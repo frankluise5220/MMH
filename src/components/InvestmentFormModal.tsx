@@ -178,6 +178,7 @@ export function InvestmentFormModal({
   const dividendAmountRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef<string | null>(null);
   const pendingFundCodeFetchRef = useRef<string | null>(null);
+  const redeemLastAppliedRef = useRef<number>(0);
 
   // Reset edit form state from entry props every time modal opens
   useEffect(() => {
@@ -478,9 +479,11 @@ export function InvestmentFormModal({
     if (navN <= 0 || amountN <= 0) return;
     if (isBuyLike(subtype)) {
       const principal = amountN - feeN;
-      if (principal > 0) setUnits((principal / navN).toFixed(3));
+      const next = principal > 0 ? (principal / navN).toFixed(3) : "";
+      if (next && next !== units) setUnits(next);
     } else if (isRedeemLike(subtype)) {
-      setUnits((amountN / navN).toFixed(3));
+      const next = (amountN / navN).toFixed(3);
+      if (next !== units) setUnits(next);
     }
   }
 
@@ -534,9 +537,12 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (!isRedeemLike(subtype) || mode !== "create") return;
     const gross = redeemGrossAmount;
+    // Guard against feedback loop: only apply if gross actually changed
+    if (Math.abs(gross - redeemLastAppliedRef.current) < 0.005) return;
     const feeN = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
     if (gross > 0) {
       const nextArrivalAmount = Math.max(0, gross - feeN).toFixed(2);
+      redeemLastAppliedRef.current = parseFloat(nextArrivalAmount) + feeN;
       setArrivalAmount(nextArrivalAmount);
       setAmount(gross.toFixed(2));
     }
