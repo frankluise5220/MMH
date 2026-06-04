@@ -336,10 +336,15 @@ export function InvestmentFormModal({
 
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
-      // Pre-fill units from the currently selected fund's holdings
+      // 切到赎回：预填当前持仓份额
       const h = holdings?.find(p => p.fundCode === fundCode);
       if (h && h.units > 0) setUnits(Number(h.units).toFixed(3));
       else if (defaults?.fundUnits && defaults.fundUnits > 0) setUnits(Number(defaults.fundUnits).toFixed(3));
+    }
+    if (isBuyLike(nextSubtype) && !isBuyLike(subtype)) {
+      // 切回买入：清除赎回带来的份额，让 autoCalcUnits 重新算
+      setUnits("");
+      unitsEditedRef.current = false;
     }
     if (isDividend(nextSubtype)) {
       if (!arrivalDate) setArrivalDate(today);
@@ -475,19 +480,14 @@ export function InvestmentFormModal({
   }, [nav, amount, fee, computedFee, subtype, defaults?.fundUnits]);
 
   function autoCalcUnits() {
-    if (!isBuyLike(subtype) && !isRedeemLike(subtype)) return;
+    if (!isBuyLike(subtype)) return;
     const navN = p(nav);
     const amountN = p(amount);
     const feeN = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
     if (navN <= 0 || amountN <= 0) return;
-    if (isBuyLike(subtype)) {
-      const principal = amountN - feeN;
-      const next = principal > 0 ? (principal / navN).toFixed(3) : "";
-      if (next && next !== units) setUnits(next);
-    } else if (isRedeemLike(subtype)) {
-      const next = (amountN / navN).toFixed(3);
-      if (next !== units) setUnits(next);
-    }
+    const principal = amountN - feeN;
+    const next = principal > 0 ? (principal / navN).toFixed(3) : "";
+    if (next && next !== units) setUnits(next);
   }
 
   // ── Auto-calc units whenever nav/amount/fee change (not only on blur) ──
@@ -630,8 +630,6 @@ export function InvestmentFormModal({
         if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
           const principal = amountN - effectiveFee;
           if (principal > 0) setUnits((principal / navN).toFixed(3));
-        } else if (isRedeemLike(subtype) && navN > 0 && amountN > 0) {
-          setUnits((amountN / navN).toFixed(3));
         }
         if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
       }
