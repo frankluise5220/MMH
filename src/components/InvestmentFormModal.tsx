@@ -471,7 +471,6 @@ export function InvestmentFormModal({
   }, [nav, amount, fee, computedFee, subtype, defaults?.fundUnits]);
 
   function autoCalcUnits() {
-    if (unitsEditedRef.current) return;
     if (!isBuyLike(subtype) && !isRedeemLike(subtype)) return;
     const navN = p(nav);
     const amountN = p(amount);
@@ -518,10 +517,8 @@ export function InvestmentFormModal({
   useEffect(() => {
     const code = fundCode.trim();
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
-    if (mode === "edit" && entry?.fundNav != null) return; // 编辑模式已有净值不覆盖
+    if (mode === "edit" && entry?.fundNav != null) return;
     setNavLoading(true);
-    setNav("");
-    if (!isRedeemLike(subtype) && mode === "create") setUnits("");
     fetch(`/api/v1/fund/nav?code=${encodeURIComponent(code)}&date=${encodeURIComponent(confirmDate)}`)
       .then(r => r.json())
       .then(d => {
@@ -613,13 +610,11 @@ export function InvestmentFormModal({
         const amountN = p(amount);
         const feeN = p(fee);
         const effectiveFee = feeN > 0 ? feeN : amountN * 0.0015;
-        if (!unitsEditedRef.current) {
-          if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
-            const principal = amountN - effectiveFee;
-            if (principal > 0) setUnits((principal / navN).toFixed(3));
-          } else if (isRedeemLike(subtype) && navN > 0 && amountN > 0) {
-            setUnits((amountN / navN).toFixed(3));
-          }
+        if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
+          const principal = amountN - effectiveFee;
+          if (principal > 0) setUnits((principal / navN).toFixed(3));
+        } else if (isRedeemLike(subtype) && navN > 0 && amountN > 0) {
+          setUnits((amountN / navN).toFixed(3));
         }
         if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
       }
