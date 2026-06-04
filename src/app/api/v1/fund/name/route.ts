@@ -37,15 +37,16 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
     const html2 = await res2.text();
     // 多种匹配模式
     const patterns = [
-      /基金简称[：<>\s]*([^：<>\s]+)</,
-      /基金名称[：<>\s]*([^：<>\s]+)</,
-      /<title[^>]*>([^<]+基金)/,
+      /基金简称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
+      /基金名称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
+      /<title[^>]*>([^<]{2,30})（\d{6}）/,  // title 格式: "基金名称（代码）"
+      /f_name[^>]*>\s*([^<]{2,30})\s*</,    // 天天基金页面变量
     ];
     for (const pattern of patterns) {
       const match = html2.match(pattern);
       if (match && match[1]) {
         const name = match[1].trim();
-        if (name && name.length > 2) return name;
+        if (name && name.length >= 2 && name.length <= 30 && !/基金历史净值|基金档案|天天基金|基金吧/.test(name)) return name;
       }
     }
   } catch {}
