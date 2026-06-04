@@ -491,7 +491,7 @@ export function InvestmentFormModal({
   useEffect(() => {
     autoCalcUnits();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nav, amount, fee, computedFee]);
+  }, [nav, fee, computedFee]);
 
   function onAmountBlur() {
     // Auto-calc fee from rate when amount changes
@@ -549,12 +549,20 @@ export function InvestmentFormModal({
   }, [redeemGrossAmount, fee, computedFee, subtype, mode]);
 
   function resetForCreate(keepSubtype = false) {
+    // Read current fund from URL at click time (defaults prop may be stale from SSR)
+    let urlFundCode = "";
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const view = q.get("view") ?? "";
+      if (view === "investfund" || view === "investmoney") urlFundCode = q.get("fundCode") ?? "";
+    } catch { /* SSR guard */ }
+
     if (!keepSubtype) {
       setSubtype("buy");
       setCashAccountId("");
       setToAccountId(defaultAccountId);
-      setFundCode(defaults?.fundCode ?? "");
-      setFundName(defaults?.fundName ?? "");
+      setFundCode(urlFundCode ? urlFundCode : (defaults?.fundCode ?? ""));
+      setFundName(urlFundCode ? (defaults?.fundName ?? urlFundCode) : (defaults?.fundName ?? ""));
       setFeeRate(defaults?.feeRate ?? "0");
       setFeeRateEdited(false);
     }
