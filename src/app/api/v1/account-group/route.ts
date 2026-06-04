@@ -24,3 +24,17 @@ export async function POST(req: NextRequest) {
   revalidateAfterSettingsChange();
   return NextResponse.json({ ok: true, group: { id: created.id, name: created.name } });
 }
+
+export async function PUT(req: NextRequest) {
+  const body = await req.json().catch(() => null);
+  const id = typeof body?.id === "string" ? body.id.trim() : "";
+  const name = typeof body?.name === "string" ? body.name.trim() : "";
+
+  if (!id || !name) {
+    return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+  }
+
+  await prisma.accountGroup.update({ where: { id }, data: { name } });
+  revalidateAfterSettingsChange();
+  return NextResponse.json({ ok: true });
+}
