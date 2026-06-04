@@ -217,7 +217,9 @@ export async function POST(req: NextRequest) {
         }
 
         // 从费率库查询手续费率（按申请日期查询）
-        const feeRate = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
+        // 费率库存储的是百分数值（0.15 = 0.15%），需除以100转为小数
+        const feeRateRaw = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
+        const feeRate = feeRateRaw / 100;
         const feeAmount = feeRate > 0 ? new Prisma.Decimal(amountNum * feeRate) : null;
         const principal = feeRate > 0 ? amountNum * (1 - feeRate) : amountNum;
 
