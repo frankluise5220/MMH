@@ -179,6 +179,35 @@ export function InvestmentFormModal({
   const requestIdRef = useRef<string | null>(null);
   const pendingFundCodeFetchRef = useRef<string | null>(null);
 
+  // Reset edit form state from entry props every time modal opens
+  useEffect(() => {
+    if (!open || mode !== "edit" || !entry) return;
+    setSubtype(initSubtype);
+    setSwitchDir("in");
+    setApplyDate(initDate);
+    setConfirmDate(initConfirmDate);
+    setCashAccountId(initCashAccountId);
+    setToAccountId(initToAccountId);
+    setFundCode(initFundCode);
+    setFundName(initFundName);
+    setNav(initNav);
+    setUnits(initUnits);
+    setAmount(String(initAmount));
+    setFeeRate(initFeeRate);
+    setFee(initFee);
+    setFeeEdited(false);
+    setFeeRateEdited(false);
+    setConfirmDays(typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0);
+    setConfirmDaysEdited(false);
+    setMemo(initMemo);
+    setArrivalDate(initArrivalDate);
+    setArrivalAmount(initArrivalAmount);
+    unitsEditedRef.current = false;
+    cashAccountTouchedRef.current = false;
+    cashAccountAutoRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, entry]);
+
   // Fetch fund name/rate/confirmDays when AI sets a fund code
   useEffect(() => {
     if (!pendingFundCodeFetchRef.current || !open) return;
