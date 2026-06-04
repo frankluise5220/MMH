@@ -44,7 +44,8 @@ export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [filterMode, setFilterMode] = useState<"group" | "institution">("group");
+  const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
 
@@ -100,7 +101,7 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ entity: "accountGroup", id }),
     });
     const data = await res.json();
-    if (data.ok) { setSelectedGroup(null); loadAll(); }
+    if (data.ok) { setSelectedFilter(null); loadAll(); }
     else window.alert(data.error);
   }
 
@@ -140,19 +141,32 @@ export default function SettingsAccountsPage() {
 
   async function createAccount() {
     if (!addForm.name.trim()) return;
+    const payload: Record<string, string | undefined> = { ...addForm };
+    if (filterMode === "group" && selectedFilter) payload.groupId = selectedFilter;
+    if (filterMode === "institution" && addForm.institutionId) payload.institutionId = addForm.institutionId;
     await fetch("/api/v1/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...addForm, groupId: selectedGroup || undefined }),
+      body: JSON.stringify(payload),
     });
     setAddForm({ name: "", kind: "bank_debit", institutionId: "", currency: "CNY" });
     setShowAdd(false);
     loadAll();
   }
 
-  const filteredAccounts = selectedGroup
-    ? accounts.filter(a => a.groupId === selectedGroup)
-    : accounts;
+  const filteredAccounts = filterMode === "group" && selectedFilter
+    ? accounts.filter(a => a.groupId === selectedFilter)
+    : filterMode === "institution" && selectedFilter
+      ? accounts.filter(a => a.institutionId === selectedFilter)
+      : accounts;
+
+  // Stats for the filter sidebar
+  const institutionAccountCounts = new Map<string, number>();
+  for (const a of accounts) {
+    if (a.institutionId) institutionAccountCounts.set(a.institutionId, (institutionAccountCounts.get(a.institutionId) || 0) + 1);
+  }
+  // Also count accounts without institution
+  const noInstitutionCount = accounts.filter(a => !a.institutionId).length;
 
   // Group accounts by kind for display
   const grouped = new Map<string, Account[]>();
@@ -165,69 +179,111 @@ export default function SettingsAccountsPage() {
 
   return (
     <div className="flex min-h-0">
-      {/* ===== 左侧：分组管理 ===== */}
+      {/* ===== 左侧：筛选边栏 ===== */}
       <div className="w-52 shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="px-4 py-3 border-b border-slate-100 shrink-0">
-          <div className="text-sm font-semibold text-slate-800">账户分组</div>
-          <p className="text-[11px] text-slate-400 mt-0.5">按人/家庭分组管理</p>
+          <div className="text-sm font-semibold text-slate-800">筛选</div>
         </div>
 
-        {/* Add group */}
-        <div className="px-3 py-2 border-b border-slate-50">
-          <div className="flex gap-1">
-            <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && createGroup()}
-              className="flex-1 h-7 rounded border border-slate-200 px-2 text-xs outline-none focus:border-blue-400"
-              placeholder="新建分组…" />
-            <button onClick={createGroup} disabled={!newGroupName.trim()}
-              className="h-7 w-7 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shrink-0">
-              <Plus className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-
-        {/* Group list */}
-        <div className="flex-1 overflow-y-auto py-1">
-          <button key="all" onClick={() => setSelectedGroup(null)}
-            className={`w-full text-left px-3 py-1.5 text-sm ${!selectedGroup ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
-            全部 ({accounts.length})
+        {/* 分组 / 机构 切换 */}
+        <div className="px-3 py-2 border-b border-slate-50 flex gap-1">
+          <button onClick={() => { setFilterMode("group"); setSelectedFilter(null); }}
+            className={`flex-1 h-7 rounded text-xs font-medium transition-colors ${filterMode === "group" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+            分组
           </button>
-          {groups.map(g => (
-            <div key={g.id} className="group">
-              {editGroupId === g.id ? (
-                <div className="flex items-center gap-1 px-3 py-1">
-                  <input value={editGroupName} onChange={e => setEditGroupName(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && updateGroup()}
-                    className="flex-1 h-7 rounded border border-blue-300 px-2 text-xs outline-none" autoFocus />
-                  <button onClick={updateGroup} className="h-6 w-6 flex items-center justify-center rounded text-emerald-600 hover:bg-emerald-50"><Check className="w-3 h-3" /></button>
-                  <button onClick={() => setEditGroupId(null)} className="h-6 w-6 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100"><X className="w-3 h-3" /></button>
-                </div>
-              ) : (
-                <button onClick={() => setSelectedGroup(g.id)}
-                  className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 ${selectedGroup === g.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
-                  <span className="flex-1 truncate">{g.name}</span>
-                  <span className="text-[10px] text-slate-400">{accounts.filter(a => a.groupId === g.id).length}</span>
-                  <button onClick={e => { e.stopPropagation(); setEditGroupId(g.id); setEditGroupName(g.name); }}
-                    className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-blue-600 shrink-0">
-                    <Pencil className="w-3 h-3" />
-                  </button>
-                  <button onClick={e => { e.stopPropagation(); if (confirm("删除分组？")) deleteGroup(g.id); }}
-                    className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-red-500 shrink-0">
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </button>
-              )}
-            </div>
-          ))}
+          <button onClick={() => { setFilterMode("institution"); setSelectedFilter(null); }}
+            className={`flex-1 h-7 rounded text-xs font-medium transition-colors ${filterMode === "institution" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+            机构
+          </button>
         </div>
+
+        {/* 分组模式 */}
+        {filterMode === "group" && (
+          <>
+            <div className="px-3 py-2 border-b border-slate-50">
+              <div className="flex gap-1">
+                <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && createGroup()}
+                  className="flex-1 h-7 rounded border border-slate-200 px-2 text-xs outline-none focus:border-blue-400"
+                  placeholder="新建分组…" />
+                <button onClick={createGroup} disabled={!newGroupName.trim()}
+                  className="h-7 w-7 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shrink-0">
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto py-1">
+              <button onClick={() => setSelectedFilter(null)}
+                className={`w-full text-left px-3 py-1.5 text-sm ${!selectedFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
+                全部 ({accounts.length})
+              </button>
+              {groups.map(g => (
+                <div key={g.id} className="group">
+                  {editGroupId === g.id ? (
+                    <div className="flex items-center gap-1 px-3 py-1">
+                      <input value={editGroupName} onChange={e => setEditGroupName(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && updateGroup()}
+                        className="flex-1 h-7 rounded border border-blue-300 px-2 text-xs outline-none" autoFocus />
+                      <button onClick={updateGroup} className="h-6 w-6 flex items-center justify-center rounded text-emerald-600 hover:bg-emerald-50"><Check className="w-3 h-3" /></button>
+                      <button onClick={() => setEditGroupId(null)} className="h-6 w-6 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100"><X className="w-3 h-3" /></button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setSelectedFilter(g.id)}
+                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 ${selectedFilter === g.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
+                      <span className="flex-1 truncate">{g.name}</span>
+                      <span className="text-[10px] text-slate-400">{accounts.filter(a => a.groupId === g.id).length}</span>
+                      <button onClick={e => { e.stopPropagation(); setEditGroupId(g.id); setEditGroupName(g.name); }}
+                        className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-blue-600 shrink-0">
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); if (confirm("删除分组？")) deleteGroup(g.id); }}
+                        className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-red-500 shrink-0">
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* 机构模式 */}
+        {filterMode === "institution" && (
+          <div className="flex-1 overflow-y-auto py-1">
+            <button onClick={() => setSelectedFilter(null)}
+              className={`w-full text-left px-3 py-1.5 text-sm ${!selectedFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
+              全部 ({accounts.length})
+            </button>
+            {institutions.map(i => (
+              <button key={i.id}
+                onClick={() => setSelectedFilter(i.id)}
+                className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 ${selectedFilter === i.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
+                <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
+                <span className="flex-1 truncate">{i.name}</span>
+                <span className="text-[10px] text-slate-400">{institutionAccountCounts.get(i.id) || 0}</span>
+              </button>
+            ))}
+            {noInstitutionCount > 0 && (
+              <div className="px-3 py-2 text-xs text-slate-400">
+                未关联机构：{noInstitutionCount} 个
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* ===== 右侧：账户列表 ===== */}
+     
+{/* ===== 右侧：账户列表 ===== */}
       <div className="flex-1 bg-slate-50 p-5 min-w-0 overflow-y-auto" style={{ height: "calc(100vh - 8.5rem)" }}>
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-sm font-semibold text-slate-800">
-              {selectedGroup ? groups.find(g => g.id === selectedGroup)?.name + " 的账户" : "所有账户"}
+              {selectedFilter
+                ? (filterMode === "group"
+                    ? groups.find(g => g.id === selectedFilter)?.name
+                    : institutions.find(i => i.id === selectedFilter)?.name) + " 的账户"
+                : "所有账户"}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">共 {filteredAccounts.length} 个账户</p>
           </div>
@@ -392,7 +448,7 @@ export default function SettingsAccountsPage() {
 
           {filteredAccounts.length === 0 && (
             <div className="text-sm text-slate-400 text-center py-12">
-              该分组下暂无账户。点击右上角"新增"按钮添加。
+              暂无账户。点击右上角"新增"按钮添加。
             </div>
           )}
         </div>
