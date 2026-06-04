@@ -1,0 +1,38 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getFundFeeRate, setFundFeeRate, type FundFeeRateType } from "@/lib/fund/feeRate";
+
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const accountId = searchParams.get("accountId")?.trim();
+  const fundCode = searchParams.get("fundCode")?.trim();
+  const feeType = parseFeeType(searchParams.get("feeType"));
+  if (!accountId || !fundCode) {
+    return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+  }
+
+  const rate = await getFundFeeRate(accountId, fundCode, feeType);
+  return NextResponse.json({ ok: true, rate, feeType });
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const accountId = String(body.accountId ?? "").trim();
+    const fundCode = String(body.fundCode ?? "").trim();
+    const rate = parseFloat(body.rate);
+    const feeType = parseFeeType(body.feeType);
+
+    if (!accountId || !fundCode || !Number.isFinite(rate) || rate < 0) {
+      return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+    }
+
+    await setFundFeeRate(accountId, fundCode, rate, feeType);
+    return NextResponse.json({ ok: true, feeType });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存失败" }, { status: 500 });
+  }
+}
+
+function parseFeeType(value: unknown): FundFeeRateType {
+  return value === "redeem" ? "redeem" : "buy";
+}

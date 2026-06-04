@@ -1,0 +1,117 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# local db
+*.db
+*.sqlite
+*.sqlite3
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env — real values never committed
+.env
+.env.local
+.env.*.local
+# allow the example template
+!.env.example
+
+# vercel
+.vercel
+
+# typescript build info
+*.tsbuildinfo
+next-env.d.ts
+
+# generated prisma client
+/src/generated/prisma
+
+# Claude Code session (may contain sensitive context)
+.claude/
+
+# IDE
+.vscode/
+.roo/
+
+# personal debug scripts
+check-*.ts
+check-*.js
+check_*.js
+check_*.ps1
+check-*.ps1
+tmp-*.ts
+tmp-*.js
+tmp_*.js
+tmp-*.mjs
+fix-*.ts
+fix-*.js
+fix_*.js
+fix_*.ps1
+cleanup-*.ts
+recalc-*.mjs
+_fix_*.mjs
+_tmp_*.cjs
+_tmp_*.ts
+temp-*.ts
+
+# personal test scripts
+*_debug.ps1
+*_test.ps1
+*_test*.ps1
+test_*.ps1
+test*.txt
+verify*.ps1
+debug_*.ps1
+
+# personal fetch/debug scripts
+fetch_*.ps1
+fetch*.ps1
+fetch*.py
+get*.ps1
+find*.ps1
+save_raw*.ps1
+call_*.ps1
+curlr*.ps1
+restart_and_build.ps1
+
+# personal data files
+cookies*.txt
+raw_debug.txt
+invest_raw*.txt
+fund_nav_cache.json
+tsc-errors.txt
+
+# FreeFileSync
+sync.ffs_db
+syno-wiseme-sync.bat
+
+# stray empty file
+{
+process.stderr.write('LISTENING'))
+
+# temporary plans
+plans/

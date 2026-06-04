@@ -1,0 +1,48 @@
+{
+  "name": "wiseme",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "prisma generate",
+    "predev": "prisma generate",
+    "dev": "next dev -H 0.0.0.0 -p 7777 --webpack",
+    "start:clean": "powershell -File start.ps1",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.64",
+    "@prisma/adapter-better-sqlite3": "^7.8.0",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "ai": "^6.0.188",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.10.0",
+    "date-fns": "^4.2.1",
+    "imap": "^0.8.19",
+    "imapflow": "^1.0.0",
+    "lucide-react": "^1.16.0",
+    "mailparser": "^3.7.4",
+    "next": "16.2.6",
+    "pg": "^8.21.0",
+    "postgres-array": "^3.0.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "recharts": "^3.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
+    "prisma": "^7.8.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

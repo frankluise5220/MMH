@@ -1,0 +1,256 @@
+"use client";
+
+import { useMemo, useState } from "react";
+
+type GroupOption = { id: string; name: string };
+type InstitutionOption = { id: string; name: string };
+type FundQueryApiOption = { id: string; code: string; name: string };
+type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "investment" | "loan" | "other";
+type FundProductTypeValue = "fund" | "money" | "wealth" | "deposit";
+type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
+
+const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
+  fund: "开放式基金",
+  money: "货币基金",
+  wealth: "银行理财",
+  deposit: "活期/存款",
+};
+
+const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
+  moving_avg: "移动加权平均（主流）",
+  fifo: "先进先出 FIFO",
+  lifo: "后进先出 LIFO",
+};
+
+export function AccountEditModalButton({
+  label,
+  title,
+  account,
+  groups,
+  institutions,
+  fundQueryApis,
+  action,
+  variant = "default",
+}: {
+  label: string;
+  title: string;
+  account: {
+    id: string;
+    name: string;
+    groupId: string;
+    institutionId: string | null;
+    kind: AccountKindValue;
+    currency: string;
+    billingDay: number | null;
+    repaymentDay: number | null;
+    creditLimit: string | null;
+    numberMasked: string | null;
+    investProductType: string | null;
+    costBasisMethod: string | null;
+    defaultFundQueryApiId: string | null;
+  };
+  groups: GroupOption[];
+  institutions: InstitutionOption[];
+  fundQueryApis: FundQueryApiOption[];
+  action: (formData: FormData) => void | Promise<void>;
+  variant?: "default" | "credit";
+}) {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<AccountKindValue>(account.kind);
+  const [investProductType, setInvestProductType] = useState<FundProductTypeValue>(
+    (account.investProductType as FundProductTypeValue) ?? "fund"
+  );
+  const [costBasisMethod, setCostBasisMethod] = useState<CostBasisMethodValue>(
+    (account.costBasisMethod as CostBasisMethodValue) ?? "moving_avg"
+  );
+
+  const buttonClassName =
+    variant === "credit"
+      ? "h-8 px-2 rounded-md border border-blue-200 bg-blue-50 text-xs text-blue-700 hover:bg-blue-100"
+      : "h-8 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50";
+
+  const initialCreditLimit = useMemo(() => account.creditLimit ?? "", [account.creditLimit]);
+
+  return (
+    <>
+      <button type="button" className={buttonClassName} onClick={() => setOpen(true)}>
+        {label}
+      </button>
+
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
+          onMouseDown={() => setOpen(false)}
+        >
+          <div
+            className="w-[560px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl p-4"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-800">{title}</div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              >
+                ×
+              </button>
+            </div>
+
+            <form action={action} className="mt-3 space-y-4">
+              <input type="hidden" name="accountId" value={account.id} />
+              <input type="hidden" name="intent" value="save" />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  name="name"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none sm:col-span-2"
+                  defaultValue={account.name}
+                />
+                <select
+                  name="groupId"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  defaultValue={account.groupId}
+                >
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="institutionId"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  defaultValue={account.institutionId ?? ""}
+                >
+                  <option value="">不指定机构</option>
+                  {institutions.map((it) => (
+                    <option key={it.id} value={it.id}>
+                      {it.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="kind"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as AccountKindValue)}
+                >
+                  <option value="cash">现金</option>
+                  <option value="bank_debit">借记卡</option>
+                  <option value="bank_credit">信用卡</option>
+                  <option value="ewallet">电子钱包</option>
+                  <option value="investment">投资</option>
+                  <option value="loan">贷款</option>
+                  <option value="other">其他</option>
+                </select>
+                {kind === "investment" && (
+                  <div className="space-y-1">
+                    <div className="text-xs text-slate-500">投资产品类型</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {(Object.keys(FUND_PRODUCT_LABELS) as FundProductTypeValue[]).map((pt) => (
+                        <button
+                          key={pt}
+                          type="button"
+                          onClick={() => setInvestProductType(pt)}
+                          className={`h-8 rounded-md border text-xs ${
+                            investProductType === pt
+                              ? "bg-blue-50 text-blue-700 border-blue-200 font-medium"
+                              : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                          }`}
+                        >
+                          {FUND_PRODUCT_LABELS[pt]}
+                        </button>
+                      ))}
+                    </div>
+                    <input type="hidden" name="investProductType" value={investProductType} />
+                    <div className="text-xs text-slate-500 mt-2">成本摊薄方式</div>
+                    <select
+                      name="costBasisMethod"
+                      value={costBasisMethod}
+                      onChange={(e) => setCostBasisMethod(e.target.value as CostBasisMethodValue)}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    >
+                      {(Object.keys(COST_BASIS_LABELS) as CostBasisMethodValue[]).map((m) => (
+                        <option key={m} value={m}>{COST_BASIS_LABELS[m]}</option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-slate-500 mt-2">默认净值查询 API</div>
+                    <select
+                      name="defaultFundQueryApiId"
+                      defaultValue={account.defaultFundQueryApiId ?? ""}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    >
+                      <option value="">默认（按优先级尝试）</option>
+                      {fundQueryApis.map((api) => (
+                        <option key={api.id} value={api.id}>
+                          {api.name} ({api.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <input
+                  name="currency"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  defaultValue={account.currency}
+                />
+              </div>
+
+              {kind === "bank_credit" || kind === "loan" ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-700">账单与额度</div>
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      name="numberMasked"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      defaultValue={account.numberMasked ?? ""}
+                      placeholder="编号/尾号（可选），例如：3833"
+                    />
+                    <input
+                      name="creditLimit"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      defaultValue={initialCreditLimit}
+                      placeholder="额度，例如：50000"
+                      inputMode="decimal"
+                    />
+                    <input
+                      name="billingDay"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      defaultValue={account.billingDay ?? ""}
+                      placeholder="每月账单日 1-31"
+                      inputMode="numeric"
+                    />
+                    <input
+                      name="repaymentDay"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      defaultValue={account.repaymentDay ?? ""}
+                      placeholder="每月还款日 1-31"
+                      inputMode="numeric"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="h-9 px-3 rounded-md border border-slate-200 bg-white text-slate-700 text-sm hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="h-9 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+                >
+                  保存
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
