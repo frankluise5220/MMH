@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { useRouter } from "next/navigation";
 import { Plus, Trash2, ChevronRight, ChevronDown } from "lucide-react";
 
 type Category = {
@@ -20,8 +19,8 @@ const typeColor = (t: string) =>
 
 const TYPE_ORDER = ["expense", "income", "investment"] as const;
 
-export default function SettingsCategoriesClient({ categories }: { categories: Category[] }) {
-  const router = useRouter();
+export default function SettingsCategoriesClient({ categories: initialCategories }: { categories: Category[] }) {
+  const [categories, setCategories] = useState<Category[]>(initialCategories);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addingUnder, setAddingUnder] = useState<string | null>(null);
@@ -72,9 +71,10 @@ export default function SettingsCategoriesClient({ categories }: { categories: C
       });
       const data = await res.json();
       if (data.ok) {
+        const created = data.category as Category;
+        setCategories(prev => [...prev, created]);
         if (addingUnder && addingUnder !== "__root__") setExpanded(prev => new Set([...prev, addingUnder]));
         setNewName("");
-        router.refresh();
       } else {
         window.alert(data.error || "添加失败");
       }
@@ -90,8 +90,14 @@ export default function SettingsCategoriesClient({ categories }: { categories: C
         body: JSON.stringify({ entity: "category", id }),
       });
       const data = await res.json();
-      if (data.ok) router.refresh();
-      else window.alert(data.error || "删除失败");
+      if (data.ok) {
+        setCategories(prev => prev.filter(c => c.id !== id));
+        if (selectedId === id) setSelectedId(null);
+        // Remove from expanded if it was expanded
+        setExpanded(prev => { const next = new Set(prev); next.delete(id); return next; });
+      } else {
+        window.alert(data.error || "删除失败");
+      }
     } catch { window.alert("删除失败"); }
   }
 
@@ -141,13 +147,13 @@ export default function SettingsCategoriesClient({ categories }: { categories: C
   }
 
   return (
-    <div className="flex min-h-0">
+    <div className="flex" style={{ height: "calc(100vh - 8.5rem)" }}>
       {/* 左侧：分类树 */}
-      <div className="w-64 flex flex-col shrink-0 border-r border-slate-200 bg-white" style={{ minHeight: 360 }}>
-        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+      <div className="w-64 flex flex-col shrink-0 border-r border-slate-200 bg-white">
+        <div className="px-4 py-3 border-b border-slate-200 shrink-0">
           <div className="text-sm font-semibold text-slate-800">分类管理</div>
         </div>
-        <div className="flex-1 py-2 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto py-2">
           {TYPE_ORDER.map(type => {
             const root = roots.find(c => c.type === type);
             const children = root ? getChildren(root.id) : [];
@@ -190,7 +196,7 @@ export default function SettingsCategoriesClient({ categories }: { categories: C
       </div>
 
       {/* 右侧：详情 */}
-      <div className="flex-1 bg-slate-50 p-6 min-w-0" style={{ minHeight: 360 }}>
+      <div className="flex-1 bg-slate-50 p-6 min-w-0">
         {selectedCategory ? (
           <div className="space-y-4">
             <div className="bg-white border border-slate-200 rounded-xl">
