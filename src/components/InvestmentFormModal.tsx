@@ -685,7 +685,7 @@ export function InvestmentFormModal({
         body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), rate: finalFeeRate, feeType: isRedeemLike(subtype) ? "redeem" : "buy" }),
       }).catch(() => {});
     }
-    if (isBuyLike(subtype) && confirmDays > 0) {
+    if (isBuyLike(subtype) && confirmDays >= 0) {
       fetch("/api/v1/fund/confirm-days", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
