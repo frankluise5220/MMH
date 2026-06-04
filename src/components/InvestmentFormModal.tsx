@@ -845,7 +845,7 @@ export function InvestmentFormModal({
                       {group.map((s) => (
                         <button key={s} type="button" onClick={() => selectSubtype(s)}
                           className={`h-8 flex-1 rounded-md border text-xs ${subtype === s ? "bg-blue-50 text-blue-700 border-blue-200 font-medium" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
-                          {DEPOSIT_LABELS[s as FundSubtype] ?? subtypeDisplay(s).label}
+                          {productType === "deposit" ? (DEPOSIT_LABELS[s as FundSubtype] ?? SUBTYPE_LABELS[s as FundSubtype]) : SUBTYPE_LABELS[s as FundSubtype]}
                         </button>
                       ))}
                     </div>
