@@ -4,13 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Building2, Database, Mail, Palette, Settings,
-  Tag, Users, Cpu, ChevronRight, Key, Globe,
+  Tag, Users, Cpu, ChevronRight, Key, Globe, Hash,
 } from "lucide-react";
 
 const navItems = [
   { href: "/settings/accounts", label: "账户", icon: Users },
   { href: "/settings/institutions", label: "机构", icon: Building2 },
   { href: "/settings/categories", label: "收支类别", icon: Tag },
+  { href: "/settings/tags", label: "标签", icon: Hash },
   { href: "/settings/email", label: "邮箱导入", icon: Mail },
   { href: "/settings/display", label: "显示", icon: Palette },
   { href: "/settings/ai", label: "AI 模型", icon: Cpu },
