@@ -161,16 +161,15 @@ export default function SettingsCategoriesClient({ categories: initialCategories
 
             return (
               <div key={type} className="mb-0.5">
-                <div className="flex items-center gap-1 px-3 py-1.5">
+                <div
+                  onClick={() => { root ? (toggleExpand(root.id), select(root.id)) : openAdd("__root__", type); }}
+                  className="flex items-center gap-1 px-3 py-1.5 cursor-pointer hover:bg-slate-50 rounded">
                   {root ? (
-                    <button onClick={() => toggleExpand(root.id)}
-                      className="w-4 h-4 flex items-center justify-center shrink-0 text-slate-400 hover:text-slate-600">
-                      {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                    </button>
-                  ) : <span className="w-4" />}
+                    isExpanded ? <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" /> : <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
+                  ) : <span className="w-3" />}
                   <span className={`text-xs font-semibold ${typeColor(type)} flex-1`}>{typeLabel(type)}</span>
                   <span className="text-[10px] text-slate-400">{children.length}</span>
-                  <button onClick={() => openAdd(root?.id ?? "__root__", type)}
+                  <button onClick={(e) => { e.stopPropagation(); openAdd(root?.id ?? "__root__", type); }}
                     className="h-5 w-5 flex items-center justify-center rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 shrink-0"
                     title={root ? "添加子分类" : "创建根分类"}>
                     <Plus className="w-3 h-3" />
