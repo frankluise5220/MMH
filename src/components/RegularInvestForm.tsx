@@ -409,7 +409,7 @@ export function RegularInvestForm({
                 ) : (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
                       {displayAccountLabel}
                     </div>
                   </div>
@@ -436,7 +436,7 @@ export function RegularInvestForm({
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">基金代码</div>
                   {mode === "edit" ? (
-                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">{formData.fundCode}</div>
+                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">{formData.fundCode}</div>
                   ) : (
                     <input
                       value={formData.fundCode}
