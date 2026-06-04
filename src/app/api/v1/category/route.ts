@@ -5,16 +5,24 @@ import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const name = typeof body?.name === "string" ? body.name.trim() : "";
-  const type = typeof body?.type === "string" ? body.type.trim() : "expense";
+  const parentId = typeof body?.parentId === "string" ? body.parentId.trim() : null;
 
   if (!name) {
     return NextResponse.json({ ok: false, error: "分类名称不能为空" }, { status: 400 });
   }
 
-  const safeType = type === "income" ? "income" : "expense";
+  // Inherit type from parent, or use explicit type, or default to expense
+  let type = "expense";
+  if (parentId) {
+    const parent = await prisma.category.findUnique({ where: { id: parentId } });
+    if (parent) type = parent.type;
+  } else if (typeof body?.type === "string") {
+    const raw = body.type.trim();
+    if (["expense", "income", "investment", "transfer"].includes(raw)) type = raw;
+  }
 
   const created = await prisma.category.create({
-    data: { name, type: safeType },
+    data: { name, type, parentId: parentId || null },
   }).catch(() => null);
 
   if (!created) {
@@ -22,5 +30,5 @@ export async function POST(req: NextRequest) {
   }
 
   revalidateAfterSettingsChange();
-  return NextResponse.json({ ok: true, category: { id: created.id, name: created.name, type: created.type } });
+  return NextResponse.json({ ok: true, category: { id: created.id, name: created.name, type: created.type, parentId: created.parentId } });
 }

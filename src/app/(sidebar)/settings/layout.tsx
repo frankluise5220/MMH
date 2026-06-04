@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Building2, Database, Mail, Palette, Settings,
-  Tag, Users, Cpu, ChevronRight,
+  Tag, Users, Cpu, ChevronRight, Key, Globe,
 } from "lucide-react";
 
 const navItems = [
@@ -13,7 +13,10 @@ const navItems = [
   { href: "/settings/categories", label: "收支类别", icon: Tag },
   { href: "/settings/email", label: "邮箱导入", icon: Mail },
   { href: "/settings/display", label: "显示", icon: Palette },
-  { href: "/settings/ai", label: "AI Provider", icon: Cpu },
+  { href: "/settings/ai", label: "AI 模型", icon: Cpu },
+  { href: "/settings/users", label: "用户管理", icon: Users },
+  { href: "/settings/api", label: "外接 API", icon: Key },
+  { href: "/settings/fund-api", label: "基金 API", icon: Globe },
   { href: "/settings/database", label: "数据库", icon: Database },
 ];
 
