@@ -335,8 +335,11 @@ export function InvestmentFormModal({
   }, [showHoldingDropdown, isUserSearching, selectedHoldingText]);
 
   function selectSubtype(nextSubtype: FundSubtype) {
-    if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype) && defaults?.fundUnits && defaults.fundUnits > 0) {
-      setUnits(Number(defaults.fundUnits).toFixed(3));
+    if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
+      // Pre-fill units from the currently selected fund's holdings
+      const h = holdings?.find(p => p.fundCode === fundCode);
+      if (h && h.units > 0) setUnits(Number(h.units).toFixed(3));
+      else if (defaults?.fundUnits && defaults.fundUnits > 0) setUnits(Number(defaults.fundUnits).toFixed(3));
     }
     if (isDividend(nextSubtype)) {
       if (!arrivalDate) setArrivalDate(today);
@@ -1161,8 +1164,7 @@ export function InvestmentFormModal({
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">到账金额</div>
-                      <input inputMode="decimal" value={arrivalAmount} onChange={(e) => setArrivalAmount(e.target.value)} placeholder="可手工填写"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder="可手工填写" label="到账金额" />
                     </div>
                   </div>
 
@@ -1223,8 +1225,52 @@ export function InvestmentFormModal({
                 </div>
               ) : null}
 
-              {/* 基金代码 + 名称 */}
-              {showCode && (
+              {/* 基金搜索下拉 */}
+              {showCode ? (
+                holdings && holdings.length > 0 ? (
+                <div className="relative space-y-1" ref={holdingDropdownRef}>
+                  <div className="text-xs font-medium text-slate-600">持仓基金</div>
+                  <div className="flex gap-1">
+                    <input value={holdingSearch} onChange={(e) => {
+                      setHoldingSearch(e.target.value);
+                      setShowHoldingDropdown(true);
+                      if (/^\d{6}$/.test(e.target.value)) {
+                        setFundCode(e.target.value);
+                        const h = holdings.find(p => p.fundCode === e.target.value);
+                        if (h) setFundName(h.name);
+                        else setFundName("");
+                      } else {
+                        setFundCode("");
+                        setFundName("");
+                      }
+                    }}
+                      onFocus={() => setShowHoldingDropdown(true)}
+                      onBlur={handleFundCodeBlur}
+                      placeholder="输入代码或名称筛选…"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    <button type="button" onClick={() => setShowHoldingDropdown(!showHoldingDropdown)}
+                      className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 shrink-0">
+                      <ChevronDown className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {showHoldingDropdown && filteredHoldings.length > 0 && (
+                    <div className="absolute z-50 mt-0 w-full max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                      {filteredHoldings.map(h => (
+                        <button key={h.fundCode} type="button" className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
+                          onClick={() => {
+                            setFundCode(h.fundCode);
+                            setFundName(h.name);
+                            setHoldingSearch(`${h.fundCode} ${h.name}`);
+                            setShowHoldingDropdown(false);
+                          }}>
+                          <span className="font-medium">{h.fundCode}</span> <span className="text-slate-600">{h.name}</span>
+                          <span className="text-slate-400 ml-1">（{Number(h.units).toFixed(3)}份）</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
                 <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">基金代码</div>
@@ -1239,7 +1285,8 @@ export function InvestmentFormModal({
                       className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
                   </div>
                 </div>
-              )}
+              )
+            ) : null}
 
               {!showCode && (
                 <div className="space-y-1">
