@@ -485,6 +485,12 @@ export function InvestmentFormModal({
     }
   }
 
+  // ── Auto-calc units whenever nav/amount/fee change (not only on blur) ──
+  useEffect(() => {
+    autoCalcUnits();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav, amount, fee, computedFee]);
+
   function onAmountBlur() {
     // Auto-calc fee from rate when amount changes
     if (!feeEdited && showFeeFor(subtype, productType)) {
