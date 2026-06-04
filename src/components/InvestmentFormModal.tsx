@@ -742,7 +742,19 @@ export function InvestmentFormModal({
         requestIdRef.current = null;
       }
       if (keepOpen) {
-        if (mode === "create") resetForCreate(true);
+        if (mode === "create") {
+          // Advance date by 1, keep amount, clear units/nav/fee
+          const nextDate = addDays(applyDate, 1);
+          setApplyDate(nextDate);
+          setConfirmDate(confirmDays > 0 ? addDays(nextDate, confirmDays) : nextDate);
+          setNav("");
+          setNavLoading(false);
+          setUnits("");
+          setFee("");
+          setFeeEdited(false);
+          setMemo("");
+          unitsEditedRef.current = false;
+        }
         await new Promise(resolve => setTimeout(resolve, 100));
         router.refresh();
       } else {

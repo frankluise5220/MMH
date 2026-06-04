@@ -60,6 +60,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
     const [recordsLoading, setRecordsLoading] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState<{ planId: string; planName: string } | null>(null);
     const [editingRecord, setEditingRecord] = useState<any>(null);
+    const [showCompleted, setShowCompleted] = useState(false);
 
     // 当 initialPlans 变化时（router.refresh 后），同步更新本地状态
     useEffect(() => {
@@ -88,7 +89,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
       const res = await fetch(`/api/v1/regular-invest/records?planId=${encodeURIComponent(p.id)}`);
       const data = await res.json();
       if (data.ok) {
-        setPlanRecords(data.records || []);
+        if (data.records) data.records.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()); setPlanRecords(data.records || []);
       } else {
         setPlanRecords([]);
       }
@@ -352,6 +353,11 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
                   共 {plans.length} 个计划，{plans.filter((p) => p.status === "active").length} 个执行中
                 </span>
               </div>
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+                <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-blue-600" />
+                显示已完成
+              </label>
             </div>
           </header>
 
@@ -392,14 +398,14 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
                 </tr>
               </thead>
               <tbody className="text-sm">
-                {plans.length === 0 ? (
+                {plans.filter(p => showCompleted || p.status !== "completed").length === 0 ? (
                   <tr>
                     <td className="px-4 py-6 text-slate-500" colSpan={10}>
                       暂无定投计划
                     </td>
                   </tr>
                 ) : (
-                  plans.map((p) => (
+                  plans.filter(p => showCompleted || p.status !== "completed").map((p) => (
                     <tr key={p.id} className={`hover:bg-slate-50 cursor-pointer ${selectedPlan?.id === p.id ? "bg-blue-50" : ""}`} onClick={() => handleSelectPlan(p)}>
                       <td className="px-4 py-2 border-b border-slate-100 text-xs">
                         <div className="flex items-baseline gap-2">
