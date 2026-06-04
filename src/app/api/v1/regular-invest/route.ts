@@ -105,6 +105,7 @@ export async function POST(req: NextRequest) {
       feeRate,
       confirmDays,
       memo,
+      skipPendingPreceding,
     } = body;
 
     if (!accountId || !fundCode || !amount || !startDate) {
@@ -154,6 +155,7 @@ export async function POST(req: NextRequest) {
           feeRate: feeRate != null ? parseFloat(feeRate) : null,
           confirmDays: confirmDays != null ? parseInt(confirmDays) : null,
           memo: memo || null,
+          skipPendingPreceding: skipPendingPreceding !== false,
         },
       });
 
@@ -204,6 +206,7 @@ export async function PUT(req: NextRequest) {
       confirmDays,
       cashAccountId,
       memo,
+      skipPendingPreceding,
     } = body;
 
     if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
@@ -288,6 +291,7 @@ export async function PUT(req: NextRequest) {
       }
     }
     if (memo != null) updateData.memo = memo || null;
+    if (skipPendingPreceding !== undefined) (updateData as any).skipPendingPreceding = skipPendingPreceding;
 
     const plan = await prisma.regularInvestPlan.update({
       where: { id },

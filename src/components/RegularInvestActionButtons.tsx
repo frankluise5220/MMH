@@ -38,6 +38,7 @@ export function RegularInvestActionButtons({
     cashAccountId: string | null;
     feeRate: number | null;
     confirmDays: number | null;
+    skipPendingPreceding: boolean | null;
   };
   cashAccounts?: { id: string; label: string }[];
   investmentAccounts?: { id: string; name: string; label: string }[];
@@ -138,6 +139,7 @@ export function RegularInvestActionButtons({
           cashAccountId: plan.cashAccountId,
           feeRate: plan.feeRate,
           confirmDays: plan.confirmDays,
+          skipPendingPreceding: plan.skipPendingPreceding ?? true,
         }}
         accountId={plan.accountId}
         accountLabel={editAccountLabel ?? ""}

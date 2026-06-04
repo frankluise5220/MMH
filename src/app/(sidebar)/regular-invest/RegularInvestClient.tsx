@@ -586,6 +586,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
           cashAccountId: editPlan.cashAccountId ?? null,
           feeRate: editPlan.feeRate ?? null,
           confirmDays: editPlan.confirmDays ?? null,
+          skipPendingPreceding: editPlan.skipPendingPreceding ?? true,
         } : undefined}
         accountId={editPlan?.accountId ?? investmentAccounts[0]?.id ?? ""}
         investmentAccounts={investmentAccounts}

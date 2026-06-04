@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import Link from "next/link";
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download } from "lucide-react";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { FillNavButton } from "@/components/FillNavButton";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
@@ -39,6 +39,49 @@ export function FundShell(props: Props) {
   const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
   const pnl = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
+
+  function exportCSV() {
+    const rows = allEntries || [];
+    const header = ["申请日期", "确认日期", "资金账户", "基金代码", "基金名称", "净值", "份额", "交易类型", "金额", "收益", "状态"];
+    const lines: string[] = [header.join(",")];
+
+    for (const e of rows) {
+      const nav = e.fundNav != null ? toNumber(e.fundNav) : "";
+      const units = e.fundUnits != null ? toNumber(e.fundUnits) : "";
+      const amt = toNumber(e.amount);
+      const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : "";
+      const subtype = fl(e.fundSubtype, e.source).label;
+      const isR = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
+      const cashAcc = accountOptions.find((a: any) => a.id === (isR ? e.toAccountId : e.accountId));
+      const cashAccName = cashAcc?.label?.split("·").pop() ?? "-";
+      const confirmDate = e.fundSubtype === "dividend_cash" ? fmtDate(e.fundArrivalDate)
+        : (e.fundUnits != null && Number(e.fundUnits) > 0) ? fmtDate(e.fundConfirmDate) : "待确认";
+      const status = e.fundSubtype === "buy_failed" ? "暂停申购" : (e.fundUnits == null || Number(e.fundUnits) === 0) ? "待确认" : "确认";
+
+      lines.push([
+        fmtDate(e.date),
+        confirmDate || "",
+        cashAccName,
+        e.fundCode || "",
+        e.fundName || "",
+        String(nav),
+        String(units),
+        subtype,
+        Math.abs(amt).toFixed(2),
+        typeof profit === "number" ? profit.toFixed(2) : "",
+        status,
+      ].join(","));
+    }
+
+    const bom = "﻿";
+    const blob = new Blob([bom + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `交易明细_${fundCode || "all"}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   const sortedPositions = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -217,6 +260,10 @@ export function FundShell(props: Props) {
         <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
           <div className="text-sm font-semibold text-slate-800">交易明细{fundCode && <span className="ml-2 text-xs text-slate-500 font-normal">{fundCode}</span>}</div>
           <div className="flex items-center gap-1 text-xs">
+            <button onClick={exportCSV} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出 CSV">
+              <Download className="w-3 h-3" />导出
+            </button>
+            <span className="text-slate-300">|</span>
             {[10, 20, 40].map((n) => (
               <button key={n} onClick={() => { setFundPageSize(n); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n}</button>
             ))}

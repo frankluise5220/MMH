@@ -214,8 +214,53 @@ export async function POST(req: NextRequest) {
 
     // 计算本次需要生成的记录数（不超过总次数限制）
     const maxToExecute = plan.totalRuns ? plan.totalRuns - plan.executedRuns : datesToExecute.length;
-    const datesToProcess = datesToExecute.slice(0, maxToExecute);
+    let datesToProcess = datesToExecute.slice(0, maxToExecute);
+    let skippedCount = 0;
+
+    // ── 预计算 NAV：避开下一日有净值而本日无净值的间隙日期 ──
+    if (plan.skipPendingPreceding !== false) {
+      const confirmDays = plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode);
+      const navResultMap = new Map<string, { hasNav: boolean; sgzt: string }>();
+      for (const d of datesToProcess) {
+        const ds = formatDateLocal(d);
+        const confirmDateStr = addWorkdaysUtc(ds, confirmDays);
+        const foundNav = await getFundNavFromCacheOnly(plan.fundCode, utcDate(confirmDateStr));
+        navResultMap.set(ds, {
+          hasNav: foundNav != null && foundNav.nav != null && foundNav.nav > 0,
+          sgzt: foundNav?.sgzt ?? "",
+        });
+      }
+
+      const filtered: Date[] = [];
+      const arr = datesToProcess;
+      const totalBeforeFilter = arr.length;
+      for (let i = 0; i < arr.length; i++) {
+        const ds = formatDateLocal(arr[i]!);
+        const cur = navResultMap.get(ds);
+        const noNav = !cur || (!cur.hasNav && cur.sgzt !== "暂停申购");
+
+        // 本日无净值 且 下一日有净值 → 跳过
+        if (noNav && i + 1 < arr.length) {
+          const nextDs = formatDateLocal(arr[i + 1]!);
+          const next = navResultMap.get(nextDs);
+          if (next && next.hasNav) continue;
+        }
+        filtered.push(arr[i]!);
+      }
+      skippedCount = totalBeforeFilter - filtered.length;
+      datesToProcess = filtered;
+    }
+
     const newRecordsCount = datesToProcess.length;
+
+    if (newRecordsCount === 0) {
+      return NextResponse.json({
+        ok: true,
+        message: `所有到期的交易明细已处理${skippedCount > 0 ? `（跳过 ${skippedCount} 个无净值间隙日期）` : ""}`,
+        executedCount: 0,
+        skippedCount,
+      });
+    }
 
     // 净值数据从缓存库读取（前端已先调 /api/v1/fund/preload-nav 扩充了净值库）
     await prisma.$transaction(async (tx) => {
@@ -378,8 +423,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: `已执行定投 ${plan.fundCode}，生成 ${newRecordsCount} 条交易明细（暂停申购退回 ${totalFailedCount} 笔）`,
+      message: `已执行定投 ${plan.fundCode}，生成 ${newRecordsCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount > 0 ? `（跳过 ${skippedCount} 个无净值间隙日期）` : ""}`,
       executedCount: newRecordsCount,
+      skippedCount,
       completed: plan.totalRuns && plan.executedRuns + newRecordsCount >= plan.totalRuns,
       stats: {
         executedCount: totalExecutedCount,

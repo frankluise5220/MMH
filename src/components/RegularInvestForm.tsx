@@ -28,6 +28,7 @@ interface RegularInvestFormData {
   cashAccountId: string;
   feeRate: string;
   confirmDays: string;
+  skipPendingPreceding: boolean;
 }
 
 interface EditData {
@@ -45,6 +46,7 @@ interface EditData {
   cashAccountId: string | null;
   feeRate: number | null;
   confirmDays: number | null;
+  skipPendingPreceding: boolean;
 }
 
 /**
@@ -119,6 +121,7 @@ export function RegularInvestForm({
         cashAccountId: editData.cashAccountId || "",
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "1",
+        skipPendingPreceding: editData.skipPendingPreceding !== undefined ? editData.skipPendingPreceding : true,
       };
     }
     return {
@@ -135,6 +138,7 @@ export function RegularInvestForm({
       cashAccountId: lastUsedCashAccountId ?? "",
       feeRate: "0",
       confirmDays: "1",
+      skipPendingPreceding: true,
     };
   }
 
@@ -252,6 +256,7 @@ export function RegularInvestForm({
           fd.set("cashAccountId", formData.cashAccountId || "");
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
+          fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
           const res = await action(fd);
           if (!res.ok) {
             window.alert(res.error);
@@ -273,6 +278,7 @@ export function RegularInvestForm({
             cashAccountId: formData.cashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
+            skipPendingPreceding: formData.skipPendingPreceding,
             action: "update",
           };
           const res = await fetch("/api/v1/regular-invest", {
@@ -309,6 +315,7 @@ export function RegularInvestForm({
           fd.set("cashAccountId", formData.cashAccountId || "");
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
+          fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
 
           const res = await action(fd);
           if (!res.ok) {
@@ -334,13 +341,10 @@ export function RegularInvestForm({
             cashAccountId: formData.cashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
+            skipPendingPreceding: formData.skipPendingPreceding,
           };
 
           const res = await apiAction(payload);
-          if (!res.ok) {
-            window.alert(res.error || "保存失败");
-            return;
-          }
           setActualOpen(false);
           resetForm();
           router.refresh();
@@ -598,6 +602,14 @@ export function RegularInvestForm({
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 />
               </div>
+
+              {/* 跳过间隙选项 */}
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input type="checkbox" checked={formData.skipPendingPreceding}
+                  onChange={(e) => setFormData(d => ({ ...d, skipPendingPreceding: e.target.checked }))}
+                  className="w-3.5 h-3.5 accent-blue-600" />
+                跳过无净值间隙（如某日无净值但次日有则跳过该日）
+              </label>
 
               {/* 保存按钮 */}
               <div className="flex justify-end pt-1 gap-2">

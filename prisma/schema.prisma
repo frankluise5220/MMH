@@ -376,6 +376,7 @@ model RegularInvestPlan {
   status                                           RegularInvestStatus @default(active)
   totalRuns                                        Int?
   executionDay                                     Int?
+  skipPendingPreceding                             Boolean             @default(true)
   Account_RegularInvestPlan_accountIdToAccount     Account             @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
   Account_RegularInvestPlan_cashAccountIdToAccount Account?            @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
 

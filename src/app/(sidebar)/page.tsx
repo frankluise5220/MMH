@@ -852,6 +852,7 @@ async function createRegularInvest(formData: FormData) {
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
+  const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
 
   if (!accountId || !fundCode || !amountRaw || !startDateStr) {
     return { ok: false as const, error: "缺少必填字段" };
@@ -899,6 +900,7 @@ async function createRegularInvest(formData: FormData) {
           status: RegularInvestStatus.active,
           feeRate: feeRate != null && Number.isFinite(feeRate) ? feeRate : null,
           confirmDays: confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : null,
+          skipPendingPreceding,
         },
       });
 
