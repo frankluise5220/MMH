@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function GET(req: NextRequest) {
+  const { hidFilter } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId")?.trim();
   const fundCode = searchParams.get("fundCode")?.trim();
@@ -14,6 +16,7 @@ export async function GET(req: NextRequest) {
   try {
     const entries = await prisma.txRecord.findMany({
       where: {
+        ...hidFilter,
         OR: [{ toAccountId: accountId }, { accountId: accountId }],
         fundCode,
         source: subtype || "regular_invest",

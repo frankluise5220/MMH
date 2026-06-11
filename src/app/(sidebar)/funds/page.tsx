@@ -3,6 +3,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { formatMoney, formatMoney4 } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,8 @@ export default async function FundsPage({
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+  const ctx = await getHouseholdScope();
+  const { hidFilter } = ctx;
 
   const accountId =
     typeof params?.accountId === "string" ? params.accountId.trim() : "";
@@ -23,7 +26,7 @@ export default async function FundsPage({
     typeof params?.symbol === "string" ? params.symbol.trim() : "";
 
   const fundAccounts = await prisma.account.findMany({
-    where: { kind: AccountKind.investment, isActive: true },
+    where: { kind: AccountKind.investment, isActive: true, ...hidFilter },
     include: { Institution: true },
     orderBy: [{ name: "asc" }],
   });
@@ -38,8 +41,8 @@ export default async function FundsPage({
 
   // ── 显示层：持仓数据统一从 fundHolding 表读取 ──
   const [investBalByAccountId, positionDisplay] = await Promise.all([
-    computeInvestBalances(),
-    computePositionDisplay(selectedAccount.id),
+    computeInvestBalances(ctx),
+    computePositionDisplay(ctx, selectedAccount.id),
   ]);
 
   const investBalance = investBalByAccountId.get(selectedAccount.id)?.marketValue ?? 0;
@@ -73,7 +76,7 @@ export default async function FundsPage({
   return (
     <div className="flex h-full w-full bg-slate-50">
       <div className="w-48 shrink-0 border-r border-slate-200 bg-white flex flex-col overflow-y-auto">
-        <div className="px-3 py-2 text-xs font-semibold text-slate-500 border-b border-slate-100">基金账户</div>
+        <div className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">基金账户</div>
         {fundAccounts.map((a) => {
           const active = a.id === selectedAccount.id;
           const bal = investBalByAccountId.get(a.id)?.marketValue ?? 0;
@@ -81,7 +84,7 @@ export default async function FundsPage({
           return (
             <a key={a.id} href={`/funds?accountId=${a.id}`} className={`px-3 py-2 text-xs truncate flex items-center justify-between ${active ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-700 hover:bg-slate-50"}`}>
               <span className="truncate">{label}</span>
-              <span className="text-emerald-700 text-[10px] ml-1 shrink-0">{formatMoney(bal)}</span>
+              <span className={`text-[10px] ml-1 shrink-0 tabular-nums font-medium ${bal > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : bal < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-slate-700"}`}>{formatMoney(bal)}</span>
             </a>
           );
         })}
@@ -91,13 +94,13 @@ export default async function FundsPage({
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-800">{selectedAccount.name}</span>
-            <span className="text-sm tabular-nums text-emerald-700 font-medium">{formatMoney(investBalance)}</span>
+            <span className={`text-sm tabular-nums font-semibold ${investBalance > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : investBalance < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-slate-800"}`}>{formatMoney(investBalance)}</span>
           </div>
           <div className="grid grid-cols-3 divide-x divide-slate-100">
             {[
               { label: "总市值", value: formatMoney(totalMarketValue) },
               { label: "持仓成本", value: formatMoney(totalCost) },
-              { label: "浮盈", value: formatMoney(totalPnL), cls: pnlCls(totalPnL) },
+              { label: "浮盈", value: formatMoney(totalPnL), cls: totalPnL > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : totalPnL < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-slate-800" },
             ].map((d) => (
               <div key={d.label} className="px-4 py-3 text-center">
                 <div className="text-[10px] text-slate-500">{d.label}</div>

@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
+    const { hidFilter } = await getHouseholdScope();
     const tags = await prisma.tag.findMany({
+      where: { ...hidFilter },
       orderBy: { name: "asc" },
     });
     return NextResponse.json({ ok: true, tags });
@@ -28,8 +31,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "名称必填（1-40字）" }, { status: 400 });
   }
 
+  const { hidFilter } = await getHouseholdScope();
   const { name, color } = parsed.data;
-  const tag = await prisma.tag.create({ data: { name, color: color || null } });
+  const tag = await prisma.tag.create({ data: { name, color: color || null, ...hidFilter } });
   revalidateAfterSettingsChange();
   return NextResponse.json({ ok: true, tag });
 }
@@ -38,8 +42,12 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
 
+  const { householdId } = await getHouseholdScope();
   const existing = await prisma.tag.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ ok: false, error: "标签不存在" }, { status: 404 });
+  if (householdId && existing.householdId && existing.householdId !== householdId) {
+    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+  }
 
   await prisma.tag.delete({ where: { id } });
   revalidateAfterSettingsChange();

@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
 
 /**
  * 删除 / 恢复 交易记录
@@ -19,6 +22,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
  */
 export async function POST(req: Request) {
   try {
+    const { householdId, user } = await getHouseholdScope();
     const body = await req.json().catch(() => null);
     const action: string | undefined = body?.action;
 
@@ -42,7 +46,7 @@ export async function POST(req: Request) {
         if (r.toAccountId) accountsToRecalc.add(r.toAccountId);
       }
       for (const acctId of accountsToRecalc) {
-        await recalcAndSaveAccountBalance(acctId).catch(() => {});
+        await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
       }
       revalidateAfterInvestChange();
       return NextResponse.json({ ok: true, count: res.count, message: `已恢复 ${res.count} 条记录` });
@@ -64,6 +68,7 @@ export async function POST(req: Request) {
       });
 
       if (!txRecord) continue;
+      if (!isAdmin(user) && txRecord.householdId && txRecord.householdId !== householdId) continue;
 
       // 软删除 TxRecord
       await prisma.txRecord.update({
@@ -94,12 +99,12 @@ export async function POST(req: Request) {
 
     // 批量重新计算持仓
     for (const [accountId, fundCodes] of fundAccountsToRecalc) {
-      await recalcFundPositions(accountId, fundCodes).catch(() => {});
+      await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     // 批量重新计算账户余额
     for (const accountId of accountsToRecalcBalance) {
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
+      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     if (deletedCount === 0) {

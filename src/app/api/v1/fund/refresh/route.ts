@@ -6,6 +6,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, fetchHistoricalNavList, findNavFallback, preloadNavListToCache, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
     let entryFailed = 0;
 
     // 直接查询 TxRecord 中未确认的基金交易（包括 fundSubtype 为 null 的记录）
+    const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
     const unconfirmedEntries = await prisma.txRecord.findMany({
       where: {
         fundNav: null,
@@ -57,16 +59,22 @@ export async function POST(req: NextRequest) {
     });
 
     // 按基金代码分组，一次性获取每个基金的历史净值
-    const fundCodes = [...new Set(unconfirmedEntries.map(e => e.fundCode).filter(Boolean))];
+    const fundCodes = [...new Set([...unconfirmedEntries.map(e => e.fundCode).filter(Boolean), ...requestedSymbols])];
     const navCacheByFund: Map<string, NavListItem[]> = new Map();
 
-    // 找出所有记录的最早和最晚确认日期
+    // 找出所有记录的最早日期。如无待确认记录，取 30 天前
     const now = new Date();
     let earliestDate = now.toISOString().slice(0, 10);
     for (const entry of unconfirmedEntries) {
       if (!entry.fundCode) continue;
       const applyDate = entry.date.toISOString().slice(0, 10);
       if (applyDate < earliestDate) earliestDate = applyDate;
+    }
+    // 如果有显式请求的 symbol 但没有未确认记录，用 30 天前作为起始
+    if (requestedSymbols.length > 0 && unconfirmedEntries.length === 0) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 30);
+      earliestDate = d.toISOString().slice(0, 10);
     }
 
     // 为每个基金预加载历史净值（从最早申请日期到今天）
@@ -121,7 +129,8 @@ export async function POST(req: NextRequest) {
         const feeType = (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out")
           ? "redeem"
           : "buy";
-        const feeRate = await getFundFeeRateByDate(accountId, entry.fundCode, actualConfirmDate, feeType);
+        const feeRateRaw = await getFundFeeRateByDate(accountId, entry.fundCode, actualConfirmDate, feeType);
+        const feeRate = feeRateRaw / 100;
 
         const amount = Math.abs(toNum(entry.amount));
         // 计算手续费 = 金额 × 费率
@@ -177,7 +186,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (entryFilled > 0) {
-      await recalcFundPositions(accountId).catch(() => {});
+      await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     // 额外刷新所有基金的名称（从外部API获取最新名称，直接写入）

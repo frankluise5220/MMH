@@ -208,8 +208,8 @@ export async function queryFundNav(
     if (dateStr && !api.baseUrl.includes("{date}")) continue;
 
     let url = api.baseUrl;
-    url = url.replace("{code}", fundCode);
-    if (dateStr) url = url.replace("{date}", dateStr);
+    url = url.replaceAll("{code}", fundCode);
+    if (dateStr) url = url.replaceAll("{date}", dateStr);
 
     const result = await fetchFromUrl(url, parser);
     if (result) return result;

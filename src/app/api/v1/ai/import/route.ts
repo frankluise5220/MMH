@@ -5,6 +5,8 @@ import { toNumber } from "@/lib/date-utils";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
@@ -82,20 +84,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
   }
 
+  const { hidFilter, householdId } = await getHouseholdScope();
+
   const { items, defaultAccountName, fundContext } = parsed.data;
   if (!items?.length) {
     return NextResponse.json({ ok: false, error: "没有可导入的记录" }, { status: 400 });
   }
 
-  const [accounts, categories, groups, users, household] = await Promise.all([
+  const [accounts, categories, groups, users] = await Promise.all([
     prisma.account.findMany({
+      where: { ...hidFilter },
       include: { Institution: true, AccountGroup: true },
       orderBy: { name: "asc" },
     }),
-    prisma.category.findMany({ orderBy: { name: "asc" } }),
-    prisma.accountGroup.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.category.findMany({ where: { ...hidFilter }, orderBy: { name: "asc" } }),
+    prisma.accountGroup.findMany({ where: { ...hidFilter }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.user.findMany({ orderBy: { name: "asc" } }),
-    prisma.household.findFirst({ orderBy: { createdAt: "asc" } }),
   ]);
 
   const accountById = new Map(accounts.map((a) => [a.id, a]));
@@ -219,7 +223,6 @@ export async function POST(req: NextRequest) {
   }
 
   const firstAccount = accounts[0] ?? null;
-  const defaultHouseholdId = household?.id ?? null;
 
   function shouldAutoCreateAccount(label: string | undefined) {
     const t = (label ?? "").trim();
@@ -309,7 +312,7 @@ export async function POST(req: NextRequest) {
       data: {
         name: "默认",
         sortOrder: 0,
-        householdId: defaultHouseholdId ?? undefined,
+        ...(householdId ? { householdId } : {}),
       },
     });
     groups.push(created);
@@ -320,11 +323,11 @@ export async function POST(req: NextRequest) {
     const name = instName.trim();
     if (!name) return null;
     const found = await prisma.institution.findFirst({
-      where: { name, householdId: defaultHouseholdId ?? undefined },
+      where: { name, ...hidFilter },
     });
     if (found) return found.id;
     const created = await prisma.institution.create({
-      data: { name, householdId: defaultHouseholdId ?? undefined },
+      data: { name, ...(householdId ? { householdId } : {}) },
     });
     return created.id;
   }
@@ -365,7 +368,7 @@ export async function POST(req: NextRequest) {
         currency: "CNY",
         isActive: true,
         groupId,
-        householdId: defaultHouseholdId ?? undefined,
+        ...(householdId ? { householdId } : {}),
         institutionId: institutionId ?? undefined,
         userId: userId ?? undefined,
       },
@@ -466,6 +469,7 @@ export async function POST(req: NextRequest) {
             fundName: resolvedFundName ?? fundContext.fundCode,
             fundProductType: productType as any,
             fundSubtype: fundSubtypeValue as any,
+            ...(householdId ? { householdId } : {}),
           },
         });
         createdCount++;
@@ -501,6 +505,7 @@ export async function POST(req: NextRequest) {
             toAccountName: to.name,
             note: normalizedRemark,
             statementMonth: fromStatementMonth,
+            ...(householdId ? { householdId } : {}),
           },
         });
       } else if (item.type === "investment") {
@@ -555,6 +560,7 @@ export async function POST(req: NextRequest) {
               toAccountName: single.kind === "investment" ? single.name : null,
               note: normalizedRemark,
               statementMonth,
+              ...(householdId ? { householdId } : {}),
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -580,6 +586,7 @@ export async function POST(req: NextRequest) {
               toAccountName: to.name,
               note: normalizedRemark,
               statementMonth: fromStatementMonth,
+              ...(householdId ? { householdId } : {}),
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -640,6 +647,7 @@ export async function POST(req: NextRequest) {
           accountName: account.name,
           note: normalizedRemark,
           statementMonth,
+          ...(householdId ? { householdId } : {}),
         };
         if (category) {
           entryData.categoryId = category.id;
@@ -656,7 +664,7 @@ export async function POST(req: NextRequest) {
   if (createdCount > 0) {
     // 重算持仓，确保 fundHolding 表即时更新
     if (fundContext?.accountId) {
-      await recalcFundPositions(fundContext.accountId).catch(() => {});
+      await recalcFundPositions(fundContext.accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
     revalidateAfterInvestChange();
   }

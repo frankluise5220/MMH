@@ -77,11 +77,23 @@ export function findNavFallback(
   targetDate: string
 ): NavListItem | null {
   const targetTime = new Date(targetDate + "T00:00:00Z").getTime();
+  const nowDate = new Date().toISOString().slice(0, 10);
+  const nowTime = new Date(nowDate + "T00:00:00Z").getTime();
+  // Don't fallback for today or future dates — the nav hasn't been published yet
+  const recentThreshold = nowTime - 2 * 86400000; // 2 calendar days ago
+  const isRecent = targetTime > recentThreshold;
+
   const sorted = [...navList].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   for (const item of sorted) {
     const itemTime = new Date(item.date + "T00:00:00Z").getTime();
-    if (itemTime <= targetTime) return item;
+    if (itemTime <= targetTime) {
+      // For recent dates, only use exact match (don't use stale fallback)
+      if (isRecent && itemTime < targetTime) continue;
+      return item;
+    }
   }
+  // No fallback for recent dates
+  if (isRecent) return null;
   return sorted[0] ?? null;
 }
 
@@ -93,9 +105,16 @@ export async function preloadNavListToCache(
   navList: NavListItem[]
 ): Promise<number> {
   let written = 0;
+  // Check if any entry has 限制 status and fetch purchase limit if so
+  const hasRestriction = navList.some(n => n.sgzt?.includes("限制"));
+  let purchaseLimit: number | null = null;
+  if (hasRestriction) {
+    purchaseLimit = await fetchPurchaseLimit(fundCode);
+  }
   for (const navItem of navList) {
     try {
-      await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, undefined, navItem.sgzt);
+      const limit = (navItem.sgzt?.includes("限制")) ? purchaseLimit : undefined;
+      await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, undefined, navItem.sgzt, limit ?? undefined);
       written++;
     } catch {
       // 单条写入失败不影响整体
@@ -194,27 +213,53 @@ export async function getFundNav(
  * @param navDate 净值日期（必须用 utcDate 构造，确保 T00:00:00Z）
  * @returns 净值信息（nav、cumNav、name、sgzt）或 null（缓存不存在）
  */
+export interface NavCacheEntry {
+  nav: number;
+  cumNav: number | null;
+  name: string | null;
+  sgzt: string | null;
+  purchaseLimit: number | null;
+}
+
 export async function getFundNavFromCacheOnly(
   fundCode: string,
   navDate: Date
-): Promise<{ nav: number; cumNav: number | null; name: string | null; sgzt: string | null } | null> {
+): Promise<NavCacheEntry | null> {
   const record = await prisma.fundNavCache.findUnique({
-    where: {
-      fundCode_navDate: {
-        fundCode,
-        navDate,
-      },
-    },
+    where: { fundCode_navDate: { fundCode, navDate } },
   });
-
   if (!record) return null;
-
   return {
     nav: Number(record.nav),
     cumNav: record.cumNav ? Number(record.cumNav) : null,
     name: record.name,
     sgzt: record.sgzt ?? null,
+    purchaseLimit: record.purchaseLimit ?? null,
   };
+}
+
+/**
+ * 从天天基金详情页抓取基金单日申购限额
+ * 只有 sgzt 包含"限制"时才调用
+ */
+const PURCHASE_LIMIT_CACHE = new Map<string, number | null>();
+
+export async function fetchPurchaseLimit(fundCode: string): Promise<number | null> {
+  if (PURCHASE_LIMIT_CACHE.has(fundCode)) return PURCHASE_LIMIT_CACHE.get(fundCode) ?? null;
+  try {
+    const res = await fetch(`http://fundf10.eastmoney.com/jjjz_${fundCode}.html`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      cache: "no-store",
+    });
+    const html = await res.text();
+    const m = html.match(/单日累计购买上限(\d+)元/);
+    const limit = m ? parseInt(m[1], 10) : null;
+    PURCHASE_LIMIT_CACHE.set(fundCode, limit);
+    return limit;
+  } catch {
+    PURCHASE_LIMIT_CACHE.set(fundCode, null);
+    return null;
+  }
 }
 
 /**
@@ -234,29 +279,13 @@ export async function setFundNav(
   nav: number,
   cumNav?: number | null,
   name?: string | null,
-  sgzt?: string | null
+  sgzt?: string | null,
+  purchaseLimit?: number | null
 ): Promise<void> {
   await prisma.fundNavCache.upsert({
-    where: {
-      fundCode_navDate: {
-        fundCode,
-        navDate,
-      },
-    },
-    create: {
-      fundCode,
-      navDate,
-      nav,
-      cumNav,
-      name,
-      sgzt,
-    },
-    update: {
-      nav,
-      cumNav,
-      name,
-      sgzt,
-    },
+    where: { fundCode_navDate: { fundCode, navDate } },
+    create: { fundCode, navDate, nav, cumNav, name, sgzt, purchaseLimit },
+    update: { nav, cumNav, name, sgzt, purchaseLimit },
   });
 }
 

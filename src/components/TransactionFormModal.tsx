@@ -95,14 +95,11 @@ export function TransactionFormModal({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
-  const [productType, setProductType] = useState<"fund" | "money" | "wealth">("fund");
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
-  const [editCashAccountId, setEditCashAccountId] = useState<string | undefined>();
-  const [editFundCode, setEditFundCode] = useState<string | undefined>();
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
@@ -113,8 +110,9 @@ export function TransactionFormModal({
   [txType]);
 
   useEffect(() => {
-    setCategoryList(txType === "income" ? incomeCategories : expenseCategories);
-    setCategoryId("");
+    const nextCategoryList = txType === "income" ? incomeCategories : expenseCategories;
+    setCategoryList(nextCategoryList);
+    setCategoryId((current) => current && nextCategoryList.some((c) => c.id === current) ? current : "");
   }, [txType, incomeCategories, expenseCategories]);
 
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
@@ -222,25 +220,39 @@ export function TransactionFormModal({
         hasFundDetail?: boolean;
         cashAccountId?: string;
         fundCode?: string;
+        fundName?: string;
+        fundUnits?: number;
+        fundNav?: number;
+        fundFee?: number;
+        fundProductType?: string;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
       setEditEntryId(detail.entryId);
       setEditEntryOriginalType(detail.type);
       setEditEntryHasFundDetail(detail.hasFundDetail ?? false);
-      setEditCashAccountId(detail.cashAccountId);
-      setEditFundCode(detail.fundCode);
       setOpen(true);
       setTxType(detail.type);
       setDate(detail.date || today);
-      setAmount(detail.amount > 0 ? String(detail.amount) : "");
+      const numericAmount = Number(detail.amount);
+      setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setNote(detail.note ?? "");
-      setAccountId(detail.accountId ?? (defaultAccountId ?? ""));
-      setCategoryId(detail.categoryId ?? "");
-      setFromAccountId(detail.fromAccountId ?? (defaultAccountId ?? ""));
-      setToAccountId(detail.toAccountId ?? "");
-      if (detail.type === "investment") {
-        setProductType(detail.fundSubtype === "money" ? "money" : detail.fundSubtype === "wealth" ? "wealth" : "fund");
+      if (detail.type === "transfer") {
+        const nextToAccountId = detail.toAccountId ?? "";
+        const nextFromAccountId = detail.fromAccountId && detail.fromAccountId !== nextToAccountId
+          ? detail.fromAccountId
+          : detail.accountId ?? "";
+        setAccountId("");
+        setCategoryId("");
+        setFromAccountId(nextFromAccountId);
+        setToAccountId(nextToAccountId);
+        setFromAccountIdEdited(true);
+      } else {
+        setAccountId(detail.accountId ?? (defaultAccountId ?? ""));
+        setCategoryId(detail.categoryId ?? "");
+        setFromAccountId("");
+        setToAccountId(detail.toAccountId ?? "");
+        setFromAccountIdEdited(false);
       }
     }
 
@@ -276,7 +288,7 @@ export function TransactionFormModal({
         setSubmitting(true);
         try {
           await (editAction ?? action)(formData);
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, 300));
           router.refresh();
           resetDraft();
         } catch (err) {
@@ -329,7 +341,7 @@ export function TransactionFormModal({
       }
       setOpen(false);
       resetDraft();
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 300));
       router.refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "记账失败";
@@ -457,21 +469,48 @@ export function TransactionFormModal({
               </div>
 
               {txType === "investment" && (
-                <InvestmentFormFields
-                  accounts={investmentAccounts}
-                  cashAccounts={accounts}
-                  productType={productType}
-                  setProductType={setProductType}
-                  date={date}
-                  setDate={setDate}
-                  amount={amount}
-                  setAmount={setAmount}
-                  note={note}
-                  setNote={setNote}
-                  defaultAccountId={accountId}
-                  defaultCashAccountId={editCashAccountId}
-                  defaultFundCode={editFundCode}
-                />
+                <div className="space-y-2 pt-1">
+                  <div className="text-xs font-medium text-slate-500 mb-1">选择投资类型：</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDraft();
+                      window.dispatchEvent(new CustomEvent("wiseme:create-transaction:open", {
+                        detail: { requestId: `create-${Date.now()}`, item: { type: "investment", date, amount: Number(amount) || undefined }, defaultAccountId, defaultCashAccountId: accountId },
+                      }));
+                    }}
+                    className="w-full h-10 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-sm hover:bg-blue-100"
+                  >
+                    开放式基金 / 货币基金
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDraft();
+                      window.dispatchEvent(new CustomEvent("wiseme:wealth:create", {
+                        detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
+                      }));
+                    }}
+                    className="w-full h-10 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-sm hover:bg-amber-100"
+                  >
+                    银行理财
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDraft();
+                      window.dispatchEvent(new CustomEvent("wiseme:deposit:create", {
+                        detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
+                      }));
+                    }}
+                    className="w-full h-10 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm hover:bg-emerald-100"
+                  >
+                    活期 / 存款
+                  </button>
+                </div>
               )}
 
               {(txType === "expense" || txType === "income" || txType === "transfer") && (
@@ -639,211 +678,6 @@ export function TransactionFormModal({
          setCategoryId(id);
        }}
      />
-    </>
-  );
-}
-
-function InvestmentFormFields({
-  accounts,
-  cashAccounts,
-  productType,
-  setProductType,
-  date,
-  setDate,
-  amount,
-  setAmount,
-  note,
-  setNote,
-  defaultAccountId,
-  defaultCashAccountId,
-  defaultFundCode,
-}: {
-  accounts: AccountOption[];
-  cashAccounts: AccountOption[];
-  productType: "fund" | "money" | "wealth";
-  setProductType: (v: "fund" | "money" | "wealth") => void;
-  date: string;
-  setDate: (v: string) => void;
-  amount: string;
-  setAmount: (v: string) => void;
-  note: string;
-  setNote: (v: string) => void;
-  defaultAccountId?: string;
-  defaultCashAccountId?: string;
-  defaultFundCode?: string;
-}) {
-  const [investAccountId, setInvestAccountId] = useState("");
-  const [cashAccountId, setCashAccountId] = useState(defaultCashAccountId ?? "");
-  const [fundCode, setFundCode] = useState(defaultFundCode ?? "");
-  const [fundName, setFundName] = useState("");
-  const [productName, setProductName] = useState("");
-  const [annualRate, setAnnualRate] = useState("");
-  const [minAmount, setMinAmount] = useState("");
-  const [termDays, setTermDays] = useState("");
-  const [nameLoading, setNameLoading] = useState(false);
-
-  useEffect(() => {
-    if (defaultCashAccountId) setCashAccountId(defaultCashAccountId);
-    if (defaultFundCode) setFundCode(defaultFundCode);
-  }, [defaultCashAccountId, defaultFundCode]);
-
-  // 基金代码变化时自动获取名称
-  useEffect(() => {
-    const code = fundCode.trim();
-    if (!code) {
-      setFundName("");
-      return;
-    }
-    const timer = setTimeout(() => {
-      setNameLoading(true);
-      // 调用新的API：先从本地数据库查询，再从API获取
-      fetch(`/api/v1/fund/name?code=${encodeURIComponent(code)}`)
-        .then(r => r.json())
-        .then(d => {
-          if (d.ok && d.name) setFundName(d.name);
-          else window.alert(d.error ?? "获取基金名称失败");
-        })
-        .catch(() => window.alert("获取失败"))
-        .finally(() => setNameLoading(false));
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [fundCode]);
-
-  const investAccounts = accounts;
-  const allCashAccounts = cashAccounts;
-
-  const isDefaultInvestAccount = defaultAccountId && investAccounts.some((a) => a.id === defaultAccountId);
-
-  const findMatchingInvestAccount = () => {
-    if (productType === "fund") {
-      return investAccounts.find((a) => a.label.includes("开放式基金"))?.id ||
-        investAccounts.find((a) => a.label.includes("基金"))?.id ||
-        (investAccounts.length > 0 ? investAccounts[0].id : "");
-    }
-    if (productType === "money") {
-      return investAccounts.find((a) => a.label.includes("货币基金"))?.id ||
-        investAccounts.find((a) => a.label.includes("货币"))?.id ||
-        investAccounts.find((a) => a.label.includes("基金"))?.id ||
-        (investAccounts.length > 0 ? investAccounts[0].id : "");
-    }
-    if (productType === "wealth") {
-      return investAccounts.find((a) => a.label.includes("理财"))?.id ||
-        investAccounts.find((a) => a.label.includes("投资"))?.id ||
-        (investAccounts.length > 0 ? investAccounts[0].id : "");
-    }
-    return investAccounts.length > 0 ? investAccounts[0].id : "";
-  };
-
-  const defaultInvestAccountId = isDefaultInvestAccount ? defaultAccountId : findMatchingInvestAccount();
-  const computedDefaultCashAccountId = isDefaultInvestAccount
-    ? ""
-    : defaultAccountId && allCashAccounts.some((a) => a.id === defaultAccountId)
-      ? defaultAccountId
-      : allCashAccounts.length > 0 ? allCashAccounts[0].id : "";
-
-  const effectiveInvestAccountId = investAccountId || defaultInvestAccountId;
-  const effectiveCashAccountId = cashAccountId || computedDefaultCashAccountId;
-
-  return (
-    <>
-      <div className="flex gap-2 pt-1">
-        <button type="button" onClick={() => setProductType("fund")}
-          className={`flex-1 h-8 rounded-md border text-xs ${productType === "fund" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"}`}>
-          开放式基金
-        </button>
-        <button type="button" onClick={() => setProductType("money")}
-          className={`flex-1 h-8 rounded-md border text-xs ${productType === "money" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"}`}>
-          货币基金
-        </button>
-        <button type="button" onClick={() => setProductType("wealth")}
-          className={`flex-1 h-8 rounded-md border text-xs ${productType === "wealth" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"}`}>
-          普通理财
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">日期</div>
-          <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-        </div>
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">金额</div>
-          <input name="amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00"
-            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">资金账户</div>
-          <select name="cashAccountId" value={effectiveCashAccountId} onChange={(e) => setCashAccountId(e.target.value)}
-            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-            <option value="">请选择</option>
-            {allCashAccounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-          </select>
-        </div>
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">投资账户</div>
-          <select name="accountId" value={effectiveInvestAccountId} onChange={(e) => setInvestAccountId(e.target.value)}
-            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-            <option value="">请选择</option>
-            {(investAccounts.length > 0 ? investAccounts : accounts).map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-          </select>
-        </div>
-      </div>
-
-      {productType === "fund" && (
-        <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">基金代码</div>
-            <input name="fundCode" value={fundCode} onChange={(e) => setFundCode(e.target.value)} placeholder="6位代码"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-          </div>
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">
-              基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
-            </div>
-            <input name="fundName" value={fundName} readOnly placeholder="根据基金代码自动获取"
-              className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
-          </div>
-        </div>
-      )}
-
-      {productType === "money" && (
-        <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">基金代码</div>
-            <input name="fundCode" value={fundCode} onChange={(e) => setFundCode(e.target.value)} placeholder="6位代码"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-          </div>
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">
-              基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
-            </div>
-            <input name="fundName" value={fundName} readOnly placeholder="根据基金代码自动获取"
-              className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
-          </div>
-        </div>
-      )}
-
-      {productType === "wealth" && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">产品名称</div>
-            <input name="fundName" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="输入产品名称"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-          </div>
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">年化收益（%）</div>
-            <input name="nav" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder="如：3.5"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-          </div>
-        </div>
-      )}
-
-      <input type="hidden" name="fundSubtype" value="buy" />
-      <input type="hidden" name="productType" value={productType} />
     </>
   );
 }

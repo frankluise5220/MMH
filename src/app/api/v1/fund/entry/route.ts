@@ -5,20 +5,24 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
  * 修改交易明细
  * PUT /api/v1/fund/entry
- * Body: { id, date?, fundConfirmDate?, ...其他字段 }
+ * Body: { id, date?, fundConfirmDate?, fundArrivalDate?, ...其他字段 }
  *
  * 特殊逻辑：
- * - 如果修改了申请日期(date)，自动重新计算确认日期(fundConfirmDate)
- * - 如果修改了确认日期(fundConfirmDate)，不修改申请日期
+ * - 如果修改了申请日期(date)，自动重新计算确认日期(fundConfirmDate)和入账日期(fundArrivalDate)
+ * - 如果修改了确认日期(fundConfirmDate)，自动重新计算入账日期(fundArrivalDate)
+ * - 如果直接指定了入账日期(fundArrivalDate)，不做自动计算
  */
 export async function PUT(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
     const body = await req.json();
-    const { id, date, fundConfirmDate, autoCalcConfirmDate } = body;
+    const { id, date, fundConfirmDate, fundArrivalDate, autoCalcConfirmDate } = body;
 
     if (!id) {
       return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
@@ -33,15 +37,18 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
     }
 
+    if (entry.householdId && entry.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
+    }
+
     const updateData: any = {};
 
     // 如果修改了申请日期
     if (date) {
       updateData.date = new Date(date);
 
-      // 如果需要自动计算确认日期（默认行为）
+      // 自动计算确认日期
       if (autoCalcConfirmDate !== false) {
-        // 获取确认天数
         const confirmDays = entry.fundCode && entry.toAccountId
           ? await getFundConfirmDays(entry.toAccountId, entry.fundCode)
           : 1;
@@ -51,9 +58,14 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    // 如果单独修改了确认日期（不修改申请日期）
+    // 确认日期由前端传入
     if (fundConfirmDate && !date) {
       updateData.fundConfirmDate = new Date(fundConfirmDate);
+    }
+
+    // 到账日期由前端传入（手工填写或由 arrivalDays 推算）
+    if (fundArrivalDate) {
+      updateData.fundArrivalDate = new Date(fundArrivalDate);
     }
 
     // 更新记录
@@ -68,7 +80,7 @@ export async function PUT(req: NextRequest) {
     const isRedeemLike = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
     const investmentAccId = isRedeemLike ? entry.accountId : entry.toAccountId;
     if (investmentAccId && entry.fundCode) {
-      await recalcFundPositions(investmentAccId, [entry.fundCode]).catch(() => {});
+      await recalcFundPositions(investmentAccId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     // 刷新涉及的账户余额
@@ -78,7 +90,7 @@ export async function PUT(req: NextRequest) {
     if (updated.accountId) accountsToRecalc.add(updated.accountId);
     if (updated.toAccountId) accountsToRecalc.add(updated.toAccountId);
     for (const acctId of accountsToRecalc) {
-      await recalcAndSaveAccountBalance(acctId).catch(() => {});
+      await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     revalidateAfterInvestChange();
@@ -90,6 +102,7 @@ export async function PUT(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
@@ -105,6 +118,10 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
     }
 
+    if (entry.householdId && entry.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
+    }
+
     // 区分买入/赎回确定投资账户ID
     const isRedeemLike = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
     const investmentAccId = isRedeemLike ? entry.accountId : entry.toAccountId;
@@ -117,7 +134,7 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (investmentAccId && fundCode) {
-      await recalcFundPositions(investmentAccId, [fundCode]).catch(() => {});
+      await recalcFundPositions(investmentAccId, [fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     // 刷新涉及的账户余额
@@ -125,7 +142,7 @@ export async function DELETE(req: NextRequest) {
     if (entry.accountId) accountsToRecalc.add(entry.accountId);
     if (entry.toAccountId) accountsToRecalc.add(entry.toAccountId);
     for (const acctId of accountsToRecalc) {
-      await recalcAndSaveAccountBalance(acctId).catch(() => {});
+      await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     revalidateAfterInvestChange();

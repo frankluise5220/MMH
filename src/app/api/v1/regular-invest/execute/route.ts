@@ -5,10 +5,12 @@ import { isWeekend, nextMonday, addDays, addWeeks, addMonths } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
-import { getFundConfirmDays } from "@/lib/fund/confirmDays";
-import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { getFundNav, getFundNavFromCacheOnly } from "@/lib/fund/navCache";
-import { addWorkdaysUtc, formatDateLocal } from "@/lib/date-utils";
+import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
+import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 function skipWeekend(date: Date): Date {
   if (isWeekend(date)) return nextMonday(date);
@@ -27,6 +29,8 @@ function calcNextRunDate(fromDate: Date, unit: IntervalUnit, value: number): Dat
 
 export async function POST(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
+
     const body = await req.json();
     const { planId, overrideDate, overrideAmount } = body;
 
@@ -40,6 +44,10 @@ export async function POST(req: NextRequest) {
 
     if (!plan) {
       return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
+    }
+
+    if (plan.householdId && plan.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
     }
 
     // 状态检查：只有 active 状态才能执行
@@ -94,13 +102,22 @@ export async function POST(req: NextRequest) {
 
     const result = await prisma.$transaction(async (tx) => {
       // 计算 T+N 确认日期
-      const runDateStr = formatDateLocal(runDate);
-      const confirmDays = plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode);
+      const runDateStr = formatDateUtc(runDate);
+      const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
       const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
       const confirmDate = new Date(Date.UTC(
         parseInt(confirmDateStr.slice(0, 4)),
         parseInt(confirmDateStr.slice(5, 7)) - 1,
         parseInt(confirmDateStr.slice(8, 10))
+      ));
+
+      // 计算入账日期 (确认日 + arrivalDays)
+      const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
+      const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
+      const arrivalDate = new Date(Date.UTC(
+        parseInt(arrivalDateStr.slice(0, 4)),
+        parseInt(arrivalDateStr.slice(5, 7)) - 1,
+        parseInt(arrivalDateStr.slice(8, 10))
       ));
 
       // 从净值缓存库查询确认日期的申购状态
@@ -115,6 +132,7 @@ export async function POST(req: NextRequest) {
       if (sgzt === "暂停申购") {
         await tx.txRecord.create({
           data: {
+            householdId,
             type: TransactionType.investment,
             date: runDate,
             accountId: cashAcc?.id ?? fundAcc.id,
@@ -129,6 +147,7 @@ export async function POST(req: NextRequest) {
             source: "regular_invest",
             fundFee: null,
             fundConfirmDate: confirmDate,
+            fundArrivalDate: arrivalDate,
             fundNav: null,
             fundUnits: null,
             regularInvestPlanId: planId,
@@ -137,6 +156,7 @@ export async function POST(req: NextRequest) {
         });
         await tx.txRecord.create({
           data: {
+            householdId,
             type: TransactionType.investment,
             date: runDate,
             accountId: fundAcc.id,
@@ -174,28 +194,28 @@ export async function POST(req: NextRequest) {
 
       // 从费率库查询手续费率（按申请日期查询）
       // 费率库存储的是百分数值（0.15 = 0.15%），需除以100转为小数
-      const feeRateRaw = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
+      let feeRateRaw = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
+      if (feeRateRaw === 0) {
+        feeRateRaw = await getFundFeeRate(plan.accountId, plan.fundCode, "buy");
+      }
       const feeRate = feeRateRaw / 100;
       const feeAmount = feeRate > 0 ? new Prisma.Decimal(amountNum * feeRate) : null;
       const principal = feeRate > 0 ? amountNum * (1 - feeRate) : amountNum;
 
-      // 查询确认日净值（先查缓存，缓存没有则调API查并写回缓存）
-      // 只有净值日期与确认日期一致（dateMatch=true）时才计算份额
+      // 查询确认日净值（仅用缓存，不调外部API）
+      // 缓存已在 execute 前通过 refresh 预装，或此基金已无缓存则跳过净值
       let fundNav: number | null = null;
       let fundUnits: number | null = null;
-      try {
-        const navData = await getFundNav(plan.fundCode, confirmDate);
-        if (navData && navData.nav > 0 && navData.dateMatch) {
-          fundNav = navData.nav;
-          fundUnits = principal / navData.nav;
-        }
-      } catch {
-        // 获取净值失败
+      const foundNavInfo = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
+      if (foundNavInfo && foundNavInfo.nav > 0) {
+        fundNav = foundNavInfo.nav;
+        fundUnits = principal / foundNavInfo.nav;
       }
 
       // 创建 TxRecord，直接包含所有基金字段
       await tx.txRecord.create({
         data: {
+          householdId,
           type: TransactionType.investment,
           date: runDate,
           accountId: cashAcc?.id ?? fundAcc.id,
@@ -210,6 +230,7 @@ export async function POST(req: NextRequest) {
           source: "regular_invest",
           fundFee: feeAmount,
           fundConfirmDate: confirmDate,
+          fundArrivalDate: arrivalDate,
           fundNav: fundNav,
           fundUnits: fundUnits,
           regularInvestPlanId: planId,
@@ -232,10 +253,10 @@ export async function POST(req: NextRequest) {
       return { buyFailed: false };
     });
 
-    await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(() => {});
+    await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
     // 刷新涉及的账户余额（资金账户和投资账户）
-    if (cashAcc?.id) await recalcAndSaveAccountBalance(cashAcc.id).catch(() => {});
-    await recalcAndSaveAccountBalance(fundAcc.id).catch(() => {});
+    if (cashAcc?.id) await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+    await recalcAndSaveAccountBalance(fundAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
 
     revalidateAfterInvestChange();
 
@@ -244,7 +265,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         buyFailed: true,
         message: `基金暂停申购 ${plan.fundCode}，已生成两条对冲记录，金额 ${amountNum.toFixed(2)}，第 ${newExecutedRuns} 次`,
-        date: formatDateLocal(runDate),
+        date: formatDateUtc(runDate),
         executedRuns: newExecutedRuns,
         completed: willComplete,
       });
@@ -253,7 +274,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       message: `已执行定投 ${plan.fundCode}，金额 ${amountNum.toFixed(2)}，第 ${newExecutedRuns} 次`,
-      date: formatDateLocal(runDate),
+      date: formatDateUtc(runDate),
       executedRuns: newExecutedRuns,
       completed: willComplete,
     });

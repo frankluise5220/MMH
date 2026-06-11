@@ -5,9 +5,10 @@ import { addDays, addWeeks, addMonths, isWeekend, nextMonday } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
-import { setFundConfirmDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
+import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { addWorkdaysUtc } from "@/lib/date-utils";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 function skipWeekend(date: Date): Date {
   if (isWeekend(date)) return nextMonday(date);
@@ -69,11 +70,13 @@ function formatDate(d: Date): string {
 
 export async function GET(req: NextRequest) {
   try {
+    const { householdId, hidFilter } = await getHouseholdScope();
     const accountId = req.nextUrl.searchParams.get("accountId");
     const status = req.nextUrl.searchParams.get("status") as RegularInvestStatus | null;
 
     const plans = await prisma.regularInvestPlan.findMany({
       where: {
+        ...hidFilter,
         ...(accountId ? { accountId } : {}),
         ...(status ? { status } : {}),
       },
@@ -88,6 +91,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
+
     const body = await req.json();
     const {
       accountId,
@@ -104,6 +109,7 @@ export async function POST(req: NextRequest) {
       executionDay,
       feeRate,
       confirmDays,
+      arrivalDays,
       memo,
       skipPendingPreceding,
     } = body;
@@ -119,10 +125,12 @@ export async function POST(req: NextRequest) {
 
     const fundAcc = await prisma.account.findUnique({ where: { id: accountId } });
     if (!fundAcc) return NextResponse.json({ ok: false, error: "基金账户不存在" }, { status: 400 });
+    if (fundAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "基金账户不属于当前账簿" }, { status: 403 });
 
     const cashAcc = cashAccountId
-      ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true } })
+      ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
       : null;
+    if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "资金账户不属于当前账簿" }, { status: 403 });
 
     const start = skipWeekend(new Date(startDate));
     const unitVal = parseInt(intervalValue) || 1;
@@ -130,11 +138,13 @@ export async function POST(req: NextRequest) {
     const totalRunsInt = totalRuns ? parseInt(totalRuns) : null;
     const executionDayInt = executionDay ? parseInt(executionDay) : null;
 
-    const entries: { date: Date; txId: string }[] = [];
+    const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
+    const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
 
     await prisma.$transaction(async (tx) => {
       const plan = await tx.regularInvestPlan.create({
         data: {
+          householdId,
           accountId,
           accountName: fundAcc.name,
           cashAccountId: cashAccountId || null,
@@ -153,14 +163,15 @@ export async function POST(req: NextRequest) {
           nextRunDate: start,
           status: RegularInvestStatus.active,
           feeRate: feeRate != null ? parseFloat(feeRate) : null,
-          confirmDays: confirmDays != null ? parseInt(confirmDays) : null,
+          confirmDays: safeConfirmDays,
+          arrivalDays: safeArrivalDays,
           memo: memo || null,
           skipPendingPreceding: skipPendingPreceding !== false,
         },
       });
 
       // 更新确认天数表
-      const newDays = confirmDays != null ? parseInt(confirmDays) : 1;
+      const newDays = safeConfirmDays ?? 0;
       if (accountId && fundCode) {
         await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
       }
@@ -169,6 +180,12 @@ export async function POST(req: NextRequest) {
       const newRate = feeRate != null ? parseFloat(feeRate) : 0;
       if (accountId && fundCode) {
         await setFundFeeRateInTx(tx, accountId, fundCode, newRate);
+      }
+
+      // 更新入账天数表
+      const newArrivalDays = safeArrivalDays ?? 2;
+      if (accountId && fundCode) {
+        await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
       }
 
       // 不预生成交易明细，等用户点击"批量生成"按钮后再生成
@@ -187,11 +204,12 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
+
     const body = await req.json();
     const {
       id,
-      action, // "update" | "pause" | "resume" | "stop"
-      // 更新字段
+      action,
       fundName,
       accountId,
       amount,
@@ -204,6 +222,7 @@ export async function PUT(req: NextRequest) {
       executionDay,
       feeRate,
       confirmDays,
+      arrivalDays,
       cashAccountId,
       memo,
       skipPendingPreceding,
@@ -213,6 +232,7 @@ export async function PUT(req: NextRequest) {
 
     const existing = await prisma.regularInvestPlan.findUnique({ where: { id } });
     if (!existing) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
+    if (existing.householdId && existing.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
 
     // 状态操作
     if (action === "pause") {
@@ -279,7 +299,8 @@ export async function PUT(req: NextRequest) {
     if (endDate != null) updateData.endDate = endDate ? new Date(endDate) : null;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
     if (feeRate != null) updateData.feeRate = parseFloat(feeRate);
-    if (confirmDays != null) updateData.confirmDays = parseInt(confirmDays);
+    if (confirmDays != null) updateData.confirmDays = normalizeNonNegativeDays(confirmDays, 0);
+    if (arrivalDays != null) updateData.arrivalDays = normalizeNonNegativeDays(arrivalDays, 2);
     if (cashAccountId != null) {
       updateData.cashAccountId = cashAccountId || null;
       // 更新资金账户名称
@@ -302,7 +323,10 @@ export async function PUT(req: NextRequest) {
     const effectiveAccountId = accountId || existing.accountId;
     const effectiveFundCode = existing.fundCode;
     if (confirmDays != null && effectiveAccountId && effectiveFundCode) {
-      await setFundConfirmDays(effectiveAccountId, effectiveFundCode, parseInt(confirmDays));
+      await setFundConfirmDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(confirmDays, 0));
+    }
+    if (arrivalDays != null && effectiveAccountId && effectiveFundCode) {
+      await setFundArrivalDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(arrivalDays, 2));
     }
     if (feeRate != null && effectiveAccountId && effectiveFundCode) {
       await setFundFeeRate(effectiveAccountId, effectiveFundCode, parseFloat(feeRate));
@@ -317,14 +341,71 @@ export async function PUT(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
+
     const { searchParams } = req.nextUrl;
     const id = searchParams.get("id");
-    const deleteEntries = searchParams.get("deleteRecords") === "1";
+    const deleteMode = searchParams.get("deleteRecords") ?? "0";
+    const deleteEntries = deleteMode === "1";
+    const deleteRecordsOnly = deleteMode === "records";
 
     if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
 
     const plan = await prisma.regularInvestPlan.findUnique({ where: { id } });
     if (!plan) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
+    if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+
+    // 仅删除交易记录，保留计划，并把计划恢复为未执行状态
+    if (deleteRecordsOnly) {
+      const affectedRecords = await prisma.txRecord.findMany({
+        where: { regularInvestPlanId: id, householdId },
+        select: { accountId: true, toAccountId: true },
+      });
+      const resetPlan = await prisma.$transaction(async (tx) => {
+        await tx.txRecord.deleteMany({ where: { regularInvestPlanId: id, householdId } });
+        return tx.regularInvestPlan.update({
+          where: { id },
+          data: {
+            status: RegularInvestStatus.active,
+            executedRuns: 0,
+            lastRunDate: null,
+            nextRunDate: plan.startDate,
+          },
+          select: {
+            id: true,
+            status: true,
+            executedRuns: true,
+            lastRunDate: true,
+            nextRunDate: true,
+          },
+        });
+      });
+
+      const accountsToRecalc = new Set<string>();
+      accountsToRecalc.add(plan.accountId);
+      if (plan.cashAccountId) accountsToRecalc.add(plan.cashAccountId);
+      for (const r of affectedRecords) {
+        if (r.accountId) accountsToRecalc.add(r.accountId);
+        if (r.toAccountId) accountsToRecalc.add(r.toAccountId);
+      }
+      if (plan.accountId && plan.fundCode) {
+        await recalcFundPositions(plan.accountId, [plan.fundCode]).catch(() => {});
+      }
+      for (const acctId of accountsToRecalc) {
+        if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
+      }
+      revalidateAfterInvestChange();
+      return NextResponse.json({
+        ok: true,
+        deletedEntries: true,
+        reset: true,
+        plan: {
+          ...resetPlan,
+          lastRunDate: resetPlan.lastRunDate?.toISOString() ?? null,
+          nextRunDate: resetPlan.nextRunDate.toISOString(),
+        },
+      });
+    }
 
     // 如果删除了交易明细，先收集涉及的账户ID（事务后记录已被删除）
     const affectedRecords = deleteEntries

@@ -1,26 +1,103 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;500;700&family=Inter:wght@400;500;600&display=swap');
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #EDEAE0; /* Soft Linen */
+  --foreground: #44362F; /* Deep Mocha */
+  
+  --accent-green: #7BA05B; /* Sage Green */
+  --accent-clay: #E0AB76; /* Sandy Clay */
+  --surface-white: #FFFFFF;
 }
 
-@theme inline {
+html {
+  color-scheme: light;
+}
+
+@theme {
+  /* Colors */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  
+  --color-accent-green: var(--accent-green);
+  --color-accent-clay: var(--accent-clay);
+  --color-surface-white: var(--surface-white);
+  
+  /* Typography */
+  --font-heading: 'Fraunces', serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-ui: 'Inter', sans-serif;
+  
+  /* Radii */
+  --radius-card: 40px;
+  --radius-ui: 14px;
+  --radius-button: 16px;
+  
+  /* Shadows */
+  --shadow-soft: 0 2px 4px rgba(0,0,0,0.03), 0 8px 24px rgba(0,0,0,0.03);
+  --shadow-hover: 0 4px 8px rgba(0,0,0,0.05), 0 12px 32px rgba(0,0,0,0.05);
+  --shadow-elevated: 0 30px 100px rgba(0,0,0,0.15);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Custom Base Styles */
+@layer base {
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+    margin: 0;
+  }
+
+  input, textarea {
+    caret-color: var(--foreground) !important;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  textarea {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 5V19M9 5H15M9 19H15' fill='none' stroke='%2344362F' stroke-width='1' stroke-linecap='round'/%3E%3C/svg%3E") 12 12, text;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading tracking-tight;
   }
 }
 
-body {
+/* Custom Utilities */
+@layer utilities {
+  .glass-card {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  .ai-panel-glass {
+    background: rgba(255, 255, 255, 0.4);
+    backdrop-filter: blur(12px);
+    border-left: 1px solid rgba(68, 54, 47, 0.05);
+  }
+
+  .bento-card {
+    @apply bg-surface-white rounded-card shadow-soft transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)];
+  }
+
+  .bento-card:hover {
+    @apply -translate-y-1 shadow-hover;
+  }
+  
+  .sidebar-item-active {
+    @apply bg-foreground text-background shadow-lg shadow-foreground/10;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(68, 54, 47, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(68, 54, 47, 0.2);
 }

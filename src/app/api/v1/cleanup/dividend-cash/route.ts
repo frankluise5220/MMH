@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
  * POST /api/v1/cleanup/dividend-cash
@@ -9,6 +10,7 @@ import { toNumber } from "@/lib/date-utils";
  * 2. 修复 fundSubtype=dividend_cash 且 amount<0 的旧投资记录（改为新方向）
  */
 export async function POST() {
+  const { hidFilter } = await getHouseholdScope();
   const results = { deletedIncome: 0, fixedInvestment: 0, errors: [] as string[] };
 
   try {
@@ -18,6 +20,7 @@ export async function POST() {
         type: "income",
         note: { startsWith: "现金红利" },
         deletedAt: null,
+        ...hidFilter,
       },
       select: { id: true },
     });
@@ -35,6 +38,7 @@ export async function POST() {
         fundSubtype: "dividend_cash",
         amount: { lt: 0 },
         deletedAt: null,
+        ...hidFilter,
       },
       select: { id: true, accountId: true, toAccountId: true, amount: true },
     });

@@ -4,26 +4,31 @@ import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { EntryRowActions } from "@/components/EntryRowActions";
+import { BasicDetailBatchDeleteButton, BasicDetailBatchReplaceButton, BasicDetailRowCheckbox, BasicDetailSelectAll, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
+import { WealthFormModal } from "@/components/WealthFormModal";
+import { DepositFormModal } from "@/components/DepositFormModal";
 import { FillNavButton } from "@/components/FillNavButton";
 import { FundShell } from "@/components/FundShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
+import { DashboardOverview } from "@/components/DashboardOverview";
 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 import EditBillAmount from "@/components/EditBillAmount";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload } from "lucide-react";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
-import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
+import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
+import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
 import { getFundNav } from "@/lib/fund/navCache";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +43,34 @@ function formatType(type: string) {
 }
 
 import { subtypeDisplay } from "@/lib/investment-config";
+import { LinkDateRangeFilter, LinkNumberRangeFilter, LinkTableColumnFilter } from "@/components/TableColumnFilter";
+
+type DetailFilterColumn = "date" | "flow" | "type" | "related" | "remark";
+
+const DETAIL_EMPTY_VALUE = "(空)";
+const DETAIL_FILTER_SEPARATOR = "\u001F";
+const DETAIL_FILTER_PARAM_BY_COLUMN: Record<DetailFilterColumn, string> = {
+  date: "detailFilterDate",
+  flow: "detailFilterFlow",
+  type: "detailFilterType",
+  related: "detailFilterRelated",
+  remark: "detailFilterRemark",
+};
+
+function parseDetailFilterParam(value: string | undefined) {
+  if (!value) return [];
+  return value.split(DETAIL_FILTER_SEPARATOR).map((v) => v.trim()).filter(Boolean);
+}
+
+function serializeDetailFilterValues(values: string[]) {
+  return Array.from(new Set(values.map((v) => v.trim()).filter(Boolean))).join(DETAIL_FILTER_SEPARATOR);
+}
+
+function detailFilterSort(a: string, b: string) {
+  if (a === DETAIL_EMPTY_VALUE) return 1;
+  if (b === DETAIL_EMPTY_VALUE) return -1;
+  return a.localeCompare(b, "zh-CN");
+}
 
 function fundSubtypeInfo(subtype: string | null | undefined, source: string | null | undefined, _amount: number) {
   const base = subtypeDisplay(subtype, source);
@@ -58,6 +91,16 @@ function ymdUtc(d: Date) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function escapeCsvCell(value: string) {
+  if (!/[",\r\n]/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function buildCsvDataUri(rows: string[][]) {
+  const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+  return `data:text/csv;charset=utf-8,${encodeURIComponent(`\uFEFF${csv}`)}`;
 }
 
 function cycleForStatementMonth(statementMonth: string, billingDay: number, repaymentDay: number | null | undefined, now: Date) {
@@ -132,8 +175,10 @@ function parseMoneyInput(value: FormDataEntryValue | null) {
   return n;
 }
 
+
 async function updateEntryRow(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
 
   const entryId = String(formData.get("entryId") ?? "").trim();
   if (!entryId) return;
@@ -272,6 +317,7 @@ async function createTransaction(formData: FormData) {
   const note = String(formData.get("note") ?? "").trim();
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+  const { householdId } = await getHouseholdScope();
 
   if (!amountAbs) {
     return { ok: false as const, error: "金额不正确" };
@@ -306,6 +352,7 @@ async function createTransaction(formData: FormData) {
             date,
             note: note || null,
             statementMonth: toStatementMonthValue,
+            ...{ householdId },
           },
         });
       });
@@ -340,6 +387,7 @@ async function createTransaction(formData: FormData) {
             date,
             note: note || null,
             statementMonth,
+            ...{ householdId },
           },
         });
       });
@@ -370,6 +418,7 @@ async function createTransaction(formData: FormData) {
             date,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
+            ...{ householdId },
           } as any,
         });
       });
@@ -467,6 +516,23 @@ async function createTransaction(formData: FormData) {
           signedAmount = -amountAbs;
         }
 
+        const applyDateStr = date.toISOString().slice(0, 10);
+        const shouldComputeArrival = finalFundSubtype === FundSubtype.buy && !redeemLike && !isDividendCash && !isDividendReinvest;
+        let computedConfirmDate: Date | null = fundConfirmDate;
+        let computedArrivalDate: Date | null = fundArrivalDate;
+
+        if (shouldComputeArrival && entryFundCode) {
+          const confirmStr = computedConfirmDate
+            ? computedConfirmDate.toISOString().slice(0, 10)
+            : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
+          computedConfirmDate = new Date(`${confirmStr}T00:00:00.000Z`);
+
+          if (!computedArrivalDate) {
+            const arrivalStr = addWorkdaysUtc(confirmStr, await getFundArrivalDays(investAcc.id, entryFundCode));
+            computedArrivalDate = new Date(`${arrivalStr}T00:00:00.000Z`);
+          }
+        }
+
         await tx.txRecord.create({
           data: {
             date,
@@ -484,10 +550,11 @@ async function createTransaction(formData: FormData) {
             fundUnits: fundUnits ?? undefined,
             fundNav: fundNav ?? undefined,
             fundFee: fundFee ?? undefined,
-            fundConfirmDate: fundConfirmDate ?? undefined,
-            fundArrivalDate: fundArrivalDate ?? undefined,
+            fundConfirmDate: computedConfirmDate ?? undefined,
+            fundArrivalDate: computedArrivalDate ?? undefined,
             fundArrivalAmount: fundArrivalAmount ?? undefined,
             note: note || undefined,
+            ...{ householdId },
           },
         });
       });
@@ -515,6 +582,7 @@ async function createTransaction(formData: FormData) {
 
 async function editInvestment(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
   const entryId = String(formData.get("entryId") ?? "").trim();
   const subtype = String(formData.get("subtype") ?? "buy").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
@@ -534,6 +602,7 @@ async function editInvestment(formData: FormData) {
   const hasFundArrivalAmount = formData.has("fundArrivalAmount");
   const hasConfirmDays = formData.has("confirmDays");
   const hasFeeRate = formData.has("feeRate");
+  const hasArrivalDays = formData.has("arrivalDays");
 
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
   const fundNavStr = String(formData.get("fundNav") ?? "").trim();
@@ -543,6 +612,7 @@ async function editInvestment(formData: FormData) {
   const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
   const fundArrivalAmountStr = String(formData.get("fundArrivalAmount") ?? "").trim();
   const confirmDaysStr = String(formData.get("confirmDays") ?? "").trim();
+  const arrivalDaysStr = String(formData.get("arrivalDays") ?? "").trim();
   const feeRateStr = String(formData.get("feeRate") ?? "").trim();
 
   // 空字符串 → null（清空），有值 → 数值
@@ -551,6 +621,7 @@ async function editInvestment(formData: FormData) {
   const fundFeeRaw = fundFeeStr ? parseFloat(fundFeeStr) : NaN;
   const fundArrivalAmountRaw = fundArrivalAmountStr ? parseFloat(fundArrivalAmountStr) : NaN;
   const confirmDaysRaw = confirmDaysStr ? parseInt(confirmDaysStr, 10) : NaN;
+  const arrivalDaysRaw = arrivalDaysStr ? parseInt(arrivalDaysStr, 10) : NaN;
   const feeRateRaw = feeRateStr ? parseFloat(feeRateStr) : NaN;
 
   const fundUnits: number | null | undefined = hasFundUnits
@@ -579,6 +650,9 @@ async function editInvestment(formData: FormData) {
     : undefined;
   const feeRate: number | null | undefined = hasFeeRate
     ? (Number.isFinite(feeRateRaw) && feeRateRaw >= 0 ? feeRateRaw : null)
+    : undefined;
+  const arrivalDays: number | null | undefined = hasArrivalDays
+    ? (Number.isFinite(arrivalDaysRaw) && arrivalDaysRaw >= 0 ? arrivalDaysRaw : null)
     : undefined;
 
   if (!entryId) return { ok: false as const, error: "缺少参数" };
@@ -659,8 +733,8 @@ async function editInvestment(formData: FormData) {
             updateData.toAccountId = cashAccountInfo.id;
             updateData.toAccountName = cashAccountInfo.name;
           } else {
-            updateData.toAccountId = newToAccountId ?? oldInvestmentAccId;
-            updateData.toAccountName = newInvestmentAccountInfo?.name ?? txRecord.accountName ?? "";
+            updateData.toAccountId = oldCashAccId || null;
+            updateData.toAccountName = txRecord.toAccountName ?? "";
           }
           updateData.amount = isDividendCash ? amountAbs : signedAmount;
           updateData.deletedAt = null;
@@ -726,6 +800,11 @@ async function editInvestment(formData: FormData) {
     // 更新 T+N 确认天数到统一确认天数库
     if (finalInvestmentAccId && fundCode && confirmDays !== undefined && confirmDays !== null) {
       await setFundConfirmDays(finalInvestmentAccId, fundCode, confirmDays).catch(() => {});
+
+    // 更新入账天数到统一入账天数库
+    if (finalInvestmentAccId && fundCode && arrivalDays !== undefined && arrivalDays !== null) {
+      await setFundArrivalDays(finalInvestmentAccId, fundCode, arrivalDays).catch(() => {});
+    }
     }
 
     // 更新费率到统一费率库，并按申购/赎回分开保存
@@ -794,7 +873,8 @@ async function fillFundNavFromCache(formData: FormData) {
 
     // 从费率库查询费率（按确认日期）
     const feeType = isRedeemFill ? "redeem" : "buy";
-    const feeRate = await getFundFeeRateByDate(investmentAccId, txRecord.fundCode, navDate, feeType);
+    const feeRateRaw = await getFundFeeRateByDate(investmentAccId, txRecord.fundCode, navDate, feeType);
+    const feeRate = feeRateRaw / 100;
     const fee = amount * feeRate;
     const principal = amount - fee;
     const units = nav > 0 ? principal / nav : null;
@@ -837,6 +917,7 @@ async function fillFundNavFromCache(formData: FormData) {
 
 async function createRegularInvest(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent !== "createRegularInvest") return { ok: false as const, error: "intent 不匹配" };
 
@@ -852,6 +933,7 @@ async function createRegularInvest(formData: FormData) {
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
+  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
   const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
 
   if (!accountId || !fundCode || !amountRaw || !startDateStr) {
@@ -876,6 +958,7 @@ async function createRegularInvest(formData: FormData) {
 
   const feeRate = feeRateRaw ? parseFloat(feeRateRaw) : null;
   const confirmDays = confirmDaysRaw ? parseInt(confirmDaysRaw, 10) : null;
+  const arrivalDays = arrivalDaysRaw ? parseInt(arrivalDaysRaw, 10) : null;
   const intervalValue = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : 1;
   const endDate = endDateStr ? new Date(endDateStr) : null;
   const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
@@ -900,7 +983,9 @@ async function createRegularInvest(formData: FormData) {
           status: RegularInvestStatus.active,
           feeRate: feeRate != null && Number.isFinite(feeRate) ? feeRate : null,
           confirmDays: confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : null,
+          arrivalDays: arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : null,
           skipPendingPreceding,
+          ...{ householdId },
         },
       });
 
@@ -909,7 +994,9 @@ async function createRegularInvest(formData: FormData) {
       const newRate = feeRate != null && Number.isFinite(feeRate) ? feeRate : 0;
       if (accountId && fundCode) {
         await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
-        await setFundFeeRateInTx(tx, accountId, fundCode, newRate);
+        await setFundFeeRateByDateInTx(tx, accountId, fundCode, newRate, startDate, "buy");
+        const newArrivalDays = arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : 0;
+        await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
       }
     });
 
@@ -927,6 +1014,7 @@ async function createRegularInvest(formData: FormData) {
 
 async function regularInvestAction(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent !== "regularInvestAction") return { ok: false as const, error: "intent 不匹配" };
 
@@ -937,6 +1025,7 @@ async function regularInvestAction(formData: FormData) {
 
   const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
   if (!plan) return { ok: false as const, error: "计划不存在" };
+  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
 
   try {
     if (actionType === "pause") {
@@ -992,6 +1081,7 @@ async function regularInvestAction(formData: FormData) {
 
 async function updateRegularInvest(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent !== "updateRegularInvest") return { ok: false as const, error: "intent 不匹配" };
 
@@ -1000,6 +1090,7 @@ async function updateRegularInvest(formData: FormData) {
 
   const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
   if (!plan) return { ok: false as const, error: "计划不存在" };
+  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
 
   const fundName = String(formData.get("fundName") ?? "").trim();
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
@@ -1052,11 +1143,26 @@ async function updateRegularInvest(formData: FormData) {
     updateData.confirmDays = null;
   }
 
+  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
+  if (arrivalDaysRaw) {
+    const arrivalDays = parseInt(arrivalDaysRaw, 10);
+    if (Number.isFinite(arrivalDays)) updateData.arrivalDays = arrivalDays;
+  } else if (formData.has("arrivalDays")) {
+    updateData.arrivalDays = null;
+  }
+
   try {
     await prisma.regularInvestPlan.update({
       where: { id: planId },
       data: updateData,
     });
+
+    if (updateData.arrivalDays != null) {
+      const updatedPlan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
+      if (updatedPlan?.accountId && updatedPlan?.fundCode) {
+        await setFundArrivalDays(updatedPlan.accountId, updatedPlan.fundCode, updateData.arrivalDays).catch(() => {});
+      }
+    }
 
     revalidatePath("/");
     revalidatePath("/invest");
@@ -1072,6 +1178,7 @@ async function updateRegularInvest(formData: FormData) {
 
 async function deleteRegularInvest(formData: FormData) {
   "use server";
+  const { householdId } = await getHouseholdScope();
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent !== "deleteRegularInvest") return { ok: false as const, error: "intent 不匹配" };
 
@@ -1080,6 +1187,7 @@ async function deleteRegularInvest(formData: FormData) {
 
   const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
   if (!plan) return { ok: false as const, error: "计划不存在" };
+  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
 
   const deleteRecords = formData.get("deleteRecords") === "1";
 
@@ -1429,6 +1537,18 @@ export default async function Home({
     fundPageSize?: string;
     fundPage?: string;
     showCleared?: string;
+    detailAll?: string;
+    detailFilterDate?: string;
+    detailFilterFlow?: string;
+    detailFilterType?: string;
+    detailFilterRelated?: string;
+    detailFilterRemark?: string;
+    detailDateFrom?: string;
+    detailDateTo?: string;
+    detailInFrom?: string;
+    detailInTo?: string;
+    detailOutFrom?: string;
+    detailOutTo?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -1447,6 +1567,23 @@ export default async function Home({
   const pageSize = [10, 20, 40].includes(pageSizeParam) ? pageSizeParam : 20;
   const detailPageParam = typeof params?.detailPage === "string" ? parseInt(params.detailPage, 10) : 1;
   const detailPage = Number.isFinite(detailPageParam) && detailPageParam >= 1 ? detailPageParam : 1;
+  const detailAll = params?.detailAll === "1";
+  const detailDateFrom = typeof params?.detailDateFrom === "string" ? params.detailDateFrom.trim() : "";
+  const detailDateTo = typeof params?.detailDateTo === "string" ? params.detailDateTo.trim() : "";
+  const detailInFrom = typeof params?.detailInFrom === "string" ? params.detailInFrom.trim() : "";
+  const detailInTo = typeof params?.detailInTo === "string" ? params.detailInTo.trim() : "";
+  const detailOutFrom = typeof params?.detailOutFrom === "string" ? params.detailOutFrom.trim() : "";
+  const detailOutTo = typeof params?.detailOutTo === "string" ? params.detailOutTo.trim() : "";
+  const detailColumnFilters: Record<DetailFilterColumn, string[]> = {
+    date: parseDetailFilterParam(params?.detailFilterDate),
+    flow: parseDetailFilterParam(params?.detailFilterFlow),
+    type: parseDetailFilterParam(params?.detailFilterType),
+    related: parseDetailFilterParam(params?.detailFilterRelated),
+    remark: parseDetailFilterParam(params?.detailFilterRemark),
+  };
+  const hasDetailFilters =
+    !!(detailDateFrom || detailDateTo || detailInFrom || detailInTo || detailOutFrom || detailOutTo) ||
+    Object.values(detailColumnFilters).some((values) => values.length > 0);
   const fundCodeParam = typeof params?.fundCode === "string" ? params.fundCode.trim() : "";
   const fundSortParam = typeof params?.fundSort === "string" ? params.fundSort.trim() : "marketValue";
   const fundSortDirParam = params?.fundSortDir === "asc" ? "asc" : "desc";
@@ -1460,6 +1597,8 @@ export default async function Home({
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const isRedUp = colorScheme === "red_up_green_down";
+  const ctx = await getHouseholdScope();
+  const { hidFilter, householdId } = ctx;
   // 颜色辅助函数
   const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
@@ -1468,12 +1607,14 @@ export default async function Home({
 
   const [categories, selectedAccount, accounts] = await Promise.all([
     prisma.category.findMany({
+      where: { ...hidFilter },
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
     accountId
       ? prisma.account.findUnique({ where: { id: accountId }, include: { Institution: true, AccountGroup: true } })
       : null,
     prisma.account.findMany({
+      where: { ...hidFilter },
       include: { Institution: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
@@ -1488,39 +1629,147 @@ export default async function Home({
     return [...set].filter(Boolean);
   })();
 
+  const hid = { householdId };
   const where = accountId
-    ? legacyNames.length
-      ? {
-          OR: [
-            { accountId },
-            { toAccountId: accountId },
-            ...legacyNames.map((n) => ({ accountName: n })),
-          ],
-          deletedAt: null,
-        }
-      : {
-          OR: [{ accountId }, { toAccountId: accountId }],
-          deletedAt: null,
-        }
+    ? {
+        OR: [{ accountId }, { toAccountId: accountId }],
+        deletedAt: null,
+        ...hid,
+      }
     : accountName
-      ? { accountName: accountName, deletedAt: null }
-      : { deletedAt: null, account: { kind: { not: AccountKind.investment } } };
+      ? { accountName: accountName, deletedAt: null, ...hid }
+      : { deletedAt: null, account: { kind: { not: AccountKind.investment }, ...hidFilter } };
 
-  const entries = await prisma.txRecord.findMany({
+  const rawEntries = await prisma.txRecord.findMany({
     where,
     include: { EntryTag: { include: { Tag: true } } },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: 5000,
   });
-  const detailTotalPages = Math.max(1, Math.ceil(entries.length / pageSize));
-  const safeDetailPage = Math.min(detailPage, detailTotalPages);
-  const pagedEntries = entries.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
+  const entryDisplayDate = (e: (typeof rawEntries)[number]) => {
+    const isCashSide = !!accountId && e.toAccountId === accountId;
+    const isBuyFailedRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
+    const isCashInByInvest = e.type === TransactionType.investment
+      && isCashSide
+      && (e.fundSubtype === "redeem" || e.fundSubtype === "switch_out" || e.fundSubtype === "dividend_cash" || isBuyFailedRefund);
+    if (isCashInByInvest) return e.fundArrivalDate ?? e.fundConfirmDate ?? e.date;
+    return e.date;
+  };
+  const entries = [...rawEntries].sort((a, b) => {
+    const byDate = entryDisplayDate(b).getTime() - entryDisplayDate(a).getTime();
+    if (byDate !== 0) return byDate;
+    return b.createdAt.getTime() - a.createdAt.getTime();
+  });
+  const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
+    const amount = toNumber(e.amount);
+    const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+    if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
+    if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
+    if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount)?.label ?? formatType(e.type)) : formatType(e.type);
+    if (column === "related") {
+      const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
+      return related.trim() || DETAIL_EMPTY_VALUE;
+    }
+    return (e.note ?? "").trim() || DETAIL_EMPTY_VALUE;
+  };
+  const detailFilterOptions: Record<DetailFilterColumn, string[]> = {
+    date: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "date")))).sort(detailFilterSort),
+    flow: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "flow")))).sort(detailFilterSort),
+    type: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "type")))).sort(detailFilterSort),
+    related: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "related")))).sort(detailFilterSort),
+    remark: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "remark")))).sort(detailFilterSort),
+  };
+
+  const detailDateInRange = (v: string) => {
+    let f = detailDateFrom;
+    let t = detailDateTo;
+    if (f && t && f > t) {
+      const tmp = f; f = t; t = tmp;
+    }
+    if (!f && !t) return true;
+    if (!v) return false;
+    if (f && v < f) return false;
+    if (t && v > t) return false;
+    return true;
+  };
+
+  const parseRangeNumber = (v: string) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const detailInFromN = parseRangeNumber(detailInFrom);
+  const detailInToN = parseRangeNumber(detailInTo);
+  const detailOutFromN = parseRangeNumber(detailOutFrom);
+  const detailOutToN = parseRangeNumber(detailOutTo);
+
+  const detailNumberInRange = (n: number, fromN: number | null, toN: number | null) => {
+    let f = fromN;
+    let t = toN;
+    if (f != null && t != null && f > t) {
+      const tmp = f; f = t; t = tmp;
+    }
+    if (f != null && n < f) return false;
+    if (t != null && n > t) return false;
+    return true;
+  };
+
+  const filteredEntries = entries.filter((e) => (Object.keys(detailColumnFilters) as DetailFilterColumn[]).every((column) => {
+    const allowedValues = detailColumnFilters[column];
+    const v = getDetailFilterColumnValue(e, column);
+    if (allowedValues.length > 0 && !allowedValues.includes(v)) return false;
+    if (column === "date" && (detailDateFrom || detailDateTo) && !detailDateInRange(v)) return false;
+    return true;
+  }));
+  const filteredEntries2 = filteredEntries.filter((e) => {
+    const amount = toNumber(e.amount);
+    const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+    const inflow = effectiveAmount > 0 ? effectiveAmount : null;
+    const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
+    if ((detailInFromN != null || detailInToN != null)) {
+      if (inflow == null) return false;
+      if (!detailNumberInRange(inflow, detailInFromN, detailInToN)) return false;
+    }
+    if ((detailOutFromN != null || detailOutToN != null)) {
+      if (outflow == null) return false;
+      if (!detailNumberInRange(outflow, detailOutFromN, detailOutToN)) return false;
+    }
+    return true;
+  });
+  const detailTotalPages = Math.max(1, Math.ceil(filteredEntries2.length / pageSize));
+  const safeDetailPage = detailAll ? 1 : Math.min(detailPage, detailTotalPages);
+  const pagedEntries = detailAll ? filteredEntries2 : filteredEntries2.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
+  const normalExportRows = (() => {
+    const rows = [["日期", "类型", "流出", "流入", "账户", "对向账户", "备注"]];
+    for (const e of filteredEntries2) {
+      const amount = toNumber(e.amount);
+      const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+      const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
+      const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
+      const accountLabel = accountId && e.toAccountId === accountId ? (e.toAccountName ?? "") : (e.accountName ?? "");
+      const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
+        ? (accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? ""))
+        : "";
+      rows.push([
+        entryDisplayDate(e).toISOString().slice(0, 10),
+        formatType(e.type),
+        outflow,
+        inflow,
+        accountLabel,
+        counterAccountLabel,
+        e.note ?? "",
+      ]);
+    }
+    return rows;
+  })();
+  const normalExportHref = buildCsvDataUri(normalExportRows);
+  const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.csv`;
 
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
   const isInvestAccount = selectedAccount?.kind === AccountKind.investment;
-  const view = viewParam ? viewParam : isBillAccount ? "bill" : isInvestAccount ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund") : "detail";
+  const isOverview = !viewParam && !accountId && !accountName;
+  const view = viewParam ? viewParam : isBillAccount ? "bill" : isInvestAccount ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund") : isOverview ? "overview" : "detail";
 
   const categoryLabels = buildCategoryPathLabels(categories);
   const expenseCategories = categories
@@ -1532,7 +1781,7 @@ export default async function Home({
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
 
-  const total = entries.reduce(
+  const total = filteredEntries.reduce(
     (acc, e) => {
       const amount = toNumber(e.amount);
       const isInvestAccountEntry = accountId && (e.toAccountId === accountId || e.accountId === accountId);
@@ -1550,13 +1799,15 @@ export default async function Home({
     { in: 0, out: 0, net: 0 },
   );
 
+  const totalNetWorthValue = accounts.reduce((s, a) => s + toNumber(a.balance), 0);
+  const monthGrowthValue = 0; // TODO: Real calculation
+
   const balanceByEntryId = new Map<string, number>();
   if (where) {
-    const asc = await prisma.txRecord.findMany({
-      where,
-      include: {},
-      orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-      take: 5000,
+    const asc = [...rawEntries].sort((a, b) => {
+      const byDate = entryDisplayDate(a).getTime() - entryDisplayDate(b).getTime();
+      if (byDate !== 0) return byDate;
+      return a.createdAt.getTime() - b.createdAt.getTime();
     });
     let running = 0;
     for (const e of asc) {
@@ -1592,8 +1843,10 @@ export default async function Home({
       id: a.id,
       name: a.name,
       label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
+      investProductType: a.investProductType,
     }));
   const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.label]));
+  const investmentProductTypeByAccountId = new Map(investmentAccountOptions.map((a) => [a.id, a.investProductType]));
 
   // 查询最近使用的资金账户
   const lastUsedCashAccount = isInvestAccount && accountId
@@ -2061,7 +2314,7 @@ export default async function Home({
     return cum?.cumulativeRemain ?? creditCardBill?.remain ?? 0;
   })();
 
-  const investBalByAccountId = isInvestAccount ? await computeInvestBalances() : new Map();
+  const investBalByAccountId = isInvestAccount ? await computeInvestBalances(ctx) : new Map();
 
   if (selectedAccount) {
     const agg = await prisma.txRecord.aggregate({
@@ -2123,7 +2376,7 @@ export default async function Home({
   const investmoneyData = viewParam === "investmoney" && investmoneyAccount
     ? await (async () => {
         // ── 显示层：持仓数据统一从 fundHolding 表读取 ──
-        const positionDisplay = await computePositionDisplay(investmoneyAccount.id);
+        const positionDisplay = await computePositionDisplay(ctx, investmoneyAccount.id);
         const sortedPositions = [...positionDisplay.positions].sort((a, b) => {
           const dir = fundSortDirParam === "asc" ? 1 : -1;
           let value = 0;
@@ -2214,7 +2467,7 @@ export default async function Home({
   const investfundData = viewParam === "investfund" && investfundAccount
     ? await (async () => {
         // ── 显示层：持仓数据统一从 fundHolding 表读取 ──
-        const positionDisplay = await computePositionDisplay(investfundAccount.id);
+        const positionDisplay = await computePositionDisplay(ctx, investfundAccount.id);
         const sortedPositions = [...positionDisplay.positions].sort((a, b) => {
           const dir = fundSortDirParam === "asc" ? 1 : -1;
           let value = 0;
@@ -2302,7 +2555,7 @@ export default async function Home({
   const regularInvestData = viewParam === "regularinvest" && accountId && selectedAccount
     ? await (async () => {
         const plans = await prisma.regularInvestPlan.findMany({
-          where: { accountId },
+          where: { accountId, ...hidFilter },
           orderBy: { nextRunDate: "asc" },
         });
         return { plans };
@@ -2312,6 +2565,25 @@ export default async function Home({
   const baseQuery = new URLSearchParams();
   if (accountId) baseQuery.set("accountId", accountId);
   else if (accountName) baseQuery.set("account", accountName);
+  const withDetailParams = (mutate?: (q: URLSearchParams) => void) => {
+    const q = new URLSearchParams(baseQuery);
+    q.set("view", "detail");
+    q.set("pageSize", String(pageSize));
+    if (!detailAll) q.set("detailPage", String(safeDetailPage));
+    else q.set("detailAll", "1");
+    (Object.keys(detailColumnFilters) as DetailFilterColumn[]).forEach((column) => {
+      const value = serializeDetailFilterValues(detailColumnFilters[column]);
+      if (value) q.set(DETAIL_FILTER_PARAM_BY_COLUMN[column], value);
+    });
+    if (detailDateFrom) q.set("detailDateFrom", detailDateFrom);
+    if (detailDateTo) q.set("detailDateTo", detailDateTo);
+    if (detailInFrom) q.set("detailInFrom", detailInFrom);
+    if (detailInTo) q.set("detailInTo", detailInTo);
+    if (detailOutFrom) q.set("detailOutFrom", detailOutFrom);
+    if (detailOutTo) q.set("detailOutTo", detailOutTo);
+    mutate?.(q);
+    return `/?${q.toString()}`;
+  };
   const hrefDetail = (() => {
     const q = new URLSearchParams(baseQuery);
     q.set("view", "detail");
@@ -2319,6 +2591,14 @@ export default async function Home({
     if (hideSettledBills) q.set("hideSettledBills", "1");
     return `/?${q.toString()}`;
   })();
+  const hrefAllDetails = withDetailParams((q) => {
+    q.set("detailAll", "1");
+    q.delete("detailPage");
+  });
+  const hrefPagedDetails = withDetailParams((q) => {
+    q.delete("detailAll");
+    q.set("detailPage", "1");
+  });
   const hrefBill = (() => {
     const q = new URLSearchParams(baseQuery);
     q.set("view", "bill");
@@ -2327,6 +2607,63 @@ export default async function Home({
     if (hideSettledBills) q.set("hideSettledBills", "1");
     return `/)${q.toString()}`;
   })();
+
+  const renderDetailFilterHeader = (column: DetailFilterColumn, label: string, className: string) => {
+    const activeValues = detailColumnFilters[column];
+    const options = detailFilterOptions[column];
+    const hasDateRange = column === "date" && !!(detailDateFrom || detailDateTo);
+    const active = activeValues.length > 0 || hasDateRange;
+    return (
+      <th className={className}>
+        {column === "date" ? (() => {
+          const clearHref = active ? withDetailParams((q) => {
+            q.delete(DETAIL_FILTER_PARAM_BY_COLUMN.date);
+            q.delete("detailDateFrom");
+            q.delete("detailDateTo");
+            q.set("detailPage", "1");
+          }) : null;
+          const current = new URLSearchParams(withDetailParams().slice(2));
+          current.delete(DETAIL_FILTER_PARAM_BY_COLUMN.date);
+          current.delete("detailDateFrom");
+          current.delete("detailDateTo");
+          current.set("detailPage", "1");
+          const hiddenInputs = Array.from(current.entries()).map(([k, v]) => ({ name: k, value: v }));
+          const badgeText = hasDateRange ? "范围" : (activeValues.length > 0 ? String(activeValues.length) : null);
+          return (
+            <LinkDateRangeFilter
+              label={label}
+              from={detailDateFrom}
+              to={detailDateTo}
+              badgeText={badgeText}
+              clearHref={clearHref}
+              hiddenInputs={hiddenInputs}
+            />
+          );
+        })() : (() => {
+          const clearHref = active ? withDetailParams((q) => { q.delete(DETAIL_FILTER_PARAM_BY_COLUMN[column]); q.set("detailPage", "1"); }) : null;
+          const items = options.map((value) => {
+            const nextValues = activeValues.includes(value) ? activeValues.filter((v) => v !== value) : [...activeValues, value];
+            const href = withDetailParams((q) => {
+              const serialized = serializeDetailFilterValues(nextValues);
+              if (serialized) q.set(DETAIL_FILTER_PARAM_BY_COLUMN[column], serialized);
+              else q.delete(DETAIL_FILTER_PARAM_BY_COLUMN[column]);
+              q.set("detailPage", "1");
+            });
+            return { value, href, checked: activeValues.includes(value) };
+          });
+          const badgeText = activeValues.length > 0 ? String(activeValues.length) : null;
+          return (
+            <LinkTableColumnFilter
+              label={label}
+              badgeText={badgeText}
+              items={items}
+              clearHref={clearHref}
+            />
+          );
+        })()}
+      </th>
+    );
+  };
 
   const renderFundSortHeader = (
     viewName: "investmoney" | "investfund",
@@ -2393,6 +2730,15 @@ export default async function Home({
                 cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
                 investmentAccounts={investmentAccountOptions}
                 holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
+                allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
+                  date: ymdUtc(e.date),
+                  fundConfirmDate: e.fundConfirmDate ? ymdUtc(e.fundConfirmDate) : null,
+                  fundArrivalDate: e.fundArrivalDate ? ymdUtc(e.fundArrivalDate) : null,
+                  fundCode: e.fundCode ?? "",
+                  fundSubtype: e.fundSubtype ?? "",
+                  fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
+                  source: e.source ?? null,
+                })) ?? undefined}
                 createAction={createTransaction}
               />
             ) : view === "regularinvest" && selectedAccount ? (
@@ -2407,6 +2753,31 @@ export default async function Home({
                 lastRepayToAccountId={lastRepayToAccountId} lastRepayFromAccountId={lastRepayFromAccountId}
                 isCreditCardAccount={isBillAccount} action={createTransaction} editAction={updateTransactionFromDialog}
               />
+              <InvestmentFormModal
+                mode="edit"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                accountProductType={selectedAccount?.investProductType ?? null}
+                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                investmentAccounts={investmentAccountOptions}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
+              <WealthFormModal
+                mode="edit"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                investmentAccounts={investmentAccountOptions}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
+              <DepositFormModal
+                mode="edit"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                investmentAccounts={investmentAccountOptions}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
               {isBillAccount && !isInvestAccount ? <a href="/invest" className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 flex items-center">投资</a> : null}
               </>
             )}
@@ -2415,7 +2786,14 @@ export default async function Home({
         </header>
 
         <div className="flex-1 overflow-hidden flex flex-col">
-          {view === "bill" && isBillAccount ? (
+          {isOverview ? (
+            <DashboardOverview 
+              totalNetWorth={totalNetWorthValue} 
+              monthGrowth={monthGrowthValue} 
+              isRedUp={isRedUp}
+              createAction={createTransaction}
+            />
+          ) : view === "bill" && isBillAccount ? (
             <div className="flex-1 overflow-auto bg-white">
               <div className="p-4 space-y-4">
                 {billSummariesWithCumulative.length > 0 ? (
@@ -2749,86 +3127,175 @@ export default async function Home({
           ) : (
             <div className="flex-1 min-h-0 flex flex-col p-4 bg-slate-50">
               <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
+                <BasicDetailSelectionProvider>
                 <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
-                  <div className="text-sm font-semibold text-slate-800">资金明细</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold text-slate-800">资金明细</div>
+                    <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
+                      <Upload className="w-3 h-3" />导入
+                    </Link>
+                    <a href={normalExportHref} download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
+                      <Download className="w-3 h-3" />导出
+                    </a>
+                  </div>
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="text-xs text-slate-600">共 {entries.length} 条</span>
+                    <span className="text-xs text-slate-600">共 {filteredEntries2.length} 条{hasDetailFilters ? ` / 原 ${entries.length} 条` : ""}</span>
                     <span className="text-xs text-slate-400 mx-1">|</span>
                     <span className="text-xs text-slate-600">每页</span>
                     {[10, 20, 40].map((n) => {
-                      const href = (() => { const q = new URLSearchParams(baseQuery); q.set("view", "detail"); q.set("pageSize", String(n)); q.set("detailPage", "1"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); return `/?${q.toString()}`; })();
-                      const active = pageSize === n;
+                      const href = withDetailParams((q) => { q.set("pageSize", String(n)); q.set("detailPage", "1"); q.delete("detailAll"); });
+                      const active = !detailAll && pageSize === n;
                       return <a key={n} href={href} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${active ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>{n}</a>;
                     })}
+                    <a href={hrefAllDetails} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${detailAll ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`} title="当前账户全部记录不分页显示">全部</a>
                     <span className="text-xs text-slate-600">条</span>
-                    {detailTotalPages > 1 && (
+                    {!detailAll && detailTotalPages > 1 && (
                       <>
                         <span className="text-slate-400">|</span>
-                        {safeDetailPage > 1 && (
-                          <>
-                            <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "detail"); q.set("detailPage", "1"); q.set("pageSize", String(pageSize)); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); return `/?${q.toString()}`; })()} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsLeft className="h-3.5 w-3.5"/></a>
-                            <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "detail"); q.set("detailPage", String(safeDetailPage - 1)); q.set("pageSize", String(pageSize)); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); return `/?${q.toString()}`; })()} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="h-3.5 w-3.5"/></a>
-                          </>
+                        {safeDetailPage > 1 ? (
+                          <a href={withDetailParams((q) => { q.set("detailPage", "1"); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="第一页"><ChevronsLeft className="h-3.5 w-3.5"/></a>
+                        ) : (
+                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是第一页"><ChevronsLeft className="h-3.5 w-3.5"/></span>
                         )}
-                        <span className="text-xs text-slate-500">{safeDetailPage}/{detailTotalPages}</span>
-                        {safeDetailPage < detailTotalPages && (
-                          <>
-                            <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "detail"); q.set("detailPage", String(safeDetailPage + 1)); q.set("pageSize", String(pageSize)); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); return `/?${q.toString()}`; })()} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="h-3.5 w-3.5"/></a>
-                            <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "detail"); q.set("detailPage", String(detailTotalPages)); q.set("pageSize", String(pageSize)); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); return `/?${q.toString()}`; })()} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsRight className="h-3.5 w-3.5"/></a>
-                          </>
+                        {safeDetailPage > 1 ? (
+                          <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage - 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="上一页"><ChevronLeft className="h-3.5 w-3.5"/></a>
+                        ) : (
+                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是第一页"><ChevronLeft className="h-3.5 w-3.5"/></span>
+                        )}
+                        <span className="min-w-10 text-center text-xs text-slate-500">{safeDetailPage}/{detailTotalPages}</span>
+                        {safeDetailPage < detailTotalPages ? (
+                          <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage + 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="下一页"><ChevronRight className="h-3.5 w-3.5"/></a>
+                        ) : (
+                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是最后一页"><ChevronRight className="h-3.5 w-3.5"/></span>
+                        )}
+                        {safeDetailPage < detailTotalPages ? (
+                          <a href={withDetailParams((q) => { q.set("detailPage", String(detailTotalPages)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="最后一页"><ChevronsRight className="h-3.5 w-3.5"/></a>
+                        ) : (
+                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是最后一页"><ChevronsRight className="h-3.5 w-3.5"/></span>
                         )}
                       </>
                     )}
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-auto">
-                  <table className="min-w-[1000px] w-full border-separate border-spacing-0">
+                  <table className="min-w-[1040px] w-full border-separate border-spacing-0">
                     <thead className="sticky top-0 z-10 bg-white">
                       <tr>
-                        <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">日期</th>
-                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">流入</th>
-                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">流出</th>
-                        <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">活动类型</th>
-                        {!isInvestAccount && <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">关联账户</th>}
+                        <th className="w-9 px-3 py-2 border-b border-slate-200 text-left">
+                          <BasicDetailSelectAll ids={pagedEntries.map((e) => e.id)} />
+                        </th>
+                        {renderDetailFilterHeader("date", "日期", "text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200")}
+                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                          {(() => {
+                            const active = !!(detailInFrom || detailInTo);
+                            const clearHref = active ? withDetailParams((q) => {
+                              q.delete("detailInFrom");
+                              q.delete("detailInTo");
+                              q.set("detailPage", "1");
+                            }) : null;
+                            const current = new URLSearchParams(withDetailParams().slice(2));
+                            current.delete("detailInFrom");
+                            current.delete("detailInTo");
+                            current.set("detailPage", "1");
+                            const hiddenInputs = Array.from(current.entries()).map(([k, v]) => ({ name: k, value: v }));
+                            return (
+                              <LinkNumberRangeFilter
+                                label="流入"
+                                fromName="detailInFrom"
+                                toName="detailInTo"
+                                from={detailInFrom}
+                                to={detailInTo}
+                                badgeText={active ? "范围" : null}
+                                clearHref={clearHref}
+                                hiddenInputs={hiddenInputs}
+                                fromPlaceholder="例如 100"
+                                toPlaceholder="例如 1000"
+                              />
+                            );
+                          })()}
+                        </th>
+                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                          {(() => {
+                            const active = !!(detailOutFrom || detailOutTo);
+                            const clearHref = active ? withDetailParams((q) => {
+                              q.delete("detailOutFrom");
+                              q.delete("detailOutTo");
+                              q.set("detailPage", "1");
+                            }) : null;
+                            const current = new URLSearchParams(withDetailParams().slice(2));
+                            current.delete("detailOutFrom");
+                            current.delete("detailOutTo");
+                            current.set("detailPage", "1");
+                            const hiddenInputs = Array.from(current.entries()).map(([k, v]) => ({ name: k, value: v }));
+                            return (
+                              <LinkNumberRangeFilter
+                                label="流出"
+                                fromName="detailOutFrom"
+                                toName="detailOutTo"
+                                from={detailOutFrom}
+                                to={detailOutTo}
+                                badgeText={active ? "范围" : null}
+                                clearHref={clearHref}
+                                hiddenInputs={hiddenInputs}
+                                fromPlaceholder="例如 100"
+                                toPlaceholder="例如 1000"
+                              />
+                            );
+                          })()}
+                        </th>
+                        {renderDetailFilterHeader("type", "活动类型", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
+                        {!isInvestAccount && renderDetailFilterHeader("related", "关联账户", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">余额</th>
-                        <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">备注</th>
+                        {renderDetailFilterHeader("remark", "备注", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">附件</th>
-                        <th className="text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">操作</th>
+                        <th className="w-24 px-2 py-2 border-b border-slate-200 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <BasicDetailBatchReplaceButton accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))} />
+                            <BasicDetailBatchDeleteButton />
+                          </div>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="text-sm">
                       {pagedEntries.length ? (pagedEntries.map((e) => {
-                        const date = e.date.toISOString().slice(0, 10);
+                        const date = entryDisplayDate(e).toISOString().slice(0, 10);
                         const amount = toNumber(e.amount);
                         const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
                         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
                         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
                         const balance = where ? balanceByEntryId.get(e.id) ?? null : null;
                         const activity = e.type === "investment" && e.fundSubtype ? (() => { const info = fundSubtypeInfo(e.fundSubtype, e.source, amount); return info ? info.label : formatType(e.type); })() : formatType(e.type);
-                        const editPayload = e.type !== "investment" ? undefined : { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, fundCode: e.fundCode, fundName: e.fundName, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, fundNav: e.fundNav != null ? toNumber(e.fundNav) : null, fundFee: e.fundFee != null ? toNumber(e.fundFee) : null, fundProductType: e.fundProductType, fundSubtype: e.fundSubtype, source: e.source, accountId: e.accountId, toAccountId: e.toAccountId, toAccountName: e.toAccountName, fundArrivalDate: e.fundArrivalDate?.toISOString().slice(0,10), fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null };
-                        const otherEditPayload = e.type !== "investment" ? { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, categoryId: e.categoryId, categoryName: e.categoryName, accountId: e.accountId, accountName: e.accountName, toAccountId: e.toAccountId, toAccountName: e.toAccountName } : undefined;
-                        const toAccountLabel = e.toAccountId ? (accountOptions.find((a: any) => a.id === e.toAccountId)?.label?.split("·").pop() ?? e.toAccountName) : null;
+                        const entryFundProductType = e.fundProductType ?? (e.toAccountId ? investmentProductTypeByAccountId.get(e.toAccountId) : null) ?? (e.accountId ? investmentProductTypeByAccountId.get(e.accountId) : null) ?? null;
+                        const isRedeemEditEntry = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
+                        const editPayload = e.type !== "investment" ? undefined : { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), confirmDate: e.fundConfirmDate?.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, fundCode: e.fundCode, fundName: e.fundName, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, fundNav: e.fundNav != null ? toNumber(e.fundNav) : null, fundFee: e.fundFee != null ? toNumber(e.fundFee) : null, fundProductType: entryFundProductType, fundSubtype: e.fundSubtype, source: e.source, accountId: e.accountId, toAccountId: e.toAccountId, cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId, toAccountName: e.toAccountName, fundArrivalDate: e.fundArrivalDate?.toISOString().slice(0,10), fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null };
+                        const otherEditPayload = e.type !== "investment" ? { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, categoryId: e.categoryId, categoryName: e.categoryName, accountId: e.accountId, accountName: e.accountName, fromAccountId: e.type === "transfer" ? e.accountId : undefined, toAccountId: e.toAccountId, toAccountName: e.toAccountName } : undefined;
+                        const isToAccount = !!accountId && e.toAccountId === accountId;
+                        const sourceAccountLabel = accountOptions.find((a: any) => a.id === e.accountId)?.label ?? e.accountName;
+                        const targetAccountLabel = e.toAccountId ? (accountOptions.find((a: any) => a.id === e.toAccountId)?.label ?? e.toAccountName) : null;
+                        const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
                         return (
                           <tr key={e.id} className="hover:bg-slate-50">
+                            <td className="px-3 py-1 border-b border-slate-100"><BasicDetailRowCheckbox id={e.id} /></td>
                             <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{date}</td>
                             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">{inflow !== null ? formatMoney(inflow) : ""}</td>
                             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">{outflow !== null ? formatMoney(outflow) : ""}</td>
                             <td className="px-3 py-1 border-b border-slate-100">
                               {e.type === "investment" && e.fundSubtype ? (() => { const info = fundSubtypeInfo(e.fundSubtype, e.source, amount); return info ? <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${info.cls}`}>{info.label}</span> : <span className="text-xs text-slate-700">{activity}</span>; })() : <span className="text-xs text-slate-700">{activity}</span>}
                             </td>
-                            {!isInvestAccount && <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">{e.type === "transfer" && toAccountLabel ? toAccountLabel : e.type === "investment" && e.toAccountName ? e.toAccountName : <span className="text-slate-300">-</span>}</td>}
+                            {!isInvestAccount && <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">{relatedAccountLabel ? relatedAccountLabel : <span className="text-slate-300">-</span>}</td>}
                             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700"><span className="text-xs">{balance !== null ? formatMoney(balance) : ""}</span></td>
                             <td className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[240px]" title={e.note ?? ""}><span className="text-xs text-slate-500">{e.note ?? ""}</span></td>
                             <td className="px-3 py-1 border-b border-slate-100 text-slate-400"></td>
-                            <td className="px-2 py-1 border-b border-slate-100"><EntryRowActions entryId={e.id} edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any} /></td>
+                            <td className="w-24 px-2 py-1 border-b border-slate-100"><div className="flex justify-end"><EntryRowActions entryId={e.id} edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any} /></div></td>
                           </tr>
                         );
                       })
-                    ) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={isInvestAccount ? 8 : 9}>暂无记录</td></tr>)
+                    ) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={isInvestAccount ? 9 : 10}>暂无记录</td></tr>)
                     }
                     </tbody>
                   </table>
                 </div>
+                </BasicDetailSelectionProvider>
               </div>
             </div>
           )}

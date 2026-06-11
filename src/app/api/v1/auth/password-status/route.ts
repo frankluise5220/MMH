@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -46,9 +49,18 @@ export async function POST(req: NextRequest) {
       : null;
 
   // 如果没找到且指定了 username，创建新用户
+  // 非 admin/system 用户需要分配 householdId
   if (!user && username) {
+    const isSystemUser = username === "admin";
+    let householdId: string | null = null;
+
+    if (!isSystemUser) {
+      const { hidFilter } = await getHouseholdScope();
+      householdId = hidFilter.householdId;
+    }
+
     user = await prisma.user.create({
-      data: { name: username, role: "admin", isSystem: username === "admin" },
+      data: { name: username, role: isSystemUser ? "admin" : "user", isSystem: isSystemUser, householdId },
     });
   }
 
@@ -77,7 +89,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: "当前密码错误" }, { status: 401 });
       }
       // 删除旧密码（迁移完成）
-      await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(() => {});
+      await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("操作失败", "route.ts"));
     }
   }
 

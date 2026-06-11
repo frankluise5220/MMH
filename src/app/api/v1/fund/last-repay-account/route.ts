@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function GET(req: NextRequest) {
+  const { hidFilter } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId")?.trim();
 
@@ -33,6 +35,7 @@ export async function GET(req: NextRequest) {
         institutionId: creditCard.institutionId,
         kind: { in: ["bank_debit", "cash", "ewallet"] },
         isActive: true,
+        ...hidFilter,
       },
       orderBy: [
         { kind: "asc" },
@@ -49,6 +52,7 @@ export async function GET(req: NextRequest) {
     where: {
       kind: { in: ["bank_debit", "cash", "ewallet"] },
       isActive: true,
+      ...hidFilter,
     },
     orderBy: { name: "asc" },
     select: { id: true },

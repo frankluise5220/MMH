@@ -9,6 +9,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { AccountKind } from "@prisma/client";
+import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export type InvestBalanceDetail = {
   marketValue: number;
@@ -50,18 +51,13 @@ export type ClearedPositionRow = {
  * 数据源：fundHolding 表（由 recalcFundPositions 在写入时维护）
  * 不再在此处调用 recalcFundPositions，避免读取时触发全量重算
  */
-export async function computeInvestBalances(): Promise<Map<string, InvestBalanceDetail>> {
+export async function computeInvestBalances(ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> {
   const accounts = await prisma.account.findMany({
-    where: { kind: AccountKind.investment },
+    where: { kind: AccountKind.investment, ...ctx.hidFilter },
     select: { id: true },
   });
   const investIds = accounts.map(a => a.id);
   if (investIds.length === 0) return new Map();
-
-  // 清理非投资账户上的残留持仓数据
-  await prisma.fundHolding.deleteMany({
-    where: { accountId: { notIn: investIds } },
-  });
 
   const allHoldings = await prisma.fundHolding.findMany({
     where: { accountId: { in: investIds } },
@@ -115,20 +111,31 @@ export async function computeInvestBalances(): Promise<Map<string, InvestBalance
  * 数据源：fundHolding 表 + fundNavCache 表
  * 不再从 entries 逐条累加计算，保证与 Sidebar/invest 页面数字一致
  */
-export async function computePositionDisplay(accountId: string): Promise<{
+export async function computePositionDisplay(ctx: HouseholdContext, accountId: string): Promise<{
   positions: PositionDisplayRow[];
   clearedPositions: ClearedPositionRow[];
   totalMarketValue: number;
   totalCost: number;
   totalHistoricalProfit: number;
 }> {
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, ...ctx.hidFilter },
+    select: { investProductType: true },
+  });
+  if (!account) {
+    return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, totalHistoricalProfit: 0 };
+  }
+
   const holdings = await prisma.fundHolding.findMany({
     where: { accountId },
   });
 
+  // Check if this is a money fund account (NAV always 1)
+  const isMoney = account?.investProductType === "money";
+
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
-  if (fundCodes.length > 0) {
+  if (fundCodes.length > 0 && !isMoney) {
     const caches = await prisma.fundNavCache.findMany({
       where: { fundCode: { in: fundCodes } },
       orderBy: { navDate: "desc" },
@@ -150,7 +157,7 @@ export async function computePositionDisplay(accountId: string): Promise<{
     const cost = toNumber(h.cost);
     const pending = toNumber(h.pendingCost);
     const avgCost = toNumber(h.avgCost);
-    const navInfo = latestNavByCode.get(h.fundCode);
+    const navInfo = isMoney ? { nav: 1, date: "" } : latestNavByCode.get(h.fundCode);
     const latestNav = navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0);
     const navDateStr = navInfo?.date ?? "";
     const historicalProfit = toNumber(h.historicalProfit);
@@ -201,6 +208,7 @@ export async function computePositionDisplay(accountId: string): Promise<{
     const investedRows = await prisma.txRecord.groupBy({
       by: ["fundCode"],
       where: {
+        ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         fundSubtype: "buy",
         toAccountId: accountId,
@@ -218,6 +226,7 @@ export async function computePositionDisplay(accountId: string): Promise<{
     const firstBuyRows = await prisma.txRecord.groupBy({
       by: ["fundCode"],
       where: {
+        ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         fundSubtype: "buy",
         toAccountId: accountId,
@@ -231,12 +240,13 @@ export async function computePositionDisplay(accountId: string): Promise<{
         firstBuyMap.set(row.fundCode, row._min.date.toISOString().slice(0, 10));
       }
     }
-    // 清仓时间（最后赎回/转出的日期）
+    // 清仓时间（最后赎回的日期）
     const clearedDateRows = await prisma.txRecord.groupBy({
       by: ["fundCode"],
       where: {
+        ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
-        fundSubtype: { in: ["redeem", "switch_out"] },
+        fundSubtype: { in: ["redeem"] },
         accountId: accountId,
         deletedAt: null,
       },
@@ -251,10 +261,11 @@ export async function computePositionDisplay(accountId: string): Promise<{
     // 申购金额和赎回金额：只统计清仓日期之前的交易
     const clearedTxRows = await prisma.txRecord.findMany({
       where: {
+        ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         OR: [
           { toAccountId: accountId, fundSubtype: "buy" },
-          { accountId: accountId, fundSubtype: { in: ["redeem", "switch_out"] } },
+          { accountId: accountId, fundSubtype: { in: ["redeem"] } },
         ],
         deletedAt: null,
       },

@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+﻿import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 
@@ -23,4 +23,14 @@ function createClient(): PrismaClient {
   });
 }
 
-export const prisma = createClient();
+// In dev mode, webpack hot-reloading re-evaluates this module each time.
+// With binary engine (PRISMA_CLIENT_ENGINE_TYPE="binary"), each PrismaClient
+// spawns a separate query-engine child process. Without caching on globalThis,
+// every hot reload creates a new PrismaClient -> a new node process, leading
+// to hundreds of zombie processes that never get cleaned up.
+// By caching on globalThis, we reuse the same PrismaClient across hot reloads.
+export const prisma = globalForPrisma.prisma ?? createClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}

@@ -15,28 +15,62 @@ function UserModal({
   initial,
   onSave,
   onCancel,
+  users,
 }: {
   initial?: ManagedUser;
   onSave: (data: { name: string; role: string; password?: string }) => void;
   onCancel: () => void;
+  users: ManagedUser[];
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [role, setRole] = useState(initial?.role ?? "user");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
   const isSystemUser = initial?.isSystem ?? false;
   const hasExistingPassword = initial?.hasPassword ?? false;
+  const isEditing = !!initial;
+
+  // 检查是否是当前账簿最后一个管理员，且正在被降级
+  const isLastAdmin = initial?.role === "admin" && users.filter(u => u.role === "admin").length <= 1;
+
+  function validate(): string | null {
+    if (!name.trim()) return "请输入用户名";
+    if (!isEditing) {
+      if (!password && !confirmPassword) return "请输入密码";
+      if (password !== confirmPassword) return "两次输入的密码不一致";
+    } else {
+      // 编辑时如果填写了密码（任意一个），需要两次一致
+      if (password || confirmPassword) {
+        if (password !== confirmPassword) return "两次输入的密码不一致";
+      }
+    }
+    return null;
+  }
+
+  function handleSubmit() {
+    const err = validate();
+    if (err) { setError(err); return; }
+    setError("");
+    onSave({ name: name.trim(), role, password: password.trim() || undefined });
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-sm bg-white rounded-xl shadow-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
-          <div className="text-sm font-semibold text-slate-800">{initial ? "编辑用户" : "添加用户"}</div>
+          <div className="text-sm font-semibold text-slate-800">{isEditing ? "编辑用户" : "添加用户"}</div>
         </div>
         <div className="p-5 space-y-4">
+          {error && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
+          )}
+
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">用户名</label>
             <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder="输入用户名" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              placeholder="输入用户名" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">角色</label>
@@ -46,20 +80,44 @@ function UserModal({
               <option value="user">普通用户 (user)</option>
             </select>
             {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">系统管理员角色不可更改</div>}
+            {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">这是当前账簿最后一个管理员，不可降级为普通用户</div>}
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">
-              {initial ? (hasExistingPassword ? "修改密码（留空则不修改）" : "设置密码") : "密码"}
+              {isEditing ? (hasExistingPassword ? "修改密码（留空则不修改）" : "设置密码") : "密码"}
             </label>
-            <input type="password" className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder={initial ? (hasExistingPassword ? "留空则不修改" : "设置密码") : "设置密码"}
-              value={password} onChange={(e) => setPassword(e.target.value)} />
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm outline-none"
+                placeholder={isEditing ? (hasExistingPassword ? "留空则不修改" : "设置新密码") : "设置密码"}
+                value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
+              />
+              <button type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 select-none"
+                onClick={() => setShowPassword(!showPassword)}
+                tabIndex={-1}
+              >
+                {showPassword ? "隐藏" : "显示"}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              {isEditing ? "确认新密码（留空则不修改）" : "确认密码"}
+            </label>
+            <input
+              type={showPassword ? "text" : "password"}
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              placeholder={isEditing ? "再次输入密码确认" : "再次输入密码确认"}
+              value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+            />
           </div>
           <div className="flex justify-end gap-2">
             <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={onCancel}>取消</button>
             <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-              onClick={() => { if (name.trim()) onSave({ name: name.trim(), role, password: password.trim() || undefined }); }} disabled={!name.trim()}>
-              {initial ? "保存" : "添加"}
+              onClick={handleSubmit} disabled={!name.trim()}>
+              {isEditing ? "保存" : "添加"}
             </button>
           </div>
         </div>
@@ -152,6 +210,7 @@ export default function UsersPage() {
       {showModal && (
         <UserModal
           initial={editingUser ?? undefined}
+          users={users}
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
         />

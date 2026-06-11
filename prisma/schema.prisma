@@ -29,7 +29,7 @@ model Account {
   billingDay                                                 Int?
   repaymentDay                                               Int?
   numberMasked                                               String?
-  householdId                                                String?
+  householdId                                                String
   institutionId                                              String?
   userId                                                     String?
   groupId                                                    String
@@ -37,10 +37,11 @@ model Account {
   updatedAt                                                  DateTime            @default(now()) @updatedAt
   costBasisMethod                                            CostBasisMethod?
   defaultConfirmDays                                         Int?
+  defaultArrivalDays                                          Int?
   defaultFundQueryApiId                                      String?
   FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
-  Household                                                  Household?          @relation(fields: [householdId], references: [id])
+  Household                                                  Household          @relation(fields: [householdId], references: [id])
   Institution                                                Institution?        @relation(fields: [institutionId], references: [id])
   User                                                       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
   AccountAlias                                               AccountAlias[]
@@ -76,11 +77,11 @@ model AccountGroup {
   id          String     @id @default(cuid())
   name        String
   sortOrder   Int        @default(0)
-  householdId String?
+  householdId String
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @default(now()) @updatedAt
   Account     Account[]
-  Household   Household? @relation(fields: [householdId], references: [id])
+  Household   Household  @relation(fields: [householdId], references: [id])
 }
 
 model AiChannel {
@@ -214,14 +215,16 @@ model EntryTag {
 }
 
 model FundConfirmDays {
-  id            String   @id @default(cuid())
-  accountId     String
-  fundCode      String
-  days          Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @default(now()) @updatedAt
-  effectiveDate DateTime @default(now())
-  Account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  accountId       String
+  fundCode        String
+  days            Int
+  redeemCostDays  Int      @default(1)
+  arrivalDays     Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+  effectiveDate   DateTime @default(now())
+  Account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, fundCode])
   @@index([accountId, fundCode])
@@ -269,7 +272,8 @@ model FundNavCache {
   nav       Decimal  @db.Decimal(20, 6)
   cumNav    Decimal? @db.Decimal(20, 6)
   name      String?
-  sgzt      String?  // 申购状态（开放申购、暂停申购、限制大额申购等）
+  sgzt      String?  // 鐢宠喘鐘舵€侊紙寮€鏀剧敵璐€佹殏鍋滅敵璐€侀檺鍒跺ぇ棰濈敵璐瓑锛?
+  purchaseLimit Int? // 鐢宠喘鏃ヤ笂闄愰噾棰濓紙鍏冿級锛屼粠澶╁ぉ鍩洪噾璇︽儏椤佃В鏋?
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
@@ -314,19 +318,20 @@ model FundSnapshot {
 }
 
 model Household {
-  id           String         @id @default(cuid())
-  name         String
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @default(now()) @updatedAt
-  Account      Account[]
-  AccountGroup AccountGroup[]
-  Category     Category[]
-  FundQueryApi FundQueryApi[]
-  ImportBatch  ImportBatch[]
-  Institution  Institution[]
-  Tag          Tag[]
-  User         User[]
-  transactions TxRecord[]
+  id                String              @id @default(cuid())
+  name              String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @default(now()) @updatedAt
+  Account           Account[]
+  AccountGroup      AccountGroup[]
+  Category          Category[]
+  FundQueryApi      FundQueryApi[]
+  ImportBatch       ImportBatch[]
+  Institution       Institution[]
+  RegularInvestPlan RegularInvestPlan[]
+  Tag               Tag[]
+  User              User[]
+  transactions      TxRecord[]
 }
 
 model ImportBatch {
@@ -364,6 +369,7 @@ model RegularInvestPlan {
   lastRunDate                                      DateTime?
   feeRate                                          Decimal?            @db.Decimal(10, 6)
   confirmDays                                      Int?
+  arrivalDays                                      Int?             @default(2)
   createdAt                                        DateTime            @default(now())
   updatedAt                                        DateTime            @default(now()) @updatedAt
   accountName                                      String
@@ -377,13 +383,16 @@ model RegularInvestPlan {
   totalRuns                                        Int?
   executionDay                                     Int?
   skipPendingPreceding                             Boolean             @default(true)
+  householdId                                      String?
   Account_RegularInvestPlan_accountIdToAccount     Account             @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
   Account_RegularInvestPlan_cashAccountIdToAccount Account?            @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
+  Household                                        Household?          @relation(fields: [householdId], references: [id])
 
   @@index([accountId])
   @@index([fundCode])
   @@index([nextRunDate])
   @@index([status])
+  @@index([householdId])
 }
 
 model SystemSetting {
@@ -483,6 +492,33 @@ model TxRecord {
   @@index([regularInvestPlanId])
   @@index([toAccountId, fundProductType])
   @@index([type])
+}
+
+model CommandTestResult {
+  id          String   @id @default(cuid())
+  index       Int
+  input       String
+  rawResponse String   @default("")
+  field       String?
+  operation   String?
+  value       String?
+  isSuccess   Boolean  @default(false)
+  error       String?
+  latencyMs   Int?
+  modelName   String?
+  createdAt   DateTime @default(now())
+}
+
+model CommandAlias {
+  id        String   @id @default(cuid())
+  key       String
+  value     String
+  category  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([category, key])
+  @@index([category])
 }
 
 enum AccountKind {

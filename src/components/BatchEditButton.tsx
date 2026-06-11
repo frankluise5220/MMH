@@ -48,13 +48,13 @@ export function BatchEditButton({ accountId, fundCode }: Props) {
     <>
       <button type="button" onClick={() => setOpen(true)}
         className="h-8 px-2.5 rounded-md border border-purple-200 bg-purple-50 text-purple-700 text-xs hover:bg-purple-100 flex items-center gap-1.5">
-        <Wand2 className="h-3.5 w-3.5" />批量修改
+        <Wand2 className="h-3.5 w-3.5" />AI 批量
       </button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35">
           <div className="w-full max-w-lg rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="text-sm font-semibold text-slate-800">批量修改</div>
+              <div className="text-sm font-semibold text-slate-800">AI 批量修改</div>
               <button onClick={() => { setOpen(false); setPreview(null); setError(""); }}
                 className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
             </div>

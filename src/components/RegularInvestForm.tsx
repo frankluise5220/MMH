@@ -28,6 +28,7 @@ interface RegularInvestFormData {
   cashAccountId: string;
   feeRate: string;
   confirmDays: string;
+  arrivalDays: string;
   skipPendingPreceding: boolean;
 }
 
@@ -46,6 +47,7 @@ interface EditData {
   cashAccountId: string | null;
   feeRate: number | null;
   confirmDays: number | null;
+  arrivalDays: number | null;
   skipPendingPreceding: boolean;
 }
 
@@ -112,7 +114,7 @@ export function RegularInvestForm({
         fundCode: editData.fundCode || "",
         fundName: editData.fundName || editData.fundCode || "",
         amount: String(editData.amount || ""),
-        intervalUnit: editData.intervalUnit || "month",
+        intervalUnit: editData.intervalUnit || "day",
         intervalValue: String(editData.intervalValue || 1),
         startDate: editData.startDate ? new Date(editData.startDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
         endDate: editData.endDate ? new Date(editData.endDate).toISOString().slice(0, 10) : "",
@@ -121,6 +123,7 @@ export function RegularInvestForm({
         cashAccountId: editData.cashAccountId || "",
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "1",
+        arrivalDays: editData.arrivalDays != null ? String(editData.arrivalDays) : "2",
         skipPendingPreceding: editData.skipPendingPreceding !== undefined ? editData.skipPendingPreceding : true,
       };
     }
@@ -129,7 +132,7 @@ export function RegularInvestForm({
       fundCode: prefilledFundCode ?? "",
       fundName: prefilledFundName ?? "",
       amount: "",
-      intervalUnit: "month",
+      intervalUnit: "day",
       intervalValue: "1",
       startDate: new Date().toISOString().slice(0, 10),
       endDate: "",
@@ -138,6 +141,7 @@ export function RegularInvestForm({
       cashAccountId: lastUsedCashAccountId ?? "",
       feeRate: "0",
       confirmDays: "1",
+      arrivalDays: "2",
       skipPendingPreceding: true,
     };
   }
@@ -178,9 +182,9 @@ export function RegularInvestForm({
       .then(r => r.json())
       .then(d => {
         if (d.ok && d.days != null) {
-          setFormData(f => ({ ...f, confirmDays: String(d.days) }));
+          setFormData(f => ({ ...f, confirmDays: String(d.days), arrivalDays: String(d.arrivalDays ?? 2) }));
         } else {
-          setFormData(f => ({ ...f, confirmDays: "1" }));
+          setFormData(f => ({ ...f, confirmDays: "1", arrivalDays: "2" }));
         }
       })
       .catch(() => {
@@ -256,6 +260,7 @@ export function RegularInvestForm({
           fd.set("cashAccountId", formData.cashAccountId || "");
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
+          fd.set("arrivalDays", formData.arrivalDays.trim() ? formData.arrivalDays : "");
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
           const res = await action(fd);
           if (!res.ok) {
@@ -278,6 +283,7 @@ export function RegularInvestForm({
             cashAccountId: formData.cashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
+            arrivalDays: formData.arrivalDays !== "" ? parseInt(formData.arrivalDays) : 2,
             skipPendingPreceding: formData.skipPendingPreceding,
             action: "update",
           };
@@ -315,6 +321,7 @@ export function RegularInvestForm({
           fd.set("cashAccountId", formData.cashAccountId || "");
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
+          fd.set("arrivalDays", formData.arrivalDays.trim() ? formData.arrivalDays : "");
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
 
           const res = await action(fd);
@@ -341,6 +348,7 @@ export function RegularInvestForm({
             cashAccountId: formData.cashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
+            arrivalDays: formData.arrivalDays !== "" ? parseInt(formData.arrivalDays) : 2,
             skipPendingPreceding: formData.skipPendingPreceding,
           };
 
@@ -471,8 +479,8 @@ export function RegularInvestForm({
                 </div>
               </div>
 
-              {/* 定投金额 + 手续费率 + 确认天数 */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* 定投金额 + 手续费率 */}
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">定投金额</div>
                   <input
@@ -494,14 +502,29 @@ export function RegularInvestForm({
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   />
                 </div>
+              </div>
+
+              {/* 确认天数 + 入账天数 */}
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">确认天数 T+N</div>
+                  <div className="text-xs font-medium text-slate-600">确认天数 (T+N)</div>
                   <input
                     inputMode="numeric"
                     min="0"
                     value={formData.confirmDays}
                     onChange={(e) => setFormData(d => ({ ...d, confirmDays: e.target.value }))}
-                    placeholder="默认1"
+                    placeholder="1"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">入账天数 (确认日+N日后入账)</div>
+                  <input
+                    inputMode="numeric"
+                    min="0"
+                    value={formData.arrivalDays}
+                    onChange={(e) => setFormData(d => ({ ...d, arrivalDays: e.target.value }))}
+                    placeholder="2"
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   />
                 </div>
@@ -608,7 +631,7 @@ export function RegularInvestForm({
                 <input type="checkbox" checked={formData.skipPendingPreceding}
                   onChange={(e) => setFormData(d => ({ ...d, skipPendingPreceding: e.target.checked }))}
                   className="w-3.5 h-3.5 accent-blue-600" />
-                跳过无净值间隙（如某日无净值但次日有则跳过该日）
+                跳过暂停申购与无净值间隙
               </label>
 
               {/* 保存按钮 */}

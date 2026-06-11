@@ -5,6 +5,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { toNumber } from "@/lib/date-utils";
 import Link from "next/link";
 import StatisticsCharts from "@/components/StatisticsCharts";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -32,8 +33,9 @@ type PnLItem = {
 
 export default async function StatisticsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
+  const ctx = await getHouseholdScope();
+  const { householdId, hidFilter } = ctx;
   const cookieStore = await cookies();
-  const householdId = cookieStore.get("householdId")?.value;
   const colorScheme = cookieStore.get("colorScheme")?.value;
 
   const now = new Date();
@@ -46,7 +48,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     : null;
 
   const allAccounts = await prisma.account.findMany({
-    where: { ...(householdId ? { householdId } : {}), isActive: true },
+    where: { ...hidFilter, isActive: true },
     select: { id: true, name: true, kind: true, Institution: { select: { name: true } } },
     orderBy: { name: "asc" },
   });
@@ -61,6 +63,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const allEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
+      ...hidFilter,
       date: { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) },
       ...accountFilter,
     },
@@ -173,7 +176,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const selectedInvestIds = selectedAccountIds
     ? selectedAccountIds.filter(id => investAccountIds.includes(id))
     : investAccountIds;
-  const investBalances = selectedInvestIds.length > 0 ? await computeInvestBalances() : new Map();
+  const investBalances = selectedInvestIds.length > 0 ? await computeInvestBalances(ctx) : new Map();
   let totalFloatingPnL = 0;
   for (const [id, detail] of investBalances) {
     if (selectedInvestIds.includes(id)) totalFloatingPnL += detail.floatingPnL;

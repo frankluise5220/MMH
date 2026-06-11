@@ -1,13 +1,15 @@
-import { prisma } from "@/lib/db/prisma";
+﻿import { prisma } from "@/lib/db/prisma";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { InvestHeaderSync } from "@/components/InvestHeaderSync";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan } from "@/lib/format";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import StatisticsCharts from "@/components/StatisticsCharts";
+import { DailyPnlCalendar } from "@/components/DailyPnlCalendar";
 
 export const dynamic = "force-dynamic";
 
@@ -27,9 +29,11 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
   const isRedUp = colorScheme === "red_up_green_down";
   const pnlClass = (n: number) =>
     n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+  const ctx = await getHouseholdScope();
+  const { hidFilter } = ctx;
 
   const accounts = await prisma.account.findMany({
-    where: { kind: AccountKind.investment, isActive: true },
+    where: { kind: AccountKind.investment, isActive: true, ...hidFilter },
     include: { Institution: true },
     orderBy: [{ name: "asc" }],
   });
@@ -64,7 +68,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
       orderBy: [{ date: "asc" }, { createdAt: "asc" }],
       take: 10000,
     }),
-    computeInvestBalances(),
+    computeInvestBalances(ctx),
   ]);
 
   // ── 收益统计：按月汇总数据 ──
@@ -247,6 +251,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
         </div>
       ) : (
       <div className="flex-1 overflow-auto p-4 space-y-4">
+        <DailyPnlCalendar accountId={accounts[0]?.id ?? ""} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {[
             { label: "总市值", value: fmt(totalMarketValue), sub: null, color: "text-slate-800" },
@@ -269,7 +274,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="text-sm font-semibold text-slate-800">账户汇总</div>
-              <div className="flex items-center gap-0.5">
+              <div className="flex items-center bg-slate-100 rounded-lg p-0.5 gap-0.5">
                 {[
                   { key: "all", label: "全部" },
                   { key: "holding", label: "持仓" },
@@ -278,7 +283,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
                   const q = new URLSearchParams();
                   q.set("tab", "overview");
                   if (f.key !== "all") q.set("filter", f.key);
-                  return <Link key={f.key} href={`/invest?${q.toString()}`} className={`h-6 px-2 rounded text-xs flex items-center ${filter === f.key ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{f.label}</Link>;
+                  return <Link key={f.key} href={`/invest?${q.toString()}`} className={`h-7 px-4 rounded-md text-xs flex items-center transition-all duration-200 ${filter === f.key ? "bg-white text-blue-700 font-semibold shadow-sm border border-blue-200" : "text-slate-600 hover:text-slate-800 hover:bg-white/60"}`}>{f.label}</Link>;
                 })}
               </div>
             </div>

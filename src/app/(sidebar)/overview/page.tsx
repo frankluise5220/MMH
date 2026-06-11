@@ -3,6 +3,7 @@ import { AccountKind } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
@@ -28,18 +29,26 @@ function kindLabel(kind: AccountKind) {
 }
 
 export default async function OverviewPage() {
+  const ctx = await getHouseholdScope();
+  const { hidFilter } = ctx;
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
 
+  const accountIds = (await prisma.account.findMany({
+    where: { isActive: true, ...hidFilter },
+    select: { id: true },
+  })).map(a => a.id);
+
   const [accounts, sums] = await Promise.all([
     prisma.account.findMany({
-      where: { isActive: true },
+      where: { isActive: true, ...hidFilter },
       include: { AccountGroup: true, Institution: true },
       orderBy: [{ kind: "asc" }, { name: "asc" }],
     }),
     prisma.txRecord.groupBy({
       by: ["accountId"],
+      where: { accountId: { in: accountIds } },
       _sum: { amount: true },
       _count: { _all: true },
     }),
@@ -54,7 +63,7 @@ export default async function OverviewPage() {
     });
   }
 
-  const investBalByAccountId = await computeInvestBalances();
+  const investBalByAccountId = await computeInvestBalances(ctx);
 
   const accountsByKind = new Map<AccountKind, Array<{ id: string; name: string; label: string; balance: number; count: number }>>();
   for (const kind of kindOrder) accountsByKind.set(kind, []);

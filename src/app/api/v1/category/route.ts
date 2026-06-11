@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -10,6 +11,8 @@ export async function POST(req: NextRequest) {
   if (!name) {
     return NextResponse.json({ ok: false, error: "分类名称不能为空" }, { status: 400 });
   }
+
+  const { hidFilter } = await getHouseholdScope();
 
   // Inherit type from parent, or use explicit type, or default to expense
   let type = "expense";
@@ -22,7 +25,7 @@ export async function POST(req: NextRequest) {
   }
 
   const created = await prisma.category.create({
-    data: { name, type, parentId: parentId || null },
+    data: { name, type, parentId: parentId || null, ...hidFilter },
   }).catch(() => null);
 
   if (!created) {

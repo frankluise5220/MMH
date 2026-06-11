@@ -2,23 +2,20 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { LayoutDashboard, TrendingUp, Users, Settings, ArrowUpDown, CalendarClock } from "lucide-react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import {
+  LayoutDashboard,
+  Users,
+  Settings,
+  CalendarClock,
+  Leaf,
+  ChevronDown,
+  Circle,
+  ArrowUpDown
+} from "lucide-react";
 import { LedgerSwitcher } from "../LedgerSwitcher";
-import { useState, useEffect, useMemo } from "react";
+import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { formatMoney } from "@/lib/format";
-
-function getColorScheme(): "red_up_green_down" | "green_up_red_down" {
-  if (typeof document === "undefined") return "red_up_green_down";
-  const match = document.cookie.match(/colorScheme=([^;]+)/);
-  return (match?.[1] ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
-}
-
-function pnlCls(n: number): string {
-  const isRedUp = getColorScheme() === "red_up_green_down";
-  if (n > 0) return isRedUp ? "text-red-500" : "text-emerald-700";
-  if (n < 0) return isRedUp ? "text-emerald-700" : "text-red-500";
-  return "text-slate-600";
-}
 
 type AccountItem = {
   id?: string | null;
@@ -31,147 +28,210 @@ type AccountItem = {
   investProductType?: string;
 };
 
-const KIND_LABELS: Record<string, string> = {
-  cash: "现金", bank_debit: "借记卡", bank_credit: "信用卡", ewallet: "电子钱包",
-  investment: "基金/投资", investment_fund: "开放式基金", investment_money: "货币基金",
-  investment_wealth: "普通理财", loan: "贷款", other: "其他",
-};
+const ASSET_KINDS = ["cash", "bank_debit", "ewallet"];
+const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
+const LIABILITY_KINDS = ["bank_credit", "loan", "other"];
 
-type GroupSection = { kind: string; label: string; accounts: AccountItem[]; totalBalance: number; totalCount: number };
-
-function isActivePath(pathname: string, href: string) {
-  if (href === "/") return pathname === "/";
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
-export function SidebarClient({ items, household }: { items: AccountItem[]; household: { id: string; name: string } | null }) {
+export function SidebarClient({ items, household, isRedUp }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const selectedAccount = (searchParams.get("account") ?? "").trim();
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
+  const selectedAccount = (searchParams.get("account") ?? "").trim();
 
   const [groupByInstitution, setGroupByInstitution] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const footerAvatarRef = useRef<HTMLDivElement>(null);
   useEffect(() => { setGroupByInstitution(localStorage.getItem("sidebar_group_by") === "institution"); }, []);
+
   function toggleGroupBy() {
     const next = !groupByInstitution;
     setGroupByInstitution(next);
     localStorage.setItem("sidebar_group_by", next ? "institution" : "kind");
   }
 
-  const navLink = (href: string) =>
-    `flex items-center px-2.5 py-1.5 text-[13px] font-medium rounded-md border transition ${
-      isActivePath(pathname, href)
-        ? "bg-blue-50 text-blue-700 border-blue-100"
-        : "text-slate-700 hover:bg-white hover:shadow-sm hover:border-slate-200 border-transparent"
+  function toggleSection(key: string) {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  const navItemCls = (href: string) => 
+    `flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300 ${
+      (href === "/" ? pathname === "/" : pathname.startsWith(href))
+        ? "sidebar-item-active"
+        : "text-foreground/60 hover:bg-white/50 hover:text-foreground"
     }`;
 
-  const accountLink = (active: boolean) =>
-    `flex items-center justify-between px-2 py-1 text-[13px] rounded-md border transition ${
-      active
-        ? "bg-blue-50 text-blue-700 border-blue-100 shadow-sm"
-        : "text-slate-700 border-transparent hover:bg-white hover:shadow-sm hover:border-slate-200"
+  const accountLinkCls = (active: boolean) =>
+    `flex items-center justify-between px-4 py-2.5 text-sm font-medium hover:bg-white/50 rounded-xl group transition-all duration-200 ${
+      active ? "bg-white/60 text-foreground font-semibold shadow-sm" : "text-foreground/80"
     }`;
 
-  const KIND_ORDER = ["cash", "ewallet", "bank_debit", "bank_credit", "investment_fund", "investment_money", "investment_wealth", "investment", "loan", "other"];
-  const grouped: Record<string, AccountItem[]> = {};
-  for (const it of items) {
-    let k = it.kind || "other";
-    if (k === "investment" && it.investProductType) k = `investment_${it.investProductType}`;
-    if (!grouped[k]) grouped[k] = [];
-    grouped[k].push(it);
-  }
-  const sections: GroupSection[] = KIND_ORDER
-    .filter((k) => grouped[k]?.length)
-    .map((k) => ({
-      kind: k, label: KIND_LABELS[k] ?? KIND_LABELS.other, accounts: grouped[k]!,
-      totalBalance: grouped[k]!.reduce((s, a) => s + a.balance, 0),
-      totalCount: grouped[k]!.reduce((s, a) => s + a.count, 0),
-    }));
+  const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
 
-  const instGrouped: Record<string, AccountItem[]> = {};
-  for (const it of items) {
-    const instKey = it.institution || "未指定机构";
-    if (!instGrouped[instKey]) instGrouped[instKey] = [];
-    instGrouped[instKey].push(it);
-  }
-  const instSections: GroupSection[] = Object.entries(instGrouped)
-    .sort(([a], [b]) => a.localeCompare(b, "zh-Hans-CN"))
-    .map(([inst, accounts]) => ({
-      kind: inst, label: inst, accounts,
-      totalBalance: accounts.reduce((s, a) => s + a.balance, 0),
-      totalCount: accounts.reduce((s, a) => s + a.count, 0),
-    }));
-
-  const activeSections = groupByInstitution ? instSections : sections;
+  // Restore and Refine Grouping logic
+  const sections = useMemo(() => {
+    if (groupByInstitution) {
+      const instGrouped: Record<string, AccountItem[]> = {};
+      for (const it of items) {
+        const instKey = it.institution || "未指定机构";
+        if (!instGrouped[instKey]) instGrouped[instKey] = [];
+        instGrouped[instKey].push(it);
+      }
+      return Object.entries(instGrouped)
+        .sort(([a], [b]) => a.localeCompare(b, "zh-Hans-CN"))
+        .map(([inst, accounts]) => ({
+          kind: inst, label: inst, accounts,
+          total: accounts.reduce((s, a) => s + a.balance, 0)
+        }));
+    } else {
+      const groups = [
+        { label: "资产", kinds: ASSET_KINDS },
+        { label: "投资", kinds: INVEST_KINDS },
+        { label: "负债", kinds: LIABILITY_KINDS }
+      ];
+      return groups.map(g => {
+        const filtered = items.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
+        return {
+          kind: g.label, label: g.label, accounts: filtered,
+          total: filtered.reduce((s, a) => s + a.balance, 0)
+        };
+      }).filter(s => s.accounts.length > 0);
+    }
+  }, [items, groupByInstitution]);
 
   return (
-    <div className="w-72 bg-slate-50 border-r border-slate-200 h-screen flex flex-col">
-      {/* Fixed top */}
-      <div className="shrink-0">
-        <div className="h-12 flex items-center px-3 border-b border-slate-200">
-          <LedgerSwitcher current={household} />
-          <span className="ml-2 font-semibold text-slate-800">{household?.name ?? "WiseMe"}</span>
-        </div>
-
-        <nav className="p-2 space-y-0.5 border-b border-slate-100">
-          <Link href="/invest" className={navLink("/invest")}><TrendingUp className="w-3.5 h-3.5 mr-2 text-slate-500"/>投资</Link>
-          <Link href="/regular-invest" className={navLink("/regular-invest")}><CalendarClock className="w-3.5 h-3.5 mr-2 text-slate-500"/>定投计划</Link>
-          <Link href="/batch-import" className={navLink("/batch-import")}><LayoutDashboard className="w-3.5 h-3.5 mr-2 text-slate-500"/>批量导入</Link>
-          <Link href="/accounts" className={navLink("/accounts")}><Users className="w-3.5 h-3.5 mr-2 text-slate-500"/>账户中心</Link>
-        </nav>
-
-        <div className="px-3 py-1.5 flex items-center justify-between">
-          <span className="text-xs font-semibold text-slate-500">账户</span>
-          <button type="button" onClick={toggleGroupBy} title={groupByInstitution ? "按类型排列" : "按机构排列"} className={`h-5 w-5 flex items-center justify-center rounded border ${groupByInstitution ? "bg-blue-50 text-blue-600 border-blue-200" : "text-slate-400 border-slate-200 hover:bg-slate-100"}`}>
-            <ArrowUpDown className="w-3 h-3"/>
-          </button>
-        </div>
-      </div>
-
-      {/* Scrollable account list */}
-      <div className="flex-1 overflow-y-auto px-2 py-1 space-y-1">
-        {activeSections.map((sec) => (
-          <div key={sec.kind}>
-            <div className="flex items-center justify-between px-2 py-1 bg-slate-200/50 rounded">
-              <span className="text-xs font-medium text-slate-500">{sec.label}</span>
-              <span className={`text-xs tabular-nums font-medium ${pnlCls(sec.totalBalance)}`}>{formatMoney(sec.totalBalance)}</span>
-            </div>
-            {sec.accounts.map((it) => (
-              <Link
-                key={`${it.id ?? ""}:${it.name}`}
-                href={(() => {
-                  const q = new URLSearchParams();
-                  if (it.id) q.set("accountId", it.id);
-                  else q.set("account", it.name);
-                  const defaultView = it.kind === "investment"
-                    ? it.investProductType === "fund" ? "investfund"
-                    : it.investProductType === "money" ? "investmoney"
-                    : "investfund"
-                    : it.kind === "bank_credit" || it.kind === "loan" ? "bill"
-                    : "detail";
-                  q.set("view", defaultView);
-                  if (searchParams.get("hideZeroBills") === "1") q.set("hideZeroBills", "1");
-                  if (searchParams.get("hideSettledBills") === "1") q.set("hideSettledBills", "1");
-                  return `/?${q.toString()}`;
-                })()}
-                className={accountLink(pathname === "/" && (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name))}
-              >
-                <span className="truncate pr-2">{it.label}</span>
-                <span className={`tabular-nums ${pnlCls(it.balance)}`}>{formatMoney(it.balance)}</span>
-              </Link>
-            ))}
+    <aside className="w-72 bg-background border-r border-foreground/5 flex flex-col shrink-0 h-screen overflow-hidden">
+      {/* Fixed Header */}
+      <div className="px-8 pt-8 pb-4 shrink-0">
+        <div
+          ref={footerAvatarRef}
+          onClick={() => setSwitcherOpen(!switcherOpen)}
+          className="flex items-center gap-3 rounded-2xl cursor-pointer hover:bg-white/30 transition-colors group"
+        >
+          <div className="w-10 h-10 bg-foreground rounded-xl flex items-center justify-center shadow-lg shadow-foreground/10 text-accent-green shrink-0">
+            <Leaf size={20} />
           </div>
-        ))}
-        {!activeSections.length && <div className="px-2 py-2 text-xs text-slate-400">暂无数据</div>}
+          <div className="flex-1 min-w-0 text-foreground">
+            <p className="font-heading text-2xl font-bold tracking-tight text-foreground leading-none">Calm.</p>
+            <p className="mt-1 text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{household?.name || "Guest"}</p>
+          </div>
+          <ChevronDown size={16} className={`text-foreground/20 group-hover:text-foreground/50 transition-all duration-200 ${switcherOpen ? "rotate-180" : ""}`} />
+          <Link href="/settings" onClick={(e) => e.stopPropagation()} className="text-foreground/20 hover:text-foreground p-1 transition-colors">
+            <Settings size={20} />
+          </Link>
+        </div>
+        <LedgerSwitcher
+          current={household}
+          anchorRef={footerAvatarRef}
+          open={switcherOpen}
+          onOpenChange={setSwitcherOpen}
+        />
       </div>
 
-      {/* Fixed bottom */}
-      <div className="shrink-0 px-3 py-2 border-t border-slate-200">
-        <Link href="/settings" className={navLink("/settings")}>
-          <Settings className="w-3.5 h-3.5 mr-2 text-slate-500"/>
-          系统设置
-        </Link>
+      {/* Main Body (Accounts scroll, bottom nav pinned) */}
+      <div className="px-8 pb-4 flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="shrink-0">
+          <nav className="space-y-1">
+            <Link href="/" className={navItemCls("/")}>
+              <LayoutDashboard size={18} />
+              <span className="font-ui font-semibold text-sm">概览</span>
+            </Link>
+          </nav>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+          <nav className="space-y-1">
+            <div className="mt-6 flex items-center justify-between px-4 mb-4">
+              <span className="text-[10px] font-bold text-foreground/30 uppercase tracking-[0.2em]">账户</span>
+              <button onClick={toggleGroupBy} className="text-foreground/20 hover:text-foreground p-1 transition-colors" title="Toggle Grouping">
+                <ArrowUpDown size={14} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {sections.map((sec) => {
+                const collapsed = collapsedSections.has(sec.kind);
+                return (
+                  <div key={sec.kind}>
+                    <div
+                      className="sticky top-0 z-10 flex items-center px-4 py-2.5 w-full rounded-xl transition-all duration-300 hover:bg-white/60 group"
+                      style={{ background: "rgba(255,255,255,0.7)" }}
+                    >
+                      <Link
+                        href={sec.label === "资产" ? "/assets" : sec.label === "投资" ? "/investments" : "/liabilities"}
+                        className="flex items-center text-base font-bold text-foreground"
+                      >
+                        <span className="mr-2">
+                          {sec.label === "资产" && "💰"}
+                          {sec.label === "投资" && "📈"}
+                          {sec.label === "负债" && "💳"}
+                        </span>
+                        <span>{sec.label}</span>
+                      </Link>
+                      <span className="flex-1" />
+                      <button
+                        onClick={() => toggleSection(sec.kind)}
+                        className={`text-xs tabular-nums font-semibold mr-1 ${balCls(sec.total)}`}
+                      >
+                        {formatMoney(sec.total)}
+                      </button>
+                      <button
+                        onClick={() => toggleSection(sec.kind)}
+                        className="text-foreground/30 group-hover:text-foreground/50 transition-all duration-200"
+                      >
+                        <ChevronDown
+                          size={14}
+                          className={collapsed ? "-rotate-90" : ""}
+                        />
+                      </button>
+                    </div>
+                    {!collapsed && (
+                      <div className="space-y-1">
+                        {sec.accounts.map((it) => {
+                          const active = pathname === "/" && (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name);
+                          const href = (() => {
+                            const q = new URLSearchParams();
+                            if (it.id) q.set("accountId", it.id);
+                            else q.set("account", it.name);
+                            const view = it.kind === "investment"
+                              ? (it.investProductType === "money" ? "investmoney" : "investfund")
+                              : (it.kind === "bank_credit" || it.kind === "loan" ? "bill" : "detail");
+                            q.set("view", view);
+                            return `/?${q.toString()}`;
+                          })();
+                          return (
+                            <Link key={`${it.id}:${it.name}`} href={href} className={accountLinkCls(active)}>
+                              <span className="truncate pr-2">{it.label}</span>
+                              <span className={`text-[10px] tabular-nums font-medium ${balCls(it.balance)}`}>{formatMoney(it.balance)}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </nav>
+        </div>
+
+        <div className="mt-4 border-t border-foreground/5 pt-4 space-y-1 shrink-0">
+          <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
+            <CalendarClock size={18} />
+            <span className="font-ui font-semibold text-sm">定投</span>
+          </Link>
+          <Link href="/accounts" className={navItemCls("/accounts")}>
+            <Users size={18} />
+            <span className="font-ui font-semibold text-sm">账户管理</span>
+          </Link>
+        </div>
       </div>
-    </div>
+
+      <NewLedgerSetupCheck />
+    </aside>
   );
 }

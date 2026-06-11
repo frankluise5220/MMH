@@ -2,17 +2,30 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { TransactionType } from "@prisma/client";
+import { corsHeaders, joinBaseUrl } from "@/lib/http";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { callAiForCommand, parseUpdateCommand, normalizeOperationText, type AnalyzedCommand, type ParsedDateRange, type ParsedUpdateCommand } from "@/lib/commandParser";
+import { SYSTEM_PROMPT, buildFundSystemPrompt, buildBillHeaderContext } from "@/lib/ai/prompts";
+import type { BillHeader } from "@/lib/ai/prompts";
+import { modelSupportsVision, buildAccountContextText, classifyInput } from "@/lib/ai/client";
+import {
+  type ParsedItem,
+  formatYmd,
+  isReadyForImport,
+  parseItems,
+  isBillStatement,
+  extractBankKeywordFromBill,
+  looksLikeBatchLedgerText,
+  isCMBFundRecord,
+  looksLikeFundTrade,
+  parseCMBFundRecord,
+  parseFundTradeFromText,
+} from "@/lib/ai/parser";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  } as const;
-}
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
@@ -56,44 +69,7 @@ async function logDistill(payload: {
   }
 }
 
-function joinBaseUrl(baseUrl: string, path: string) {
-  const base = baseUrl.replace(/\/$/, "");
-  const p = path.startsWith("/") ? path : `/${path}`;
-  if (base.endsWith("/v1") && p.startsWith("/v1/")) return `${base}${p.slice(3)}`;
-  if (base.endsWith("/v1") && p.startsWith("/api/")) return `${base.slice(0, -3)}${p}`;
-  return `${base}${p}`;
-}
 
-function modelSupportsVision(modelName: string): boolean {
-  const lower = modelName.toLowerCase();
-  return [
-    "gpt-4o",
-    "gpt-4-turbo",
-    "gpt-4-vision",
-    "claude-3",
-    "claude-3.5",
-    "claude-3.7",
-    "gemini-1.5",
-    "gemini-2",
-    "gemini-pro-vision",
-    "qwen-vl",
-    "qwen2-vl",
-    "vision",
-  ].some((m) => lower.includes(m)) || lower.includes("vision") || lower.includes("vl") || lower.includes("gemma3");
-}
-
-const ParsedItemSchema = z.object({
-  rawText: z.string(),
-  type: z.enum(["expense", "income", "transfer", "investment"]),
-  date: z.string().optional(),
-  amount: z.number(),
-  account: z.string().optional(),
-  fromAccount: z.string().optional(),
-  toAccount: z.string().optional(),
-  category: z.string().optional(),
-  remark: z.string().optional(),
-  counterparty: z.string().optional(),
-});
 
 type CommandScope = {
   operation: "create" | "update" | "delete" | "restore" | "query";
@@ -129,29 +105,7 @@ function buildScopeSummary(scope: CommandScope) {
   };
 }
 
-function parseAmountRange(text: string) {
-  const t = text.replace(/，|,/g, " ");
-  const gt = t.match(/(?:大于|超过|高于|>\s*)(\d+(?:\.\d+)?)/);
-  const lt = t.match(/(?:小于|低于|少于|<\s*)(\d+(?:\.\d+)?)/);
-  const between = t.match(/(\d+(?:\.\d+)?)\s*(?:到|至|-)\s*(\d+(?:\.\d+)?)/);
-  if (between) {
-    const a = Number(between[1]);
-    const b = Number(between[2]);
-    return { min: Math.min(a, b), max: Math.max(a, b) };
-  }
-  return {
-    min: gt ? Number(gt[1]) : undefined,
-    max: lt ? Number(lt[1]) : undefined,
-  };
-}
 
-type BillHeader = {
-  statementDate?: string;
-  paymentDueDate?: string;
-  newBalance?: number;
-  minPayment?: number;
-  currency?: "CNY" | "USD";
-};
 
 function normalizeDateToken(raw: string) {
   const s = raw.trim().replace(/[年/.]/g, "-").replace(/[月]/g, "-").replace(/[日]/g, "");
@@ -218,18 +172,6 @@ function preprocessBillText(raw: string) {
   return { cleaned, header, txLines };
 }
 
-function buildBillHeaderContext(header: BillHeader) {
-  const parts: string[] = [];
-  if (header.statementDate) parts.push(`账单日=${header.statementDate}`);
-  if (header.paymentDueDate) parts.push(`最后还款日=${header.paymentDueDate}`);
-  if (header.newBalance != null) parts.push(`本期应还=${header.newBalance}`);
-  if (header.minPayment != null) parts.push(`最低还款=${header.minPayment}`);
-  if (header.currency) parts.push(`币种=${header.currency}`);
-  return parts.join("；");
-}
-
-type ParsedItem = z.infer<typeof ParsedItemSchema>;
-
 function parseBillTxLines(txLines: string[], header: BillHeader, issuerKeyword: string): ParsedItem[] {
   const items: ParsedItem[] = [];
   for (const line of txLines) {
@@ -257,499 +199,6 @@ function parseBillTxLines(txLines: string[], header: BillHeader, issuerKeyword: 
     });
   }
   return items;
-}
-
-async function buildAccountContextText() {
-  try {
-    const accounts = await prisma.account.findMany({
-      where: { isActive: true },
-      include: { Institution: true },
-      orderBy: [{ name: "asc" }],
-      take: 300,
-    });
-
-    let aliases: Array<{ alias: string; account: { name: string; Institution: { name: string } | null } }> = [];
-    try {
-      const aliasModel = (prisma as any).accountAlias;
-      if (aliasModel?.findMany) {
-        aliases = await aliasModel.findMany({
-          include: { Account: { include: { Institution: true } } },
-          orderBy: [{ alias: "asc" }],
-          take: 1000,
-        });
-      }
-    } catch {
-      aliases = [];
-    }
-
-    const canonical = accounts.map((a) => (a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name));
-
-    const aliasLines = aliases
-      .map((x) => {
-        const target = x.account.Institution?.name ? `${x.account.Institution.name}·${x.account.name}` : x.account.name;
-        return `${x.alias} => ${target}`;
-      })
-      .slice(0, 300);
-
-    const lines = [
-      `可用账户（严格优先匹配以下标准账户名）：${canonical.join("、") || "（暂无）"}`,
-      `账户别名映射（命中别名时应归一到右侧标准账户）：${aliasLines.join("；") || "（暂无）"}`,
-    ];
-
-    return lines.join("\n");
-  } catch {
-    return "可用账户列表暂时无法加载，请按实际账户名称匹配。";
-  }
-}
-
-
-const SYSTEM_PROMPT = `你是一个出色的家庭帐簿记录管理专家，你需要将用户的自然语句提炼成可对数据库进行精确操作的指令。
-
-你的任务：识别用户语句中是否包含以下字段，并结构化返回：
-1) 操作类型（operation）：create|delete|update|restore|query|stats
-2) 时间范围（timeRange）：某个时间段 / 不限时间段
-3) 账户范围（accountRange）：指定账户 / 不限账户
-4) 金额范围（amountRange）：某个金额区间 / 不限金额
-5) 备注条件（remarkCondition）：是否要求"有备注/无备注"或备注关键词
-
-你必须输出严格 JSON，格式如下：
-{
-  "operation": "create|delete|update|restore|query|stats",
-  "scope": {
-    "timeRange": {
-      "hasRange": true,
-      "year": 2024,
-      "month": 3,
-      "startDay": 15,
-      "endDay": 31,
-      "unlimited": false
-    },
-    "accountRange": {
-      "keyword": "花呗",
-      "unlimited": false
-    },
-    "amountRange": {
-      "min": 100,
-      "max": 500,
-      "unlimited": false
-    },
-    "remarkCondition": {
-      "hasRemark": true,
-      "keyword": "台盆"
-    },
-    "type": "expense|income|transfer|investment"
-  },
-  "items": [],
-  "reason": "简要说明你的判断依据"
-}
-
-字段规则：
-- 若用户未指定时间范围：timeRange.unlimited=true
-- 若用户未指定账户：accountRange.unlimited=true
-- 若用户未指定金额：amountRange.unlimited=true
-- 用户说"消费"默认 type=expense
-- 用户说"恢复这7条"可解析为 operation=restore，并在 scope 中体现 limit=7（可放在 reason 中补充）
-- 如果是账单明细解析任务，operation=create 且 items 返回结构化明细
-- 只输出 JSON，不要解释文字，不要 markdown。`;
-
-/** Build fund-specific system prompt when user is viewing a fund's holdings page */
-function buildFundSystemPrompt(ctx: FundContext) {
-  const fundLabel = ctx.fundName ? `${ctx.fundName}(${ctx.fundCode})` : ctx.fundCode;
-  const cashLabel = ctx.cashAccountId ?? "(需用户手动选择)";
-  const today = new Date().toISOString().slice(0, 10);
-  return `你是一个基金交易记录解析器。用户正在查看基金持仓页面。当前上下文:
-
-基金: ${fundLabel}
-基金账户ID: ${ctx.accountId}
-资金账户ID: ${cashLabel}
-今天日期: ${today}
-
-用户输入的目标基金已经确定 (=${fundLabel})，你不需要提取基金代码/账户ID。
-你的任务: 判断用户意图是单笔操作还是批量操作，输出对应的 JSON。
-
-## A. 单笔操作 (operation: "single")
-用户只想记录一笔交易。
-
-输出格式:
-{"operation":"single","items":[{"type":"investment","date":"YYYY-MM-DD","amount":数字,"remark":"","fundSubtype":"buy|redeem|dividend_cash","fundNav":null,"fundUnits":null,"fundFee":null}]}
-
-- date: 默认今天(${today})，可从"昨天""5月1日""上周三"等解析
-- amount: 必填，从"1000元""10块""500份""1万"提取
-- fundSubtype: "buy"(买入/申购), "redeem"(赎回/卖出), "dividend_cash"(现金红利/分红到账)
-- 净值和份额可选，不确定就不填
-
-单笔示例:
-"买入1000元" → {"operation":"single","items":[{"type":"investment","date":"${today}","amount":1000,"fundSubtype":"buy","fundNav":null,"fundUnits":null,"fundFee":null,"remark":""}]}
-"5月1日赎回500份" → {"operation":"single","items":[{"type":"investment","date":"2026-05-01","amount":500,"fundSubtype":"redeem","fundNav":null,"fundUnits":500,"fundFee":null,"remark":""}]}
-"昨天分红到账200元" → {"operation":"single","items":[{"type":"investment","date":"2026-06-03","amount":200,"fundSubtype":"dividend_cash","fundNav":null,"fundUnits":null,"fundFee":null,"remark":"红利到账"}]}
-
-## B. 批量操作 (operation: "batch")
-用户想按某个频率重复买入。输出:
-{"operation":"batch","plan":{"amount":数字,"intervalUnit":"day|week|biweek|month","intervalValue":数字,"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD 或 null"}}
-
-- amount: 每期买入金额(必填)
-- intervalUnit: day=每天, week=每周, biweek=每两周, month=每月
-- intervalValue: 间隔数量(默认1)
-- startDate: 如果提到"N月份"则取该月1日，否则取今天
-- endDate: 如果提到"N月份"则取该月最后一天。无截止则 null
-
-批量示例:
-"每天投10块" → {"operation":"batch","plan":{"amount":10,"intervalUnit":"day","intervalValue":1,"startDate":"${today}","endDate":null}}
-"5月份每天买50元" → {"operation":"batch","plan":{"amount":50,"intervalUnit":"day","intervalValue":1,"startDate":"2026-05-01","endDate":"2026-05-31"}}
-"每周定投500" → {"operation":"batch","plan":{"amount":500,"intervalUnit":"week","intervalValue":1,"startDate":"${today}","endDate":null}}
-"5月1日到6月1日每两天投100" → {"operation":"batch","plan":{"amount":100,"intervalUnit":"day","intervalValue":2,"startDate":"2026-05-01","endDate":"2026-06-01"}}
-
-## 判断规则
-- 有"每天""每周""每月""一天一""两天一""定投"等频率词 → batch
-- 无频率词 → single
-- 只输出 JSON，不要任何解释文字，不要 markdown`;
-}
-
-const CLASSIFY_PROMPT = `你是 WiseMe 系统的输入分类器。你的任务是根据用户输入的内容，判断其类型并输出分类结果。
-
-用户输入可能是以下几种类型之一：
-1. 自然语句（natural）：用户用自然语言描述的交易记录，如"今天在超市买了50块的东西"、"转账100元给张三"
-2. 批量账单（bill_statement）：来自银行/信用卡的账单邮件或截图，包含账单日、还款日、多笔交易明细
-3. 批量表格（batch_table）：多行格式化的交易记录文本，如日期+金额+备注的表格形式，每行一条记录
-4. 操作指令（command）：删除、恢复、统计等操作命令，如"删除上个月的所有消费"、"恢复最近10条"
-
-判断规则：
-- 如果包含"账单日"、"最后还款日"、"本期应还"等关键词 → bill_statement
-- 如果包含多行日期格式（YYYY-MM-DD）且每行有金额 → batch_table
-- 如果是"删"、"恢复"、"统计"、"查询回收站"等明确操作意图 → command
-- 其他情况 → natural
-
-只输出严格 JSON，格式如下：
-{
-  "inputType": "natural|bill_statement|batch_table|command",
-  "confidence": 0.95,
-  "reason": "判断理由（1-2句话）",
-  "suggestedAction": "分类后建议的处理方式（1句话）"
-}
-
-只输出 JSON，不要解释，不要 markdown。`;
-
-function extractItemsFromText(text: string): ParsedItem[] | null {
-  const patterns = [
-    /```json\s*([\s\S]*?)\s*```/i,
-    /```\s*([\s\S]*?)\s*```/,
-    /\{[\s\S]*"items"[\s\S]*\}/,
-    /\[[\s\S]*\{[\s\S]*rawText[\s\S]*\]/,
-  ];
-
-  for (const pat of patterns) {
-    const m = text.match(pat);
-    if (m) {
-      const str = m[1] ?? m[0];
-      try {
-        const parsed = JSON.parse(str);
-        if (Array.isArray(parsed)) return parsed;
-        if (parsed?.items && Array.isArray(parsed.items)) return parsed.items;
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed?.items && Array.isArray(parsed.items)) return parsed.items;
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-function formatYmd(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function startOfWeekMonday(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  const day = (x.getDay() + 6) % 7;
-  x.setDate(x.getDate() - day);
-  return x;
-}
-
-function addDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function hasRelativeDateToken(text: string) {
-  const t = text.trim();
-  if (!t) return false;
-  return /(今天|昨天|前天|上周|本周|这周|上星期|本星期|这星期|周[一二三四五六日天1-7]|星期\s*[一二三四五六日天1-7])/.test(t);
-}
-
-function parseRelativeDateFromText(text: string, now: Date) {
-  const t = text.trim();
-  if (!t) return null;
-
-  if (/(^|[^\u4e00-\u9fa5])(今天)([^\u4e00-\u9fa5]|$)/.test(t)) return formatYmd(now);
-  if (/(昨天|昨日)/.test(t)) return formatYmd(addDays(now, -1));
-  if (/前天/.test(t)) return formatYmd(addDays(now, -2));
-
-  const w = t.match(/(上周|本周|这周|上星期|本星期|这星期)?\s*(周|星期)\s*([一二三四五六日天1-7])/);
-  if (w) {
-    const prefix = w[1] ?? "";
-    const weekdayChar = w[3];
-    const weekdayIndex =
-      weekdayChar === "一"
-        ? 0
-        : weekdayChar === "二"
-          ? 1
-          : weekdayChar === "三"
-            ? 2
-            : weekdayChar === "四"
-              ? 3
-              : weekdayChar === "五"
-                ? 4
-                : weekdayChar === "六"
-                  ? 5
-                  : weekdayChar === "7"
-                    ? 6
-                    : weekdayChar === "1"
-                      ? 0
-                      : weekdayChar === "2"
-                        ? 1
-                        : weekdayChar === "3"
-                          ? 2
-                          : weekdayChar === "4"
-                            ? 3
-                            : weekdayChar === "5"
-                              ? 4
-                              : weekdayChar === "6"
-                                ? 5
-                                : 6;
-
-    const base = startOfWeekMonday(now);
-    if (prefix.startsWith("上")) return formatYmd(addDays(base, -7 + weekdayIndex));
-    if (prefix.startsWith("本") || prefix.startsWith("这")) return formatYmd(addDays(base, weekdayIndex));
-
-    const candidate = addDays(base, weekdayIndex);
-    const todayStart = new Date(now);
-    todayStart.setHours(0, 0, 0, 0);
-    if (candidate.getTime() > todayStart.getTime()) return formatYmd(addDays(candidate, -7));
-    return formatYmd(candidate);
-  }
-
-  return null;
-}
-
-function parseAmountLoose(value: unknown, fallbackText: string) {
-  if (typeof value === "number" && Number.isFinite(value)) return Math.abs(value);
-  if (typeof value === "string") {
-    const m = value.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
-    if (m) return Math.abs(Number(m[0]));
-  }
-  const matches = fallbackText.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/g) ?? [];
-  if (matches.length) return Math.abs(Number(matches[matches.length - 1]));
-  return 0;
-}
-
-function normalizeDate(dateInput: unknown, rawText: string, now: Date) {
-  const rel = parseRelativeDateFromText(rawText, now);
-  if (rel && hasRelativeDateToken(rawText)) return rel;
-  const dateStr = typeof dateInput === "string" ? dateInput.trim() : "";
-  if (dateStr) {
-    const d = new Date(dateStr.replace(/[年/.]/g, "-").replace(/[月]/g, "-").replace(/[日]/g, ""));
-    if (!Number.isNaN(d.getTime())) return formatYmd(d);
-  }
-  return rel ?? formatYmd(now);
-}
-
-function isReadyForImport(item: ParsedItem) {
-  if (!(item.amount > 0)) return false;
-  if (item.type === "transfer") return !!(item.fromAccount?.trim() && item.toAccount?.trim());
-  return true;
-}
-
-function isBillStatement(text: string) {
-  const t = text ?? "";
-  if (/(基金交易记录|基金定期定额|申购|赎回|交易日期.*交易时间)/i.test(t)) return false;
-  return /(账单日|最后还款日|本期应还|最低还款|信用额度|Statement\s*Date|Payment\s*Due\s*Date|New\s*Balance|Min\.Payment)/i.test(t);
-}
-
-function extractBankKeywordFromBill(text: string) {
-  if (/民生/.test(text)) return "民生银行";
-  if (/平安/.test(text)) return "平安银行";
-  if (/招商|招行/.test(text)) return "招商银行";
-  if (/交通|交行/.test(text)) return "交通银行";
-  if (/中信/.test(text)) return "中信银行";
-  if (/光大/.test(text)) return "光大银行";
-  if (/华夏/.test(text)) return "华夏银行";
-  if (/浦发/.test(text)) return "浦发银行";
-  if (/兴业/.test(text)) return "兴业银行";
-  if (/广发/.test(text)) return "广发银行";
-  if (/邮储/.test(text)) return "邮储银行";
-  if (/工商|工行/.test(text)) return "工商银行";
-  if (/农业|农行/.test(text)) return "农业银行";
-  if (/建设|建行/.test(text)) return "建设银行";
-  if (/中国银行|中行/.test(text)) return "中国银行";
-  return "";
-}
-
-function looksLikeBatchLedgerText(text: string) {
-  const t = text.trim();
-  if (!t) return false;
-  if (/交易日期.*交易时间.*支出.*余额.*交易类型/i.test(t)) return false;
-  const matches = t.match(/\d{4}-\d{2}-\d{2}/g) ?? [];
-  if (matches.length < 3) return false;
-  return true;
-}
-
-function isCMBFundRecord(text: string) {
-  const t = text ?? "";
-  if (!/交易日期.*交易时间.*支出.*余额.*交易类型/i.test(t)) return false;
-  if (/账单日|最后还款日|本期应还|信用额度/i.test(t)) return false;
-  return true;
-}
-
-// ---- Fund natural language pre-processing ----
-
-type FundContext = { fundCode: string; fundName?: string; accountId: string; cashAccountId?: string };
-
-/** Detect if text looks like a fund trade expressed in natural language */
-function looksLikeFundTrade(text: string) {
-  const t = text.trim();
-  if (!t || t.length > 200) return false;
-  return /(买入|卖出|赎回|申购|红利转投|红利再投|现金红利|转出|转入)/.test(t) &&
-    /\d{6}/.test(t);
-}
-
-/** Parse regular invest plan creation from natural language with fund context */
-function parseCMBFundRecord(text: string, now: Date): { items: ParsedItem[]; directImport: boolean } {
-  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-  const rows: ParsedItem[] = [];
-  for (const line of lines) {
-    const parts = line.split(/\|/).map(p => p.trim().replace(/"/g, ""));
-    if (parts.length < 6) continue;
-    const dateStr = parts[0].replace(/\D/g, "");
-    if (!/^\d{8}$/.test(dateStr)) continue;
-    const date = `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
-    const expense = parseFloat(parts[3]) || 0;
-    if (expense <= 0) continue;
-    const fundCode = (parts[parts.length - 1] || "").replace(/\D/g, "").slice(-6);
-    const remark = parts[parts.length - 1]?.trim() || "";
-    const isRedeem = /赎回/.test(remark);
-    const rawText = `${isRedeem ? "赎回" : "买入"} ${fundCode} ${expense}元`;
-    rows.push({
-      rawText: rawText.slice(0, 200),
-      type: "investment",
-      date,
-      amount: expense,
-      remark: remark && /\d{6}/.test(remark) ? remark : `${fundCode} ${isRedeem ? "赎回" : "申购"}`,
-      account: "招商银行",
-      counterparty: /\d{6}/.test(fundCode) ? `基金${fundCode}` : undefined,
-      // Fund code embedded in rawText for downstream extraction
-      ...(fundCode ? { category: `基金·${fundCode}` } : {}),
-    });
-  }
-  return { items: rows, directImport: rows.length > 0 };
-}
-
-function parseItems(raw: string, now: Date, userTextForContext: string): { items: ParsedItem[]; directImport: boolean } {
-  const items = extractItemsFromText(raw);
-  if (!items || items.length === 0) {
-    const ctx = (userTextForContext || raw).trim();
-    const fallback: ParsedItem = {
-      rawText: ctx.slice(0, 200),
-      type: "expense",
-      amount: parseAmountLoose(undefined, ctx),
-      date: normalizeDate(undefined, ctx, now),
-    };
-    return { items: [fallback], directImport: isReadyForImport(fallback) };
-  }
-  const parsedItems = items.map((item) => {
-    const rawText = (item.rawText ?? "").trim() || userTextForContext.slice(0, 200) || raw.slice(0, 200);
-    const ctxText = `${userTextForContext}\n${rawText}`.trim();
-    const typeFromModel = (item.type as ParsedItem["type"]) || "expense";
-    const date = normalizeDate(item.date, ctxText, now);
-    const amount = parseAmountLoose(item.amount, ctxText);
-    return {
-      rawText,
-      type: typeFromModel,
-      date,
-      amount,
-      account: item.account?.trim() ? item.account : undefined,
-      fromAccount: item.fromAccount,
-      toAccount: item.toAccount,
-      category: item.category,
-      remark: item.remark,
-      counterparty: item.counterparty,
-    };
-  });
-  const allValid = parsedItems.every(isReadyForImport);
-  return { items: parsedItems, directImport: allValid };
-}
-
-function normalizeOperationText(text: string) {
-  let t = text.trim();
-  t = t.replace(/删掉|去掉|不要了|移除/g, "删除");
-  t = t.replace(/还原/g, "恢复");
-  t = t.replace(/看看|查下|看一下/g, "查询");
-  t = t.replace(/算一下|统计一下|统计下|汇总/g, "统计");
-  t = t.replace(/改成|改成|改为|改成|改称/g, "更新");
-  return t;
-}
-
-function parseUpdateCommand(text: string) {
-  const t = normalizeOperationText(text);
-  if (!t) return null;
-
-  const sqlStyleMatch = t.match(/^replace\s+(.+?)\s+with\s+(.+?)\s+for\s+(.+?)$/i);
-  if (sqlStyleMatch) {
-    return {
-      remarkKeyword: sqlStyleMatch[3].trim(),
-      newAccountName: sqlStyleMatch[2].trim(),
-    };
-  }
-
-  const naturalMatch = t.match(/把所有备注包含(.+?)的记录.*改成(.+?)(?:$|，|。|的话)/);
-  if (naturalMatch) {
-    return {
-      remarkKeyword: naturalMatch[1].trim(),
-      newAccountName: naturalMatch[2].trim(),
-    };
-  }
-
-  const simpleMatch = t.match(/备注包含(.+?).*改成(.+?)(?:$|，|。)/);
-  if (simpleMatch) {
-    return {
-      remarkKeyword: simpleMatch[1].trim(),
-      newAccountName: simpleMatch[2].trim(),
-    };
-  }
-
-  const explicitMatch = t.match(/(?:把|把.+的)?记录.*账户.*改成(.+?)(?:吧|，|$)/);
-  const expenseMatch = t.match(/支出改(投资|收入|转账)/);
-  if (explicitMatch || expenseMatch) {
-    return {
-      remarkKeyword: "",
-      newAccountName: explicitMatch ? explicitMatch[1].trim() : "",
-      newType: expenseMatch ? expenseMatch[1].trim() : undefined,
-    };
-  }
-
-  return null;
-}
-
-function parseBulkUpdateCommand(text: string) {
-  const t = text.trim();
-  if (/^修改/.test(t)) {
-    const dateMatch = t.match(/(\d{1,2})号/);
-    const monthMatch = t.match(/(\d{1,2})月/);
-    const allMatch = /所有/.test(t);
-    if (dateMatch || monthMatch || allMatch) {
-      return { targetText: t };
-    }
-  }
-  return null;
 }
 
 function parseBatchEditCommand(text: string) {
@@ -786,8 +235,8 @@ function parseBatchEditCommand(text: string) {
   };
 }
 
-async function executeBatchEditPlan(plan: { year: number; month?: number; day?: number; accountKeyword?: string }) {
-  const where: Record<string, unknown> = { deletedAt: null };
+async function executeBatchEditPlan(plan: { year: number; month?: number; day?: number; accountKeyword?: string }, hidFilter: Record<string, string>, householdId: string | null) {
+  const where: Record<string, unknown> = { deletedAt: null, ...hidFilter };
 
   if (plan.day) {
     const start = new Date(Date.UTC(plan.year, (plan.month ?? 1) - 1, plan.day, 0, 0, 0));
@@ -829,34 +278,195 @@ async function executeBatchEditPlan(plan: { year: number; month?: number; day?: 
   };
 }
 
-async function executeUpdatePlan(plan: { remarkKeyword: string; newAccountName: string; newType?: string }, apply: boolean, accountName?: string) {
+function dateRangeToWhere(range?: ParsedDateRange) {
+  if (!range?.year) return undefined;
+  const startMonth = range.startMonth ?? 1;
+  const startDay = range.startDay ?? 1;
+  if (range.before && range.startMonth) {
+    return { lt: new Date(Date.UTC(range.year, range.startMonth - 1, 1, 0, 0, 0)) };
+  }
+  const start = new Date(Date.UTC(range.year, startMonth - 1, startDay, 0, 0, 0));
+  const endMonth = range.endMonth ?? range.startMonth;
+  const endDay = range.endDay ?? range.startDay;
+  const end = endMonth
+    ? endDay
+      ? new Date(Date.UTC(range.year, endMonth - 1, endDay + 1, 0, 0, 0))
+      : new Date(Date.UTC(range.year, endMonth, 1, 0, 0, 0))
+    : new Date(Date.UTC(range.year + 1, 0, 1, 0, 0, 0));
+  return { gte: start, lt: end };
+}
+
+function accountQueryParts(query: string) {
+  return query
+    .replace(/[·・.\s_-]/g, "")
+    .match(/\d+|[A-Za-z]+|[\u4e00-\u9fa5]+/g) ?? [];
+}
+
+function accountMatches(account: { name: string; Institution?: { name: string } | null }, query: string) {
+  const normalizedQuery = query.replace(/[·・.\s_-]/g, "");
+  const label = `${account.Institution?.name ?? ""}${account.name}`.replace(/[·・.\s_-]/g, "");
+  if (account.name.replace(/[·・.\s_-]/g, "").includes(normalizedQuery) || label.includes(normalizedQuery)) return true;
+  const parts = accountQueryParts(query);
+  return parts.length > 0 && parts.every((part) => label.includes(part));
+}
+
+function parsedDateRangeFromIso(startDate?: string, endDate?: string): ParsedDateRange | undefined {
+  const start = startDate?.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!start) return undefined;
+  const range: ParsedDateRange = { year: Number(start[1]), startMonth: Number(start[2]), startDay: Number(start[3]) };
+  const end = endDate?.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (end && Number(end[1]) === range.year) {
+    range.endMonth = Number(end[2]);
+    range.endDay = Number(end[3]);
+  }
+  return range;
+}
+
+function analyzedToUpdateCommand(command: AnalyzedCommand | null): ParsedUpdateCommand | null {
+  if (!command || !/编辑|修改|update/i.test(command.action ?? "")) return null;
+  const editField = command.editField ?? command.field;
+  const editValue = command.editValue ?? command.value;
+  if (!editValue) return null;
+  const canonicalField = editField ? cnFieldFallback(editField) : "";
+  const isAccountField = /账户|资金|cashAccount|account/i.test(editField ?? "") || ["cashAccount", "toAccount", "account"].includes(canonicalField);
+  const updateTarget = isAccountField ? ({ cashAccount: "cashAccount", toAccount: "toAccount", account: "account" }[canonicalField] as ParsedUpdateCommand["updateTarget"] | undefined) : undefined;
+  return {
+    remarkKeyword: "",
+    newAccountName: isAccountField ? editValue : "",
+    newType: /类型|type/i.test(editField ?? "") ? editValue : undefined,
+    timeRange: parsedDateRangeFromIso(command.startDate, command.endDate),
+    updateTarget,
+    oldAccountName: command.accountName,
+    replaceAccountEverywhere: Boolean(isAccountField && command.accountName),
+  };
+}
+
+function cnFieldFallback(field: string) {
+  if (/资金账户|扣款卡/.test(field)) return "cashAccount";
+  if (/对方账户|转入账户|收款账户/.test(field)) return "toAccount";
+  if (/账户|消费账户|主账户/.test(field)) return "account";
+  if (/类型/.test(field)) return "type";
+  return field;
+}
+
+function describeDateRange(range?: ParsedDateRange) {
+  if (!range?.year) return "不限时间";
+  if (range.before && range.startMonth) return `${range.year}年${range.startMonth}月前`;
+  if (range.startMonth && range.startDay && range.endMonth && range.endDay) return `${range.year}-${String(range.startMonth).padStart(2, "0")}-${String(range.startDay).padStart(2, "0")} 至 ${String(range.endMonth).padStart(2, "0")}-${String(range.endDay).padStart(2, "0")}`;
+  if (range.startMonth) return `${range.year}年${range.startMonth}月`;
+  return `${range.year}年`;
+}
+
+function buildUpdatePreview(plan: ParsedUpdateCommand, count: number, accountName?: string) {
+  const isAccountReplace = Boolean(plan.replaceAccountEverywhere && plan.oldAccountName);
+  return {
+    operationType: "批量修改",
+    action: isAccountReplace ? "账户替换" : "字段修改",
+    targetField: isAccountReplace ? "账户（发出方/接收方）" : plan.updateTarget === "toAccount" ? "对方账户" : plan.updateTarget === "cashAccount" ? "资金账户" : plan.newType ? "记录类型" : "账户",
+    oldValue: plan.oldAccountName ?? (plan.remarkKeyword ? `备注包含：${plan.remarkKeyword}` : accountName || "当前筛选范围"),
+    newValue: plan.newType ?? plan.newAccountName,
+    scopeFields: [
+      { label: "时间范围", value: describeDateRange(plan.timeRange) },
+      { label: "原账户/范围", value: (plan.oldAccountName ?? accountName) || "不限账户" },
+      { label: "备注条件", value: plan.remarkKeyword || "不限备注" },
+      { label: "命中记录", value: `${count} 条` },
+    ],
+  };
+}
+
+async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, accountName?: string, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const accounts = await prisma.account.findMany({
-    where: { isActive: true },
+    where: { isActive: true, ...hidFilter },
     include: { Institution: true },
     take: 300,
   });
 
+  const findSingleAccount = (query: string, label: string) => {
+    const matches = accounts.filter((account) => accountMatches(account, query));
+    if (matches.length === 0) return { error: `未找到${label}：${query}` };
+    if (matches.length > 1) return { error: `${label}“${query}”匹配到多个账户：${matches.slice(0, 5).map((a) => `${a.Institution?.name ? `${a.Institution.name}·` : ""}${a.name}`).join("、")}` };
+    return { account: matches[0] };
+  };
+
+  const dateWhere = dateRangeToWhere(plan.timeRange);
+
+  if (plan.replaceAccountEverywhere && plan.oldAccountName && plan.newAccountName) {
+    const oldResult = findSingleAccount(plan.oldAccountName, "原账户");
+    if (oldResult.error || !oldResult.account) return { ok: false, error: oldResult.error ?? "原账户匹配失败" };
+    const newResult = findSingleAccount(plan.newAccountName, "新账户");
+    if (newResult.error || !newResult.account) return { ok: false, error: newResult.error ?? "新账户匹配失败" };
+    const oldAccount = oldResult.account;
+    const newAccount = newResult.account;
+    const where = {
+      deletedAt: null,
+      ...hidFilter,
+      ...(dateWhere ? { date: dateWhere } : {}),
+      OR: [{ accountId: oldAccount.id }, { toAccountId: oldAccount.id }],
+    };
+    const entries = await prisma.txRecord.findMany({ where, orderBy: { date: "asc" }, take: 500 });
+
+    if (!apply) {
+      return {
+        ok: true,
+        requiresConfirm: true,
+        count: entries.length,
+        accountName: newAccount.name,
+        targets: entries.slice(0, 10).map((e) => ({
+          transactionId: e.id,
+          date: e.date.toISOString().slice(0, 10),
+          accountName: e.accountId === oldAccount.id ? `${oldAccount.name} → ${newAccount.name}` : `${e.accountName} / ${oldAccount.name} → ${newAccount.name}`,
+          amount: Number(e.amount),
+          remark: e.note ?? "",
+          type: e.type ?? "expense",
+        })),
+      };
+    }
+
+    if (householdId) {
+      const mismatchCount = entries.filter((e) => e.householdId !== householdId).length;
+      if (mismatchCount > 0) return { ok: false, error: `有 ${mismatchCount} 条记录不属于当前账簿，无法修改` };
+    }
+
+    const sourceIds = entries.filter((e) => e.accountId === oldAccount.id).map((e) => e.id);
+    const targetIds = entries.filter((e) => e.toAccountId === oldAccount.id).map((e) => e.id);
+    const [sourceResult, targetResult] = await prisma.$transaction([
+      prisma.txRecord.updateMany({
+        where: { id: { in: sourceIds }, deletedAt: null, ...hidFilter },
+        data: { accountId: newAccount.id, accountName: newAccount.name },
+      }),
+      prisma.txRecord.updateMany({
+        where: { id: { in: targetIds }, deletedAt: null, ...hidFilter },
+        data: { toAccountId: newAccount.id, toAccountName: newAccount.name },
+      }),
+    ]);
+    await Promise.all([oldAccount.id, newAccount.id].map((id) => recalcAndSaveAccountBalance(id)));
+    revalidateAfterTxChange();
+    return {
+      ok: true,
+      updatedCount: sourceResult.count + targetResult.count,
+      accountName: newAccount.name,
+      requiresConfirm: false,
+    };
+  }
+
   let accountId: string | undefined = undefined;
   let accountFullName = "";
   if (plan.newAccountName) {
-    const account = accounts.find(a => a.name.includes(plan.newAccountName) || a.Institution?.name.includes(plan.newAccountName));
-    if (!account) {
-      return { ok: false, error: `未找到账户：${plan.newAccountName}` };
-    }
-    accountId = account.id;
-    accountFullName = account.name;
+    const accountResult = findSingleAccount(plan.newAccountName, "账户");
+    if (accountResult.error || !accountResult.account) return { ok: false, error: accountResult.error ?? `未找到账户：${plan.newAccountName}` };
+    accountId = accountResult.account.id;
+    accountFullName = accountResult.account.name;
   }
 
-  const where: Record<string, unknown> = { deletedAt: null };
-  if (plan.remarkKeyword) {
-    where.note = { contains: plan.remarkKeyword };
-  }
-  if (accountName) {
-    where.accountName = accountName;
-  }
+  const where: Record<string, unknown> = { deletedAt: null, ...hidFilter };
+  if (plan.remarkKeyword) where.note = { contains: plan.remarkKeyword };
+  if (accountName) where.accountName = accountName;
+  if (dateWhere) where.date = dateWhere;
+  if (plan.fundSubtype) where.fundSubtype = plan.fundSubtype;
 
   const entries = await prisma.txRecord.findMany({
     where,
+    orderBy: { date: "asc" },
     take: 500,
   });
 
@@ -879,17 +489,33 @@ async function executeUpdatePlan(plan: { remarkKeyword: string; newAccountName: 
 
   const data: Record<string, unknown> = {};
   if (accountId) {
-    data.accountId = accountId;
-    data.accountName = accountFullName;
+    if (plan.updateTarget === "toAccount" || plan.updateTarget === "cashAccount") {
+      data.toAccountId = accountId;
+      data.toAccountName = accountFullName;
+    } else {
+      data.accountId = accountId;
+      data.accountName = accountFullName;
+    }
   }
-  if (plan.newType) {
-    data.type = plan.newType;
+  if (plan.newType) data.type = plan.newType;
+
+  if (householdId) {
+    const mismatchCount = entries.filter(e => e.householdId !== householdId).length;
+    if (mismatchCount > 0) return { ok: false, error: `有 ${mismatchCount} 条记录不属于当前账簿，无法修改` };
   }
 
+  const affectedAccountIds = new Set<string>();
+  entries.forEach((entry) => {
+    if (entry.accountId) affectedAccountIds.add(entry.accountId);
+    if (entry.toAccountId) affectedAccountIds.add(entry.toAccountId);
+  });
+  if (accountId) affectedAccountIds.add(accountId);
   const result = await prisma.txRecord.updateMany({
-    where: { id: { in: entries.map(e => e.id) } },
+    where: { id: { in: entries.map(e => e.id) }, deletedAt: null, ...hidFilter },
     data,
   });
+  await Promise.all([...affectedAccountIds].map((id) => recalcAndSaveAccountBalance(id)));
+  revalidateAfterTxChange();
 
   return {
     ok: true,
@@ -968,12 +594,12 @@ function parseDeleteCommand(text: string) {
   };
 }
 
-async function executeDeletePlan(plan: { year?: number; month?: number; hasMonth: boolean; startDay: number; endDay: number; accountQuery: string; type: "expense" | "income" | "transfer"; amountRange?: { min?: number; max?: number }; remarkCondition?: { hasRemark?: boolean; keyword?: string } }, apply: boolean) {
+async function executeDeletePlan(plan: { year?: number; month?: number; hasMonth: boolean; startDay: number; endDay: number; accountQuery: string; type: "expense" | "income" | "transfer"; amountRange?: { min?: number; max?: number }; remarkCondition?: { hasRemark?: boolean; keyword?: string } }, apply: boolean, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const start = plan.hasMonth ? new Date(Date.UTC(plan.year as number, (plan.month as number) - 1, plan.startDay, 0, 0, 0)) : null;
   const end = plan.hasMonth ? new Date(Date.UTC(plan.year as number, (plan.month as number) - 1, plan.endDay + 1, 0, 0, 0)) : null;
 
   const accounts = await prisma.account.findMany({
-    where: { isActive: true },
+    where: { isActive: true, ...hidFilter },
     include: { Institution: true },
     orderBy: { name: "asc" },
     take: 300,
@@ -1000,6 +626,7 @@ async function executeDeletePlan(plan: { year?: number; month?: number; hasMonth
       deletedAt: null,
       type: txType,
       date: { gte: start as Date, lt: end as Date },
+      ...hidFilter,
     },
     select: { id: true },
     take: 20000,
@@ -1048,9 +675,9 @@ function parseRestoreCommand(text: string) {
   return { take };
 }
 
-async function executeRestorePlan(plan: { take: number }, apply: boolean) {
+async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const rows = await prisma.txRecord.findMany({
-    where: { deletedAt: { not: null } },
+    where: { deletedAt: { not: null }, ...hidFilter },
     orderBy: [{ deletedAt: "desc" }, { date: "desc" }],
     take: plan.take,
   });
@@ -1110,8 +737,9 @@ function parseStatsCommand(text: string) {
   return { metric: metric as "count" | "sum", type, year, month, accountKeyword };
 }
 
-async function executeStatsPlan(plan: { metric: "count" | "sum"; type: TransactionType; year?: number; month?: number; accountKeyword?: string }) {
+async function executeStatsPlan(plan: { metric: "count" | "sum"; type: TransactionType; year?: number; month?: number; accountKeyword?: string }, hidFilter: Record<string, string> = {}) {
   const where: any = {
+    ...hidFilter,
     transaction: {
       deletedAt: null,
       type: plan.type,
@@ -1128,8 +756,8 @@ async function executeStatsPlan(plan: { metric: "count" | "sum"; type: Transacti
 
   if (plan.accountKeyword) {
     where.OR = [
-      { account: { name: { contains: plan.accountKeyword } } },
-      { account: { Institution: { name: { contains: plan.accountKeyword } } } },
+      { account: { name: { contains: plan.accountKeyword }, ...hidFilter } },
+      { account: { Institution: { name: { contains: plan.accountKeyword } }, ...hidFilter } },
     ];
   }
 
@@ -1143,9 +771,9 @@ async function executeStatsPlan(plan: { metric: "count" | "sum"; type: Transacti
   return { count, sum };
 }
 
-async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }) {
+async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, hidFilter: Record<string, string> = {}) {
   const rows = await prisma.txRecord.findMany({
-    where: { deletedAt: { not: null } },
+    where: { deletedAt: { not: null }, ...hidFilter },
     orderBy: [{ deletedAt: "desc" }, { date: "desc" }],
     take: plan.take,
   });
@@ -1166,6 +794,7 @@ async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }) 
 }
 
 export async function POST(req: Request) {
+  const { hidFilter, householdId } = await getHouseholdScope();
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = z
     .object({
@@ -1202,13 +831,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "缺少模型配置（baseUrl/modelName）" }, { status: 400, headers: corsHeaders() });
   }
 
+  const cleanUrl = baseUrl.replace(/\/$/, "");
+  const isOllama = /:11434(\/|$)/.test(cleanUrl);
+
   if (text) {
     const startMs = Date.now();
+    const normalizedCommand = await callAiForCommand({
+      text,
+      fundContext: fundContext ?? null,
+      today: formatYmd(new Date()),
+      modelName,
+      baseUrl,
+      apiKey,
+      isOllama,
+    });
 
     const restorePlan = parseRestoreCommand(text);
     if (restorePlan) {
       try {
-        const r = await executeRestorePlan(restorePlan, false);
+        const r = await executeRestorePlan(restorePlan, false, hidFilter, householdId);
         return NextResponse.json({
           ok: true,
           operation: "restore",
@@ -1220,11 +861,21 @@ export async function POST(req: Request) {
       } catch { /* continue */ }
     }
 
-    const updatePlan = parseUpdateCommand(text);
+    const updatePlan = analyzedToUpdateCommand(normalizedCommand) ?? await parseUpdateCommand(text);
     if (updatePlan) {
       try {
-        const result = await executeUpdatePlan(updatePlan, false, accountName);
+        const applyNow = /确认|继续|执行|立即/.test(text);
+        const result = await executeUpdatePlan(updatePlan, applyNow, accountName, hidFilter, householdId);
         if (!result.ok) return NextResponse.json({ ok: false, error: (result as { error: string }).error }, { status: 422, headers: corsHeaders() });
+        if (applyNow) {
+          return NextResponse.json({
+            ok: true,
+            operation: "update",
+            updatedCount: (result as { updatedCount: number }).updatedCount,
+            accountName: (result as { accountName: string }).accountName,
+            trace: [`已确认执行更新：修改 ${(result as { updatedCount: number }).updatedCount} 条记录。`],
+          }, { headers: corsHeaders() });
+        }
         return NextResponse.json({
           ok: true,
           operation: "update",
@@ -1234,8 +885,12 @@ export async function POST(req: Request) {
           remarkKeyword: updatePlan.remarkKeyword,
           newType: updatePlan.newType,
           targets: (result as { targets: Array<{ transactionId: string; date: string; accountName: string; amount: number; remark: string; type?: string }> }).targets,
+          preview: buildUpdatePreview(updatePlan, (result as { count: number }).count, accountName),
+          normalizedCommand,
           trace: [
-            `识别为更新指令：${updatePlan.remarkKeyword ? `备注包含"${updatePlan.remarkKeyword}"的` : "当前账户"}记录${updatePlan.newAccountName ? `改为"${updatePlan.newAccountName}"` : ""}${updatePlan.newType ? `，类型改为"${updatePlan.newType}"` : ""}`,
+            updatePlan.replaceAccountEverywhere && updatePlan.oldAccountName
+              ? `识别为账户替换：${updatePlan.oldAccountName} → ${updatePlan.newAccountName}`
+              : `识别为更新指令：${updatePlan.remarkKeyword ? `备注包含"${updatePlan.remarkKeyword}"的` : "当前账户"}记录${updatePlan.newAccountName ? `改为"${updatePlan.newAccountName}"` : ""}${updatePlan.newType ? `，类型改为"${updatePlan.newType}"` : ""}`,
             `命中 ${(result as { count: number }).count} 条记录，需要确认后执行。`,
           ],
         }, { headers: corsHeaders() });
@@ -1251,7 +906,7 @@ export async function POST(req: Request) {
           ...batchEditPlan,
           accountKeyword: batchEditPlan.accountKeyword || accountName || undefined,
         };
-        const result = await executeBatchEditPlan(planToExecute);
+        const result = await executeBatchEditPlan(planToExecute, hidFilter, householdId);
         return NextResponse.json(
           {
             ok: true,
@@ -1275,7 +930,7 @@ export async function POST(req: Request) {
     if (plan) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
-        const result = await executeDeletePlan(plan, false);
+        const result = await executeDeletePlan(plan, false, hidFilter, householdId);
         if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 422, headers: corsHeaders() });
         const scopeText = plan.hasMonth
           ? `${plan.year}-${String(plan.month).padStart(2, "0")}-${String(plan.startDay).padStart(2, "0")} 到 ${String(plan.endDay).padStart(2, "0")}`
@@ -1301,7 +956,7 @@ export async function POST(req: Request) {
     const statsPlan = parseStatsCommand(text);
     if (statsPlan) {
       try {
-        const s = await executeStatsPlan(statsPlan);
+        const s = await executeStatsPlan(statsPlan, hidFilter);
         return NextResponse.json(
           {
             ok: true,
@@ -1325,7 +980,7 @@ export async function POST(req: Request) {
     const queryPlan = parseQueryCommand(text);
     if (queryPlan) {
       try {
-        const q = await executeQueryPlan(queryPlan);
+        const q = await executeQueryPlan(queryPlan, hidFilter);
         return NextResponse.json(
           {
             ok: true,
@@ -1348,9 +1003,6 @@ export async function POST(req: Request) {
       { status: 422, headers: corsHeaders() },
     );
   }
-
-  const cleanUrl = baseUrl.replace(/\/$/, "");
-  const isOllama = /:11434(\/|$)/.test(cleanUrl);
 
   if (text && !imageDataUrl) {
     const billPre = preprocessBillText(text);
@@ -1393,50 +1045,6 @@ export async function POST(req: Request) {
   }
 
   const startMs = Date.now();
-
-  async function classifyInput(userText: string, model: string, base: string, key: string, ollamaMode: boolean) {
-    if (!userText || imageDataUrl) return null;
-    try {
-      if (ollamaMode) {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (key) headers.Authorization = `Bearer ${key}`;
-        const body = { model, stream: false, messages: [{ role: "user", content: `${CLASSIFY_PROMPT}\n\n输入内容：${userText.slice(0, 500)}` }] };
-        const r = await fetch(`${base}/api/chat`, { method: "POST", headers, body: JSON.stringify(body) });
-        if (!r.ok) return null;
-        const d = await r.json().catch(() => null);
-        const content = (d as any)?.message?.content ?? "";
-        return extractInputType(content);
-      } else {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (key) headers.Authorization = `Bearer ${key}`;
-        const body = { model, messages: [{ role: "user", content: `${CLASSIFY_PROMPT}\n\n输入内容：${userText.slice(0, 500)}` }] };
-        const r = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) });
-        if (!r.ok) return null;
-        const d = await r.json().catch(() => null);
-        const content = (d as any)?.choices?.[0]?.message?.content ?? "";
-        return extractInputType(content);
-      }
-    } catch {
-      return null;
-    }
-  }
-
-  function extractInputType(raw: string): { inputType: string; confidence: number; reason: string } | null {
-    for (const pat of [/```json\s*([\s\S]*?)\s*```/i, /```\s*([\s\S]*?)\s*```/, /(\{[\s\S]*\})/]) {
-      const m = raw.match(pat);
-      if (m) {
-        try {
-          const obj = JSON.parse(m[1] ?? m[0]);
-          if (obj?.inputType) return obj;
-        } catch { continue; }
-      }
-    }
-    try {
-      const obj = JSON.parse(raw);
-      if (obj?.inputType) return obj;
-    } catch { return null; }
-    return null;
-  }
 
   async function routeByType(inputType: string, text: string, now: Date) {
     const pre = preprocessBillText(text);
@@ -1511,59 +1119,14 @@ export async function POST(req: Request) {
 
     if (text && !imageDataUrl && looksLikeFundTrade(text)) {
       const now = new Date();
-      // When fund context is available, use it to fill fund-specific fields
-      if (fundContext) {
-        const isRedeem = /赎回|卖出/.test(text);
-        const isDividendReinvest = /红利转投|红利再投/.test(text);
-        const isDividendCash = /现金红利/.test(text);
-        const subtype = isRedeem ? "redeem" : isDividendReinvest ? "dividend_reinvest" : isDividendCash ? "dividend_cash" : "buy";
-
-        const amountMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:元|块|万)/);
-        const sharesMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:份)/);
-        const amount = amountMatch ? parseFloat(amountMatch[1]) : sharesMatch ? parseFloat(sharesMatch[1]) : 0;
-
-        const date = normalizeDate(undefined, text, now);
-        const typeLabel = subtype === "redeem" ? "赎回" : subtype === "dividend_cash" ? "现金红利" : subtype === "dividend_reinvest" ? "红利转投" : "申购";
-
+      const fundTrade = parseFundTradeFromText(text, now, fundContext);
+      if (fundTrade) {
         return NextResponse.json({
           ok: true,
-          items: [{
-            rawText: text.slice(0, 200),
-            type: "investment",
-            date,
-            amount: amount || 0,
-            remark: `${typeLabel} ${fundContext.fundCode}`,
-            category: `基金·${fundContext.fundCode}`,
-            counterparty: `基金${fundContext.fundCode}`,
-          }],
-          directImport: amount > 0,
+          items: fundTrade.items,
+          directImport: fundTrade.directImport,
           trace: [
-            `基金上下文直出：${fundContext.fundCode} ${typeLabel}${amount > 0 ? ` ${amount}元` : ""}（无需模型）`,
-            `耗时 ${Date.now() - startMs}ms`,
-          ],
-        }, { headers: corsHeaders() });
-      }
-      // Without fund context: extract fund code from text for basic fund trades
-      const fundCodeFromText = text.match(/\b(\d{6})\b/)?.[1];
-      if (fundCodeFromText && (/\b(买入|卖出|赎回|申购)\b/.test(text))) {
-        const isRedeem = /赎回|卖出/.test(text);
-        const amtMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:元|块|万)/);
-        const amount = amtMatch ? parseFloat(amtMatch[1]) : 0;
-        const date = normalizeDate(undefined, text, now);
-        return NextResponse.json({
-          ok: true,
-          items: [{
-            rawText: text.slice(0, 200),
-            type: "investment",
-            date,
-            amount: amount || 0,
-            remark: `${isRedeem ? "赎回" : "申购"} ${fundCodeFromText}`,
-            category: `基金·${fundCodeFromText}`,
-            counterparty: `基金${fundCodeFromText}`,
-          }],
-          directImport: amount > 0,
-          trace: [
-            `基金代码直出: ${fundCodeFromText} (无需模型)`,
+            `${fundContext ? "基金上下文直出" : "基金代码直出"}: ${fundTrade.items[0]?.remark ?? ""} (无需模型)`,
             `耗时 ${Date.now() - startMs}ms`,
           ],
         }, { headers: corsHeaders() });
@@ -1571,7 +1134,7 @@ export async function POST(req: Request) {
     }
 
     if (text && !imageDataUrl) {
-      const classification = await classifyInput(text, modelName, cleanUrl, apiKey, isOllama);
+      const classification = await classifyInput(text, modelName, cleanUrl, apiKey, isOllama, imageDataUrl);
       if (classification) {
         const routeResult = await routeByType(classification.inputType, text, new Date());
         if (routeResult) {

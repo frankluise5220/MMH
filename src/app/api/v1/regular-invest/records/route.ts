@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function GET(req: NextRequest) {
+  const { hidFilter } = await getHouseholdScope();
   const planId = req.nextUrl.searchParams.get("planId");
   if (!planId) return NextResponse.json({ ok: false, error: "缺少 planId" }, { status: 400 });
 
   const records = await prisma.txRecord.findMany({
     where: {
+      ...hidFilter,
       regularInvestPlanId: planId,
       deletedAt: null,
     },

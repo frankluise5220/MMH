@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
@@ -18,6 +20,7 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
+  const { hidFilter } = await getHouseholdScope();
   const body = await req.json().catch(() => null);
   const days = typeof body?.days === "number" ? body.days : 30;
 
@@ -36,6 +39,7 @@ export async function POST(req: Request) {
     const toDelete = await tx.txRecord.findMany({
       where: {
         deletedAt: { not: null, lte: cutoff },
+        ...hidFilter,
       },
       select: { id: true, accountId: true, toAccountId: true, fundCode: true, fundSubtype: true, fundProductType: true },
     });
@@ -81,7 +85,7 @@ export async function POST(req: Request) {
 
   // 重新汇总持仓（事务外）
   for (const [accountId, fundCodes] of result.fundAccountsToRecalc) {
-    await recalcFundPositions(accountId, fundCodes).catch(() => {});
+    await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "route.ts"));
   }
 
   if (result.permanentlyDeleted > 0) {

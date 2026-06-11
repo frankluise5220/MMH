@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -11,6 +13,7 @@ const BodySchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const { householdId, user } = await getHouseholdScope();
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
@@ -20,6 +23,9 @@ export async function POST(req: Request) {
   const { entity, id } = parse.data;
 
   if (entity === "accountGroup") {
+    const group = await prisma.accountGroup.findUnique({ where: { id } });
+    if (!group) return NextResponse.json({ ok: false, error: "分组不存在" }, { status: 404 });
+    if (!isAdmin(user) && group.householdId && group.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { groupId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该分组，无法删除" }, { status: 409 });
     await prisma.accountGroup.delete({ where: { id } });
@@ -28,6 +34,9 @@ export async function POST(req: Request) {
   }
 
   if (entity === "account") {
+    const acc = await prisma.account.findUnique({ where: { id } });
+    if (!acc) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!isAdmin(user) && acc.householdId && acc.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.txRecord.count({ where: { accountId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });
     await prisma.account.delete({ where: { id } });
@@ -36,6 +45,9 @@ export async function POST(req: Request) {
   }
 
   if (entity === "institution") {
+    const inst = await prisma.institution.findUnique({ where: { id } });
+    if (!inst) return NextResponse.json({ ok: false, error: "机构不存在" }, { status: 404 });
+    if (!isAdmin(user) && inst.householdId && inst.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { institutionId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该机构，无法删除" }, { status: 409 });
     await prisma.institution.delete({ where: { id } });

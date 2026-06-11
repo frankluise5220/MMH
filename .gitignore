@@ -109,9 +109,23 @@ tsc-errors.txt
 sync.ffs_db
 syno-wiseme-sync.bat
 
-# stray empty file
-{
-process.stderr.write('LISTENING'))
+# IDE (local)
+.obsidian/
+.kombai/
+
+# local scratch
+AI_CONTEXT.md
+page-backup.tsx
+patch*.txt
+_*.cjs
+_*.ts
+_*.mts
+_*.mjs
+*.new
+
+# local test artifacts
+public/test-results.json
+/src/app/test-results/
 
 # temporary plans
 plans/

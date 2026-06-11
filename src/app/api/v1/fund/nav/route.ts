@@ -6,6 +6,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 
@@ -23,7 +24,7 @@ async function getNav(fundCode: string, dateStr: string) {
   const data = await fetchNavFromEastmoney(fundCode, dateStr);
   if (data) {
     const navDateObj = utcDate(data.date);
-    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(() => {});
+    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(logger.catchLog("操作失败", "route.ts"));
     return data;
   }
 
@@ -125,7 +126,7 @@ export async function GET(req: NextRequest) {
     }
     const navDateStr = data.date ?? new Date().toISOString().slice(0, 10);
     const navDateObj = utcDate(navDateStr);
-    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(() => {});
+    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(logger.catchLog("操作失败", "route.ts"));
     return NextResponse.json({ ok: true, ...data });
   } catch (e) {
     return NextResponse.json(
@@ -195,7 +196,8 @@ export async function POST(req: NextRequest) {
     const amount = Math.abs(userAmount ?? toNum(txRecord.amount));
 
     // 从费率库查询申购手续费率（按确认日期查询）
-    const feeRate = await getFundFeeRateByDate(accountId, fundCode, confirmDateObj, "buy");
+    const feeRateRaw = await getFundFeeRateByDate(accountId, fundCode, confirmDateObj, "buy");
+    const feeRate = feeRateRaw / 100;
     // 计算手续费 = 金额 × 费率
     const fee = amount * feeRate;
     // 计算份额 = (金额 - 手续费) / 净值
@@ -227,7 +229,7 @@ export async function POST(req: NextRequest) {
     });
 
     // 重新计算持仓
-    await recalcFundPositions(accountId).catch(() => {});
+    await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     revalidateAfterInvestChange();
 
     return NextResponse.json({
@@ -243,5 +245,21 @@ export async function POST(req: NextRequest) {
       { ok: false, error: e instanceof Error ? e.message : "补填失败" },
       { status: 500 }
     );
+  }
+}
+
+export async function PUT(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const fundCode = String(body.fundCode ?? "").trim();
+    const date = String(body.date ?? "").trim();
+    const nav = parseFloat(String(body.nav ?? ""));
+    if (!fundCode || !date || !Number.isFinite(nav) || nav <= 0) {
+      return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+    }
+    await setFundNav(fundCode, new Date(date+"T00:00:00Z"), nav);
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存失败" }, { status: 500 });
   }
 }

@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { AccountKind } from "@prisma/client";
+import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { defaultModel, localProvider } from "@/lib/ai/config";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 
 export const runtime = "nodejs";
 
-type Db = typeof prisma;
+type Db = typeof prisma | Prisma.TransactionClient;
 
 function corsHeaders() {
   return {
@@ -31,6 +33,12 @@ function requireApiKey(req: Request) {
   const provided = getProvidedApiKey(req);
   if (!provided || provided !== required) return { ok: false as const };
   return { ok: true as const };
+}
+
+async function isInternalImportRequest(req: Request) {
+  if (req.headers.get("x-internal-import") !== "batch-import") return false;
+  await getHouseholdScope();
+  return true;
 }
 
 const ParsedItemSchema = z.object({
@@ -95,14 +103,16 @@ function pickAccountName(value?: string, defaultAccountName?: string) {
 
 async function resolveAccountId(tx: Db, accountName?: string) {
   if (!accountName) return null;
-  const found = await tx.account.findFirst({ where: { name: accountName } });
+  const { householdId } = await getHouseholdScope();
+  const found = await tx.account.findFirst({ where: { name: accountName, householdId } });
   return found?.id ?? null;
 }
 
 async function ensureDefaultAccountGroupId(tx: Db) {
-  const existing = await tx.accountGroup.findFirst({ where: { name: "未指定" } });
+  const { householdId } = await getHouseholdScope();
+  const existing = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId } });
   if (existing?.id) return existing.id;
-  const legacy = await tx.accountGroup.findFirst({ where: { name: "默认" } });
+  const legacy = await tx.accountGroup.findFirst({ where: { name: "默认", householdId } });
   if (legacy?.id) {
     try {
       await tx.accountGroup.update({ where: { id: legacy.id }, data: { name: "未指定" } });
@@ -114,11 +124,12 @@ async function ensureDefaultAccountGroupId(tx: Db) {
       data: {
         name: "未指定",
         sortOrder: 0,
+        householdId,
       },
     });
     return created.id;
   } catch {
-    const retry = await tx.accountGroup.findFirst({ where: { name: "未指定" } });
+    const retry = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId } });
     return retry?.id ?? null;
   }
 }
@@ -126,6 +137,7 @@ async function ensureDefaultAccountGroupId(tx: Db) {
 async function ensureAccountId(tx: Db, accountName?: string) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  const { householdId } = await getHouseholdScope();
   const existingId = await resolveAccountId(tx, name);
   if (existingId) return existingId;
   const groupId = await ensureDefaultAccountGroupId(tx);
@@ -135,6 +147,10 @@ async function ensureAccountId(tx: Db, accountName?: string) {
       data: {
         name,
         groupId,
+        householdId,
+        currency: "CNY",
+        kind: AccountKind.other,
+        isActive: true,
       },
     });
     return created.id;
@@ -151,6 +167,7 @@ async function resolveCategoryId(tx: Db, categoryName?: string) {
 
 async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccountName?: string) {
   const date = parseDate(item.date);
+  const { householdId } = await getHouseholdScope();
 
   const shouldUseDoubleEntry =
     item.type === "transfer" ||
@@ -165,7 +182,9 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       ensureAccountId(tx, toAccountName),
     ]);
 
-    const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, date);
+    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(tx, "未指定账户") : null);
+    const sourceAccountName = fromAccountName || (toAccountId ? "未指定账户" : "未识别账户");
+    const fromStatementMonth = await statementMonthForAccountId(tx, sourceAccountId, date);
 
     const amountAbs = Math.abs(item.amount);
 
@@ -186,12 +205,13 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
         type: item.type as any,
         date,
         amount: -amountAbs,
-        accountId: fromAccountId ?? "",
-        accountName: fromAccountName || "未识别账户",
+        accountId: sourceAccountId ?? toAccountId ?? "",
+        accountName: sourceAccountName,
         toAccountId,
-        toAccountName: toAccountName || "未识别账户",
+        toAccountName: toAccountName || null,
         note: item.remark ?? item.rawText,
         statementMonth: fromStatementMonth,
+        householdId,
         // Add fund fields for investment type
         ...(item.type === "investment" && fundCode ? {
           fundCode,
@@ -231,12 +251,13 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       type: item.type as any,
       date,
       amount,
-      accountId: accountId ?? "",
+      accountId: accountId ?? (await ensureAccountId(tx, "未指定账户")) ?? "",
       accountName: accountName || "未识别账户",
       categoryId,
       categoryName: item.category ?? null,
       note: item.remark ?? item.rawText,
       statementMonth,
+      householdId,
       // Add fund fields for investment type
       ...(item.type === "investment" && fundCode ? {
         fundCode,
@@ -267,7 +288,7 @@ function fallbackParse(text: string): ParsedItem[] {
     const isTransfer = /转账|转入|转出|转给|转到|转\s*给|转\s*到|从.*到|从.*给/.test(rawText);
     if (isTransfer) {
       const fromMatch = rawText.match(/从([^，,\s]+?)(?:转|到|给)/);
-      const toMatch = rawText.match(/(?:到|给)([^，,\s]+)$/);
+      const toMatch = rawText.match(/(?:到|给)([^，,\s]+?)(?=\s+\d|[，,\s]|$)/);
       return {
         rawText,
         type: "transfer",
@@ -295,7 +316,8 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
-  if (!requireApiKey(req).ok) {
+  const internalImport = await isInternalImportRequest(req).catch(() => false);
+  if (!internalImport && !requireApiKey(req).ok) {
     return NextResponse.json(
       { ok: false, error: "未授权" },
       { status: 401, headers: corsHeaders() },
@@ -304,6 +326,7 @@ export async function POST(req: Request) {
 
   const body = (await req.json().catch(() => null)) as null | {
     text?: string;
+    items?: unknown;
     import?: boolean;
     defaultAccountName?: string;
   };
@@ -311,10 +334,13 @@ export async function POST(req: Request) {
   const text = (body?.text ?? "").trim();
   const shouldImport = body?.import !== false;
   const defaultAccountName = body?.defaultAccountName;
+  const bodyItems = Array.isArray(body?.items)
+    ? z.array(ParsedItemSchema).safeParse(body.items)
+    : null;
 
-  if (!text) {
+  if (!text && !bodyItems?.success) {
     return NextResponse.json(
-      { ok: false, error: "缺少 text" },
+      { ok: false, error: "缺少 text 或 items" },
       { status: 400, headers: corsHeaders() },
     );
   }
@@ -336,26 +362,34 @@ export async function POST(req: Request) {
   let items: ParsedItem[];
   let trace: string[] = [];
 
-  try {
-    const { object } = await generateObject({
-      model,
-      schema: z.object({ items: z.array(ParsedItemSchema) }),
-      system,
-      prompt: text,
-    });
-    items = object.items;
+  if (bodyItems?.success) {
+    items = bodyItems.data;
     trace = [
-      `输入字符数：${text.length}`,
+      "使用客户端预览数据导入",
       `解析条数：${items.length}`,
-      `模型：${defaultModel}`,
     ];
-  } catch {
-    items = fallbackParse(text);
-    trace = [
-      `输入字符数：${text.length}`,
-      `解析条数：${items.length}`,
-      "模型调用失败，已使用规则解析",
-    ];
+  } else {
+    try {
+      const { object } = await generateObject({
+        model,
+        schema: z.object({ items: z.array(ParsedItemSchema) }),
+        system,
+        prompt: text,
+      });
+      items = object.items;
+      trace = [
+        `输入字符数：${text.length}`,
+        `解析条数：${items.length}`,
+        `模型：${defaultModel}`,
+      ];
+    } catch {
+      items = fallbackParse(text);
+      trace = [
+        `输入字符数：${text.length}`,
+        `解析条数：${items.length}`,
+        "模型调用失败，已使用规则解析",
+      ];
+    }
   }
 
   if (!shouldImport) {
@@ -366,9 +400,21 @@ export async function POST(req: Request) {
   }
 
   try {
-    const created: Awaited<ReturnType<typeof createTransactionFromItem>>[] = [];
-    for (const item of items) {
-      created.push(await createTransactionFromItem(prisma, item, defaultAccountName));
+    const created = await prisma.$transaction(async (tx) => {
+      const rows: Awaited<ReturnType<typeof createTransactionFromItem>>[] = [];
+      for (const item of items) {
+        rows.push(await createTransactionFromItem(tx, item, defaultAccountName));
+      }
+      return rows;
+    });
+
+    const accountIdsToRecalc = new Set<string>();
+    for (const row of created) {
+      if (row.accountId) accountIdsToRecalc.add(row.accountId);
+      if (row.toAccountId) accountIdsToRecalc.add(row.toAccountId);
+    }
+    for (const accountId of accountIdsToRecalc) {
+      await recalcAndSaveAccountBalance(accountId);
     }
 
     revalidateAfterTxChange();
@@ -379,6 +425,7 @@ export async function POST(req: Request) {
         imported: true,
         createdCount: created.length,
         ids: created.map((t) => t.id),
+        recalculatedAccountCount: accountIdsToRecalc.size,
         message: `已导入 ${created.length} 条记录`,
         trace,
       },

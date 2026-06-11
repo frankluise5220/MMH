@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react";
 import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
+import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
 
 type Group = { id: string; name: string; sortOrder: number };
-type Institution = { id: string; name: string };
+type Institution = { id: string; name: string; type?: string };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   institutionId: string | null; groupId: string | null;
@@ -40,6 +41,9 @@ const kindColor = (k: string) => {
   return "bg-slate-50 text-slate-700 border-slate-200";
 };
 
+const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
+const investmentProductTypeLabel = (value: string | null | undefined) => PRODUCT_LABELS[(value || "fund") as ProductType] || "开放式基金";
+
 export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -56,7 +60,12 @@ export default function SettingsAccountsPage() {
 
   // Add account
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", kind: "bank_debit", institutionId: "", currency: "CNY" });
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState({ name: "", kind: "bank_debit", groupId: "", institutionId: "", currency: "CNY", investProductType: "fund" });
+  const [showInstitutionMenu, setShowInstitutionMenu] = useState(false);
+  const [showNewInstitution, setShowNewInstitution] = useState(false);
+  const [newInstitutionName, setNewInstitutionName] = useState("");
+  const [newInstitutionType, setNewInstitutionType] = useState("bank");
 
   useEffect(() => { loadAll(); }, []);
 
@@ -110,12 +119,15 @@ export default function SettingsAccountsPage() {
     setEditingId(a.id);
     setEditForm({
       name: a.name,
+      kind: a.kind,
       groupId: a.groupId || "",
       institutionId: a.institutionId || "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
       numberMasked: a.numberMasked || "",
+      investProductType: a.investProductType || "fund",
+      costBasisMethod: a.costBasisMethod || "moving_avg",
     });
   }
 
@@ -139,17 +151,69 @@ export default function SettingsAccountsPage() {
     loadAll();
   }
 
+  async function createInstitutionForAccount() {
+    const name = newInstitutionName.trim();
+    if (!name) return;
+    const exists = institutions.find((item) => item.name.trim() === name);
+    if (exists) {
+      setAddError(`机构“${name}”已存在，已为当前账户选中。`);
+      setAddForm((prev) => ({ ...prev, institutionId: exists.id }));
+      setShowNewInstitution(false);
+      setShowInstitutionMenu(false);
+      setNewInstitutionName("");
+      return;
+    }
+    setAddError(null);
+    const res = await fetch("/api/v1/institution", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, type: newInstitutionType }),
+    }).catch(() => null);
+    if (!res) {
+      setAddError("网络请求失败，机构未创建。");
+      return;
+    }
+    const data = await res.json().catch(() => ({ ok: false, error: "创建机构失败，返回数据格式异常" }));
+    if (!data.ok || !data.institution?.id) {
+      setAddError(data.error || "机构创建失败");
+      return;
+    }
+    setInstitutions((prev) => {
+      const exists = prev.some((item) => item.id === data.institution.id);
+      return exists ? prev : [...prev, data.institution].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    });
+    setAddForm((prev) => ({ ...prev, institutionId: data.institution.id }));
+    setNewInstitutionName("");
+    setNewInstitutionType("bank");
+    setShowNewInstitution(false);
+    setShowInstitutionMenu(false);
+  }
+
+  const selectedInstitutionId = filterMode === "institution" && selectedFilter ? selectedFilter : addForm.institutionId;
+  const selectedInstitution = institutions.find((item) => item.id === selectedInstitutionId);
+  const accountDisplayName = (account: Account) => account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
+
   async function createAccount() {
     if (!addForm.name.trim()) return;
+    setAddError(null);
     const payload: Record<string, string | undefined> = { ...addForm };
     if (filterMode === "group" && selectedFilter) payload.groupId = selectedFilter;
-    if (filterMode === "institution" && addForm.institutionId) payload.institutionId = addForm.institutionId;
-    await fetch("/api/v1/accounts", {
+    if (filterMode === "institution" && selectedFilter) payload.institutionId = selectedFilter;
+    const res = await fetch("/api/v1/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    });
-    setAddForm({ name: "", kind: "bank_debit", institutionId: "", currency: "CNY" });
+    }).catch(() => null);
+    if (!res) {
+      setAddError("网络请求失败，账户未创建。");
+      return;
+    }
+    const data = await res.json().catch(() => ({ ok: false, error: "创建失败，返回数据格式异常" }));
+    if (!data.ok) {
+      setAddError(data.error || "账户创建失败");
+      return;
+    }
+    setAddForm({ name: "", kind: "bank_debit", groupId: "", institutionId: "", currency: "CNY", investProductType: "fund" });
     setShowAdd(false);
     loadAll();
   }
@@ -287,7 +351,7 @@ export default function SettingsAccountsPage() {
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">共 {filteredAccounts.length} 个账户</p>
           </div>
-          <button onClick={() => setShowAdd(!showAdd)}
+          <button onClick={() => { setShowAdd(!showAdd); setAddError(null); }}
             className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
             <Plus className="w-3.5 h-3.5" />新增
           </button>
@@ -297,7 +361,8 @@ export default function SettingsAccountsPage() {
         {showAdd && (
           <div className="bg-white border border-blue-200 rounded-xl p-4 mb-4">
             <div className="text-sm font-medium text-slate-700 mb-3">新增账户</div>
-            <div className="grid grid-cols-4 gap-3">
+            {addError && <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{addError}</div>}
+            <div className="grid grid-cols-5 gap-3">
               <div>
                 <label className="block text-xs text-slate-500 mb-1">名称</label>
                 <input value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
@@ -305,18 +370,84 @@ export default function SettingsAccountsPage() {
               </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">类型</label>
-                <select value={addForm.kind} onChange={e => setAddForm(f => ({ ...f, kind: e.target.value }))}
+                <select value={addForm.kind} onChange={e => setAddForm(f => ({ ...f, kind: e.target.value, investProductType: e.target.value === "investment" ? f.investProductType || "fund" : "fund" }))}
                   className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none">
                   {kindOrder.map(k => <option key={k} value={k}>{kindLabel(k)}</option>)}
                 </select>
               </div>
+              {addForm.kind === "investment" && (
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
+                  <select value={addForm.investProductType} onChange={e => setAddForm(f => ({ ...f, investProductType: e.target.value }))}
+                    className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none">
+                    {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">分组</label>
+                <select value={filterMode === "group" && selectedFilter ? selectedFilter : addForm.groupId} onChange={e => setAddForm(f => ({ ...f, groupId: e.target.value }))}
+                  disabled={filterMode === "group" && !!selectedFilter}
+                  className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                  <option value="">自动/默认</option>
+                  {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
+              </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">机构</label>
-                <select value={addForm.institutionId} onChange={e => setAddForm(f => ({ ...f, institutionId: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none">
-                  <option value="">无</option>
-                  {institutions.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-                </select>
+                <div className="relative">
+                  <button type="button"
+                    onClick={() => {
+                      if (filterMode === "institution" && selectedFilter) return;
+                      setShowInstitutionMenu((open) => !open);
+                    }}
+                    disabled={filterMode === "institution" && !!selectedFilter}
+                    className="flex h-9 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-left text-sm outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                    <span className={selectedInstitution ? "text-slate-800" : "text-slate-400"}>{selectedInstitution?.name || "无"}</span>
+                    <span className="text-xs text-slate-400">▾</span>
+                  </button>
+                  {showInstitutionMenu && !(filterMode === "institution" && selectedFilter) && (
+                    <div className="absolute left-0 right-0 top-10 z-20 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+                      <button type="button" onClick={() => setShowNewInstitution((open) => !open)}
+                        className="flex h-9 w-full items-center px-3 text-left text-xs font-medium text-blue-600 hover:bg-blue-50">
+                        + 新增机构
+                      </button>
+                      <div className="max-h-44 overflow-y-auto border-t border-slate-100">
+                        <button type="button" onClick={() => { setAddForm(f => ({ ...f, institutionId: "" })); setShowInstitutionMenu(false); }}
+                          className={`flex h-8 w-full items-center px-3 text-left text-xs hover:bg-slate-50 ${!selectedInstitutionId ? "bg-slate-50 text-blue-700" : "text-slate-700"}`}>
+                          无
+                        </button>
+                        {institutions.map(i => (
+                          <button key={i.id} type="button" onClick={() => { setAddForm(f => ({ ...f, institutionId: i.id })); setShowInstitutionMenu(false); }}
+                            className={`flex h-8 w-full items-center px-3 text-left text-xs hover:bg-slate-50 ${selectedInstitutionId === i.id ? "bg-slate-50 text-blue-700" : "text-slate-700"}`}>
+                            {i.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {showNewInstitution && (
+                  <div className="mt-2 rounded-md border border-blue-100 bg-blue-50 p-2 space-y-2">
+                    <input value={newInstitutionName} onChange={e => setNewInstitutionName(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && createInstitutionForAccount()}
+                      className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400" placeholder="新机构名称，如 招商银行" autoFocus />
+                    <div className="flex gap-1">
+                      <select value={newInstitutionType} onChange={e => setNewInstitutionType(e.target.value)}
+                        className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 text-xs outline-none">
+                        <option value="bank">银行</option>
+                        <option value="brokerage">券商</option>
+                        <option value="payment">支付机构</option>
+                        <option value="ewallet">电子钱包</option>
+                        <option value="other">其他</option>
+                      </select>
+                      <button type="button" onClick={createInstitutionForAccount} disabled={!newInstitutionName.trim()}
+                        className="h-8 rounded bg-blue-600 px-2 text-xs text-white hover:bg-blue-700 disabled:opacity-50">保存</button>
+                      <button type="button" onClick={() => { setShowNewInstitution(false); setNewInstitutionName(""); }}
+                        className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-slate-50">取消</button>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex items-end gap-2">
                 <button onClick={createAccount} disabled={!addForm.name.trim()}
@@ -364,6 +495,27 @@ export default function SettingsAccountsPage() {
                             </div>
                           </div>
 
+                          {a.kind === "investment" && (
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
+                                <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
+                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none">
+                                  {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-500 mb-1">成本摊薄方式</label>
+                                <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
+                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none">
+                                  <option value="moving_avg">移动平均</option>
+                                  <option value="fifo">先进先出</option>
+                                  <option value="lifo">后进先出</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+
                           {(a.kind === "bank_credit" || a.kind === "loan") && (
                             <div className="grid grid-cols-4 gap-3">
                               <div>
@@ -401,14 +553,18 @@ export default function SettingsAccountsPage() {
                         <div className="p-3 flex items-center justify-between">
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-slate-800 truncate">{a.name}</span>
+                              <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                               <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
                                 {a.isActive ? "启用" : "停用"}
                               </span>
+                              {a.kind === "investment" && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
+                                  {investmentProductTypeLabel(a.investProductType)}
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
                               {a.AccountGroup && <span>{a.AccountGroup.name}</span>}
-                              {a.Institution && <span>{a.Institution.name}</span>}
                               {(a.billingDay) && <span>账单日{a.billingDay}日</span>}
                               {(a.repaymentDay) && <span>还款{a.repaymentDay}日</span>}
                               {a.creditLimit && <span>额度￥{a.creditLimit}</span>}

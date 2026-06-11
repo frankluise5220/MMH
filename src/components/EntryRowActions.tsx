@@ -18,7 +18,13 @@ type EditPayload = {
   hasFundDetail?: boolean;
   cashAccountId?: string;
   fundCode?: string;
+  fundName?: string;
   fundSubtype?: string;
+  fundUnits?: number;
+  fundNav?: number;
+  fundFee?: number;
+  fundConfirmDate?: string;
+  fundProductType?: string;
 };
 
 export function EntryRowActions({
@@ -34,15 +40,18 @@ export function EntryRowActions({
   function onEdit() {
     if (!edit) return;
     const requestId = `edit-${entryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    window.dispatchEvent(
-      new CustomEvent("wiseme:transaction:edit", {
-        detail: {
-          requestId,
-          entryId,
-          ...edit,
-        } satisfies EditPayload,
-      }),
-    );
+    const detail = { requestId, entryId, ...edit } satisfies EditPayload;
+
+    const pt = edit.fundProductType;
+    if (edit.type === "investment" && pt === "wealth") {
+      window.dispatchEvent(new CustomEvent("wiseme:wealth:edit", { detail }));
+    } else if (edit.type === "investment" && pt === "deposit") {
+      window.dispatchEvent(new CustomEvent("wiseme:deposit:edit", { detail }));
+    } else if (edit.type === "investment") {
+      window.dispatchEvent(new CustomEvent("wiseme:investment:edit", { detail }));
+    } else {
+      window.dispatchEvent(new CustomEvent("wiseme:transaction:edit", { detail }));
+    }
   }
 
   async function onDelete() {

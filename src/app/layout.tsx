@@ -9,7 +9,7 @@ export default function RootLayout({
     <html lang="zh-CN" suppressHydrationWarning>
       <body
         suppressHydrationWarning
-        className="antialiased text-slate-900 bg-white h-screen overflow-x-auto overflow-y-hidden"
+        className="antialiased h-screen overflow-x-auto overflow-y-hidden"
       >
         {children}
       </body>

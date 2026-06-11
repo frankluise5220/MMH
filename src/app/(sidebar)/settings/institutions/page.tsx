@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
 import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 
@@ -9,13 +10,14 @@ export const dynamic = "force-dynamic";
 async function createInstitution(formData: FormData) {
   "use server";
 
+  const { householdId } = await getHouseholdScope();
   const name = String(formData.get("institutionName") ?? "").trim();
   const type = String(formData.get("institutionType") ?? "").trim();
   if (!name) return;
 
   await prisma.institution
     .create({
-      data: { name, type: type || null },
+      data: { name, type: type || null, householdId },
     })
     .catch(() => null);
 
@@ -27,14 +29,15 @@ async function createInstitution(formData: FormData) {
 async function updateInstitutionRow(formData: FormData) {
   "use server";
 
+  const { householdId } = await getHouseholdScope();
   const institutionId = String(formData.get("institutionId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
   if (!institutionId || !name) return;
 
   await prisma.institution
-    .update({
-      where: { id: institutionId },
+    .updateMany({
+      where: { id: institutionId, householdId },
       data: { name, type: type || null },
     })
     .catch(() => null);
@@ -45,7 +48,8 @@ async function updateInstitutionRow(formData: FormData) {
 }
 
 export default async function SettingsInstitutionsPage() {
-  const institutions = await prisma.institution.findMany({ orderBy: [{ type: "asc" }, { name: "asc" }] });
+  const { hidFilter } = await getHouseholdScope();
+  const institutions = await prisma.institution.findMany({ where: hidFilter, orderBy: [{ type: "asc" }, { name: "asc" }] });
 
   return (
     <div className="space-y-4">

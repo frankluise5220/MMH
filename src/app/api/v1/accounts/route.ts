@@ -1,8 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
+
+const fundProductTypes = ["fund", "money", "wealth", "deposit"] as const;
+const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
+
+function normalizeFundProductType(raw: unknown) {
+  const value = String(raw ?? "").trim();
+  return fundProductTypes.includes(value as (typeof fundProductTypes)[number]) ? value : "fund";
+}
+
+function normalizeCostBasisMethod(raw: unknown) {
+  const value = String(raw ?? "").trim();
+  return costBasisMethods.includes(value as (typeof costBasisMethods)[number]) ? value : "moving_avg";
+}
 
 function corsHeaders() {
   return {
@@ -37,16 +53,43 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const name = String(body.name ?? "").trim();
     const kind = (typeof body?.kind === "string" ? body.kind.trim() : "other") as any;
-    const groupId = String(body.groupId ?? "").trim() || null;
-    const institutionId = String(body.institutionId ?? "").trim() || null;
-    const currency = String(body.currency ?? "CNY").trim();
+    const requestedGroupId = String(body.groupId ?? "").trim() || null;
+    const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
+    const currency = String(body.currency ?? "CNY").trim() || "CNY";
+    const isInvestment = kind === "investment";
 
     if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
 
-    await prisma.account.create({
-      data: { name, kind, currency, groupId: groupId || null, institutionId: institutionId || null, isActive: true },
-    } as any);
-    return NextResponse.json({ ok: true });
+    const { householdId } = await getHouseholdScope();
+
+    const group = requestedGroupId
+      ? await prisma.accountGroup.findFirst({ where: { id: requestedGroupId, householdId } })
+      : await prisma.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
+    const ensuredGroup = group ?? await prisma.accountGroup.create({
+      data: { name: "默认分组", householdId, sortOrder: 0 },
+    });
+
+    const institution = requestedInstitutionId
+      ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
+      : null;
+    if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+
+    const account = await prisma.account.create({
+      data: {
+        name,
+        kind,
+        currency,
+        groupId: ensuredGroup.id,
+        institutionId: institution?.id ?? null,
+        householdId,
+        isActive: true,
+        investProductType: isInvestment ? normalizeFundProductType(body.investProductType) as any : null,
+        costBasisMethod: isInvestment ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
+        defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
+      },
+    });
+    revalidateAfterSettingsChange();
+    return NextResponse.json({ ok: true, account });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
   }
@@ -55,12 +98,21 @@ export async function POST(req: NextRequest) {
 // === Internal: PUT (update) ===
 export async function PUT(req: NextRequest) {
   try {
+    const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
     if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
 
+    const existing = await prisma.account.findUnique({ where: { id } });
+    if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!isAdmin(user) && existing.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    }
+
     const data: Record<string, unknown> = {};
     if (body.name !== undefined) data.name = String(body.name).trim();
+    if (body.kind !== undefined) data.kind = String(body.kind).trim();
+    if (body.currency !== undefined) data.currency = String(body.currency ?? "CNY").trim() || "CNY";
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
 
@@ -77,6 +129,17 @@ export async function PUT(req: NextRequest) {
     if (body.creditLimit !== undefined) data.creditLimit = String(body.creditLimit ?? "").trim() || null;
     if (body.numberMasked !== undefined) data.numberMasked = String(body.numberMasked ?? "").trim() || null;
 
+    const nextKind = String(data.kind ?? existing.kind);
+    if (nextKind === "investment") {
+      if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
+      if (body.costBasisMethod !== undefined || existing.kind !== "investment") data.costBasisMethod = normalizeCostBasisMethod(body.costBasisMethod ?? existing.costBasisMethod) as any;
+      if (body.defaultFundQueryApiId !== undefined) data.defaultFundQueryApiId = String(body.defaultFundQueryApiId ?? "").trim() || null;
+    } else {
+      data.investProductType = null;
+      data.costBasisMethod = null;
+      data.defaultFundQueryApiId = null;
+    }
+
     await prisma.account.update({ where: { id }, data });
     return NextResponse.json({ ok: true });
   } catch (e) {
@@ -87,12 +150,16 @@ export async function PUT(req: NextRequest) {
 // === Internal: PATCH (toggle active) ===
 export async function PATCH(req: NextRequest) {
   try {
+    const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
     if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
     if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!isAdmin(user) && existing.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    }
 
     await prisma.account.update({ where: { id }, data: { isActive: !existing.isActive } });
     return NextResponse.json({ ok: true });
@@ -104,8 +171,15 @@ export async function PATCH(req: NextRequest) {
 // === Internal: DELETE ===
 export async function DELETE(req: NextRequest) {
   try {
+    const { householdId, user } = await getHouseholdScope();
     const id = req.nextUrl.searchParams.get("id");
     if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+
+    const existing = await prisma.account.findUnique({ where: { id } });
+    if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!isAdmin(user) && existing.householdId !== householdId) {
+      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    }
 
     const used = await prisma.txRecord.count({ where: { accountId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });

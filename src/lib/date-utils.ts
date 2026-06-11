@@ -76,6 +76,13 @@ export function formatDateLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+export function formatDateUtc(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export function addWorkdaysUtc(dateStr: string, n: number) {
   const [y, m, d] = dateStr.split("-").map(Number);
   let ms = Date.UTC(y, m - 1, d);

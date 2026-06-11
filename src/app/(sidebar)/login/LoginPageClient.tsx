@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 
-export function LoginPageClient() {
+export function LoginPageClient({ householdName }: { householdName: string | null }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -117,7 +117,10 @@ export function LoginPageClient() {
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-          <div className="text-base font-semibold text-slate-800">WiseMe</div>
+          {householdName && (
+            <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">账簿</div>
+          )}
+          <div className="text-base font-semibold text-slate-800">{householdName || "WiseMe"}</div>
           {mode === "login" && (
             <div className="mt-1 text-xs text-slate-500">输入用户名和密码以继续</div>
           )}

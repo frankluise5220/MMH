@@ -130,7 +130,8 @@ export function CalcInput({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleInputKeyDown}
         placeholder={placeholder}
-        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm font-mono outline-none"
+        style={{ caretColor: "var(--foreground)" }}
+        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm font-mono text-slate-800 placeholder:text-slate-300 outline-none caret-slate-800"
       />
 
       {/* Trigger button */}

@@ -3,9 +3,11 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function POST(req: NextRequest) {
   try {
+    const { hidFilter } = await getHouseholdScope();
     const body = await req.json();
     const accountIdParam = String(body.accountId ?? "all").trim();
 
@@ -13,7 +15,7 @@ export async function POST(req: NextRequest) {
 
     if (accountIdParam === "all") {
       const accounts = await prisma.account.findMany({
-        where: { kind: AccountKind.investment, isActive: true },
+        where: { kind: AccountKind.investment, isActive: true, ...hidFilter },
         select: { id: true },
       });
       accountIds = accounts.map(a => a.id);

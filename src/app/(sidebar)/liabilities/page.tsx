@@ -1,0 +1,85 @@
+import { prisma } from "@/lib/db/prisma";
+import { AccountKind } from "@prisma/client";
+import { toNumber } from "@/lib/date-utils";
+import { formatMoney } from "@/lib/format";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { cookies } from "next/headers";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
+
+export const dynamic = "force-dynamic";
+
+const LIABILITY_KINDS = [AccountKind.bank_credit, AccountKind.loan, AccountKind.other];
+
+export default async function LiabilitiesPage() {
+  const ctx = await getHouseholdScope();
+  const { hidFilter } = ctx;
+  const cookieStore = await cookies();
+  const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
+  const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+
+  const [accounts, sums] = await Promise.all([
+    prisma.account.findMany({
+      where: { isActive: true, kind: { in: LIABILITY_KINDS }, ...hidFilter },
+      include: { AccountGroup: true, Institution: true },
+      orderBy: [{ name: "asc" }],
+    }),
+    prisma.txRecord.groupBy({
+      by: ["accountId"],
+      where: { account: { kind: { in: LIABILITY_KINDS }, ...hidFilter } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const sumById = new Map(sums.map(s => [s.accountId, toNumber(s._sum.amount)]));
+  const total = accounts.reduce((s, a) => s + (sumById.get(a.id) ?? 0), 0);
+
+  return (
+    <div className="p-6 max-w-2xl">
+      <div className="flex items-center gap-3 mb-6">
+        <Link href="/" className="p-2 rounded-lg hover:bg-slate-100 transition-colors">
+          <ArrowLeft size={20} />
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold">💳 负债</h1>
+          <p className="text-sm text-slate-500 mt-1">共 {accounts.length} 个账户</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
+        <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+          <span className="font-semibold">负债合计</span>
+          <span className={`text-xl font-bold tabular-nums ${pnlCls(total)}`}>{formatMoney(total)}</span>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {accounts.map(a => {
+          const bal = sumById.get(a.id) ?? 0;
+          const instLabel = a.Institution?.name?.trim() || "";
+          const prefix = instLabel ? `${instLabel}·` : "";
+          return (
+            <Link
+              key={a.id}
+              href={`/?accountId=${a.id}&view=${a.kind === AccountKind.bank_credit || a.kind === AccountKind.loan ? "bill" : "detail"}`}
+              className="block bg-white rounded-xl border border-slate-200 px-6 py-4 hover:border-blue-200 hover:shadow-sm transition-all"
+            >
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="font-semibold text-foreground">{prefix}{a.name}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    {a.kind === AccountKind.bank_credit ? "信用卡" : a.kind === AccountKind.loan ? "贷款" : "其他"}
+                  </div>
+                </div>
+                <div className={`text-lg font-bold tabular-nums ${pnlCls(bal)}`}>{formatMoney(bal)}</div>
+              </div>
+            </Link>
+          );
+        })}
+        {accounts.length === 0 && (
+          <div className="text-center py-8 text-slate-400">暂无负债账户</div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function GET(req: NextRequest) {
+  const { hidFilter } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId")?.trim();
   const fundCode = searchParams.get("fundCode")?.trim();
@@ -18,7 +20,7 @@ export async function GET(req: NextRequest) {
     : baseWhere;
 
   const last = await prisma.txRecord.findFirst({
-    where,
+    where: { ...where, ...hidFilter },
     orderBy: { createdAt: "desc" },
     select: { accountId: true, toAccountId: true, fundSubtype: true },
   });
@@ -50,6 +52,7 @@ export async function GET(req: NextRequest) {
         institutionId: investAccount.institutionId,
         kind: "bank_debit",
         isActive: true,
+        ...hidFilter,
       },
       orderBy: { name: "asc" },
       select: { id: true },
@@ -63,6 +66,7 @@ export async function GET(req: NextRequest) {
         institutionId: investAccount.institutionId,
         kind: { in: ["cash", "ewallet"] },
         isActive: true,
+        ...hidFilter,
       },
       orderBy: { name: "asc" },
       select: { id: true },

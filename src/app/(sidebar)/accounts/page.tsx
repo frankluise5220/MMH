@@ -3,6 +3,7 @@ import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ export default async function AccountsPage({
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+  const { hidFilter } = await getHouseholdScope();
 
   const groupParam =
     typeof params?.group === "string"
@@ -44,15 +46,21 @@ export default async function AccountsPage({
         : "__all__";
   const view = typeof params?.view === "string" ? params.view.trim() : "kind";
 
+  const accountIds = (await prisma.account.findMany({
+    where: { ...hidFilter },
+    select: { id: true },
+  })).map(a => a.id);
+
   const [groups, accounts, sums] = await Promise.all([
-    prisma.accountGroup.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.accountGroup.findMany({ where: { ...hidFilter }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.account.findMany({
+      where: { ...hidFilter },
       include: { AccountGroup: true, Institution: true },
       orderBy: [{ isActive: "desc" }, { kind: "asc" }, { name: "asc" }],
     }),
     prisma.txRecord.groupBy({
       by: ["accountId"],
-      where: { accountId: { not: "" } },
+      where: { accountId: { in: accountIds } },
       _sum: { amount: true },
       _count: true,
     }),
@@ -151,12 +159,20 @@ export default async function AccountsPage({
       <header className="shrink-0 border-b border-slate-200 bg-white">
         <div className="h-12 flex items-center justify-between px-4">
           <div className="text-sm font-semibold text-slate-800">账户中心</div>
-          <Link
-            href="/settings"
-            className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
-          >
-            系统设置
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/accounts/quick-add"
+              className="h-8 px-3 inline-flex items-center rounded-md border border-blue-200 bg-blue-50 text-sm text-blue-700 hover:bg-blue-100"
+            >
+              快捷新增
+            </Link>
+            <Link
+              href="/settings"
+              className="h-8 px-3 inline-flex items-center rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+            >
+              系统设置
+            </Link>
+          </div>
         </div>
         <div className="h-11 px-4 flex items-center justify-between border-t border-slate-200 bg-slate-50">
           <form method="get" className="flex items-center gap-2">

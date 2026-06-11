@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 function parsePrompt(prompt: string) {
   let dateFrom = "";
@@ -48,6 +49,7 @@ function parsePrompt(prompt: string) {
  */
 export async function POST(req: NextRequest) {
   try {
+    const { hidFilter } = await getHouseholdScope();
     const body = await req.json();
     const prompt = String(body.prompt ?? "").trim();
     if (!prompt) return NextResponse.json({ ok: false, error: "请输入修改指令" }, { status: 400 });
@@ -59,7 +61,7 @@ export async function POST(req: NextRequest) {
     const { dateFrom, dateTo, amountMin, amountMax, newFundCode } = parsePrompt(prompt);
 
     // Build filter
-    const where: any = { deletedAt: null, fundCode: { not: null } };
+    const where: any = { deletedAt: null, fundCode: { not: null }, ...hidFilter };
     if (accountId) where.OR = [{ accountId }, { toAccountId: accountId }];
     if (fundCodeFilter) where.fundCode = fundCodeFilter;
     if (dateFrom) where.date = { ...(where.date || {}), gte: new Date(`${dateFrom}-01T00:00:00.000Z`) };

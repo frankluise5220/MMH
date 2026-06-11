@@ -6,17 +6,18 @@ import { Suspense } from "react";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 async function getSidebarData() {
   await connection();
+  const ctx = await getHouseholdScope();
+  const { householdId, hidFilter } = ctx;
+
   const cookieStore = await cookies();
-  const householdId = cookieStore.get("householdId")?.value;
+  const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as string;
+  const isRedUp = colorScheme === "red_up_green_down";
 
-  const household = householdId
-    ? await prisma.household.findUnique({ where: { id: householdId }, select: { id: true, name: true } })
-    : await prisma.household.findFirst({ select: { id: true, name: true }, orderBy: { createdAt: "asc" } });
-
-  const hidFilter = household ? { householdId: household.id } : {};
+  const household = await prisma.household.findUnique({ where: { id: householdId }, select: { id: true, name: true } });
 
   const [accounts, byAccountId, byAccountName] = await Promise.all([
     prisma.account.findMany({
@@ -38,7 +39,7 @@ async function getSidebarData() {
     }),
   ]);
 
-  const investBalByAccountId = await computeInvestBalances();
+  const investBalByAccountId = await computeInvestBalances(ctx);
 
   const statsById = new Map<string, { balance: number; count: number }>();
   for (const row of byAccountId) {
@@ -94,13 +95,13 @@ async function getSidebarData() {
       })),
   ].sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
 
-  return { items, household };
+  return { items, household, isRedUp };
 }
 
 export async function Sidebar() {
-  const { items, household } = await getSidebarData();
+  const { items, household, isRedUp } = await getSidebarData();
 
-  return <Suspense fallback={<div className="w-72 bg-slate-50 border-r border-slate-200 h-screen flex-shrink-0" />}>
-    <SidebarClient items={items} household={household} />
+  return <Suspense fallback={<div className="w-72 bg-background border-r border-foreground/5 h-screen flex-shrink-0" />}>
+    <SidebarClient items={items} household={household} isRedUp={isRedUp} />
   </Suspense>;
 }
