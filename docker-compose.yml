@@ -6,17 +6,37 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_DB: openclaw
-      POSTGRES_USER: openclaw
-      POSTGRES_PASSWORD: openclaw
+      POSTGRES_DB: ${POSTGRES_DB:-openclaw}
+      POSTGRES_USER: ${POSTGRES_USER:-openclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openclaw}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres-entrypoint.sh:/docker-entrypoint-initdb.d/init.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openclaw} -d ${POSTGRES_DB:-openclaw}"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wiseme-app
+    restart: unless-stopped
+    ports:
+      - "7777:7777"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      POSTGRES_DB: ${POSTGRES_DB:-openclaw}
+      POSTGRES_USER: ${POSTGRES_USER:-openclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openclaw}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-openclaw}:${POSTGRES_PASSWORD:-openclaw}@postgres:5432/${POSTGRES_DB:-openclaw}?schema=public
+      PGPASSWORD: ${POSTGRES_PASSWORD:-openclaw}
+    depends_on:
+      - postgres
 
 volumes:
   pgdata:
