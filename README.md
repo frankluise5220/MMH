@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## NAS 安装
+
+NAS（飞牛/群晖等）Docker 部署说明见： [nas-install-manual.md](docs/nas-install-manual.md)
+
 ## Getting Started
 
 First, run the development server:
