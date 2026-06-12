@@ -1,8 +1,11 @@
 import dotenv from "dotenv";
 import { defineConfig } from "prisma/config";
 
-dotenv.config({ path: ".env" });
-dotenv.config({ path: ".env.local", override: true });
+// 只在 DATABASE_URL 未设置时才从 .env 加载，避免覆盖容器环境变量
+if (!process.env["DATABASE_URL"]) {
+  dotenv.config({ path: ".env" });
+  dotenv.config({ path: ".env.local", override: true });
+}
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
