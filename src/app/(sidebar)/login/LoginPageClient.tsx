@@ -7,6 +7,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [mode, setMode] = useState<"login" | "setup">("login");
+  const [showReset, setShowReset] = useState(false);
+  const [resetStep, setResetStep] = useState<"request" | "confirm">("request");
+  const [resetInfo, setResetInfo] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
   const loginRef = useRef<HTMLDivElement>(null);
   const setupRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +70,74 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       setError("验证失败");
     } finally {
       setLoading(false);
+    }
+  }
+
+  function getResetValues() {
+    const container = loginRef.current;
+    if (!container) return { username: "", email: "", code: "", newPassword: "", confirmPassword: "" };
+    const username = (container.querySelector<HTMLInputElement>('input[data-field="resetUsername"]')?.value ?? "").trim();
+    const email = (container.querySelector<HTMLInputElement>('input[data-field="resetEmail"]')?.value ?? "").trim();
+    const code = (container.querySelector<HTMLInputElement>('input[data-field="resetCode"]')?.value ?? "").trim();
+    const newPassword = (container.querySelector<HTMLInputElement>('input[data-field="resetNewPassword"]')?.value ?? "").trim();
+    const confirmPassword = (container.querySelector<HTMLInputElement>('input[data-field="resetConfirmPassword"]')?.value ?? "").trim();
+    return { username, email, code, newPassword, confirmPassword };
+  }
+
+  async function handleResetRequest() {
+    const { username, email } = getResetValues();
+    if (!username) { setResetError("请输入用户名"); return; }
+    if (!email) { setResetError("请输入找回邮箱"); return; }
+    setResetLoading(true);
+    setResetError("");
+    setResetInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, email }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; error?: string; message?: string } | null;
+      if (!data?.ok) {
+        setResetError(data?.error ?? "发送失败");
+        return;
+      }
+      setResetInfo(data.message ?? "如果该用户已绑定邮箱，将收到一封验证码邮件。");
+      setResetStep("confirm");
+    } catch {
+      setResetError("发送失败");
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
+  async function handleResetConfirm() {
+    const { username, code, newPassword, confirmPassword } = getResetValues();
+    if (!username) { setResetError("请输入用户名"); return; }
+    if (!code) { setResetError("请输入验证码"); return; }
+    if (!newPassword) { setResetError("请输入新密码"); return; }
+    if (newPassword !== confirmPassword) { setResetError("两次输入的密码不一致"); return; }
+    setResetLoading(true);
+    setResetError("");
+    setResetInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, code, newPassword }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; error?: string } | null;
+      if (!data?.ok) {
+        setResetError(data?.error ?? "重置失败");
+        return;
+      }
+      setResetInfo("密码已重置，请返回登录。");
+      setResetStep("request");
+      setShowReset(false);
+    } catch {
+      setResetError("重置失败");
+    } finally {
+      setResetLoading(false);
     }
   }
 
@@ -162,6 +235,102 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             >
               {loading ? "验证中…" : "进入"}
             </button>
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              onClick={() => { setShowReset(!showReset); setResetStep("request"); setResetError(""); setResetInfo(""); }}
+              disabled={loading || resetLoading}
+            >
+              {showReset ? "收起找回密码" : "忘记密码？"}
+            </button>
+
+            {showReset && (
+              <div className="pt-2 border-t border-slate-100 space-y-3">
+                <div className="text-xs font-medium text-slate-600">找回密码</div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">用户名</div>
+                  <input
+                    data-field="resetUsername"
+                    type="text"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    placeholder="输入用户名"
+                  />
+                </div>
+                {resetStep === "request" && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">找回邮箱</div>
+                    <input
+                      data-field="resetEmail"
+                      type="email"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      placeholder="该用户绑定的邮箱"
+                    />
+                  </div>
+                )}
+                {resetStep === "confirm" && (
+                  <>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">验证码</div>
+                      <input
+                        data-field="resetCode"
+                        type="text"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder="邮箱中收到的验证码"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">新密码</div>
+                      <input
+                        data-field="resetNewPassword"
+                        type="password"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder="输入新密码"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">确认新密码</div>
+                      <input
+                        data-field="resetConfirmPassword"
+                        type="password"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder="再次输入新密码"
+                      />
+                    </div>
+                  </>
+                )}
+                {resetError && <div className="text-sm text-red-600">{resetError}</div>}
+                {resetInfo && <div className="text-sm text-slate-600">{resetInfo}</div>}
+                {resetStep === "request" ? (
+                  <button
+                    type="button"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    disabled={resetLoading}
+                    onClick={handleResetRequest}
+                  >
+                    {resetLoading ? "发送中…" : "发送验证码"}
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      className="h-9 w-full rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                      disabled={resetLoading}
+                      onClick={handleResetConfirm}
+                    >
+                      {resetLoading ? "提交中…" : "重置密码"}
+                    </button>
+                    <button
+                      type="button"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                      disabled={resetLoading}
+                      onClick={() => { setResetStep("request"); setResetError(""); setResetInfo(""); }}
+                    >
+                      返回上一步
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

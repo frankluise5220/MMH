@@ -24,7 +24,7 @@ export async function GET() {
   const users = await prisma.user.findMany({
     where: { householdId },
     orderBy: { name: "asc" },
-    select: { id: true, name: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
+    select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
   });
   return NextResponse.json({
     ok: true,
@@ -34,6 +34,7 @@ export async function GET() {
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(80),
+  email: z.union([z.string().email(), z.literal("")]).optional(),
   role: z.enum(["admin", "user"]).default("user"),
   password: z.string().optional(),
 });
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少必填字段（name）" }, { status: 400, headers: cors() });
   }
 
-  const { name, role, password } = parse.data;
+  const { name, role, password, email } = parse.data;
 
   // 检查当前账簿内同名用户是否已存在
   const existing = await prisma.user.findFirst({ where: { name, householdId } });
@@ -55,14 +56,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "用户名已存在" }, { status: 409, headers: cors() });
   }
 
-  const data: { name: string; role: string; householdId: string; passwordHash?: string } = { name, role, householdId };
+  const data: { name: string; role: string; householdId: string; email?: string; passwordHash?: string } = { name, role, householdId };
+  if (email != null) data.email = email.trim() ? email.trim() : undefined;
   if (password && password.trim()) {
     data.passwordHash = await hashPassword(password.trim());
   }
 
   const user = await prisma.user.create({
     data,
-    select: { id: true, name: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
+    select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
   });
 
   return NextResponse.json({ ok: true, user }, { headers: cors() });
@@ -71,6 +73,7 @@ export async function POST(req: NextRequest) {
 const UpdateSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(80).optional(),
+  email: z.union([z.string().email(), z.literal("")]).optional(),
   role: z.enum(["admin", "user"]).optional(),
   password: z.string().optional(),
 });
@@ -84,7 +87,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少必填字段（id）" }, { status: 400, headers: cors() });
   }
 
-  const { id, name, role, password } = parse.data;
+  const { id, name, role, password, email } = parse.data;
 
   const existing = await prisma.user.findUnique({ where: { id } });
   if (!existing) {
@@ -104,8 +107,9 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  const data: { name?: string; role?: string; passwordHash?: string | null } = {};
+  const data: { name?: string; email?: string | null; role?: string; passwordHash?: string | null } = {};
   if (name) data.name = name;
+  if (email != null) data.email = email.trim() ? email.trim() : null;
   if (role) data.role = role;
   if (password && password.trim()) {
     data.passwordHash = await hashPassword(password.trim());
@@ -118,7 +122,7 @@ export async function PUT(req: NextRequest) {
   const user = await prisma.user.update({
     where: { id },
     data,
-    select: { id: true, name: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
+    select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
   });
 
   return NextResponse.json({ ok: true, user }, { headers: cors() });

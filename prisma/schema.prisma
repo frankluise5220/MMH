@@ -37,11 +37,11 @@ model Account {
   updatedAt                                                  DateTime            @default(now()) @updatedAt
   costBasisMethod                                            CostBasisMethod?
   defaultConfirmDays                                         Int?
-  defaultArrivalDays                                          Int?
+  defaultArrivalDays                                         Int?
   defaultFundQueryApiId                                      String?
   FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
-  Household                                                  Household          @relation(fields: [householdId], references: [id])
+  Household                                                  Household           @relation(fields: [householdId], references: [id])
   Institution                                                Institution?        @relation(fields: [institutionId], references: [id])
   User                                                       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
   AccountAlias                                               AccountAlias[]
@@ -53,8 +53,8 @@ model Account {
   FundSnapshot                                               FundSnapshot[]
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[] @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[] @relation("RegularInvestPlan_cashAccountIdToAccount")
-  transactions_accountIdToAccount                           TxRecord[]      @relation("transactions_accountIdToAccount")
-  transactions_toAccountIdToAccount                         TxRecord[]      @relation("transactions_toAccountIdToAccount")
+  transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
+  transactions_toAccountIdToAccount                          TxRecord[]          @relation("transactions_toAccountIdToAccount")
 
   @@index([householdId, kind])
   @@index([householdId, name])
@@ -74,14 +74,14 @@ model AccountAlias {
 }
 
 model AccountGroup {
-  id          String     @id @default(cuid())
+  id          String    @id @default(cuid())
   name        String
-  sortOrder   Int        @default(0)
+  sortOrder   Int       @default(0)
   householdId String
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @default(now()) @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
   Account     Account[]
-  Household   Household  @relation(fields: [householdId], references: [id])
+  Household   Household @relation(fields: [householdId], references: [id])
 }
 
 model AiChannel {
@@ -112,13 +112,13 @@ model AiModel {
 }
 
 model Attachment {
-  id           String       @id @default(cuid())
+  id           String   @id @default(cuid())
   name         String?
   mimeType     String?
   url          String?
-  createdAt    DateTime     @default(now())
+  createdAt    DateTime @default(now())
   entryId      String
-  updatedAt    DateTime     @default(now()) @updatedAt
+  updatedAt    DateTime @default(now()) @updatedAt
   transactions TxRecord @relation(fields: [entryId], references: [id], onDelete: Cascade)
 }
 
@@ -138,16 +138,16 @@ model BillOverride {
 }
 
 model Category {
-  id             String         @id @default(cuid())
+  id             String     @id @default(cuid())
   name           String
   type           String
   icon           String?
   parentId       String?
   householdId    String?
-  isSystem       Boolean        @default(false)
-  Household      Household?     @relation(fields: [householdId], references: [id])
-  Category       Category?      @relation("CategoryToCategory", fields: [parentId], references: [id])
-  other_Category Category[]     @relation("CategoryToCategory")
+  isSystem       Boolean    @default(false)
+  Household      Household? @relation(fields: [householdId], references: [id])
+  Category       Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  other_Category Category[] @relation("CategoryToCategory")
   transactions   TxRecord[]
 
   @@index([householdId, type, name])
@@ -209,22 +209,22 @@ model EntryTag {
   entryId      String
   tagId        String
   transactions TxRecord @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  Tag          Tag          @relation(fields: [tagId], references: [id])
+  Tag          Tag      @relation(fields: [tagId], references: [id])
 
   @@id([entryId, tagId])
 }
 
 model FundConfirmDays {
-  id              String   @id @default(cuid())
-  accountId       String
-  fundCode        String
-  days            Int
-  redeemCostDays  Int      @default(1)
-  arrivalDays     Int      @default(0)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @default(now()) @updatedAt
-  effectiveDate   DateTime @default(now())
-  Account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  accountId      String
+  fundCode       String
+  days           Int
+  redeemCostDays Int      @default(1)
+  arrivalDays    Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+  effectiveDate  DateTime @default(now())
+  Account        Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, fundCode])
   @@index([accountId, fundCode])
@@ -266,16 +266,16 @@ model FundHolding {
 }
 
 model FundNavCache {
-  id        String   @id @default(cuid())
-  fundCode  String
-  navDate   DateTime
-  nav       Decimal  @db.Decimal(20, 6)
-  cumNav    Decimal? @db.Decimal(20, 6)
-  name      String?
-  sgzt      String?  // 鐢宠喘鐘舵€侊紙寮€鏀剧敵璐€佹殏鍋滅敵璐€侀檺鍒跺ぇ棰濈敵璐瓑锛?
+  id            String   @id @default(cuid())
+  fundCode      String
+  navDate       DateTime
+  nav           Decimal  @db.Decimal(20, 6)
+  cumNav        Decimal? @db.Decimal(20, 6)
+  name          String?
+  sgzt          String? // 鐢宠喘鐘舵€侊紙寮€鏀剧敵璐€佹殏鍋滅敵璐€侀檺鍒跺ぇ棰濈敵璐瓑锛?
   purchaseLimit Int? // 鐢宠喘鏃ヤ笂闄愰噾棰濓紙鍏冿級锛屼粠澶╁ぉ鍩洪噾璇︽儏椤佃В鏋?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
 
   @@unique([fundCode, navDate])
   @@index([fundCode])
@@ -335,13 +335,13 @@ model Household {
 }
 
 model ImportBatch {
-  id           String         @id @default(cuid())
+  id           String     @id @default(cuid())
   source       String?
   note         String?
   rawText      String?
   householdId  String?
-  createdAt    DateTime       @default(now())
-  Household    Household?     @relation(fields: [householdId], references: [id])
+  createdAt    DateTime   @default(now())
+  Household    Household? @relation(fields: [householdId], references: [id])
   transactions TxRecord[]
 }
 
@@ -369,7 +369,7 @@ model RegularInvestPlan {
   lastRunDate                                      DateTime?
   feeRate                                          Decimal?            @db.Decimal(10, 6)
   confirmDays                                      Int?
-  arrivalDays                                      Int?             @default(2)
+  arrivalDays                                      Int?                @default(2)
   createdAt                                        DateTime            @default(now())
   updatedAt                                        DateTime            @default(now()) @updatedAt
   accountName                                      String
@@ -413,17 +413,21 @@ model Tag {
 }
 
 model User {
-  id           String        @id @default(cuid())
-  name         String
-  role         String        @default("admin")
-  isSystem     Boolean       @default(false)
-  passwordHash String?
-  householdId  String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @default(now()) @updatedAt
-  Account      Account[]
-  Household    Household?    @relation(fields: [householdId], references: [id])
-  UserSettings UserSettings?
+  id                 String               @id @default(cuid())
+  name               String
+  email              String?
+  role               String               @default("admin")
+  isSystem           Boolean              @default(false)
+  passwordHash       String?
+  householdId        String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @default(now()) @updatedAt
+  Account            Account[]
+  Household          Household?           @relation(fields: [householdId], references: [id])
+  UserSettings       UserSettings?
+  PasswordResetToken PasswordResetToken[]
+
+  @@index([email])
 }
 
 model UserSettings {
@@ -441,57 +445,73 @@ model UserSettings {
   User          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model TxRecord {
-  id                                        String            @id @default(cuid())
-  date                                      DateTime
-  type                                      TransactionType
-  amount                                    Decimal           @db.Decimal(18, 2)
-  accountId                                 String
-  accountName                               String
-  toAccountId                               String?
-  toAccountName                             String?
-  categoryId                                String?
-  categoryName                              String?
-  fundCode                                  String?
-  fundProductType                           FundProductType?
-  confirmDate                               DateTime?
-  statementMonth                            String?           @db.VarChar(7)
-  note                                      String?
-  deletedAt                                 DateTime?
-  importBatchId                             String?
-  householdId                               String?
-  createdAt                                 DateTime          @default(now())
-  updatedAt                                 DateTime          @default(now()) @updatedAt
-  currency                                  String            @default("CNY")
-  paymentChannelId                          String?
-  paymentChannelName                        String?
-  status                                    TransactionStatus @default(posted)
-  fundArrivalAmount                         Decimal?          @db.Decimal(18, 2)
-  fundArrivalDate                           DateTime?
-  fundConfirmDate                           DateTime?
-  fundFee                                   Decimal?          @db.Decimal(18, 2)
-  fundNav                                   Decimal?          @db.Decimal(18, 6)
-  fundSubtype                               FundSubtype?
-  fundUnits                                 Decimal?          @db.Decimal(20, 6)
-  realizedProfit                            Decimal?          @db.Decimal(18, 2)
-  regularInvestPlanId                       String?
-  fundName                                  String?
-  source                                    String?           @default("manual")
-  Attachment                                Attachment[]
-  EntryTag                                  EntryTag[]
-  account   Account           @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])
-  Category                                  Category?         @relation(fields: [categoryId], references: [id])
-  Household                                 Household?        @relation(fields: [householdId], references: [id])
-  ImportBatch                               ImportBatch?      @relation(fields: [importBatchId], references: [id])
-  toAccount                                 Account?          @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  ip        String?
+  userAgent String?
 
-  @@map("transactions")
+  User User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model TxRecord {
+  id                  String            @id @default(cuid())
+  date                DateTime
+  type                TransactionType
+  amount              Decimal           @db.Decimal(18, 2)
+  accountId           String
+  accountName         String
+  toAccountId         String?
+  toAccountName       String?
+  categoryId          String?
+  categoryName        String?
+  fundCode            String?
+  fundProductType     FundProductType?
+  confirmDate         DateTime?
+  statementMonth      String?           @db.VarChar(7)
+  note                String?
+  deletedAt           DateTime?
+  importBatchId       String?
+  householdId         String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @default(now()) @updatedAt
+  currency            String            @default("CNY")
+  paymentChannelId    String?
+  paymentChannelName  String?
+  status              TransactionStatus @default(posted)
+  fundArrivalAmount   Decimal?          @db.Decimal(18, 2)
+  fundArrivalDate     DateTime?
+  fundConfirmDate     DateTime?
+  fundFee             Decimal?          @db.Decimal(18, 2)
+  fundNav             Decimal?          @db.Decimal(18, 6)
+  fundSubtype         FundSubtype?
+  fundUnits           Decimal?          @db.Decimal(20, 6)
+  realizedProfit      Decimal?          @db.Decimal(18, 2)
+  regularInvestPlanId String?
+  fundName            String?
+  source              String?           @default("manual")
+  Attachment          Attachment[]
+  EntryTag            EntryTag[]
+  account             Account           @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])
+  Category            Category?         @relation(fields: [categoryId], references: [id])
+  Household           Household?        @relation(fields: [householdId], references: [id])
+  ImportBatch         ImportBatch?      @relation(fields: [importBatchId], references: [id])
+  toAccount           Account?          @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
+
   @@index([accountId, date])
   @@index([accountId, statementMonth])
   @@index([deletedAt])
   @@index([regularInvestPlanId])
   @@index([toAccountId, fundProductType])
   @@index([type])
+  @@map("transactions")
 }
 
 model CommandTestResult {

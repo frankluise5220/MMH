@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 type ManagedUser = {
   id: string;
   name: string;
+  email?: string | null;
   role: string;
   isSystem?: boolean;
   hasPassword?: boolean;
@@ -18,11 +19,12 @@ function UserModal({
   users,
 }: {
   initial?: ManagedUser;
-  onSave: (data: { name: string; role: string; password?: string }) => void;
+  onSave: (data: { name: string; email?: string; role: string; password?: string }) => void;
   onCancel: () => void;
   users: ManagedUser[];
 }) {
   const [name, setName] = useState(initial?.name ?? "");
+  const [email, setEmail] = useState(initial?.email ?? "");
   const [role, setRole] = useState(initial?.role ?? "user");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -53,7 +55,7 @@ function UserModal({
     const err = validate();
     if (err) { setError(err); return; }
     setError("");
-    onSave({ name: name.trim(), role, password: password.trim() || undefined });
+    onSave({ name: name.trim(), email: email.trim() || undefined, role, password: password.trim() || undefined });
   }
 
   return (
@@ -71,6 +73,11 @@ function UserModal({
             <label className="block text-xs font-medium text-slate-600 mb-1.5">用户名</label>
             <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
               placeholder="输入用户名" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">找回邮箱（可选）</label>
+            <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              placeholder="用于忘记密码找回" value={email ?? ""} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">角色</label>
@@ -141,11 +148,11 @@ export default function UsersPage() {
     } catch { /* ignore */ }
   }
 
-  async function handleSave(data: { name: string; role: string; password?: string }) {
+  async function handleSave(data: { name: string; email?: string; role: string; password?: string }) {
     try {
       const url = "/api/v1/settings/users";
       const body = editingUser
-        ? { id: editingUser.id, name: data.name, role: data.role, password: data.password }
+        ? { id: editingUser.id, name: data.name, email: data.email ?? "", role: data.role, password: data.password }
         : data;
       const res = await fetch(url, {
         method: editingUser ? "PUT" : "POST",
@@ -190,7 +197,10 @@ export default function UsersPage() {
           <div className="divide-y divide-slate-100">
             {users.map((u) => (
               <div key={u.id} className="px-3 py-2 flex items-center gap-2">
-                <span className="text-sm text-slate-800 flex-1 truncate">{u.name}</span>
+                <span className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-800 truncate">{u.name}</div>
+                  {u.email && <div className="text-[11px] text-slate-400 truncate">{u.email}</div>}
+                </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${u.role === "admin" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}>
                   {u.role === "admin" ? "管理员" : "用户"}
                 </span>
