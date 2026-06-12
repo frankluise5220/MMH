@@ -5,12 +5,23 @@ import { prisma } from "@/lib/db/prisma";
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
+  // IMAP 收件
   emailHost: z.string().optional(),
   emailPort: z.number().optional(),
   emailSecure: z.boolean().optional(),
   emailUser: z.string().optional(),
   emailPassword: z.string().optional(),
   emailMailbox: z.string().optional(),
+  // SMTP 发件
+  smtpHost: z.string().optional(),
+  smtpPort: z.number().optional(),
+  smtpSecure: z.boolean().optional(),
+  smtpUser: z.string().optional(),
+  smtpPass: z.string().optional(),
+  smtpFrom: z.string().optional(),
+  // Resend 发件
+  resendApiKey: z.string().optional(),
+  resendFrom: z.string().optional(),
 });
 
 export async function POST(req: Request) {
@@ -43,6 +54,14 @@ export async function POST(req: Request) {
       emailUser: data.emailUser,
       emailPassword: data.emailPassword,
       emailMailbox: data.emailMailbox,
+      smtpHost: data.smtpHost,
+      smtpPort: data.smtpPort,
+      smtpSecure: data.smtpSecure,
+      smtpUser: data.smtpUser,
+      smtpPass: data.smtpPass,
+      smtpFrom: data.smtpFrom,
+      resendApiKey: data.resendApiKey,
+      resendFrom: data.resendFrom,
     },
     create: {
       userId,
@@ -52,6 +71,14 @@ export async function POST(req: Request) {
       emailUser: data.emailUser,
       emailPassword: data.emailPassword,
       emailMailbox: data.emailMailbox,
+      smtpHost: data.smtpHost,
+      smtpPort: data.smtpPort,
+      smtpSecure: data.smtpSecure,
+      smtpUser: data.smtpUser,
+      smtpPass: data.smtpPass,
+      smtpFrom: data.smtpFrom,
+      resendApiKey: data.resendApiKey,
+      resendFrom: data.resendFrom,
     },
   });
 
@@ -84,6 +111,14 @@ export async function GET(req: Request) {
       emailUser: settings.emailUser,
       emailPassword: settings.emailPassword,
       emailMailbox: settings.emailMailbox,
+      smtpHost: settings.smtpHost,
+      smtpPort: settings.smtpPort,
+      smtpSecure: settings.smtpSecure,
+      smtpUser: settings.smtpUser,
+      smtpPass: settings.smtpPass,
+      smtpFrom: settings.smtpFrom,
+      resendApiKey: settings.resendApiKey,
+      resendFrom: settings.resendFrom,
     } : null,
   });
 }

@@ -55,6 +55,19 @@ export default function SettingsEmailPage() {
   const [subjectIncludes, setSubjectIncludes] = useState("");
   const [fromIncludes, setFromIncludes] = useState("");
 
+  // 发件配置
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("465");
+  const [smtpSecure, setSmtpSecure] = useState(true);
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [resendApiKey, setResendApiKey] = useState("");
+  const [resendFrom, setResendFrom] = useState("");
+  const [testTo, setTestTo] = useState("");
+  const [testSending, setTestSending] = useState(false);
+  const [outboundTab, setOutboundTab] = useState<"smtp" | "resend">("smtp");
+
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [discoveringMailboxes, setDiscoveringMailboxes] = useState(false);
@@ -88,6 +101,14 @@ export default function SettingsEmailPage() {
           setMailbox(d.data.emailMailbox ?? "INBOX");
           setUser(d.data.emailUser ?? "");
           setPassword(d.data.emailPassword ?? "");
+          setSmtpHost(d.data.smtpHost ?? "");
+          setSmtpPort(String(d.data.smtpPort ?? "465"));
+          setSmtpSecure(d.data.smtpSecure !== false);
+          setSmtpUser(d.data.smtpUser ?? "");
+          setSmtpPass(d.data.smtpPass ?? "");
+          setSmtpFrom(d.data.smtpFrom ?? "");
+          setResendApiKey(d.data.resendApiKey ?? "");
+          setResendFrom(d.data.resendFrom ?? "");
         }
       })
       .catch(() => {});
@@ -122,6 +143,14 @@ export default function SettingsEmailPage() {
           emailUser: user.trim(),
           emailPassword: password,
           emailMailbox: mailbox.trim() || "INBOX",
+          smtpHost: smtpHost.trim(),
+          smtpPort: Number(smtpPort) || 465,
+          smtpSecure: smtpSecure,
+          smtpUser: smtpUser.trim(),
+          smtpPass: smtpPass,
+          smtpFrom: smtpFrom.trim(),
+          resendApiKey: resendApiKey.trim(),
+          resendFrom: resendFrom.trim(),
         }),
       });
       const data = (await res.json().catch(() => null)) as { ok: true } | { ok: false; error: string } | null;
@@ -210,6 +239,32 @@ export default function SettingsEmailPage() {
       }
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function onTestSend() {
+    if (!testTo.trim()) {
+      setError("请输入测试收件邮箱");
+      return;
+    }
+    setTestSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/email/test-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: testTo.trim() }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setInfo("测试邮件发送成功，请检查收件箱。");
+      } else {
+        setError(data.error ?? "发送失败");
+      }
+    } catch {
+      setError("网络错误，发送失败");
+    } finally {
+      setTestSending(false);
     }
   }
 
@@ -398,6 +453,56 @@ export default function SettingsEmailPage() {
             <button className="h-9 px-3 rounded-md border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50" onClick={onDiscoverMailboxes} disabled={discoveringMailboxes || testing || saving || loading || parsing || importing} type="button">
               {discoveringMailboxes ? "探测目录中…" : "探测邮箱目录"}
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 发件配置 */}
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-200">
+          <div className="text-sm font-semibold text-slate-800">发件配置</div>
+          <div className="mt-1 text-xs text-slate-500">用于密码找回等系统邮件发送。可配置 SMTP 或 Resend。</div>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="flex gap-1 bg-slate-100 rounded-md p-0.5 w-fit">
+            <button
+              className={`px-3 py-1 rounded text-xs font-medium ${outboundTab === "smtp" ? "bg-white shadow text-slate-800" : "text-slate-500 hover:text-slate-700"}`}
+              onClick={() => setOutboundTab("smtp")}
+            >SMTP</button>
+            <button
+              className={`px-3 py-1 rounded text-xs font-medium ${outboundTab === "resend" ? "bg-white shadow text-slate-800" : "text-slate-500 hover:text-slate-700"}`}
+              onClick={() => setOutboundTab("resend")}
+            >Resend</button>
+          </div>
+
+          {outboundTab === "smtp" ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="SMTP Host，例如：smtp.qq.com" />
+              <div className="grid grid-cols-2 gap-2">
+                <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="端口，例如：465" inputMode="numeric" />
+                <label className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 flex items-center gap-2">
+                  <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} />SSL/TLS
+                </label>
+              </div>
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="SMTP 用户名" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="SMTP 密码/授权码" type="password" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder="发件人地址，例如：noreply@example.com" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none md:col-span-2" value={resendApiKey} onChange={(e) => setResendApiKey(e.target.value)} placeholder="Resend API Key" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none md:col-span-2" value={resendFrom} onChange={(e) => setResendFrom(e.target.value)} placeholder="发件人地址，例如：noreply@example.com" />
+            </div>
+          )}
+
+          <div className="pt-2 border-t border-slate-100">
+            <div className="text-xs text-slate-500 mb-2">发送测试邮件以验证配置</div>
+            <div className="flex items-center gap-2">
+              <input className="h-9 w-64 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="接收测试邮件的邮箱" />
+              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50" onClick={onTestSend} disabled={testSending} type="button">
+                {testSending ? "发送中…" : "发送测试邮件"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

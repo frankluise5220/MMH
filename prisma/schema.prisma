@@ -433,12 +433,23 @@ model User {
 model UserSettings {
   id            String   @id @default(cuid())
   userId        String   @unique
+  // IMAP 收件
   emailHost     String?
   emailPort     Int?
   emailSecure   Boolean  @default(true)
   emailUser     String?
   emailPassword String?
   emailMailbox  String   @default("INBOX")
+  // SMTP 发件
+  smtpHost      String?
+  smtpPort      Int?
+  smtpSecure    Boolean  @default(true)
+  smtpUser      String?
+  smtpPass      String?
+  smtpFrom      String?
+  // Resend 发件
+  resendApiKey  String?
+  resendFrom    String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
   colorScheme   String   @default("red_up_green_down")
