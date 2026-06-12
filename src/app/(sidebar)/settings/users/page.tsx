@@ -139,23 +139,10 @@ export default function UsersPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
 
-  // #region debug-point B:users-page
-  const reportDebug = (hypothesisId: string, msg: string, data?: Record<string, unknown>) => {
-    void fetch("http://192.168.2.199:7778/event", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "settings/users/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
-    }).catch(() => {});
-  };
-  // #endregion
-
   useEffect(() => { fetchUsers(); }, []);
 
   async function fetchUsers() {
     try {
-      // #region debug-point B:users-page-mounted
-      reportDebug("B", "users page fetch started", { pathname: typeof window !== "undefined" ? window.location.pathname : "" });
-      // #endregion
       const res = await fetch("/api/v1/settings/users");
       const text = await res.text();
       let data: { ok?: boolean; users?: ManagedUser[]; error?: string } | { raw: string } = { raw: "" };
@@ -164,13 +151,6 @@ export default function UsersPage() {
       } catch {
         data = { raw: text.slice(0, 200) };
       }
-      // #region debug-point B:users-fetch-result
-      reportDebug("B", "users fetch completed", {
-        status: res.status,
-        ok: res.ok,
-        payload: data,
-      });
-      // #endregion
       if ("ok" in data && data.ok && Array.isArray(data.users)) {
         setUsers(data.users);
         setLoadError("");
@@ -180,9 +160,6 @@ export default function UsersPage() {
         setLoadError(hint);
       }
     } catch (error) {
-      // #region debug-point B:users-fetch-error
-      reportDebug("B", "users fetch failed", { error: error instanceof Error ? error.message : String(error) });
-      // #endregion
       setUsers([]);
       setLoadError("请求失败（网络或服务异常）");
     }

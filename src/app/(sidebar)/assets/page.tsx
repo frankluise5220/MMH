@@ -10,16 +10,6 @@ export const dynamic = "force-dynamic";
 
 const ASSET_KINDS = [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewallet];
 
-// #region debug-point D:assets-page
-function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
-  void fetch("http://192.168.2.199:7778/event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "assets/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
-  }).catch(() => {});
-}
-// #endregion
-
 export const dynamic = "force-dynamic";
 
 export default async function AssetsPage() {
@@ -36,15 +26,7 @@ export default async function AssetsPage() {
   });
 
   const total = accounts.reduce((sum, account) => sum + Number(account.balance), 0);
-  // #region debug-point D:assets-balance-snapshot
-  reportDebug("D", "assets page rendered", {
-    total,
-    bankDebit: accounts
-      .filter((account) => account.kind === AccountKind.bank_debit)
-      .slice(0, 5)
-      .map((account) => ({ id: account.id, name: account.name, balance: Number(account.balance) })),
-  });
-  // #endregion
+
 
   return (
     <div className="p-6 max-w-2xl">

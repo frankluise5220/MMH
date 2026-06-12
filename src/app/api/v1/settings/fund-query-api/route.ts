@@ -27,16 +27,6 @@ const DEFAULT_FUND_QUERY_APIS = [
   },
 ];
 
-// #region debug-point A:fund-query-api-route
-function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
-  void fetch("http://192.168.2.199:7778/event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "api/v1/settings/fund-query-api/route.ts", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
-  }).catch(() => {});
-}
-// #endregion
-
 async function ensureDefaultFundQueryApis() {
   await prisma.$transaction(
     DEFAULT_FUND_QUERY_APIS.map((api) =>
@@ -58,9 +48,6 @@ async function ensureDefaultFundQueryApis() {
 export async function GET() {
   try {
     const { householdId } = await getHouseholdScope();
-    // #region debug-point A:fund-query-api-scope
-    reportDebug("A", "fund query api get entered", { householdId });
-    // #endregion
     let apis = await prisma.fundQueryApi.findMany({
       where: {
         OR: [
@@ -75,9 +62,6 @@ export async function GET() {
     });
 
     if (apis.length === 0) {
-      // #region debug-point A:fund-query-api-empty
-      reportDebug("A", "fund query api empty before default seed", { householdId });
-      // #endregion
       await ensureDefaultFundQueryApis();
       apis = await prisma.fundQueryApi.findMany({
         where: {
@@ -93,22 +77,8 @@ export async function GET() {
       });
     }
 
-    // #region debug-point A:fund-query-api-result
-    reportDebug("A", "fund query api get completed", {
-      householdId,
-      count: apis.length,
-      ids: apis.slice(0, 5).map((item) => item.id),
-      codes: apis.slice(0, 5).map((item) => item.code),
-    });
-    // #endregion
     return NextResponse.json({ ok: true, apis });
   } catch (error) {
-    // #region debug-point A:fund-query-api-error
-    reportDebug("A", "fund query api get threw", {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? (error.stack ?? "").slice(0, 1200) : "",
-    });
-    // #endregion
     return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500 });
   }
 }

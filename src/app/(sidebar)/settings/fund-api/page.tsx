@@ -20,20 +20,8 @@ export default function FundQueryApiPage() {
   const [form, setForm] = useState<Partial<FundQueryApiRecord>>({});
   const [saving, setSaving] = useState(false);
 
-  // #region debug-point A:fund-api-page
-  const reportDebug = (hypothesisId: string, msg: string, data?: Record<string, unknown>) => {
-    void fetch("http://192.168.2.199:7778/event", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "settings/fund-api/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
-    }).catch(() => {});
-  };
-  // #endregion
-
   useEffect(() => {
-    // #region debug-point A:fund-api-page-mounted
-    reportDebug("A", "fund api page mounted", { pathname: typeof window !== "undefined" ? window.location.pathname : "" });
-    // #endregion
+    // 移除导致无限闪烁或重绘的 debug 上报
     fetch("/api/v1/settings/fund-query-api")
       .then(async (r) => {
         const text = await r.text();
@@ -43,13 +31,6 @@ export default function FundQueryApiPage() {
         } catch {
           payload = { raw: text.slice(0, 200) };
         }
-        // #region debug-point A:fund-api-fetch-result
-        reportDebug("A", "fund api fetch completed", {
-          status: r.status,
-          ok: r.ok,
-          payload,
-        });
-        // #endregion
         return { status: r.status, ok: r.ok, payload };
       })
       .then(({ status, payload }) => {
@@ -63,9 +44,6 @@ export default function FundQueryApiPage() {
         }
       })
       .catch((error) => {
-        // #region debug-point A:fund-api-fetch-error
-        reportDebug("A", "fund api fetch failed", { error: error instanceof Error ? error.message : String(error) });
-        // #endregion
         setApis([]);
         setLoadError("请求失败（网络或服务异常）");
       })
