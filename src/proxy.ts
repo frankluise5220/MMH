@@ -62,8 +62,19 @@ const ORIGIN_BYPASS_PATHS = [
   "/api/v1/settings/system",
 ];
 
+// #region debug-point C:proxy
+function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
+  void fetch("http://192.168.2.199:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "proxy.ts", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
+  }).catch(() => {});
+}
+// #endregion
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const shouldTraceSettings = pathname === "/settings/fund-api" || pathname === "/settings/users" || pathname === "/api/v1/settings/fund-query-api" || pathname === "/api/v1/settings/users";
 
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
@@ -75,6 +86,9 @@ export async function proxy(req: NextRequest) {
     if (hostname) {
       const allowed = await getAllowedOrigins();
       if (!allowed.includes(hostname)) {
+        // #region debug-point C:proxy-origin-denied
+        if (shouldTraceSettings) reportDebug("C", "proxy denied by origin", { pathname, hostname, allowed });
+        // #endregion
         return new NextResponse("Access Denied", { status: 403 });
       }
     }
@@ -82,6 +96,9 @@ export async function proxy(req: NextRequest) {
 
   const verified = req.cookies.get(VERIFIED_KEY)?.value;
   if (verified === "ok") {
+    // #region debug-point C:proxy-allowed
+    if (shouldTraceSettings) reportDebug("C", "proxy allowed request", { pathname, verified });
+    // #endregion
     return NextResponse.next();
   }
 
@@ -89,6 +106,9 @@ export async function proxy(req: NextRequest) {
   const loginUrl = req.nextUrl.clone();
   loginUrl.pathname = "/login";
   loginUrl.searchParams.delete("error");
+  // #region debug-point C:proxy-login-redirect
+  if (shouldTraceSettings) reportDebug("C", "proxy redirected to login", { pathname, verified: verified ?? null });
+  // #endregion
   return NextResponse.redirect(loginUrl);
 }
 

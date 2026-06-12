@@ -15,15 +15,60 @@ type FundQueryApiRecord = {
 export default function FundQueryApiPage() {
   const [apis, setApis] = useState<FundQueryApiRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<FundQueryApiRecord>>({});
   const [saving, setSaving] = useState(false);
 
+  // #region debug-point A:fund-api-page
+  const reportDebug = (hypothesisId: string, msg: string, data?: Record<string, unknown>) => {
+    void fetch("http://192.168.2.199:7778/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "settings/fund-api/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
+    }).catch(() => {});
+  };
+  // #endregion
+
   useEffect(() => {
+    // #region debug-point A:fund-api-page-mounted
+    reportDebug("A", "fund api page mounted", { pathname: typeof window !== "undefined" ? window.location.pathname : "" });
+    // #endregion
     fetch("/api/v1/settings/fund-query-api")
-      .then(r => r.json())
-      .then(d => { if (d.ok) setApis(d.apis); })
-      .catch(() => {})
+      .then(async (r) => {
+        const text = await r.text();
+        let payload: { ok?: boolean; apis?: FundQueryApiRecord[]; error?: string } | { raw: string } = { raw: "" };
+        try {
+          payload = JSON.parse(text) as { ok?: boolean; apis?: FundQueryApiRecord[]; error?: string };
+        } catch {
+          payload = { raw: text.slice(0, 200) };
+        }
+        // #region debug-point A:fund-api-fetch-result
+        reportDebug("A", "fund api fetch completed", {
+          status: r.status,
+          ok: r.ok,
+          payload,
+        });
+        // #endregion
+        return { status: r.status, ok: r.ok, payload };
+      })
+      .then(({ status, payload }) => {
+        if ("ok" in payload && payload.ok) {
+          setApis(Array.isArray(payload.apis) ? payload.apis : []);
+          setLoadError("");
+        } else {
+          setApis([]);
+          const hint = "ok" in payload ? (payload.error || `请求失败（${status}）`) : `请求失败（${status}）`;
+          setLoadError(hint);
+        }
+      })
+      .catch((error) => {
+        // #region debug-point A:fund-api-fetch-error
+        reportDebug("A", "fund api fetch failed", { error: error instanceof Error ? error.message : String(error) });
+        // #endregion
+        setApis([]);
+        setLoadError("请求失败（网络或服务异常）");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -120,6 +165,12 @@ export default function FundQueryApiPage() {
           + 添加 API
         </button>
       </div>
+
+      {loadError && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          {loadError}
+        </div>
+      )}
 
       <div className="space-y-2">
         {editingId === "__new__" && (

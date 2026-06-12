@@ -3,22 +3,114 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
+const DEFAULT_FUND_QUERY_APIS = [
+  {
+    code: "eastmoney",
+    name: "天天基金",
+    baseUrl: "http://fundgz.1234567.com.cn/js/{code}.js",
+    priority: 1,
+    isActive: true,
+  },
+  {
+    code: "eastmoney_history",
+    name: "东方财富历史净值",
+    baseUrl: "http://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=5&startDate={date}&endDate={date}",
+    priority: 2,
+    isActive: true,
+  },
+  {
+    code: "danjuan",
+    name: "蛋卷基金",
+    baseUrl: "https://danjuanfunds.com/djapi/fund/{code}",
+    priority: 3,
+    isActive: false,
+  },
+];
+
+// #region debug-point A:fund-query-api-route
+function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
+  void fetch("http://192.168.2.199:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "api/v1/settings/fund-query-api/route.ts", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
+  }).catch(() => {});
+}
+// #endregion
+
+async function ensureDefaultFundQueryApis() {
+  await prisma.$transaction(
+    DEFAULT_FUND_QUERY_APIS.map((api) =>
+      prisma.fundQueryApi.upsert({
+        where: { code: api.code },
+        create: api,
+        update: {
+          name: api.name,
+          baseUrl: api.baseUrl,
+          priority: api.priority,
+          isActive: api.isActive,
+        },
+      }),
+    ),
+  );
+}
+
 // GET: 获取当前账簿内的 FundQueryApi 列表
 export async function GET() {
-  const { householdId } = await getHouseholdScope();
-  const apis = await prisma.fundQueryApi.findMany({
-    where: {
-      OR: [
-        { householdId },
-        { householdId: null },
+  try {
+    const { householdId } = await getHouseholdScope();
+    // #region debug-point A:fund-query-api-scope
+    reportDebug("A", "fund query api get entered", { householdId });
+    // #endregion
+    let apis = await prisma.fundQueryApi.findMany({
+      where: {
+        OR: [
+          { householdId },
+          { householdId: null },
+        ],
+      },
+      orderBy: [
+        { priority: "asc" },
+        { createdAt: "asc" },
       ],
-    },
-    orderBy: [
-      { priority: "asc" },
-      { createdAt: "asc" },
-    ],
-  });
-  return NextResponse.json({ ok: true, apis });
+    });
+
+    if (apis.length === 0) {
+      // #region debug-point A:fund-query-api-empty
+      reportDebug("A", "fund query api empty before default seed", { householdId });
+      // #endregion
+      await ensureDefaultFundQueryApis();
+      apis = await prisma.fundQueryApi.findMany({
+        where: {
+          OR: [
+            { householdId },
+            { householdId: null },
+          ],
+        },
+        orderBy: [
+          { priority: "asc" },
+          { createdAt: "asc" },
+        ],
+      });
+    }
+
+    // #region debug-point A:fund-query-api-result
+    reportDebug("A", "fund query api get completed", {
+      householdId,
+      count: apis.length,
+      ids: apis.slice(0, 5).map((item) => item.id),
+      codes: apis.slice(0, 5).map((item) => item.code),
+    });
+    // #endregion
+    return NextResponse.json({ ok: true, apis });
+  } catch (error) {
+    // #region debug-point A:fund-query-api-error
+    reportDebug("A", "fund query api get threw", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? (error.stack ?? "").slice(0, 1200) : "",
+    });
+    // #endregion
+    return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500 });
+  }
 }
 
 const CreateSchema = z.object({

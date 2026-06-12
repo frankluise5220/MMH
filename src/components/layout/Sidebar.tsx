@@ -95,6 +95,28 @@ async function getSidebarData() {
       })),
   ].sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
 
+  // #region debug-point D:sidebar-balance-snapshot
+  void fetch("http://192.168.2.199:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "fund-users-balance",
+      runId: "pre-fix",
+      hypothesisId: "D",
+      location: "components/layout/Sidebar.tsx",
+      msg: "[DEBUG] sidebar rendered",
+      data: {
+        householdId,
+        bankDebit: items
+          .filter((item) => item.kind === "bank_debit")
+          .slice(0, 5)
+          .map((item) => ({ id: item.id, name: item.name, balance: item.balance })),
+      },
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
   return { items, household, isRedUp };
 }
 

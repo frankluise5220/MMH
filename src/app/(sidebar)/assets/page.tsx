@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
-import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
@@ -11,6 +10,16 @@ export const dynamic = "force-dynamic";
 
 const ASSET_KINDS = [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewallet];
 
+// #region debug-point D:assets-page
+function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
+  void fetch("http://192.168.2.199:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "assets/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
+  }).catch(() => {});
+}
+// #endregion
+
 export default async function AssetsPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
@@ -18,21 +27,22 @@ export default async function AssetsPage() {
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
 
-  const [accounts, sums] = await Promise.all([
-    prisma.account.findMany({
-      where: { isActive: true, kind: { in: ASSET_KINDS }, ...hidFilter },
-      include: { AccountGroup: true, Institution: true },
-      orderBy: [{ name: "asc" }],
-    }),
-    prisma.txRecord.groupBy({
-      by: ["accountId"],
-      where: { account: { kind: { in: ASSET_KINDS }, ...hidFilter } },
-      _sum: { amount: true },
-    }),
-  ]);
+  const accounts = await prisma.account.findMany({
+    where: { isActive: true, kind: { in: ASSET_KINDS }, ...hidFilter },
+    include: { AccountGroup: true, Institution: true },
+    orderBy: [{ name: "asc" }],
+  });
 
-  const sumById = new Map(sums.map(s => [s.accountId, toNumber(s._sum.amount)]));
-  const total = accounts.reduce((s, a) => s + (sumById.get(a.id) ?? 0), 0);
+  const total = accounts.reduce((sum, account) => sum + Number(account.balance), 0);
+  // #region debug-point D:assets-balance-snapshot
+  reportDebug("D", "assets page rendered", {
+    total,
+    bankDebit: accounts
+      .filter((account) => account.kind === AccountKind.bank_debit)
+      .slice(0, 5)
+      .map((account) => ({ id: account.id, name: account.name, balance: Number(account.balance) })),
+  });
+  // #endregion
 
   return (
     <div className="p-6 max-w-2xl">
@@ -55,7 +65,7 @@ export default async function AssetsPage() {
 
       <div className="space-y-3">
         {accounts.map(a => {
-          const bal = sumById.get(a.id) ?? 0;
+          const bal = Number(a.balance);
           const instLabel = a.Institution?.name?.trim() || "";
           const prefix = instLabel ? `${instLabel}·` : "";
           return (

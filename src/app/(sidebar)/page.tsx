@@ -2315,29 +2315,7 @@ export default async function Home({
   })();
 
   const investBalByAccountId = isInvestAccount ? await computeInvestBalances(ctx) : new Map();
-
-  if (selectedAccount) {
-    const agg = await prisma.txRecord.aggregate({
-      where: { accountId: selectedAccount.id },
-      _sum: { amount: true },
-    });
-    const txSum = toNumber(agg._sum.amount);
-    const newBalance = isBillAccount
-      ? String(-cumulativeRemainValue)
-      : String(txSum);
-    await prisma.account.update({
-      where: { id: selectedAccount.id },
-      data: { balance: newBalance },
-    });
-
-    if (selectedAccount.kind === AccountKind.investment) {
-      const investDetail = investBalByAccountId.get(selectedAccount.id);
-      await prisma.account.update({
-        where: { id: selectedAccount.id },
-        data: { balance: String(investDetail?.marketValue ?? 0) },
-      });
-    }
-  }
+  const selectedAccountBalanceValue = selectedAccount ? Number(selectedAccount.balance) : 0;
 
   const creditCardBillDetails =
     view === "bill" && creditCardBill && isBillAccount
@@ -2700,14 +2678,14 @@ export default async function Home({
           <div className="h-12 flex items-center justify-between px-4">
             <div className="flex items-center gap-3 text-sm">
               <span className="font-semibold text-slate-800">{selectedAccountLabel || "全部账户"}</span>
-              {isBillAccount && view === "bill" && cumulativeRemainValue > 0 ? (
-                <span className="tabular-nums font-semibold text-red-500">{formatMoney(-cumulativeRemainValue)}</span>
+              {!selectedAccount ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(totalNetWorthValue)}`}>{formatMoney(totalNetWorthValue)}</span>
               ) : view === "investmoney" && investmoneyData ? (
                 <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investmoneyData.totalMarketValue)}</span>
               ) : view === "investfund" && investfundData ? (
                 <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investfundData.totalMarketValue)}</span>
               ) : (
-                <span className={`tabular-nums font-semibold ${pnlCls(total.net)}`}>{formatMoney(total.net)}</span>
+                <span className={`tabular-nums font-semibold ${pnlCls(selectedAccountBalanceValue)}`}>{formatMoney(selectedAccountBalanceValue)}</span>
               )}
               {isBillAccount && (
                 <div className="flex items-center gap-2">

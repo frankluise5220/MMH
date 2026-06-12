@@ -135,17 +135,57 @@ function UserModal({
 
 export default function UsersPage() {
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+
+  // #region debug-point B:users-page
+  const reportDebug = (hypothesisId: string, msg: string, data?: Record<string, unknown>) => {
+    void fetch("http://192.168.2.199:7778/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "settings/users/page.tsx", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
+    }).catch(() => {});
+  };
+  // #endregion
 
   useEffect(() => { fetchUsers(); }, []);
 
   async function fetchUsers() {
     try {
+      // #region debug-point B:users-page-mounted
+      reportDebug("B", "users page fetch started", { pathname: typeof window !== "undefined" ? window.location.pathname : "" });
+      // #endregion
       const res = await fetch("/api/v1/settings/users");
-      const data = await res.json();
-      if (data.ok && Array.isArray(data.users)) setUsers(data.users);
-    } catch { /* ignore */ }
+      const text = await res.text();
+      let data: { ok?: boolean; users?: ManagedUser[]; error?: string } | { raw: string } = { raw: "" };
+      try {
+        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; error?: string };
+      } catch {
+        data = { raw: text.slice(0, 200) };
+      }
+      // #region debug-point B:users-fetch-result
+      reportDebug("B", "users fetch completed", {
+        status: res.status,
+        ok: res.ok,
+        payload: data,
+      });
+      // #endregion
+      if ("ok" in data && data.ok && Array.isArray(data.users)) {
+        setUsers(data.users);
+        setLoadError("");
+      } else {
+        setUsers([]);
+        const hint = "ok" in data ? (data.error || `请求失败（${res.status}）`) : `请求失败（${res.status}）`;
+        setLoadError(hint);
+      }
+    } catch (error) {
+      // #region debug-point B:users-fetch-error
+      reportDebug("B", "users fetch failed", { error: error instanceof Error ? error.message : String(error) });
+      // #endregion
+      setUsers([]);
+      setLoadError("请求失败（网络或服务异常）");
+    }
   }
 
   async function handleSave(data: { name: string; email?: string; role: string; password?: string }) {
@@ -191,6 +231,12 @@ export default function UsersPage() {
           + 添加用户
         </button>
       </div>
+
+      {loadError && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          {loadError}
+        </div>
+      )}
 
       {users.length > 0 ? (
         <div className="border border-slate-200 rounded-md overflow-hidden bg-white">
