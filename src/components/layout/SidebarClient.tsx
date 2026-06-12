@@ -42,6 +42,17 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const footerAvatarRef = useRef<HTMLDivElement>(null);
+
+  async function handleLogout() {
+    if (!window.confirm("确认退出当前账号吗？")) return;
+    try {
+      await fetch("/api/v1/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    } catch {
+      window.alert("退出失败");
+    }
+  }
+
   useEffect(() => { setGroupByInstitution(localStorage.getItem("sidebar_group_by") === "institution"); }, []);
 
   function toggleGroupBy() {
@@ -117,7 +128,16 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
           </div>
           <div className="flex-1 min-w-0 text-foreground">
             <p className="font-heading text-2xl font-bold tracking-tight text-foreground leading-none">Calm.</p>
-            <p className="mt-1 text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{household?.name || "Guest"}</p>
+            <div className="mt-1 flex items-center gap-2">
+              <p className="text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{household?.name || "Guest"}</p>
+              <button 
+                onClick={(e) => { e.stopPropagation(); handleLogout(); }}
+                className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
+                title="退出当前用户"
+              >
+                退出
+              </button>
+            </div>
           </div>
           <ChevronDown size={16} className={`text-foreground/20 group-hover:text-foreground/50 transition-all duration-200 ${switcherOpen ? "rotate-180" : ""}`} />
           <Link href="/settings" onClick={(e) => e.stopPropagation()} className="text-foreground/20 hover:text-foreground p-1 transition-colors">
