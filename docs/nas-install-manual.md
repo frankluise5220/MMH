@@ -20,6 +20,7 @@
 - 如果 `git clone` 报 `HTTP/2 stream ... was not closed cleanly`：先执行 `git config --global http.version HTTP/1.1`，再重试
 - 如果构建时报 `401 Unauthorized` 且 URL 类似 `https://docker.fnnas.com/.../library/node/...`：说明 NAS 配了需要登录的镜像加速/代理；先在 NAS Docker 设置里关闭该加速或改成可用镜像源，或执行 `sudo docker login docker.fnnas.com` 登录后再重试
 - 第一次构建可能会看到 `apt-get install ...` 持续很久（NAS 性能/网络影响），这是正常现象；只要日志还在继续下载/安装就耐心等待即可
+- 如果构建时报 `npm error ECONNRESET` / `npm error network aborted`：这是拉 npm 依赖时网络中断，通常重试一次即可；也可以先执行 `sudo docker builder prune -af` 清掉失败缓存后再重试
 - 复制粘贴要包含从 `sh -c 'set -e` 开始到最后一行单独的 `'` 结束（包含最后这个 `'`），不要只粘贴中间几行
 
 ```sh
