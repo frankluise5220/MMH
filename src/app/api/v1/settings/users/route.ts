@@ -22,7 +22,12 @@ export async function OPTIONS() {
 export async function GET() {
   const { householdId } = await getHouseholdScope();
   const users = await prisma.user.findMany({
-    where: { householdId },
+    where: {
+      OR: [
+        { householdId },
+        { isSystem: true },
+      ],
+    },
     orderBy: { name: "asc" },
     select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
   });
@@ -95,12 +100,12 @@ export async function PUT(req: NextRequest) {
   }
 
   // 越权检查：用户不属于当前账簿
-  if (existing.householdId !== householdId) {
+  if (existing.householdId !== householdId && !existing.isSystem) {
     return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403, headers: cors() });
   }
 
   // 最后一个管理员不可降级为 user
-  if (role === "user" && existing.role === "admin") {
+  if (role === "user" && existing.role === "admin" && !existing.isSystem) {
     const adminCount = await prisma.user.count({ where: { householdId, role: "admin" } });
     if (adminCount <= 1) {
       return NextResponse.json({ ok: false, error: "不能将最后一个管理员降级为普通用户" }, { status: 409, headers: cors() });
@@ -144,7 +149,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   // 越权检查：用户不属于当前账簿
-  if (existing.householdId !== householdId) {
+  if (existing.householdId !== householdId && !existing.isSystem) {
     return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403, headers: cors() });
   }
 

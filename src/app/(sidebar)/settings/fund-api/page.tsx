@@ -38,19 +38,37 @@ export default function FundQueryApiPage() {
     });
   }
 
+  function openCreate() {
+    setEditingId("__new__");
+    setForm({
+      code: "",
+      name: "",
+      baseUrl: "",
+      apiKey: "",
+      priority: apis.length,
+      isActive: true,
+    });
+  }
+
   async function save() {
     if (!editingId) return;
     setSaving(true);
     try {
+      const isCreate = editingId === "__new__";
       const res = await fetch("/api/v1/settings/fund-query-api", {
-        method: "PUT",
+        method: isCreate ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: editingId, ...form }),
+        body: JSON.stringify(isCreate ? form : { id: editingId, ...form }),
       });
       const data = await res.json();
       if (data.ok) {
-        setApis(prev => prev.map(a => a.id === editingId ? { ...a, ...form } : a));
+        if (isCreate && data.api) {
+          setApis(prev => [...prev, data.api].sort((a, b) => a.priority - b.priority));
+        } else {
+          setApis(prev => prev.map(a => a.id === editingId ? { ...a, ...form } as FundQueryApiRecord : a));
+        }
         setEditingId(null);
+        setForm({});
       } else {
         alert(data.error || "保存失败");
       }
@@ -86,14 +104,69 @@ export default function FundQueryApiPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">基金查询 API 管理</h2>
-      <p className="text-xs text-slate-500 leading-relaxed">
-        请求地址含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 占位符的 API 支持按日期查询历史净值；
-        不含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 的 API 仅返回最新净值，查询指定日期时会被自动跳过。
-        优先级数值越小越先执行。
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">基金查询 API 管理</h2>
+          <p className="text-xs text-slate-500 leading-relaxed mt-1">
+            请求地址含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 占位符的 API 支持按日期查询历史净值；
+            不含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 的 API 仅返回最新净值，查询指定日期时会被自动跳过。
+            优先级数值越小越先执行。
+          </p>
+        </div>
+        <button
+          onClick={openCreate}
+          className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"
+        >
+          + 添加 API
+        </button>
+      </div>
 
       <div className="space-y-2">
+        {editingId === "__new__" && (
+          <div className="rounded-lg border border-blue-200 bg-white p-4">
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">代码</div>
+                  <input value={form.code ?? ""} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">优先级</div>
+                  <input type="number" value={form.priority ?? 0} onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">名称</div>
+                <input value={form.name ?? ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">请求地址</div>
+                <input value={form.baseUrl ?? ""} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">API Key（可选）</div>
+                <input value={form.apiKey ?? ""} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => { setEditingId(null); setForm({}); }}
+                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">取消</button>
+                <button onClick={save} disabled={saving}
+                  className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">创建</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {apis.length === 0 && editingId !== "__new__" && (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-400">
+            暂无基金查询 API，请点击右上角“添加 API”。
+          </div>
+        )}
         {apis.map((api) => (
           <div key={api.id}
             className={`rounded-lg border p-4 ${api.isActive ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50 opacity-60"}`}

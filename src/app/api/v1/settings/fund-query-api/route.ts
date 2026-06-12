@@ -7,8 +7,16 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 export async function GET() {
   const { householdId } = await getHouseholdScope();
   const apis = await prisma.fundQueryApi.findMany({
-    where: { householdId },
-    orderBy: { priority: "asc" },
+    where: {
+      OR: [
+        { householdId },
+        { householdId: null },
+      ],
+    },
+    orderBy: [
+      { priority: "asc" },
+      { createdAt: "asc" },
+    ],
   });
   return NextResponse.json({ ok: true, apis });
 }
@@ -52,7 +60,7 @@ export async function PUT(req: NextRequest) {
   if (!existing) return NextResponse.json({ ok: false, error: "API 不存在" }, { status: 404 });
 
   // 越权检查：API 不属于当前账簿
-  if (existing.householdId !== householdId) {
+  if (existing.householdId !== householdId && existing.householdId !== null) {
     return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
   }
 
@@ -88,13 +96,15 @@ export async function DELETE(req: NextRequest) {
   if (!existing) return NextResponse.json({ ok: false, error: "API 不存在" }, { status: 404 });
 
   // 越权检查：API 不属于当前账簿
-  if (existing.householdId !== householdId) {
+  if (existing.householdId !== householdId && existing.householdId !== null) {
     return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
   }
 
   // 删除前清除当前账簿内所有引用此 API 的账户默认设置
   await prisma.account.updateMany({
-    where: { defaultFundQueryApiId: id, householdId },
+    where: existing.householdId
+      ? { defaultFundQueryApiId: id, householdId }
+      : { defaultFundQueryApiId: id },
     data: { defaultFundQueryApiId: null },
   });
 
