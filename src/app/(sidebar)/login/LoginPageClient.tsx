@@ -7,6 +7,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [mode, setMode] = useState<"login" | "setup">("login");
+  const [systemUsers, setSystemUsers] = useState<any[]>([]);
   const [showReset, setShowReset] = useState(false);
   const [resetStep, setResetStep] = useState<"request" | "confirm">("request");
   const [resetInfo, setResetInfo] = useState("");
@@ -17,10 +18,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
   useEffect(() => {
     fetch("/api/v1/auth/password-status")
-      .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean }>)
+      .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; users?: any[] }>)
       .then(data => {
         if (data.ok) {
           setMode(data.hasPassword ? "login" : "setup");
+          if (data.users) setSystemUsers(data.users);
         }
         setChecking(false);
       })
@@ -213,37 +215,53 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
         {mode === "login" && (
           <div ref={loginRef} className="p-6 space-y-4">
-            <div className="space-y-1">
+            {!showReset && (
+              <>
+                <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">用户名</div>
-              <input
-                data-field="username"
-                type="text"
-                autoComplete="username"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                placeholder="输入用户名"
-              />
+              {systemUsers.length > 0 ? (
+                <select
+                  data-field="username"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                >
+                  {systemUsers.map(u => (
+                    <option key={u.id} value={u.name}>{u.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  data-field="username"
+                  type="text"
+                  autoComplete="username"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                  placeholder="输入用户名"
+                />
+              )}
             </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">密码</div>
-              <input
-                data-field="password"
-                type="password"
-                autoComplete="current-password"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                placeholder="输入密码"
-                autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") handleLogin(); }}
-              />
-            </div>
-            {error && <div className="text-sm text-red-600">{error}</div>}
-            <button
-              type="button"
-              className="h-10 w-full rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-              disabled={loading}
-              onClick={handleLogin}
-            >
-              {loading ? "验证中…" : "进入"}
-            </button>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">密码</div>
+                  <input
+                    data-field="password"
+                    type="password"
+                    autoComplete="current-password"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                    placeholder="输入密码"
+                    autoFocus
+                    onKeyDown={(e) => { if (e.key === "Enter") handleLogin(); }}
+                  />
+                </div>
+                {error && <div className="text-sm text-red-600">{error}</div>}
+                <button
+                  type="button"
+                  className="h-10 w-full rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                  disabled={loading}
+                  onClick={handleLogin}
+                >
+                  {loading ? "验证中…" : "进入"}
+                </button>
+              </>
+            )}
+            
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"
