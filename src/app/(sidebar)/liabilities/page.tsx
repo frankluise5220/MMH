@@ -10,8 +10,6 @@ export const dynamic = "force-dynamic";
 
 const LIABILITY_KINDS = [AccountKind.bank_credit, AccountKind.loan, AccountKind.other];
 
-export const dynamic = "force-dynamic";
-
 export default async function LiabilitiesPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
@@ -39,9 +37,9 @@ export default async function LiabilitiesPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
-        <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-          <span className="font-semibold">负债合计</span>
+      <div className="page-card overflow-hidden mb-6">
+        <div className="page-card-header">
+          <span className="page-title">负债合计</span>
           <span className={`text-xl font-bold tabular-nums ${pnlCls(total)}`}>{formatMoney(total)}</span>
         </div>
       </div>
@@ -55,7 +53,7 @@ export default async function LiabilitiesPage() {
             <Link
               key={a.id}
               href={`/?accountId=${a.id}&view=${a.kind === AccountKind.bank_credit || a.kind === AccountKind.loan ? "bill" : "detail"}`}
-              className="block bg-white rounded-xl border border-slate-200 px-6 py-4 hover:border-blue-200 hover:shadow-sm transition-all"
+              className="block page-card px-6 py-4 transition-all"
             >
               <div className="flex justify-between items-center">
                 <div>

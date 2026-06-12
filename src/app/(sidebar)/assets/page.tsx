@@ -10,8 +10,6 @@ export const dynamic = "force-dynamic";
 
 const ASSET_KINDS = [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewallet];
 
-export const dynamic = "force-dynamic";
-
 export default async function AssetsPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
@@ -29,7 +27,7 @@ export default async function AssetsPage() {
 
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="flex-1 min-h-0 flex flex-col p-6 max-w-2xl overflow-y-auto">
       <div className="flex items-center gap-3 mb-6">
         <Link href="/" className="p-2 rounded-lg hover:bg-slate-100 transition-colors">
           <ArrowLeft size={20} />
@@ -40,9 +38,9 @@ export default async function AssetsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
-        <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-          <span className="font-semibold">资产合计</span>
+      <div className="page-card overflow-hidden mb-6">
+        <div className="page-card-header">
+          <span className="page-title">资产合计</span>
           <span className={`text-xl font-bold tabular-nums ${pnlCls(total)}`}>{formatMoney(total)}</span>
         </div>
       </div>
@@ -56,7 +54,7 @@ export default async function AssetsPage() {
             <Link
               key={a.id}
               href={`/?accountId=${a.id}&view=detail`}
-              className="block bg-white rounded-xl border border-slate-200 px-6 py-4 hover:border-blue-200 hover:shadow-sm transition-all"
+              className="block page-card px-6 py-4 transition-all"
             >
               <div className="flex justify-between items-center">
                 <div>
