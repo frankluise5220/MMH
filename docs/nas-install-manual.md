@@ -82,7 +82,18 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 ```
 
 3. 在 NAS 的容器管理界面，创建“Stack/Compose/项目”，选择该目录下的 `docker-compose.yml`（或直接粘贴文件内容）
-4. 点击“部署/启动”
+4. 点击”部署/启动”
 
 访问：
 - `http://NAS_IP:7777/`
+
+---
+
+## 3) 更新
+
+```bash
+cd ~/wiseme
+git pull
+sudo docker compose down
+sudo docker compose up -d --build
+```
