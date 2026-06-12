@@ -440,6 +440,19 @@ export function LedgerSwitcher({
                     <div className="text-sm text-red-600">{switchError}</div>
                   )}
 
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenChange(false);
+                        router.push("/login");
+                      }}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      忘记密码？去登录页找回
+                    </button>
+                  </div>
+
                   <div className="flex gap-3">
                     <button
                       type="button"
