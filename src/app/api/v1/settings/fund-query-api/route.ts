@@ -25,6 +25,13 @@ const DEFAULT_FUND_QUERY_APIS = [
     priority: 3,
     isActive: false,
   },
+  {
+    code: "alipay",
+    name: "支付宝基金",
+    baseUrl: "https://fundapi.eastmoney.com/fundapi/{code}/nav",
+    priority: 5,
+    isActive: false,
+  },
 ];
 
 async function ensureDefaultFundQueryApis() {
