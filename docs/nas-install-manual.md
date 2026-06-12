@@ -46,8 +46,7 @@ STATEMENT_API_KEY=”$STATEMENT_API_KEY”
 PRISMA_CLIENT_ENGINE_TYPE=”binary”
 EOF
 
-sudo docker compose pull
-sudo docker compose up -d
+sudo docker compose up -d --build # 首次安装需要编译
 
 echo “访问地址: http://<NAS_IP>:7777/” # 把 <NAS_IP> 换成你的 NAS 局域网 IP
 echo “ADMIN_PASSWORD=$ADMIN_PASSWORD”
@@ -94,6 +93,5 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 ```bash
 cd ~/wiseme
 git pull
-sudo docker compose pull
-sudo docker compose up -d
+sudo docker compose up -d --build
 ```
