@@ -40,6 +40,7 @@ ADMIN_PASSWORD="$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | 
 STATEMENT_API_KEY="$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p)"
 
 cat > .env <<EOF
+DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public"
 POSTGRES_DB="$POSTGRES_DB"
 POSTGRES_USER="$POSTGRES_USER"
 POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
@@ -72,6 +73,7 @@ echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
 2. 在项目根目录创建 `.env`（与 `docker-compose.yml` 同级），内容如下，必须改密码：
 
 ```env
+DATABASE_URL="postgresql://openclaw:请换成很长的随机密码@postgres:5432/openclaw?schema=public"
 POSTGRES_DB=openclaw # 可改：数据库名
 POSTGRES_USER=openclaw # 可改：数据库用户名
 POSTGRES_PASSWORD=请换成很长的随机密码 # 必改
