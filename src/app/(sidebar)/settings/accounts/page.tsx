@@ -292,19 +292,29 @@ export default function SettingsAccountsPage() {
                       <button onClick={() => setEditGroupId(null)} className="h-6 w-6 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100"><X className="w-3 h-3" /></button>
                     </div>
                   ) : (
-                    <button onClick={() => setSelectedFilter(g.id)}
-                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 ${selectedFilter === g.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedFilter(g.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedFilter(g.id);
+                        }
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 cursor-pointer ${selectedFilter === g.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                    >
                       <span className="flex-1 truncate">{g.name}</span>
                       <span className="text-[10px] text-slate-400">{accounts.filter(a => a.groupId === g.id).length}</span>
-                      <button onClick={e => { e.stopPropagation(); setEditGroupId(g.id); setEditGroupName(g.name); }}
+                      <button type="button" onClick={e => { e.stopPropagation(); setEditGroupId(g.id); setEditGroupName(g.name); }}
                         className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-blue-600 shrink-0">
                         <Pencil className="w-3 h-3" />
                       </button>
-                      <button onClick={e => { e.stopPropagation(); if (confirm("删除分组？")) deleteGroup(g.id); }}
+                      <button type="button" onClick={e => { e.stopPropagation(); if (confirm("删除分组？")) deleteGroup(g.id); }}
                         className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-red-500 shrink-0">
                         <Trash2 className="w-3 h-3" />
                       </button>
-                    </button>
+                    </div>
                   )}
                 </div>
               ))}

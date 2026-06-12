@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -20,17 +21,37 @@ export async function OPTIONS() {
 
 /** GET /api/v1/settings/users — 返回当前账簿内的所有用户 */
 export async function GET() {
-  const { householdId } = await getHouseholdScope();
-  const users = await prisma.user.findMany({
-    where: {
-      OR: [
-        { householdId },
-        { isSystem: true },
-      ],
-    },
+  const { householdId, user } = await getHouseholdScope();
+  const orFilters: Array<Record<string, unknown>> = [
+    { householdId },
+    { isSystem: true },
+  ];
+  if (isAdmin(user)) {
+    orFilters.push({ householdId: null });
+  }
+  const where = { OR: orFilters };
+
+  let users = await prisma.user.findMany({
+    where,
     orderBy: { name: "asc" },
     select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
   });
+
+  if (users.length === 0) {
+    await prisma.user.create({
+      data: {
+        name: "管理员",
+        role: "admin",
+        isSystem: false,
+        householdId,
+      },
+    });
+    users = await prisma.user.findMany({
+      where,
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
+    });
+  }
   return NextResponse.json({
     ok: true,
     users: users.map(u => ({ ...u, hasPassword: !!u.passwordHash, passwordHash: undefined })),
