@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 
 const LIABILITY_KINDS = [AccountKind.bank_credit, AccountKind.loan, AccountKind.other];
 
+export const dynamic = "force-dynamic";
+
 export default async function LiabilitiesPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;

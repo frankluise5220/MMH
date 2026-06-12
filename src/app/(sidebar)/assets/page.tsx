@@ -20,6 +20,8 @@ function reportDebug(hypothesisId: string, msg: string, data?: Record<string, un
 }
 // #endregion
 
+export const dynamic = "force-dynamic";
+
 export default async function AssetsPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
