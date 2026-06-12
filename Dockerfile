@@ -14,10 +14,10 @@ RUN npm config set fetch-retries 5 \
   && npm config set fetch-timeout 1200000 \
   && npm config set audit false \
   && npm config set fund false \
-  && npm ci
+  && npm ci --ignore-scripts
 
 COPY . .
-RUN npm run build
+RUN npx prisma generate && npm run build
 
 FROM node:20-bookworm-slim AS runtime
 
