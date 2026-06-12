@@ -35,7 +35,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   function getLoginValues() {
     const container = loginRef.current;
     if (!container) return { username: "", password: "" };
-    const username = (container.querySelector<HTMLInputElement>('input[data-field="username"]')?.value ?? "").trim();
+    const username = (container.querySelector<HTMLInputElement | HTMLSelectElement>('[data-field="username"]')?.value ?? "").trim();
     const password = (container.querySelector<HTMLInputElement>('input[data-field="password"]')?.value ?? "").trim();
     return { username, password };
   }
