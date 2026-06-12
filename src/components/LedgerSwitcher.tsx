@@ -38,7 +38,7 @@ export function LedgerSwitcher({
   const [createAdminName, setCreateAdminName] = useState("");
   const [createAdminPassword, setCreateAdminPassword] = useState("");
   const [createAdminPasswordConfirm, setCreateAdminPasswordConfirm] = useState("");
-  const [createDbPassword, setCreateDbPassword] = useState("");
+  const [createAdminEmail, setCreateAdminEmail] = useState("");
   const [createDialogError, setCreateDialogError] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -125,8 +125,7 @@ export function LedgerSwitcher({
     if (!name || adding) return;
     setCreateAdminName(name); // 默认用账簿名称作为管理员用户名
     setCreateAdminPassword("");
-    setCreateAdminPasswordConfirm("");
-    setCreateDbPassword("");
+    setCreateAdminEmail("");
     setCreateDialogError("");
     setShowCreateDialog(true);
   }
@@ -142,26 +141,13 @@ export function LedgerSwitcher({
       setCreateDialogError("两次输入的密码不一致");
       return;
     }
-    if (!createDbPassword.trim()) {
-      setCreateDialogError("请输入数据库密码");
+    if (!createAdminEmail.trim()) {
+      setCreateDialogError("请输入邮箱");
       return;
     }
     setAdding(true);
     setCreateDialogError("");
     try {
-      // 先验证数据库密码
-      const verifyRes = await fetch("/api/v1/auth/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: createDbPassword, verifySystem: true }),
-      });
-      const vd = await verifyRes.json();
-      if (!vd.ok) {
-        setCreateDialogError(vd.error ?? "数据库密码错误");
-        setAdding(false);
-        return;
-      }
-      // 创建账簿
       const res = await fetch("/api/v1/households", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -169,6 +155,7 @@ export function LedgerSwitcher({
           name,
           adminName: createAdminName.trim(),
           adminPassword: createAdminPassword,
+          adminEmail: createAdminEmail.trim(),
         }),
       });
       const d = await res.json();
@@ -498,6 +485,17 @@ export function LedgerSwitcher({
                   />
                 </div>
                 <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">邮箱</div>
+                  <input
+                    type="email"
+                    value={createAdminEmail}
+                    onChange={(e) => setCreateAdminEmail(e.target.value)}
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                    placeholder="用于密码找回"
+                    autoComplete="email"
+                  />
+                </div>
+                <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">管理员密码</div>
                   <input
                     type="password"
@@ -514,28 +512,11 @@ export function LedgerSwitcher({
                     type="password"
                     value={createAdminPasswordConfirm}
                     onChange={(e) => setCreateAdminPasswordConfirm(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleCreateWithAdmin(); }}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
                     placeholder="再次输入密码"
                     autoComplete="new-password"
                   />
-                </div>
-
-                {/* 数据库密码验证 */}
-                <div className="pt-2 border-t border-slate-100">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Shield className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                    <span className="text-xs font-medium text-amber-700">数据库密码验证</span>
-                  </div>
-                  <input
-                    type="password"
-                    value={createDbPassword}
-                    onChange={(e) => setCreateDbPassword(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleCreateWithAdmin(); }}
-                    className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400"
-                    placeholder="输入数据库密码"
-                    autoComplete="off"
-                  />
-                  <div className="mt-1 text-[10px] text-slate-400">创建账簿需要验证数据库密码</div>
                 </div>
 
                 {createDialogError && (
@@ -549,7 +530,7 @@ export function LedgerSwitcher({
                 <div className="flex gap-3">
                   <button
                     type="button"
-                    onClick={() => { setShowCreateDialog(false); setCreateAdminName(""); setCreateAdminPassword(""); setCreateAdminPasswordConfirm(""); setCreateDbPassword(""); }}
+                    onClick={() => { setShowCreateDialog(false); setCreateAdminName(""); setCreateAdminPassword(""); setCreateAdminPasswordConfirm(""); setCreateAdminEmail(""); }}
                     disabled={adding}
                     className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                   >
@@ -558,7 +539,7 @@ export function LedgerSwitcher({
                   <button
                     type="button"
                     onClick={handleCreateWithAdmin}
-                    disabled={adding || !createAdminName.trim() || !createAdminPassword.trim() || !createAdminPasswordConfirm.trim() || !createDbPassword.trim()}
+                    disabled={adding || !createAdminName.trim() || !createAdminPassword.trim() || !createAdminPasswordConfirm.trim() || !createAdminEmail.trim()}
                     className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                   >
                     {adding ? "创建中…" : "创建账簿"}

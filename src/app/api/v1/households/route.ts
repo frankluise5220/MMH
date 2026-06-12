@@ -28,9 +28,10 @@ export async function GET() {
  * POST /api/v1/households
  * 创建新账簿（含默认账户组、账户、分类、管理员用户）
  *
- * Body: { name: string, adminName?: string, adminPassword?: string }
+ * Body: { name: string, adminName?: string, adminPassword?: string, adminEmail?: string }
  * - adminName: 管理员用户名，默认使用账簿名称
  * - adminPassword: 管理员密码（创建时立即哈希存储，不再延迟设置）
+ * - adminEmail: 管理员邮箱（用于密码找回）
  * 非 admin 用户创建新账簿后，自动将用户关联到新账簿
  */
 export async function POST(req: NextRequest) {
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
   const name = String(body.name ?? "").trim();
   const adminName = String(body.adminName ?? name).trim();
   const adminPassword = String(body.adminPassword ?? "").trim();
+  const adminEmail = String(body.adminEmail ?? "").trim();
 
   if (!name || name.length > 50) {
     return NextResponse.json({ ok: false, error: "账簿名称不合法（1-50字）" }, { status: 400 });
@@ -48,6 +50,9 @@ export async function POST(req: NextRequest) {
   }
   if (!adminPassword || adminPassword.length < 1) {
     return NextResponse.json({ ok: false, error: "请设置管理员密码" }, { status: 400 });
+  }
+  if (!adminEmail) {
+    return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
   }
 
   const household = await prisma.household.create({
@@ -124,6 +129,7 @@ export async function POST(req: NextRequest) {
       role: "admin",
       isSystem: false,
       passwordHash,
+      email: adminEmail,
       householdId: household.id,
     },
   });
