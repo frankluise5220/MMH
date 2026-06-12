@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
@@ -98,16 +99,16 @@ function pickAccountName(value?: string, defaultAccountName?: string) {
   return fallback;
 }
 
-async function resolveAccountId(tx: Db, accountName?: string) {
+async function resolveAccountId(tx: Db, householdId: string, accountName?: string) {
   if (!accountName) return null;
-  const found = await tx.account.findFirst({ where: { name: accountName } });
+  const found = await tx.account.findFirst({ where: { householdId, name: accountName } });
   return found?.id ?? null;
 }
 
-async function ensureDefaultAccountGroupId(tx: Db) {
-  const existing = await tx.accountGroup.findFirst({ where: { name: "未指定" } });
+async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
+  const existing = await tx.accountGroup.findFirst({ where: { householdId, name: "未指定" } });
   if (existing?.id) return existing.id;
-  const legacy = await tx.accountGroup.findFirst({ where: { name: "默认" } });
+  const legacy = await tx.accountGroup.findFirst({ where: { householdId, name: "默认" } });
   if (legacy?.id) {
     try {
       await tx.accountGroup.update({ where: { id: legacy.id }, data: { name: "未指定" } });
@@ -119,27 +120,29 @@ async function ensureDefaultAccountGroupId(tx: Db) {
       data: {
         name: "未指定",
         sortOrder: 0,
+        householdId,
       },
     });
     return created.id;
   } catch {
-    const retry = await tx.accountGroup.findFirst({ where: { name: "未指定" } });
+    const retry = await tx.accountGroup.findFirst({ where: { householdId, name: "未指定" } });
     return retry?.id ?? null;
   }
 }
 
-async function ensureAccountId(tx: Db, accountName?: string, _meta?: { institutionName?: string; cardNumberMasked?: string; creditLimit?: number; billingDay?: number; repaymentDay?: number; }) {
+async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: { institutionName?: string; cardNumberMasked?: string; creditLimit?: number; billingDay?: number; repaymentDay?: number; }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
-  const existingId = await resolveAccountId(tx, name);
+  const existingId = await resolveAccountId(tx, householdId, name);
   if (existingId) return existingId;
 
-  const groupId = await ensureDefaultAccountGroupId(tx);
+  const groupId = await ensureDefaultAccountGroupId(tx, householdId);
   if (!groupId) return null;
 
   const isCreditCard = !!_meta?.institutionName;
   const accountData: {
     name: string;
+    householdId: string;
     groupId: string;
     kind?: "bank_credit";
     institutionId?: string | null;
@@ -147,7 +150,7 @@ async function ensureAccountId(tx: Db, accountName?: string, _meta?: { instituti
     creditLimit?: number | null;
     billingDay?: number | null;
     repaymentDay?: number | null;
-  } = { name, groupId };
+  } = { name, householdId, groupId };
 
   if (isCreditCard) {
     accountData.kind = "bank_credit";
@@ -162,17 +165,17 @@ async function ensureAccountId(tx: Db, accountName?: string, _meta?: { instituti
     const created = await tx.account.create({ data: accountData });
     return created.id;
   } catch {
-    return (await resolveAccountId(tx, name)) ?? null;
+    return (await resolveAccountId(tx, householdId, name)) ?? null;
   }
 }
 
-async function resolveCategoryId(tx: Db, categoryName?: string) {
+async function resolveCategoryId(tx: Db, householdId: string, categoryName?: string) {
   if (!categoryName) return null;
-  const found = await tx.category.findFirst({ where: { name: categoryName } });
+  const found = await tx.category.findFirst({ where: { householdId, name: categoryName } });
   return found?.id ?? null;
 }
 
-async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccountName?: string) {
+async function createTransactionFromItem(tx: Db, householdId: string, item: ParsedItem, defaultAccountName?: string) {
   const date = parseDate(item.date);
   const meta = item._meta;
 
@@ -195,8 +198,8 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
     const toAccountName = normalizeAccountCell(item.toAccount);
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, fromAccountName),
-      ensureAccountId(tx, toAccountName),
+      ensureAccountId(tx, householdId, fromAccountName),
+      ensureAccountId(tx, householdId, toAccountName),
     ]);
 
     const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, date);
@@ -231,6 +234,7 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
         accountName: fromAccountName || "未识别账户",
         toAccountId: investAccId || toAccountId || undefined,
         toAccountName: investAccName || toAccountName || "未识别账户",
+        householdId,
         note: item.remark ?? item.rawText,
         statementMonth: fromStatementMonth ?? undefined,
         // Include fund fields in create if investment account identified
@@ -247,8 +251,8 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
 
   const accountName = pickAccountName(item.account, defaultAccountName);
   const [accountId, categoryId] = await Promise.all([
-    ensureAccountId(tx, accountName, meta),
-    resolveCategoryId(tx, item.category),
+    ensureAccountId(tx, householdId, accountName, meta),
+    resolveCategoryId(tx, householdId, item.category),
   ]);
   const statementMonth = await statementMonthForAccountId(tx, accountId, date);
 
@@ -284,6 +288,7 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       categoryName: item.category ?? null,
       toAccountId: isInvestAccount ? accountId : null,
       toAccountName: isInvestAccount ? investAccountName : null,
+      householdId,
       note: item.remark ?? item.rawText,
       statementMonth,
       // Include fund fields in create if investment account
@@ -330,6 +335,7 @@ export async function POST(req: Request) {
 
   const items = parse.data.items;
   const defaultAccountName = parse.data.defaultAccountName;
+  const { householdId } = await getHouseholdScope();
 
   const created: { id: string }[] = [];
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
@@ -337,8 +343,8 @@ export async function POST(req: Request) {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     try {
-      const t = await createTransactionFromItem(prisma, item, defaultAccountName);
-      created.push({ id: t.id });
+      const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName);
+      created.push({ id: createdRecord.id });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "导入失败";
       errors.push({ index: i, rawText: item.rawText, error: msg });

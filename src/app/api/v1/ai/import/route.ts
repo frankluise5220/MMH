@@ -312,7 +312,7 @@ export async function POST(req: NextRequest) {
       data: {
         name: "默认",
         sortOrder: 0,
-        ...(householdId ? { householdId } : {}),
+        householdId,
       },
     });
     groups.push(created);
@@ -327,7 +327,7 @@ export async function POST(req: NextRequest) {
     });
     if (found) return found.id;
     const created = await prisma.institution.create({
-      data: { name, ...(householdId ? { householdId } : {}) },
+      data: { name, householdId },
     });
     return created.id;
   }
@@ -368,7 +368,7 @@ export async function POST(req: NextRequest) {
         currency: "CNY",
         isActive: true,
         groupId,
-        ...(householdId ? { householdId } : {}),
+        householdId,
         institutionId: institutionId ?? undefined,
         userId: userId ?? undefined,
       },
@@ -469,7 +469,7 @@ export async function POST(req: NextRequest) {
             fundName: resolvedFundName ?? fundContext.fundCode,
             fundProductType: productType as any,
             fundSubtype: fundSubtypeValue as any,
-            ...(householdId ? { householdId } : {}),
+            householdId,
           },
         });
         createdCount++;
@@ -505,7 +505,7 @@ export async function POST(req: NextRequest) {
             toAccountName: to.name,
             note: normalizedRemark,
             statementMonth: fromStatementMonth,
-            ...(householdId ? { householdId } : {}),
+            householdId,
           },
         });
       } else if (item.type === "investment") {
@@ -560,7 +560,7 @@ export async function POST(req: NextRequest) {
               toAccountName: single.kind === "investment" ? single.name : null,
               note: normalizedRemark,
               statementMonth,
-              ...(householdId ? { householdId } : {}),
+              householdId,
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -586,7 +586,7 @@ export async function POST(req: NextRequest) {
               toAccountName: to.name,
               note: normalizedRemark,
               statementMonth: fromStatementMonth,
-              ...(householdId ? { householdId } : {}),
+              householdId,
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -647,7 +647,7 @@ export async function POST(req: NextRequest) {
           accountName: account.name,
           note: normalizedRemark,
           statementMonth,
-          ...(householdId ? { householdId } : {}),
+          householdId,
         };
         if (category) {
           entryData.categoryId = category.id;

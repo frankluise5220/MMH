@@ -53,7 +53,7 @@ export function FundShell(props: Props) {
   type FundFilterColumn = "cashAccount" | "subtype" | "status";
   const filterColumns: FundFilterColumn[] = ["cashAccount", "subtype", "status"];
   const [activeFilterColumn, setActiveFilterColumn] = useState<FundFilterColumn | null>(null);
-  const [columnFilters, setColumnFilters] = useState<Record<FundFilterColumn, string[] | undefined>>({});
+  const [columnFilters, setColumnFilters] = useState<Partial<Record<FundFilterColumn, string[]>>>({});
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [dateFilterOpen, setDateFilterOpen] = useState(false);
@@ -291,7 +291,7 @@ export function FundShell(props: Props) {
 
   const columnFilterOptions = useMemo(() => {
     if (!activeFilterColumn) return [];
-    const values = filtered.map((e: any) => getFilterColumnValue(e, activeFilterColumn));
+    const values: string[] = filtered.map((e: any) => getFilterColumnValue(e, activeFilterColumn));
     return Array.from(new Set(values)).sort((a, b) => (a === "(空)" ? 1 : b === "(空)" ? -1 : a.localeCompare(b, "zh-CN")));
   }, [filtered, activeFilterColumn, accountOptions]);
 
