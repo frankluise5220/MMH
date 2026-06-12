@@ -19,9 +19,7 @@ services:
       retries: 5
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/frankluise5220/wiseme:latest
     container_name: wiseme-app
     restart: unless-stopped
     ports:
