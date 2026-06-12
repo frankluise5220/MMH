@@ -36,13 +36,14 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
+# 只安装生产依赖，大幅减小镜像体积
 COPY --from=build /app/package.json /app/package-lock.json ./
-COPY --from=build /app/node_modules ./node_modules
+RUN npm ci --omit=dev --ignore-scripts
+
 COPY --from=build /app/next.config.ts ./next.config.ts
 COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /app/public ./public
 COPY --from=build /app/prisma ./prisma
-COPY --from=build /app/src ./src
 COPY --from=build /app/.next ./.next
 
 ENV NODE_ENV=production

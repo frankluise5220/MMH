@@ -32,7 +32,9 @@
     "react-dom": "19.2.4",
     "recharts": "^3.8.1",
     "xlsx": "^0.18.5",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "prisma": "^7.8.0",
+    "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -41,10 +43,8 @@
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
-    "prisma": "^7.8.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
