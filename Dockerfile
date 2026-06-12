@@ -18,8 +18,14 @@ RUN npm config set fetch-retries 5 \
   && npm config set fund false \
   && npm ci --ignore-scripts
 
+# 先 copy prisma schema 和 config，让 generate 层能被缓存
+COPY prisma ./prisma/
+COPY next.config.ts tsconfig.json ./
+RUN npx prisma generate
+
+# 源码最后 copy（变更最频繁）
 COPY . .
-RUN npx prisma generate && npm run build
+RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
 
@@ -43,4 +49,4 @@ ENV PORT=7777
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-openclaw}\"; PGDATABASE=\"${POSTGRES_DB:-openclaw}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[wiseme] waiting for postgres...\"; sleep 1; done; npx prisma db push && npx prisma generate; npm run start"]
+CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-openclaw}\"; PGDATABASE=\"${POSTGRES_DB:-openclaw}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[wiseme] waiting for postgres...\"; sleep 1; done; echo '[wiseme] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && npx prisma generate && echo '[wiseme] prisma setup complete, starting app...' && npm run start"]
