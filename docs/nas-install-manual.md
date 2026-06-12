@@ -47,11 +47,18 @@ PRISMA_CLIENT_ENGINE_TYPE=”binary”
 EOF
 
 sudo docker compose up -d --build # 首次安装需要编译
-
-echo “访问地址: http://<NAS_IP>:7777/” # 把 <NAS_IP> 换成你的 NAS 局域网 IP
-echo “ADMIN_PASSWORD=$ADMIN_PASSWORD”
-echo “STATEMENT_API_KEY=$STATEMENT_API_KEY”
-echo “POSTGRES_PASSWORD=$POSTGRES_PASSWORD”
+echo “”
+echo “============================================”
+echo “  WiseMe 安装完成！”
+echo “============================================”
+echo “  访问地址: http://<NAS_IP>:7777/”
+echo “  管理员初始密码: $ADMIN_PASSWORD”
+echo “  数据库密码: $POSTGRES_PASSWORD”
+echo “  Statement API Key: $STATEMENT_API_KEY”
+echo “============================================”
+echo “  以上密码已保存在 .env 文件中”
+echo “  可通过 cat ~/wiseme/.env 查看”
+echo “============================================”
 '
 ```
 
