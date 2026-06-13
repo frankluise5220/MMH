@@ -450,6 +450,8 @@ model UserSettings {
   // Resend 发件
   resendApiKey  String?
   resendFrom    String?
+  // 功能开关
+  passwordResetEnabled Boolean @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
   colorScheme   String   @default("red_up_green_down")

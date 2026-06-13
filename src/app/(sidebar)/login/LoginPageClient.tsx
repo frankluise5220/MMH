@@ -15,14 +15,16 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [resetLoading, setResetLoading] = useState(false);
   const loginRef = useRef<HTMLDivElement>(null);
   const setupRef = useRef<HTMLDivElement>(null);
+  const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
 
   useEffect(() => {
     fetch("/api/v1/auth/password-status")
-      .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; users?: any[] }>)
+      .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; passwordResetEnabled?: boolean; users?: any[] }>)
       .then(data => {
         if (data.ok) {
           setMode(data.hasPassword ? "login" : "setup");
           if (data.users) setSystemUsers(data.users);
+          setPasswordResetEnabled(data.passwordResetEnabled ?? false);
         }
         setChecking(false);
       })
@@ -262,14 +264,16 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               </>
             )}
             
-            <button
-              type="button"
-              className="w-full text-xs text-slate-500 hover:text-slate-700"
-              onClick={() => { setShowReset(!showReset); setResetStep("request"); setResetError(""); setResetInfo(""); }}
-              disabled={loading || resetLoading}
-            >
-              {showReset ? "收起找回密码" : "忘记密码？"}
-            </button>
+            {passwordResetEnabled && (
+              <button
+                type="button"
+                className="w-full text-xs text-slate-500 hover:text-slate-700"
+                onClick={() => { setShowReset(!showReset); setResetStep("request"); setResetError(""); setResetInfo(""); }}
+                disabled={loading || resetLoading}
+              >
+                {showReset ? "收起找回密码" : "忘记密码？"}
+              </button>
+            )}
 
             {showReset && (
               <div className="pt-2 border-t border-slate-100 space-y-3">

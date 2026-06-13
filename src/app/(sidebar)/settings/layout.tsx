@@ -12,7 +12,7 @@ const navItems = [
   { href: "/settings/institutions", label: "机构", icon: Building2 },
   { href: "/settings/categories", label: "收支类别", icon: Tag },
   { href: "/settings/tags", label: "标签", icon: Hash },
-  { href: "/settings/email", label: "邮箱导入", icon: Mail },
+  { href: "/settings/email", label: "邮箱配置", icon: Mail },
   { href: "/settings/display", label: "显示", icon: Palette },
   { href: "/settings/ai", label: "AI 模型", icon: Cpu },
   { href: "/settings/users", label: "用户管理", icon: Users },

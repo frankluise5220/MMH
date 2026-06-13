@@ -4,14 +4,22 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
+import { cookies } from "next/headers";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
 /**
  * GET /api/v1/auth/password-status
  * 检查系统是否有任何用户设置了密码（或旧 SystemSetting 密码）
+ * 返回的用户列表按当前账簿过滤：
+ * - 系统用户（isSystem=true）不绑定账簿，始终显示
+ * - 普通用户只显示属于当前 householdId 的用户
  */
 export async function GET() {
+  const cookieStore = await cookies();
+  const householdId = cookieStore.get("householdId")?.value;
+
+  // 检查是否有任何用户设置了密码（全局检查，用于判断是否需要首次设置）
   const userWithPassword = await prisma.user.findFirst({
     where: { passwordHash: { not: null } },
   });
@@ -19,14 +27,38 @@ export async function GET() {
     where: { key: LEGACY_PASSWORD_KEY },
   });
   const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
+
+  // 按账簿过滤用户列表
+  // 系统用户（isSystem=true）不绑定账簿，始终显示
+  // 普通用户只显示属于当前 householdId 的用户
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, passwordHash: true, role: true, isSystem: true },
+    select: { id: true, name: true, passwordHash: true, role: true, isSystem: true, householdId: true },
+    where: householdId
+      ? {
+          OR: [
+            { isSystem: true },
+            { householdId: householdId },
+          ],
+        }
+      : undefined,
     orderBy: { name: "asc" },
   });
+
+  // 检查密码找回功能开关
+  let passwordResetEnabled = false;
+  try {
+    const firstUser = users.find(u => u.role === "admin" && !u.isSystem);
+    if (firstUser) {
+      const settings = await prisma.userSettings.findUnique({ where: { userId: firstUser.id } });
+      passwordResetEnabled = settings?.passwordResetEnabled !== false;
+    }
+  } catch {}
+
   return NextResponse.json({
     ok: true,
     hasPassword,
-    users: users.map(u => ({ ...u, hasPassword: !!u.passwordHash, passwordHash: undefined })),
+    passwordResetEnabled,
+    users: users.map(u => ({ id: u.id, name: u.name, hasPassword: !!u.passwordHash, role: u.role, isSystem: u.isSystem })),
   });
 }
 

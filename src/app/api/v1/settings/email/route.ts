@@ -22,6 +22,8 @@ const BodySchema = z.object({
   // Resend 发件
   resendApiKey: z.string().optional(),
   resendFrom: z.string().optional(),
+  // 功能开关
+  passwordResetEnabled: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -62,6 +64,7 @@ export async function POST(req: Request) {
       smtpFrom: data.smtpFrom,
       resendApiKey: data.resendApiKey,
       resendFrom: data.resendFrom,
+      passwordResetEnabled: data.passwordResetEnabled,
     },
     create: {
       userId,
@@ -79,6 +82,7 @@ export async function POST(req: Request) {
       smtpFrom: data.smtpFrom,
       resendApiKey: data.resendApiKey,
       resendFrom: data.resendFrom,
+      passwordResetEnabled: data.passwordResetEnabled,
     },
   });
 
@@ -119,6 +123,7 @@ export async function GET(req: Request) {
       smtpFrom: settings.smtpFrom,
       resendApiKey: settings.resendApiKey,
       resendFrom: settings.resendFrom,
+      passwordResetEnabled: settings.passwordResetEnabled,
     } : null,
   });
 }
