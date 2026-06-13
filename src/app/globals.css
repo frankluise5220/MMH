@@ -81,7 +81,32 @@ html {
   .bento-card:hover {
     @apply -translate-y-1 shadow-hover;
   }
-  
+
+  /* Page-level layout utilities */
+  .page-header {
+    @apply shrink-0 border-b border-foreground/10 bg-surface-white/80 backdrop-blur-sm;
+  }
+
+  .page-title {
+    @apply font-semibold text-foreground;
+  }
+
+  .page-body {
+    @apply flex-1 min-h-0 overflow-y-auto;
+  }
+
+  .page-card {
+    @apply bg-surface-white rounded-xl border border-foreground/10 shadow-soft;
+  }
+
+  .page-card:hover {
+    @apply shadow-hover;
+  }
+
+  .page-card-header {
+    @apply px-6 py-4 bg-background/50 border-b border-foreground/10 flex justify-between items-center;
+  }
+
   .sidebar-item-active {
     @apply bg-foreground text-background shadow-lg shadow-foreground/10;
   }

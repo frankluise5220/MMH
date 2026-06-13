@@ -202,9 +202,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   };
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-slate-50">
-      <header className="shrink-0 border-b border-slate-200 bg-white px-6 py-3 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-slate-800">资金统计</h1>
+    <div className="flex-1 min-h-0 flex flex-col">
+      <header className="page-header px-6 py-3 flex items-center justify-between">
+        <h1 className="text-lg page-title">资金统计</h1>
         <div className="flex items-center gap-3">
           {/* 年份切换 */}
           <div className="flex items-center gap-1">

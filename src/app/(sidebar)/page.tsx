@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
@@ -1555,6 +1556,10 @@ export default async function Home({
   await connection();
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
+  // 如果没有选择账户，默认跳转到概览页
+  if (!accountId && !accountName) {
+    redirect("/overview");
+  }
   const viewParam = params?.view === "bill" ? "bill" : params?.view === "detail" ? "detail" : params?.view === "investfund" ? "investfund" : params?.view === "investmoney" ? "investmoney" : params?.view === "regularinvest" ? "regularinvest" : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const hideZeroBills = params?.hideZeroBills === "1";
@@ -2673,11 +2678,11 @@ export default async function Home({
 
   return (
     <div className="flex h-full w-full">
-      <div className="flex-1 flex flex-col min-w-0 bg-slate-50 relative">
-        <header className="shrink-0 border-b border-slate-200 bg-white">
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        <header className="page-header">
           <div className="h-12 flex items-center justify-between px-4">
             <div className="flex items-center gap-3 text-sm">
-              <span className="font-semibold text-slate-800">{selectedAccountLabel || "全部账户"}</span>
+              <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
               {!selectedAccount ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(totalNetWorthValue)}`}>{formatMoney(totalNetWorthValue)}</span>
               ) : view === "investmoney" && investmoneyData ? (

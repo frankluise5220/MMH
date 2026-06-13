@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
-import { sendPasswordResetEmail } from "@/lib/mail/smtp";
+import { sendPasswordResetEmail } from "@/lib/mail/passwordReset";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -116,12 +117,16 @@ export async function POST(req: NextRequest) {
       expiresMinutes,
     });
     if (!mailRes.ok) {
-      await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(() => {});
+      await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除未发送验证码", "password-reset"));
+      logger.warn(mailRes.error || "验证码发送失败", "password-reset");
+      return NextResponse.json({ ok: false, error: mailRes.error }, { status: 500 });
     }
-  } catch {
-    await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(() => {});
+  } catch (error) {
+    await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除发送失败验证码", "password-reset"));
+    logger.error("验证码邮件发送失败", "password-reset", error);
+    return NextResponse.json({ ok: false, error: "验证码邮件发送失败，请检查 SMTP 配置或邮箱授权码" }, { status: 500 });
   }
 
-  return response;
+  return NextResponse.json({ ok: true, message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。" });
 }
 

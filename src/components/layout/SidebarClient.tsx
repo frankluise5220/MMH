@@ -11,7 +11,8 @@ import {
   Leaf,
   ChevronDown,
   Circle,
-  ArrowUpDown
+  ArrowUpDown,
+  EyeOff
 } from "lucide-react";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
@@ -22,7 +23,6 @@ type AccountItem = {
   name: string;
   label: string;
   balance: number;
-  count: number;
   kind: string;
   institution?: string;
   investProductType?: string;
@@ -32,13 +32,14 @@ const ASSET_KINDS = ["cash", "bank_debit", "ewallet"];
 const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
 const LIABILITY_KINDS = ["bank_credit", "loan", "other"];
 
-export function SidebarClient({ items, household, isRedUp }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean }) {
+export function SidebarClient({ items, household, isRedUp, user }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean; user: { id: string; name: string; role: string } | null }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
 
   const [groupByInstitution, setGroupByInstitution] = useState(false);
+  const [hideZero, setHideZero] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const footerAvatarRef = useRef<HTMLDivElement>(null);
@@ -46,19 +47,35 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
   async function handleLogout() {
     if (!window.confirm("确认退出当前账号吗？")) return;
     try {
-      await fetch("/api/v1/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    } catch {
-      window.alert("退出失败");
+      const res = await fetch("/api/v1/auth/logout", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || data?.ok !== true) {
+        throw new Error(data?.error || `退出接口返回 ${res.status}`);
+      }
+      window.location.assign("/login");
+    } catch (error) {
+      window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
     }
   }
 
-  useEffect(() => { setGroupByInstitution(localStorage.getItem("sidebar_group_by") === "institution"); }, []);
+  useEffect(() => {
+    setGroupByInstitution(localStorage.getItem("sidebar_group_by") === "institution");
+    setHideZero(localStorage.getItem("sidebar_hide_zero") === "true");
+  }, []);
 
   function toggleGroupBy() {
     const next = !groupByInstitution;
     setGroupByInstitution(next);
     localStorage.setItem("sidebar_group_by", next ? "institution" : "kind");
+  }
+
+  function toggleHideZero() {
+    const next = !hideZero;
+    setHideZero(next);
+    localStorage.setItem("sidebar_hide_zero", String(next));
   }
 
   function toggleSection(key: string) {
@@ -77,17 +94,19 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
     }`;
 
   const accountLinkCls = (active: boolean) =>
-    `flex items-center justify-between px-4 py-2.5 text-sm font-medium hover:bg-white/50 rounded-xl group transition-all duration-200 ${
+    `flex items-center justify-between px-3 py-1.5 text-xs font-medium hover:bg-white/50 rounded-lg group transition-all duration-200 ${
       active ? "bg-white/60 text-foreground font-semibold shadow-sm" : "text-foreground/80"
     }`;
 
   const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
 
   // Restore and Refine Grouping logic
+  const visibleItems = hideZero ? items.filter(it => it.balance !== 0) : items;
+
   const sections = useMemo(() => {
     if (groupByInstitution) {
       const instGrouped: Record<string, AccountItem[]> = {};
-      for (const it of items) {
+      for (const it of visibleItems) {
         const instKey = it.institution || "未指定机构";
         if (!instGrouped[instKey]) instGrouped[instKey] = [];
         instGrouped[instKey].push(it);
@@ -105,14 +124,14 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
         { label: "负债", kinds: LIABILITY_KINDS }
       ];
       return groups.map(g => {
-        const filtered = items.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
+        const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
         return {
           kind: g.label, label: g.label, accounts: filtered,
           total: filtered.reduce((s, a) => s + a.balance, 0)
         };
       }).filter(s => s.accounts.length > 0);
     }
-  }, [items, groupByInstitution]);
+  }, [visibleItems, groupByInstitution]);
 
   return (
     <aside className="w-72 bg-background border-r border-foreground/5 flex flex-col shrink-0 h-screen overflow-hidden">
@@ -127,10 +146,10 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
             <Leaf size={20} />
           </div>
           <div className="flex-1 min-w-0 text-foreground">
-            <p className="font-heading text-2xl font-bold tracking-tight text-foreground leading-none">Calm.</p>
+            <p className="font-heading text-lg font-bold tracking-tight text-foreground leading-none truncate">{user?.name || "未登录"}@{household?.name || "默认"}</p>
             <div className="mt-1 flex items-center gap-2">
-              <p className="text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{household?.name || "Guest"}</p>
-              <button 
+              <p className="text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{user?.role === "admin" ? "管理员" : "用户"}</p>
+              <button
                 onClick={(e) => { e.stopPropagation(); handleLogout(); }}
                 className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
                 title="退出当前用户"
@@ -156,7 +175,7 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
       <div className="px-8 pb-4 flex flex-col flex-1 min-h-0 overflow-hidden">
         <div className="shrink-0">
           <nav className="space-y-1">
-            <Link href="/" className={navItemCls("/")}>
+            <Link href="/overview" className={navItemCls("/overview")}>
               <LayoutDashboard size={18} />
               <span className="font-ui font-semibold text-sm">概览</span>
             </Link>
@@ -167,18 +186,23 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
           <nav className="space-y-1">
             <div className="mt-6 flex items-center justify-between px-4 mb-4">
               <span className="text-[10px] font-bold text-foreground/30 uppercase tracking-[0.2em]">账户</span>
-              <button onClick={toggleGroupBy} className="text-foreground/20 hover:text-foreground p-1 transition-colors" title="Toggle Grouping">
-                <ArrowUpDown size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button onClick={toggleHideZero} className={`p-1 transition-colors ${hideZero ? "text-foreground/60" : "text-foreground/20 hover:text-foreground"}`} title="隐藏余额为0的账户">
+                  <EyeOff size={14} />
+                </button>
+                <button onClick={toggleGroupBy} className="text-foreground/20 hover:text-foreground p-1 transition-colors" title="切换分组方式">
+                  <ArrowUpDown size={14} />
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-2">
               {sections.map((sec) => {
                 const collapsed = collapsedSections.has(sec.kind);
                 return (
                   <div key={sec.kind}>
                     <div
-                      className="sticky top-0 z-10 flex items-center px-4 py-2.5 w-full rounded-xl transition-all duration-300 hover:bg-white/60 group"
+                      className="sticky top-0 z-10 flex items-center px-3 py-1.5 w-full rounded-lg transition-all duration-300 hover:bg-white/60 group"
                       style={{ background: "rgba(255,255,255,0.7)" }}
                     >
                       <Link
@@ -195,7 +219,7 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
                       <span className="flex-1" />
                       <button
                         onClick={() => toggleSection(sec.kind)}
-                        className={`text-xs tabular-nums font-semibold mr-1 ${balCls(sec.total)}`}
+                        className={`text-[11px] tabular-nums font-semibold mr-1 ${balCls(sec.total)}`}
                       >
                         {formatMoney(sec.total)}
                       </button>
@@ -210,7 +234,7 @@ export function SidebarClient({ items, household, isRedUp }: { items: AccountIte
                       </button>
                     </div>
                     {!collapsed && (
-                      <div className="space-y-1">
+                      <div className="space-y-0.5">
                         {sec.accounts.map((it) => {
                           const active = pathname === "/" && (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name);
                           const href = (() => {

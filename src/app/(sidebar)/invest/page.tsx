@@ -40,10 +40,10 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
 
   if (accounts.length === 0) {
     return (
-      <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
-        <header className="shrink-0 border-b border-slate-200 bg-white">
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="page-header">
           <div className="h-12 flex items-center px-4">
-            <div className="text-sm font-semibold text-slate-800">投资一览</div>
+            <div className="text-sm page-title">投资一览</div>
           </div>
         </header>
         <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
@@ -225,11 +225,11 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
   const totalFloatingRate = totalCostAll > 0 ? totalFloatingPnL / totalCostAll : 0;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
-      <header className="shrink-0 border-b border-slate-200 bg-white">
+    <div className="flex-1 flex flex-col min-w-0">
+      <header className="page-header">
         <div className="h-12 flex items-center justify-between px-4">
           <div className="flex items-center gap-4">
-            <div className="text-sm font-semibold text-slate-800">投资</div>
+            <div className="text-sm page-title">投资</div>
             <div className="flex items-center gap-1">
               <Link href="/invest?tab=overview" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "overview" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>投资一览</Link>
               <Link href="/invest?tab=stats" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "stats" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>收益统计</Link>

@@ -1,8 +1,22 @@
 import { NextResponse } from "next/server";
 
+const COOKIES_TO_CLEAR = [
+  "wiseme_access_password_verified",
+  "wiseme_username",
+] as const;
+
 export async function POST() {
   const response = NextResponse.json({ ok: true });
-  response.cookies.delete("wiseme_access_password_verified");
-  response.cookies.delete("wiseme_username");
+
+  for (const name of COOKIES_TO_CLEAR) {
+    response.cookies.set(name, "", {
+      path: "/",
+      httpOnly: name === "wiseme_access_password_verified",
+      sameSite: "lax",
+      maxAge: 0,
+      expires: new Date(0),
+    });
+  }
+
   return response;
 }

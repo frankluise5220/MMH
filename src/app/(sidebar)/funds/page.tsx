@@ -74,8 +74,8 @@ export default async function FundsPage({
     : allEntries;
 
   return (
-    <div className="flex h-full w-full bg-slate-50">
-      <div className="w-48 shrink-0 border-r border-slate-200 bg-white flex flex-col overflow-y-auto">
+    <div className="flex h-full w-full">
+      <div className="w-48 shrink-0 border-r border-foreground/10 bg-surface-white/80 flex flex-col overflow-y-auto">
         <div className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">基金账户</div>
         {fundAccounts.map((a) => {
           const active = a.id === selectedAccount.id;
