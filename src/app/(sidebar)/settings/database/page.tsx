@@ -12,6 +12,7 @@ export default function DatabaseSettingsPage() {
   const [origins, setOrigins] = useState<string[]>([]);
   const [originsLoading, setOriginsLoading] = useState(false);
   const [newOrigin, setNewOrigin] = useState("");
+  const [originCheckEnabled, setOriginCheckEnabled] = useState(true);
 
   // 恢复出厂设置
   const [resetConfirmText, setResetConfirmText] = useState("");
@@ -36,12 +37,19 @@ export default function DatabaseSettingsPage() {
   async function loadOrigins() {
     setOriginsLoading(true);
     try {
-      const res = await fetch("/api/v1/settings/system?key=allowed_dev_origins");
-      const data = await res.json();
-      if (data.ok && data.value) {
-        setOrigins((JSON.parse(data.value) as string[]).map(e => e.includes(":") ? e.split(":")[0] : e));
+      const [originsRes, checkRes] = await Promise.all([
+        fetch("/api/v1/settings/system?key=allowed_dev_origins"),
+        fetch("/api/v1/settings/system?key=origin_check_enabled"),
+      ]);
+      const originsData = await originsRes.json();
+      const checkData = await checkRes.json();
+      if (originsData.ok && originsData.value) {
+        setOrigins((JSON.parse(originsData.value) as string[]).map(e => e.includes(":") ? e.split(":")[0] : e));
       } else {
         setOrigins([]);
+      }
+      if (checkData.ok && checkData.value !== undefined) {
+        setOriginCheckEnabled(checkData.value !== "false");
       }
     } catch {
       setOrigins([]);
@@ -60,6 +68,15 @@ export default function DatabaseSettingsPage() {
     } catch {
       alert("保存失败");
     }
+  }
+
+  async function toggleOriginCheck(enabled: boolean) {
+    setOriginCheckEnabled(enabled);
+    await fetch("/api/v1/settings/system", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "origin_check_enabled", value: String(enabled) }),
+    }).catch(() => {});
   }
 
   async function addOrigin() {
@@ -198,9 +215,19 @@ export default function DatabaseSettingsPage() {
 
       {/* 访问白名单 */}
       <div className="rounded-lg border border-slate-200 bg-white p-4">
-        <div className="text-sm font-medium text-slate-800">访问白名单</div>
-        <div className="text-xs text-slate-500 mt-0.5">{DEFAULT_ORIGINS_LABEL}</div>
-        <div className="text-xs text-slate-500">添加允许访问本系统的域名或 IP（不含端口，端口由访问地址自带），不在白名单内的来源将被拒绝（403）</div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-slate-800">访问白名单</div>
+            <div className="text-xs text-slate-500 mt-0.5">{DEFAULT_ORIGINS_LABEL}</div>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" className="sr-only peer" checked={originCheckEnabled} onChange={(e) => toggleOriginCheck(e.target.checked)} />
+            <div className="w-9 h-5 bg-slate-200 peer-checked:bg-blue-600 rounded-full peer transition-colors after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4" />
+          </label>
+        </div>
+        {originCheckEnabled && (
+          <>
+        <div className="text-xs text-slate-500">添加允许访问本系统的域名或 IP（不含端口），不在白名单内的来源将被拒绝（403）</div>
 
         <div className="mt-3 space-y-1.5">
           {origins.map((o, i) => (
@@ -229,6 +256,8 @@ export default function DatabaseSettingsPage() {
             添加
           </button>
         </div>
+          </>
+        )}
       </div>
 
       {/* 恢复出厂设置 */}

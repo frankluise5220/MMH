@@ -29,7 +29,23 @@ function isAllowedHostname(hostname: string, allowedList: string[]): boolean {
 // 模块级缓存
 let _allowedOrigins: string[] | null = null;
 let _originsCacheTime = 0;
+let _checkEnabledCache: boolean | null = null;
+let _checkEnabledCacheTime = 0;
 const CACHE_TTL = 60_000; // 60秒
+
+async function isOriginCheckEnabled(): Promise<boolean> {
+  if (_checkEnabledCache !== null && Date.now() - _checkEnabledCacheTime < CACHE_TTL) {
+    return _checkEnabledCache;
+  }
+  try {
+    const row = await prisma.systemSetting.findUnique({ where: { key: "origin_check_enabled" } });
+    _checkEnabledCache = row?.value !== "false";
+  } catch {
+    _checkEnabledCache = true;
+  }
+  _checkEnabledCacheTime = Date.now();
+  return _checkEnabledCache;
+}
 
 async function getAllowedOrigins(): Promise<string[]> {
   if (_allowedOrigins && Date.now() - _originsCacheTime < CACHE_TTL) {
@@ -81,13 +97,16 @@ export async function proxy(req: NextRequest) {
 
   // origin 校验：不在白名单的域名拒绝访问（放行路径除外）
   if (!ORIGIN_BYPASS_PATHS.some((p) => pathname.startsWith(p))) {
-    const hostname = extractHostname(req);
-    if (hostname) {
-      const allowed = await getAllowedOrigins();
-      const isAllowed = isAllowedHostname(hostname, allowed);
-      if (!isAllowed) {
-        console.error("[proxy] Access Denied — hostname:", hostname, "allowed:", allowed);
-        return new NextResponse("Access Denied", { status: 403 });
+    const enabled = await isOriginCheckEnabled();
+    if (enabled) {
+      const hostname = extractHostname(req);
+      if (hostname) {
+        const allowed = await getAllowedOrigins();
+        const isAllowed = isAllowedHostname(hostname, allowed);
+        if (!isAllowed) {
+          console.error("[proxy] Access Denied — hostname:", hostname, "allowed:", allowed);
+          return new NextResponse("Access Denied — 请联系管理员将您的域名或 IP 添加到访问白名单中", { status: 403 });
+        }
       }
     }
   }
