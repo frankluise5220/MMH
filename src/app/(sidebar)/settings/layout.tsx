@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Building2, Database, Mail, Palette, Settings,
   Tag, Users, Cpu, ChevronRight, Key, Globe, Hash,
+  RefreshCw,
 } from "lucide-react";
 
 const navItems = [
@@ -19,6 +20,7 @@ const navItems = [
   { href: "/settings/api", label: "外接 API", icon: Key },
   { href: "/settings/fund-api", label: "基金 API", icon: Globe },
   { href: "/settings/database", label: "数据库", icon: Database },
+  { href: "/settings/system-update", label: "系统更新", icon: RefreshCw },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
