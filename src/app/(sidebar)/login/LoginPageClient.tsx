@@ -198,7 +198,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">账簿</div>
           )}
           <div className="flex items-center justify-between">
-            <div className="text-base font-semibold text-slate-800">{householdName || "WiseMe"}</div>
+            <div className="text-base font-semibold text-slate-800">{householdName || "MMH"}</div>
             <button
               onClick={() => { window.location.href = "/"; }}
               className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded-md hover:bg-slate-100"

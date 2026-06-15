@@ -45,13 +45,13 @@ export function EntryRowActions({
 
     const pt = edit.fundProductType;
     if (edit.type === "investment" && pt === "wealth") {
-      window.dispatchEvent(new CustomEvent("wiseme:wealth:edit", { detail }));
+      window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
     } else if (edit.type === "investment" && pt === "deposit") {
-      window.dispatchEvent(new CustomEvent("wiseme:deposit:edit", { detail }));
+      window.dispatchEvent(new CustomEvent("mmh:deposit:edit", { detail }));
     } else if (edit.type === "investment") {
-      window.dispatchEvent(new CustomEvent("wiseme:investment:edit", { detail }));
+      window.dispatchEvent(new CustomEvent("mmh:investment:edit", { detail }));
     } else {
-      window.dispatchEvent(new CustomEvent("wiseme:transaction:edit", { detail }));
+      window.dispatchEvent(new CustomEvent("mmh:transaction:edit", { detail }));
     }
   }
 

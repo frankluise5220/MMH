@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 const COOKIES_TO_CLEAR = [
-  "wiseme_access_password_verified",
-  "wiseme_username",
+  "mmh_access_password_verified",
+  "mmh_username",
 ] as const;
 
 export async function POST() {
@@ -11,7 +11,7 @@ export async function POST() {
   for (const name of COOKIES_TO_CLEAR) {
     response.cookies.set(name, "", {
       path: "/",
-      httpOnly: name === "wiseme_access_password_verified",
+      httpOnly: name === "mmh_access_password_verified",
       sameSite: "lax",
       maxAge: 0,
       expires: new Date(0),

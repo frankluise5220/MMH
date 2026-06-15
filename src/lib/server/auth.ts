@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
 
-const USERNAME_KEY = "wiseme_username";
+const USERNAME_KEY = "mmh_username";
 
 export type CurrentUser = {
   id: string;
@@ -12,7 +12,7 @@ export type CurrentUser = {
 };
 
 /**
- * 从 cookie 读取 wiseme_username，查 DB 得到当前登录用户。
+ * 从 cookie 读取 mmh_username，查 DB 得到当前登录用户。
  * 未登录时返回 null。
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {

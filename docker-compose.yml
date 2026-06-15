@@ -1,19 +1,19 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: wiseme-db
+    container_name: mmh-db
     restart: unless-stopped
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-openclaw}
-      POSTGRES_USER: ${POSTGRES_USER:-openclaw}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openclaw}
+      POSTGRES_DB: ${POSTGRES_DB:-mmh}
+      POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres-entrypoint.sh:/docker-entrypoint-initdb.d/init.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openclaw} -d ${POSTGRES_DB:-openclaw}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mmh-fs} -d ${POSTGRES_DB:-mmh}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: wiseme-app
+    container_name: mmh-app
     restart: unless-stopped
     ports:
       - "7777:7777"
@@ -30,11 +30,11 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      POSTGRES_DB: ${POSTGRES_DB:-openclaw}
-      POSTGRES_USER: ${POSTGRES_USER:-openclaw}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openclaw}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-openclaw}:${POSTGRES_PASSWORD:-openclaw}@postgres:5432/${POSTGRES_DB:-openclaw}?schema=public
-      PGPASSWORD: ${POSTGRES_PASSWORD:-openclaw}
+      POSTGRES_DB: ${POSTGRES_DB:-mmh}
+      POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mmh-fs}:${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}@postgres:5432/${POSTGRES_DB:-mmh}?schema=public
+      PGPASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
     depends_on:
       - postgres
 

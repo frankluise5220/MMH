@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# WiseMe PostgreSQL 初始化脚本
+# MMH PostgreSQL 初始化脚本
 # 在 Docker 容器首次启动时由 /docker-entrypoint-initdb.d 自动执行
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
@@ -15,4 +15,4 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 
 EOSQL
 
-echo "WiseMe 数据库初始化完成"
+echo "MMH 数据库初始化完成"

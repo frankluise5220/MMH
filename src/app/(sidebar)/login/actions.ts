@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 
 const PASSWORD_KEY = "access_password";
-const VERIFIED_KEY = "wiseme_access_password_verified";
-const USERNAME_KEY = "wiseme_username";
+const VERIFIED_KEY = "mmh_access_password_verified";
+const USERNAME_KEY = "mmh_username";
 
 async function ensureUser(username: string, isSystem = false) {
   const existing = await prisma.user.findFirst({ where: { name: username } });

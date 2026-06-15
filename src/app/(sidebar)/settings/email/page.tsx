@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const RESEND_FROM = "wiseme@floatingice.win";
+const RESEND_FROM = "mmh@floatingice.win";
 
 type Account = {
   id: string;

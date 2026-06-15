@@ -130,8 +130,8 @@ export function DepositFormModal({
       setToAccountId(detail.fundSubtype === "redeem" ? (detail.accountId ?? defaultAccountId) : (detail.toAccountId ?? defaultAccountId));
       setOpen(true);
     }
-    window.addEventListener("wiseme:deposit:edit", onEdit as EventListener);
-    return () => window.removeEventListener("wiseme:deposit:edit", onEdit as EventListener);
+    window.addEventListener("mmh:deposit:edit", onEdit as EventListener);
+    return () => window.removeEventListener("mmh:deposit:edit", onEdit as EventListener);
   }, [defaultAccountId, today]);
 
   useEffect(() => {
@@ -144,8 +144,8 @@ export function DepositFormModal({
       setToAccountId(defaultAccountId);
       setOpen(true);
     }
-    window.addEventListener("wiseme:deposit:create", onCreate as EventListener);
-    return () => window.removeEventListener("wiseme:deposit:create", onCreate as EventListener);
+    window.addEventListener("mmh:deposit:create", onCreate as EventListener);
+    return () => window.removeEventListener("mmh:deposit:create", onCreate as EventListener);
   }, [defaultAccountId, today]);
 
   async function onSubmit(e: FormEvent) {
@@ -171,7 +171,7 @@ export function DepositFormModal({
         fd.set("fundProductType", "deposit");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: "缺少 editAction" };
         if (!res.ok) throw new Error(res.error ?? "保存失败");
-        window.dispatchEvent(new CustomEvent("wiseme:deposit:edit:success", { detail: { requestId } }));
+        window.dispatchEvent(new CustomEvent("mmh:deposit:edit:success", { detail: { requestId } }));
       } else {
         fd.set("fundProductType", "deposit");
         const res = await createAction(fd);

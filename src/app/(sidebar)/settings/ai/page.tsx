@@ -16,8 +16,8 @@ type ModelEntry = {
   supportsVision?: boolean;
 };
 
-const MODELS_KEY = "wiseme_ai_models";
-const ACTIVE_MODEL_KEY = "wiseme_ai_active_model";
+const MODELS_KEY = "mmh_ai_models";
+const ACTIVE_MODEL_KEY = "mmh_ai_active_model";
 
 function genId() { return Math.random().toString(36).slice(2, 10); }
 

@@ -15,12 +15,12 @@ export type SendEmailResult = {
 };
 
 function buildPasswordResetContent(params: PasswordResetEmailParams) {
-  const subject = "WiseMe 密码找回验证码";
-  const text = `你正在找回 WiseMe 账号（${params.username}）的密码。\n\n验证码：${params.code}\n有效期：${params.expiresMinutes} 分钟\n\n如果不是你本人操作，请忽略本邮件。`;
+  const subject = "MMH 密码找回验证码";
+  const text = `你正在找回 MMH 账号（${params.username}）的密码。\n\n验证码：${params.code}\n有效期：${params.expiresMinutes} 分钟\n\n如果不是你本人操作，请忽略本邮件。`;
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.7; color: #0f172a;">
-      <h2 style="margin: 0 0 12px;">WiseMe 密码找回验证码</h2>
-      <p>你正在找回 WiseMe 账号（${params.username}）的密码。</p>
+      <h2 style="margin: 0 0 12px;">MMH 密码找回验证码</h2>
+      <p>你正在找回 MMH 账号（${params.username}）的密码。</p>
       <p style="font-size: 24px; letter-spacing: 6px; font-weight: 700; margin: 18px 0;">${params.code}</p>
       <p>验证码有效期：${params.expiresMinutes} 分钟。</p>
       <p style="color: #64748b; font-size: 13px;">如果不是你本人操作，请忽略本邮件。</p>

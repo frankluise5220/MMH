@@ -1,5 +1,5 @@
 const { Pool } = require("pg");
-const pool = new Pool({ connectionString: "postgresql://openclaw:openclaw@192.168.5.148:5433/openclaw?schema=public" });
+const pool = new Pool({ connectionString: "postgresql://mmh-fs:mmh-fs@192.168.5.148:5433/mmh?schema=public" });
 
 async function main() {
   let r = await pool.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('TransactionEntry', 'EntryTag', 'Attachment') ORDER BY table_name`);

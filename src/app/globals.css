@@ -84,7 +84,7 @@ html {
 
   /* Page-level layout utilities */
   .page-header {
-    @apply shrink-0 border-b border-foreground/10 bg-surface-white/80 backdrop-blur-sm;
+    @apply shrink-0 border-b border-foreground/10 bg-surface-white;
   }
 
   .page-title {

@@ -38,9 +38,9 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       from,
       to: from, // 测试发给自己
-      subject: "WiseMe Resend 测试邮件",
+      subject: "MMH Resend 测试邮件",
       text: "如果你收到这封邮件，说明 Resend 发件配置正确。",
-      html: "<div><h2>WiseMe Resend 测试邮件</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
+      html: "<div><h2>MMH Resend 测试邮件</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
     }),
   });
 

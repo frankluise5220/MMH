@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 
 /** 固定发件地址 */
-const RESEND_FROM = "wiseme@floatingice.win";
+const RESEND_FROM = "mmh@floatingice.win";
 
 type ResendConfig = {
   apiKey: string;

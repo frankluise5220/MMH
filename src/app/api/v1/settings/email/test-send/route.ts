@@ -32,9 +32,9 @@ export async function POST(req: NextRequest) {
   if (hasSmtpDb) {
     const result = await sendEmail({
       to,
-      subject: "WiseMe 邮件测试",
+      subject: "MMH 邮件测试",
       text: "如果你收到这封邮件，说明 SMTP 发件配置正确。",
-      html: "<div><h2>WiseMe 邮件测试</h2><p>如果你收到这封邮件，说明 SMTP 发件配置正确。</p></div>",
+      html: "<div><h2>MMH 邮件测试</h2><p>如果你收到这封邮件，说明 SMTP 发件配置正确。</p></div>",
     });
     return NextResponse.json(result);
   }
@@ -42,9 +42,9 @@ export async function POST(req: NextRequest) {
   // 尝试 Resend
   const result = await sendEmailByResend({
     to,
-    subject: "WiseMe 邮件测试",
+    subject: "MMH 邮件测试",
     text: "如果你收到这封邮件，说明 Resend 发件配置正确。",
-    html: "<div><h2>WiseMe 邮件测试</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
+    html: "<div><h2>MMH 邮件测试</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
   });
   return NextResponse.json(result);
 }

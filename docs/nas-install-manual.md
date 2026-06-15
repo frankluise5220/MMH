@@ -1,6 +1,6 @@
-# WiseMe NAS 安装操作手册（Docker 版）
+# MMH NAS 安装操作手册（Docker 版）
 
-仓库地址：`https://github.com/frankluise5220/Wiseme`
+仓库地址：`https://github.com/frankluise5220/MMH`
 
 目标：在 NAS 上启动 2 个容器（数据库 + Web），局域网浏览器访问 `http://NAS_IP:7777/`。
 
@@ -14,7 +14,7 @@
 3. 等命令结束后，用浏览器打开 `http://NAS_IP:7777/`（把 NAS_IP 换成你的 NAS 局域网 IP）
 
 说明：
-- `rm -rf “$APP_DIR”` 只会删除你家目录下的 `~/wiseme`，用于”重装/覆盖安装”
+- `rm -rf “$APP_DIR”` 只会删除你家目录下的 `~/mmh`，用于”重装/覆盖安装”
 - 默认数据库名和用户名可自定义，密码会自动生成
 - 如果执行过程中出现 `permission denied while trying to connect to the Docker daemon socket`：用 `sudo docker compose ...` 运行，或把当前用户加入 docker 组后重新登录
 - 如果 `git clone` 报 `HTTP/2 stream ... was not closed cleanly`：先执行 `git config --global http.version HTTP/1.1`，再重试
@@ -23,15 +23,15 @@
 
 ```sh
 sh -c 'set -e
-APP_DIR=”$HOME/wiseme”
+APP_DIR=”$HOME/mmh”
 
 # 注意：这行会删除旧目录后重装；不想删除就把这一行删掉，并确保目录为空
 rm -rf “$APP_DIR”
-git clone “https://github.com/frankluise5220/Wiseme” “$APP_DIR”
+git clone “https://github.com/frankluise5220/MMH” “$APP_DIR”
 cd “$APP_DIR”
 
-POSTGRES_DB=”wiseme” # 可改：数据库名
-POSTGRES_USER=”wiseme-fs” # 可改：数据库用户名
+POSTGRES_DB=”mmh” # 可改：数据库名
+POSTGRES_USER=”mmh-fs” # 可改：数据库用户名
 POSTGRES_PASSWORD=”$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p)” # 自动生成；也可以改成你自己指定的密码（建议足够复杂）
 ADMIN_PASSWORD=”$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p)” # 自动生成；也可以改成你自己指定的密码（建议足够复杂）
 STATEMENT_API_KEY=”$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p)”
@@ -49,7 +49,7 @@ EOF
 sudo docker compose up -d --build # 首次安装需要编译
 echo “”
 echo “============================================”
-echo “  WiseMe 安装完成！”
+echo “  MMH 安装完成！”
 echo “============================================”
 echo “  访问地址: http://<NAS_IP>:7777/”
 echo “  管理员初始密码: $ADMIN_PASSWORD”
@@ -57,7 +57,7 @@ echo “  数据库密码: $POSTGRES_PASSWORD”
 echo “  Statement API Key: $STATEMENT_API_KEY”
 echo “============================================”
 echo “  以上密码已保存在 .env 文件中”
-echo “  可通过 cat ~/wiseme/.env 查看”
+echo “  可通过 cat ~/mmh/.env 查看”
 echo “============================================”
 '
 ```
@@ -72,14 +72,14 @@ echo “============================================”
 适合：只会在 NAS 网页界面里操作容器的人。
 
 步骤：
-1. 把项目文件放到 NAS 某个文件夹（例如 `docker/wiseme/`，路径随 NAS 不同而不同）
-   - 推荐：从 GitHub Releases 下载 `wiseme-nas-<版本>.zip`，上传到 NAS 后解压到该文件夹
+1. 把项目文件放到 NAS 某个文件夹（例如 `docker/mmh/`，路径随 NAS 不同而不同）
+   - 推荐：从 GitHub Releases 下载 `mmh-nas-<版本>.zip`，上传到 NAS 后解压到该文件夹
 2. 在项目根目录创建 `.env`（与 `docker-compose.yml` 同级），内容如下，必须改密码：
 
 ```env
-DATABASE_URL=”postgresql://wiseme-fs:请换成很长的随机密码@postgres:5432/wiseme?schema=public”
-POSTGRES_DB=wiseme
-POSTGRES_USER=wiseme-fs
+DATABASE_URL=”postgresql://mmh-fs:请换成很长的随机密码@postgres:5432/mmh?schema=public”
+POSTGRES_DB=mmh
+POSTGRES_USER=mmh-fs
 POSTGRES_PASSWORD=请换成很长的随机密码 # 必改
 
 ADMIN_PASSWORD=请换成强密码 # 必改
@@ -98,7 +98,7 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 ## 3) 更新
 
 ```bash
-cd ~/wiseme
+cd ~/mmh
 git pull
 sudo docker compose up -d --build
 ```

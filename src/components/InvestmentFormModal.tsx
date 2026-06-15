@@ -361,8 +361,8 @@ export function InvestmentFormModal({
       setOpen(true);
     }
 
-    window.addEventListener("wiseme:create-transaction:open", onOpenFromAi as EventListener);
-    return () => window.removeEventListener("wiseme:create-transaction:open", onOpenFromAi as EventListener);
+    window.addEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
+    return () => window.removeEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, defaultAccountId, today, defaults]);
 
@@ -431,13 +431,13 @@ export function InvestmentFormModal({
       setOpen(true);
     }
 
-    window.addEventListener("wiseme:investment:edit", onInvestmentEdit as EventListener);
-    return () => window.removeEventListener("wiseme:investment:edit", onInvestmentEdit as EventListener);
+    window.addEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
+    return () => window.removeEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
   }, [mode, today]);
 
   // Dispatch success event when create form is saved from AI panel
   function notifyAiSuccess(requestId: string) {
-    window.dispatchEvent(new CustomEvent("wiseme:create-transaction:success", { detail: { requestId } }));
+    window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
   // 当前选中项的显示文本（用于判断搜索词是否只是默认选中值）
@@ -476,10 +476,12 @@ export function InvestmentFormModal({
   const effectiveHoldings = useMemo(() => {
     if (!holdings) return undefined;
     if (!holdingsAsOfDate) return holdings;
+    // 赎回模式：保留所有持仓基金在下拉列表，不因份额为 0 就剔除
+    // 份额为 0 的仍可选，用户可手动输入份额（可能是历史数据补录）
     return holdings.map(h => ({
       ...h,
       units: holdingsAsOfDate.has(h.fundCode) ? holdingsAsOfDate.get(h.fundCode)! : 0,
-    })).filter(h => h.units > 0);
+    }));
   }, [holdings, holdingsAsOfDate]);
 
   const filteredHoldings = useMemo(() => {

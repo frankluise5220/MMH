@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 
-const VERIFIED_KEY = "wiseme_access_password_verified";
+const VERIFIED_KEY = "mmh_access_password_verified";
 
 const PUBLIC_PATHS = [
   "/login",

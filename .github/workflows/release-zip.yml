@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME:-manual}"
-          ZIP="wiseme-nas-${TAG}.zip"
+          ZIP="mmh-nas-${TAG}.zip"
           rm -f "$ZIP"
           zip -r "$ZIP" . \
             -x ".git/*" \

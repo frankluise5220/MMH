@@ -11,7 +11,7 @@ import { getCurrentUser } from "@/lib/server/auth";
  * - hasPassword: 当前账簿至少有一个管理员设置了密码
  * - adminUser: 当前账簿的第一个管理员用户信息（用于引导设置密码）
  *
- * 注意：如果用户未登录（无 wiseme_username cookie），
+ * 注意：如果用户未登录（无 mmh_username cookie），
  * 说明用户正在登录页面，此时不触发账簿级密码引导（登录页有自己的设置流程）。
  */
 export async function GET() {

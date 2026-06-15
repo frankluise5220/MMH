@@ -77,8 +77,8 @@ type CorrectionSkill = {
 
 /* ---- Constants & Helpers ---- */
 
-const SKILLS_KEY = "wiseme_ai_skills";
-const PANEL_COLLAPSED_KEY = "wiseme_ai_panel_collapsed";
+const SKILLS_KEY = "mmh_ai_skills";
+const PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
 
 function loadSkills(): CorrectionSkill[] {
   try {
@@ -170,7 +170,7 @@ export function AIPanel({ defaultAccountName }: { defaultAccountName?: string })
   const [importConfirmDialog, setImportConfirmDialog] = useState<ImportConfirmDialog | null>(null);
 
   const [activeModel, setActiveModel] = useState(() => {
-    try { return localStorage.getItem("wiseme_ai_active_model") ?? ""; } catch { return ""; }
+    try { return localStorage.getItem("mmh_ai_active_model") ?? ""; } catch { return ""; }
   });
   const [modelNames, setModelNames] = useState<string[]>([]);
   const [modelConfigs, setModelConfigs] = useState<Record<string, { baseUrl: string; apiKey: string; model: string }>>({});
@@ -243,9 +243,9 @@ export function AIPanel({ defaultAccountName }: { defaultAccountName?: string })
         setModelConfigs(dbResult.configs);
         setModelIdsByName(dbResult.idsByName);
         setActiveModel((current) => {
-          const saved = current || localStorage.getItem("wiseme_ai_active_model") || "";
+          const saved = current || localStorage.getItem("mmh_ai_active_model") || "";
           const next = saved && dbResult.configs[saved] ? saved : dbResult.active;
-          try { localStorage.setItem("wiseme_ai_active_model", next); } catch { /* ignore */ }
+          try { localStorage.setItem("mmh_ai_active_model", next); } catch { /* ignore */ }
           return next;
         });
       }
@@ -791,7 +791,7 @@ export function AIPanel({ defaultAccountName }: { defaultAccountName?: string })
                       <button
                         onClick={() => {
                           setActiveModel(name);
-                          try { localStorage.setItem("wiseme_ai_active_model", name); } catch { /* ignore */ }
+                          try { localStorage.setItem("mmh_ai_active_model", name); } catch { /* ignore */ }
                           setModelDropdownOpen(false);
                         }}
                         className={`text-[11px] truncate min-w-0 flex-1 text-left ${isActive ? "font-bold text-accent-green" : "text-foreground/70"}`}

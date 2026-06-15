@@ -4,9 +4,9 @@ export type ApiKeySession = {
   ttlDays: number;
 };
 
-const SESSION_STORAGE_KEY = "wiseme_api_session_v1";
-const TTL_STORAGE_KEY = "wiseme_api_ttl_days_v1";
-const LEGACY_KEY = "wiseme_api_key";
+const SESSION_STORAGE_KEY = "mmh_api_session_v1";
+const TTL_STORAGE_KEY = "mmh_api_ttl_days_v1";
+const LEGACY_KEY = "mmh_api_key";
 
 function safeJsonParse<T>(value: string | null): T | null {
   if (!value) return null;

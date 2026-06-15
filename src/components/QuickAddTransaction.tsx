@@ -8,7 +8,7 @@ import { SmartSelect } from "./SmartSelect";
 
 type TxType = "expense" | "income" | "transfer" | "investment";
 
-const LAST_TYPE_KEY = "wiseme_quick_add_type_v1";
+const LAST_TYPE_KEY = "mmh_quick_add_type_v1";
 
 function typeLabel(type: TxType) {
   if (type === "expense") return "支出";
@@ -150,7 +150,7 @@ export function QuickAddTransaction({
 
       if (res.status === 401) {
         clearStoredApiKeySession();
-        window.dispatchEvent(new CustomEvent("wiseme:api-key-required"));
+        window.dispatchEvent(new CustomEvent("mmh:api-key-required"));
         throw new Error("未授权：请先输入 API 密码");
       }
 

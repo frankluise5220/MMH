@@ -132,8 +132,8 @@ export function WealthFormModal({
       setToAccountId(detail.fundSubtype === "redeem" ? (detail.accountId ?? defaultAccountId) : (detail.toAccountId ?? defaultAccountId));
       setOpen(true);
     }
-    window.addEventListener("wiseme:wealth:edit", onEdit as EventListener);
-    return () => window.removeEventListener("wiseme:wealth:edit", onEdit as EventListener);
+    window.addEventListener("mmh:wealth:edit", onEdit as EventListener);
+    return () => window.removeEventListener("mmh:wealth:edit", onEdit as EventListener);
   }, [defaultAccountId, today]);
 
   // Listen for create event
@@ -147,8 +147,8 @@ export function WealthFormModal({
       setToAccountId(defaultAccountId);
       setOpen(true);
     }
-    window.addEventListener("wiseme:wealth:create", onCreate as EventListener);
-    return () => window.removeEventListener("wiseme:wealth:create", onCreate as EventListener);
+    window.addEventListener("mmh:wealth:create", onCreate as EventListener);
+    return () => window.removeEventListener("mmh:wealth:create", onCreate as EventListener);
   }, [defaultAccountId, today]);
 
   async function onSubmit(e: FormEvent) {
@@ -174,7 +174,7 @@ export function WealthFormModal({
         fd.set("fundProductType", "wealth");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: "缺少 editAction" };
         if (!res.ok) throw new Error(res.error ?? "保存失败");
-        window.dispatchEvent(new CustomEvent("wiseme:wealth:edit:success", { detail: { requestId } }));
+        window.dispatchEvent(new CustomEvent("mmh:wealth:edit:success", { detail: { requestId } }));
       } else {
         fd.set("fundProductType", "wealth");
         const res = await createAction(fd);

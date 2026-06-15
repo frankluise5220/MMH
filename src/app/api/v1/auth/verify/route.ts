@@ -3,8 +3,8 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 
-const VERIFIED_KEY = "wiseme_access_password_verified";
-const USERNAME_KEY = "wiseme_username";
+const VERIFIED_KEY = "mmh_access_password_verified";
+const USERNAME_KEY = "mmh_username";
 const LEGACY_PASSWORD_KEY = "access_password";
 
 /**

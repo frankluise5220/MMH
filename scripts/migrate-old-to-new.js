@@ -1,5 +1,5 @@
 const { Pool } = require("pg");
-const pool = new Pool({ connectionString: "postgresql://openclaw:openclaw@192.168.5.148:5433/openclaw?schema=public" });
+const pool = new Pool({ connectionString: "postgresql://mmh-fs:mmh-fs@192.168.5.148:5433/mmh?schema=public" });
 
 async function main() {
   // 1. 给 transactions 表加新列 (如果不存在)

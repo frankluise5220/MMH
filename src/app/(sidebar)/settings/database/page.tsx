@@ -247,7 +247,7 @@ export default function DatabaseSettingsPage() {
             type="text"
             value={newOrigin}
             onChange={(e) => setNewOrigin(e.target.value)}
-            placeholder="域名或 IP（不含端口），如 wiseme.floatingice.win"
+            placeholder="域名或 IP（不含端口），如 mmh.floatingice.win"
             className="h-8 px-2 rounded-md border border-slate-200 text-sm text-slate-700 w-48 focus:border-blue-300 focus:outline-none"
             onKeyDown={(e) => { if (e.key === "Enter") addOrigin(); }}
           />

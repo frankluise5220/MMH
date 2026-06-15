@@ -51,4 +51,4 @@ ENV PORT=7777
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-openclaw}\"; PGDATABASE=\"${POSTGRES_DB:-openclaw}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[wiseme] waiting for postgres...\"; sleep 1; done; echo '[wiseme] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && npx prisma generate && echo '[wiseme] prisma setup complete, starting app...' && npm run start"]
+CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && npx prisma generate && echo '[mmh] prisma setup complete, starting app...' && npm run start"]

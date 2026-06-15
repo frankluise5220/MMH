@@ -325,8 +325,8 @@ export function TransactionFormModal({
       }
     }
 
-    window.addEventListener("wiseme:create-transaction:open", onOpenFromAi as EventListener);
-    return () => window.removeEventListener("wiseme:create-transaction:open", onOpenFromAi as EventListener);
+    window.addEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
+    return () => window.removeEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
   }, [accounts, defaultAccountId, expenseCategories, incomeCategories, lastRepayFromAccountId, lastRepayToAccountId, today, transferAccounts]);
 
   useEffect(() => {
@@ -384,8 +384,8 @@ export function TransactionFormModal({
       }
     }
 
-    window.addEventListener("wiseme:transaction:edit", onOpenEdit as EventListener);
-    return () => window.removeEventListener("wiseme:transaction:edit", onOpenEdit as EventListener);
+    window.addEventListener("mmh:transaction:edit", onOpenEdit as EventListener);
+    return () => window.removeEventListener("mmh:transaction:edit", onOpenEdit as EventListener);
   }, [defaultAccountId, today]);
 
   useEffect(() => {
@@ -465,7 +465,7 @@ export function TransactionFormModal({
       }
       if (requestId) {
         window.dispatchEvent(
-          new CustomEvent(editEntryId ? "wiseme:transaction:edit:success" : "wiseme:create-transaction:success", { detail: { requestId } }),
+          new CustomEvent(editEntryId ? "mmh:transaction:edit:success" : "mmh:create-transaction:success", { detail: { requestId } }),
         );
       }
       setOpen(false);
@@ -608,7 +608,7 @@ export function TransactionFormModal({
                     onClick={() => {
                       setOpen(false);
                       resetDraft();
-                      window.dispatchEvent(new CustomEvent("wiseme:create-transaction:open", {
+                      window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
                         detail: { requestId: `create-${Date.now()}`, item: { type: "investment", date, amount: Number(amount) || undefined }, defaultAccountId, defaultCashAccountId: accountId },
                       }));
                     }}
@@ -621,7 +621,7 @@ export function TransactionFormModal({
                     onClick={() => {
                       setOpen(false);
                       resetDraft();
-                      window.dispatchEvent(new CustomEvent("wiseme:wealth:create", {
+                      window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
                         detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
                       }));
                     }}
@@ -634,7 +634,7 @@ export function TransactionFormModal({
                     onClick={() => {
                       setOpen(false);
                       resetDraft();
-                      window.dispatchEvent(new CustomEvent("wiseme:deposit:create", {
+                      window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
                         detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
                       }));
                     }}

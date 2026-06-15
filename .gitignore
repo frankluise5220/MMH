@@ -98,6 +98,9 @@ call_*.ps1
 curlr*.ps1
 restart_and_build.ps1
 
+# personal debug data
+.dbg/
+
 # personal data files
 cookies*.txt
 raw_debug.txt
@@ -107,7 +110,7 @@ tsc-errors.txt
 
 # FreeFileSync
 sync.ffs_db
-syno-wiseme-sync.bat
+syno-mmh-sync.bat
 
 # IDE (local)
 .obsidian/
