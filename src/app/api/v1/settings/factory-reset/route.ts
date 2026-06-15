@@ -8,8 +8,8 @@ export const runtime = "nodejs";
 /**
  * POST /api/v1/settings/factory-reset
  *
- * 恢复出厂设置：清空当前账簿所有数据，保留账簿本身。
- * 同时清理全局数据（系统设置、AI模型、访问密钥等）。
+ * 系统初始化：删除所有数据，包括账簿本身，恢复到第一次安装完成的状态。
+ * 初始化后需要重新创建账簿和管理员。
  * 仅管理员可操作。
  */
 export async function POST(_req: NextRequest) {
@@ -53,8 +53,10 @@ export async function POST(_req: NextRequest) {
     await tx.accountGroup.deleteMany({ where: { householdId } });
     // 删除分类
     await tx.category.deleteMany({ where: { householdId } });
-    // 删除用户
-    await tx.user.deleteMany({ where: { householdId } });
+    // 删除账簿
+    await tx.household.deleteMany({ where: { id: householdId } });
+    // 删除用户（包括系统管理员）
+    await tx.user.deleteMany();
 
     // 清理全局数据
     await tx.entryTag.deleteMany();

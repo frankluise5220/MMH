@@ -14,7 +14,7 @@ export default function DatabaseSettingsPage() {
   const [newOrigin, setNewOrigin] = useState("");
   const [originCheckEnabled, setOriginCheckEnabled] = useState(true);
 
-  // 恢复出厂设置
+  // 系统初始化
   const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetDbPassword, setResetDbPassword] = useState("");
   const [resetError, setResetError] = useState("");
@@ -101,7 +101,7 @@ export default function DatabaseSettingsPage() {
   }
 
   async function handleFactoryReset() {
-    if (resetConfirmText !== "恢复出厂设置") {
+    if (resetConfirmText !== "系统初始化") {
       setResetError("请输入正确的确认文字");
       return;
     }
@@ -124,7 +124,7 @@ export default function DatabaseSettingsPage() {
         setResetting(false);
         return;
       }
-      // 执行恢复出厂设置
+      // 执行系统初始化
       const res = await fetch("/api/v1/settings/factory-reset", { method: "POST" });
       const d = await res.json();
       if (d.ok) {
@@ -260,23 +260,23 @@ export default function DatabaseSettingsPage() {
         )}
       </div>
 
-      {/* 恢复出厂设置 */}
+      {/* 系统初始化 */}
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <div className="text-sm font-medium text-red-800">恢复出厂设置</div>
+        <div className="text-sm font-medium text-red-800">系统初始化</div>
         <div className="text-xs text-red-600 mt-0.5">
-          此操作不可撤销，将清空当前账簿下的所有数据（交易记录、账户、分类、用户等），但账簿本身不会被删除。所有用户将被删除，操作完成后需要重新登录。
+          此操作不可撤销，将删除所有数据（账簿、交易记录、账户、分类、用户等），恢复到第一次安装完成的状态。操作完成后需要重新创建账簿和管理员。
         </div>
 
         <div className="mt-3 space-y-3">
           <div className="space-y-1">
             <div className="text-xs font-medium text-slate-600">
-              请输入 <span className="font-bold text-red-700">恢复出厂设置</span> 以确认操作
+              请输入 <span className="font-bold text-red-700">系统初始化</span> 以确认操作
             </div>
             <input
               value={resetConfirmText}
               onChange={(e) => { setResetConfirmText(e.target.value); setResetError(""); }}
               className="h-9 w-64 rounded-md border border-red-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-red-100 focus:border-red-400"
-              placeholder="恢复出厂设置"
+              placeholder="系统初始化"
               autoComplete="off"
             />
           </div>
@@ -295,7 +295,7 @@ export default function DatabaseSettingsPage() {
               placeholder="输入数据库密码"
               autoComplete="off"
             />
-            <div className="mt-1 text-[10px] text-slate-400">恢复出厂设置需要验证数据库密码</div>
+            <div className="mt-1 text-[10px] text-slate-400">系统初始化需要验证数据库密码</div>
           </div>
 
           {resetError && (
@@ -305,10 +305,10 @@ export default function DatabaseSettingsPage() {
           <button
             type="button"
             onClick={handleFactoryReset}
-            disabled={resetting || resetConfirmText !== "恢复出厂设置" || !resetDbPassword.trim()}
+            disabled={resetting || resetConfirmText !== "系统初始化" || !resetDbPassword.trim()}
             className="h-9 px-4 rounded-md bg-red-600 text-white text-sm hover:bg-red-700 disabled:opacity-50"
           >
-            {resetting ? "执行中…" : "恢复出厂设置"}
+            {resetting ? "执行中…" : "系统初始化"}
           </button>
         </div>
       </div>

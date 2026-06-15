@@ -51,7 +51,7 @@ echo “  MMH 安装完成！”
 echo “============================================”
 echo “  访问地址: http://<NAS_IP>:7777/”
 echo “  首次打开将引导设置管理员密码”
-echo “  数据库密码（恢复出厂设置验证用）: $POSTGRES_PASSWORD”
+echo “  数据库密码（系统初始化验证用）: $POSTGRES_PASSWORD”
 echo “  Statement API Key: $STATEMENT_API_KEY”
 echo “============================================”
 echo “  以上密码已保存在 .env 文件中”
@@ -78,7 +78,7 @@ echo “============================================”
 DATABASE_URL=”postgresql://mmh-fs:请换成很长的随机密码@postgres:5432/mmh?schema=public”
 POSTGRES_DB=mmh
 POSTGRES_USER=mmh-fs
-POSTGRES_PASSWORD=请换成很长的随机密码 # 必改（同时用于恢复出厂设置验证）
+POSTGRES_PASSWORD=请换成很长的随机密码 # 必改（同时用于系统初始化验证）
 
 STATEMENT_API_KEY=请换成很长的随机token # 建议改
 PRISMA_CLIENT_ENGINE_TYPE=binary
