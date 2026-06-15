@@ -52,6 +52,8 @@ next-env.d.ts
 
 # Claude Code session (may contain sensitive context)
 .claude/
+AGENTS.md
+CLAUDE.md
 
 # IDE
 .vscode/
