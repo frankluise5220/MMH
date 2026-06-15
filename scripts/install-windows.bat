@@ -45,10 +45,6 @@ powershell -Command "$pwd = -join ((48..57) + (65..90) + (97..122) | Get-Random 
 set /p POSTGRES_PASSWORD=<"%TEMP%\pgpass.txt"
 del "%TEMP%\pgpass.txt"
 
-powershell -Command "$pwd = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 16 | ForEach-Object {[char]$_}); Write-Output $pwd" > "%TEMP%\adminpass.txt"
-set /p ADMIN_PASSWORD=<"%TEMP%\adminpass.txt"
-del "%TEMP%\adminpass.txt"
-
 powershell -Command "$pwd = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 48 | ForEach-Object {[char]$_}); Write-Output $pwd" > "%TEMP%\stmtkey.txt"
 set /p STATEMENT_API_KEY=<"%TEMP%\stmtkey.txt"
 del "%TEMP%\stmtkey.txt"
@@ -59,7 +55,6 @@ echo DATABASE_URL="postgresql://%POSTGRES_USER%:%POSTGRES_PASSWORD%@postgres:543
 echo POSTGRES_DB="%POSTGRES_DB%"
 echo POSTGRES_USER="%POSTGRES_USER%"
 echo POSTGRES_PASSWORD="%POSTGRES_PASSWORD%"
-echo ADMIN_PASSWORD="%ADMIN_PASSWORD%"
 echo STATEMENT_API_KEY="%STATEMENT_API_KEY%"
 echo PRISMA_CLIENT_ENGINE_TYPE="binary"
 ) > .env
@@ -74,23 +69,11 @@ echo ============================================
 echo  安装完成！
 echo.
 echo  访问地址: http://localhost:7777
-echo  管理员初始密码: %ADMIN_PASSWORD%
+echo  首次打开将引导设置管理员密码
 echo.
-echo  请妥善保管上述密码！
+echo  数据库密码已保存在 .env 文件中
+echo  该密码同时用于"恢复出厂设置"验证
 echo ============================================
 echo.
-echo 以后更新请运行: %APP_DIR%\update.bat
 
-:: 创建更新脚本
-(
-echo @echo off
-echo cd /d "%APP_DIR%"
-echo echo 正在拉取最新镜像...
-echo docker compose pull
-echo docker compose up -d
-echo echo 更新完成！
-echo pause
-) > "%APP_DIR%\update.bat"
-
-echo.
 pause

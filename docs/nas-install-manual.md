@@ -33,7 +33,6 @@ cd “$APP_DIR”
 POSTGRES_DB=”mmh” # 可改：数据库名
 POSTGRES_USER=”mmh-fs” # 可改：数据库用户名
 POSTGRES_PASSWORD=”$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p)” # 自动生成；也可以改成你自己指定的密码（建议足够复杂）
-ADMIN_PASSWORD=”$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p)” # 自动生成；也可以改成你自己指定的密码（建议足够复杂）
 STATEMENT_API_KEY=”$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p)”
 
 cat > .env <<EOF
@@ -41,7 +40,6 @@ DATABASE_URL=”postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432
 POSTGRES_DB=”$POSTGRES_DB”
 POSTGRES_USER=”$POSTGRES_USER”
 POSTGRES_PASSWORD=”$POSTGRES_PASSWORD”
-ADMIN_PASSWORD=”$ADMIN_PASSWORD”
 STATEMENT_API_KEY=”$STATEMENT_API_KEY”
 PRISMA_CLIENT_ENGINE_TYPE=”binary”
 EOF
@@ -52,8 +50,8 @@ echo “============================================”
 echo “  MMH 安装完成！”
 echo “============================================”
 echo “  访问地址: http://<NAS_IP>:7777/”
-echo “  管理员初始密码: $ADMIN_PASSWORD”
-echo “  数据库密码: $POSTGRES_PASSWORD”
+echo “  首次打开将引导设置管理员密码”
+echo “  数据库密码（恢复出厂设置验证用）: $POSTGRES_PASSWORD”
 echo “  Statement API Key: $STATEMENT_API_KEY”
 echo “============================================”
 echo “  以上密码已保存在 .env 文件中”
@@ -80,9 +78,8 @@ echo “============================================”
 DATABASE_URL=”postgresql://mmh-fs:请换成很长的随机密码@postgres:5432/mmh?schema=public”
 POSTGRES_DB=mmh
 POSTGRES_USER=mmh-fs
-POSTGRES_PASSWORD=请换成很长的随机密码 # 必改
+POSTGRES_PASSWORD=请换成很长的随机密码 # 必改（同时用于恢复出厂设置验证）
 
-ADMIN_PASSWORD=请换成强密码 # 必改
 STATEMENT_API_KEY=请换成很长的随机token # 建议改
 PRISMA_CLIENT_ENGINE_TYPE=binary
 ```
