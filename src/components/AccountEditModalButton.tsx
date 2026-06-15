@@ -1,9 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { EntityCreateForm } from "./EntityCreateForm";
+import { institutionTypeLabel } from "@/lib/account-kinds";
 
 type GroupOption = { id: string; name: string };
-type InstitutionOption = { id: string; name: string };
+type InstitutionOption = { id: string; name: string; type?: string };
 type FundQueryApiOption = { id: string; code: string; name: string };
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "investment" | "loan" | "other";
 type FundProductTypeValue = "fund" | "money" | "wealth" | "deposit";
@@ -64,12 +67,48 @@ export function AccountEditModalButton({
     (account.costBasisMethod as CostBasisMethodValue) ?? "moving_avg"
   );
 
+  // SmartSelect-controlled state
+  const [groupId, setGroupId] = useState(account.groupId);
+  const [institutionId, setInstitutionId] = useState(account.institutionId ?? "");
+  const [groupList, setGroupList] = useState(groups);
+  const [institutionList, setInstitutionList] = useState<InstitutionOption[]>(institutions);
+
+  // Nested creation
+  const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
+
   const buttonClassName =
     variant === "credit"
       ? "h-8 px-2 rounded-md border border-blue-200 bg-blue-50 text-xs text-blue-700 hover:bg-blue-100"
       : "h-8 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50";
 
   const initialCreditLimit = useMemo(() => account.creditLimit ?? "", [account.creditLimit]);
+
+  function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
+    setInstitutionList(prev => [...prev, { id, name, type: extra?.type }]);
+    setInstitutionId(id);
+    setNestedEntityType(null);
+  }
+
+  function handleGroupCreated(id: string, name: string) {
+    setGroupList(prev => [...prev, { id, name }]);
+    setGroupId(id);
+    setNestedEntityType(null);
+  }
+
+  const institutionOptions: SmartSelectOption[] = [
+    ...institutionList.map(it => ({
+      id: it.id,
+      label: it.name,
+      subLabel: institutionTypeLabel(it.type ?? null),
+    })),
+  ];
+
+  const groupOptions: SmartSelectOption[] = [
+    ...groupList.map(g => ({
+      id: g.id,
+      label: g.name,
+    })),
+  ];
 
   return (
     <>
@@ -100,6 +139,8 @@ export function AccountEditModalButton({
             <form action={action} className="mt-3 space-y-4">
               <input type="hidden" name="accountId" value={account.id} />
               <input type="hidden" name="intent" value="save" />
+              <input type="hidden" name="groupId" value={groupId} />
+              <input type="hidden" name="institutionId" value={institutionId} />
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
@@ -107,29 +148,33 @@ export function AccountEditModalButton({
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none sm:col-span-2"
                   defaultValue={account.name}
                 />
-                <select
-                  name="groupId"
-                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  defaultValue={account.groupId}
-                >
-                  {groups.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  name="institutionId"
-                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  defaultValue={account.institutionId ?? ""}
-                >
-                  <option value="">不指定机构</option>
-                  {institutions.map((it) => (
-                    <option key={it.id} value={it.id}>
-                      {it.name}
-                    </option>
-                  ))}
-                </select>
+
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">分组</div>
+                  <SmartSelect
+                    mode="single"
+                    value={groupId}
+                    onChange={setGroupId}
+                    options={groupOptions}
+                    placeholder="选择分组"
+                    onCreateClick={() => setNestedEntityType("group")}
+                    createLabel="新增分组"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">机构</div>
+                  <SmartSelect
+                    mode="single"
+                    value={institutionId}
+                    onChange={setInstitutionId}
+                    options={institutionOptions}
+                    placeholder="选择机构"
+                    onCreateClick={() => setNestedEntityType("institution")}
+                    createLabel="新增机构"
+                  />
+                </div>
+
                 <select
                   name="kind"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
@@ -251,6 +296,17 @@ export function AccountEditModalButton({
           </div>
         </div>
       ) : null}
+
+      {/* Nested creation modals */}
+      {nestedEntityType && (
+        <EntityCreateForm
+          mode="compact"
+          entityType={nestedEntityType}
+          open={true}
+          onClose={() => setNestedEntityType(null)}
+          onCreated={nestedEntityType === "institution" ? handleInstitutionCreated : handleGroupCreated}
+        />
+      )}
     </>
   );
 }

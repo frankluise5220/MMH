@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
 
 type ModelEntry = {
   id: string;
   name: string;
   channelId: string;
+  channelType: string;
   channelName: string;
   baseUrl: string;
   apiKey: string;
@@ -13,16 +15,6 @@ type ModelEntry = {
   category?: string;
   supportsVision?: boolean;
 };
-
-const CHANNEL_TYPES = [
-  { id: "openai", label: "OpenAI", modelsUrl: "/v1/models" },
-  { id: "anthropic", label: "Anthropic", modelsUrl: "/v1/models" },
-  { id: "deepseek", label: "DeepSeek", modelsUrl: "/v1/models" },
-  { id: "qwen", label: "通义千问", modelsUrl: "/v1/models" },
-  { id: "local", label: "本地 / LocalAI", modelsUrl: "/v1/models" },
-  { id: "ollama", label: "Ollama", modelsUrl: "/api/tags" },
-  { id: "custom", label: "自定义兼容接口", modelsUrl: "/v1/models" },
-];
 
 const MODELS_KEY = "wiseme_ai_models";
 const ACTIVE_MODEL_KEY = "wiseme_ai_active_model";
@@ -89,7 +81,7 @@ function ModelModal({
 }) {
   const [step, setStep] = useState<"config" | "models">("config");
   const [channelName, setChannelName] = useState(initial?.name ?? "");
-  const [channelType, setChannelType] = useState(initial?.channelId ?? "openai");
+  const [channelType, setChannelType] = useState(initial?.channelType ?? initial?.channelId ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
   const [fetching, setFetching] = useState(false);
@@ -105,7 +97,7 @@ function ModelModal({
     if (channelType !== "ollama" && !apiKey.trim()) { setError("请先填写 API Key"); return; }
     setFetching(true); setError("");
     try {
-      const models = await fetchModelsForChannel(baseUrl.trim(), apiKey.trim(), currentType.modelsUrl);
+      const models = await fetchModelsForChannel(baseUrl.trim(), apiKey.trim(), getModelsUrl(channelType));
       if (models.length === 0) { setError("未获取到模型，请检查 URL 和 Key"); setFetching(false); return; }
       setModelList(models); setSelectedModel(models[0]?.id ?? ""); setStep("models");
     } catch (e) {
@@ -118,7 +110,8 @@ function ModelModal({
     const name = channelName.trim() || selectedModel;
     const info = modelList.find(m => m.id === selectedModel) ?? detectModelInfo(selectedModel);
     onSave({
-      id: initial?.id ?? genId(), name, channelId: channelType, channelName: name,
+      id: initial?.id ?? genId(), name, channelId: "", channelType,
+      channelName: name,
       baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: selectedModel,
       category: info.category, supportsVision: info.supportsVision,
     });
@@ -220,6 +213,11 @@ export default function AiModelsPage() {
   const [activeModel, setActiveModel] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
+  const [quickAdd, setQuickAdd] = useState<ModelEntry | null>(null); // + 号：用同渠道快速添加
+  const [quickModelList, setQuickModelList] = useState<ModelInfo[]>([]);
+  const [quickSelected, setQuickSelected] = useState("");
+  const [quickFetching, setQuickFetching] = useState(false);
+  const [menuOpen, setMenuOpen] = useState<string | null>(null); // 下拉菜单打开的模型 id
 
   useEffect(() => {
     setModels(loadModels());
@@ -239,7 +237,7 @@ export default function AiModelsPage() {
         const chRes = await fetch("/api/v1/settings/ai-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: m.channelName || m.name, baseUrl: m.baseUrl, apiKey: m.apiKey }),
+          body: JSON.stringify({ name: m.channelName || m.name, channelType: m.channelType || "custom", baseUrl: m.baseUrl, apiKey: m.apiKey }),
         });
         const chData = await chRes.json();
         if (!chData.ok || !chData.channel) continue;
@@ -283,10 +281,48 @@ export default function AiModelsPage() {
       const name = fallback?.name || fallback?.model || "";
       setActiveModel(name); saveActiveModel(name);
     }
+    setMenuOpen(null);
   }
 
   function handleSetDefault(name: string) {
     setActiveModel(name); saveActiveModel(name);
+    setMenuOpen(null);
+  }
+
+  // + 号：用同渠道快速添加模型
+  async function handleQuickAdd(channel: ModelEntry) {
+    setQuickAdd(channel); setQuickFetching(true); setQuickSelected("");
+    try {
+      const type = CHANNEL_TYPES.find(t => t.id === channel.channelId) ?? CHANNEL_TYPES[0];
+      const modelsInfo = await fetchModelsForChannel(channel.baseUrl, channel.apiKey, type.modelsUrl);
+      setQuickModelList(modelsInfo);
+      setQuickSelected(modelsInfo[0]?.id ?? "");
+    } catch {
+      setQuickModelList([]);
+    } finally {
+      setQuickFetching(false);
+    }
+  }
+
+  function confirmQuickAdd() {
+    if (!quickAdd || !quickSelected) return;
+    const info = quickModelList.find(m => m.id === quickSelected) ?? detectModelInfo(quickSelected);
+    const entry: ModelEntry = {
+      id: genId(),
+      name: quickSelected,
+      channelId: quickAdd.channelId,
+      channelType: quickAdd.channelType || "custom",
+      channelName: quickAdd.channelName,
+      baseUrl: quickAdd.baseUrl,
+      apiKey: quickAdd.apiKey,
+      model: quickSelected,
+      category: info.category,
+      supportsVision: info.supportsVision,
+    };
+    const next = [...models, entry];
+    setModels(next); saveModels(next);
+    if (!activeModel) { setActiveModel(entry.name || entry.model); saveActiveModel(entry.name || entry.model); }
+    setQuickAdd(null);
   }
 
   return (
@@ -294,11 +330,11 @@ export default function AiModelsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-slate-800">AI 模型</h2>
-          <p className="mt-1 text-xs text-slate-500">为每个模型配置独立的渠道（类型/URL/Key），获取后从列表选择。</p>
+          <p className="mt-1 text-xs text-slate-500">为每个模型配置独立的渠道。点击 + 号可基于同渠道快速添加新模型。</p>
         </div>
         <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
           onClick={() => { setEditingModel(null); setShowModal(true); }}>
-          + 添加模型
+          + 新渠道
         </button>
       </div>
 
@@ -311,16 +347,31 @@ export default function AiModelsPage() {
             const category = m.category ?? info.category;
             const supportsVision = m.supportsVision ?? info.supportsVision;
             return (
-              <div key={m.id} className={`flex items-center gap-2 h-10 px-3 rounded-md border ${isActive ? "border-blue-300 bg-blue-50" : "border-slate-200"}`}>
-                <span className="flex-1 text-sm text-slate-800 truncate">{name}</span>
-                <span className="text-xs text-slate-400 shrink-0">{m.channelId}</span>
-                <span className="text-xs text-slate-500 shrink-0">〔{categoryLabel(category)}〕</span>
-                <span className={`text-xs shrink-0 ${supportsVision ? "text-emerald-700" : "text-slate-400"}`}>{supportsVision ? "识图" : "不识图"}</span>
-                {isActive
-                  ? <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full shrink-0">使用中</span>
-                  : <button className="text-xs text-blue-600 hover:text-blue-700 shrink-0" onClick={() => handleSetDefault(name)}>设为默认</button>}
-                <button className="text-slate-400 hover:text-blue-600 shrink-0 text-xs" onClick={() => { setEditingModel(m); setShowModal(true); }}>编辑</button>
-                <button className="text-slate-400 hover:text-red-500 shrink-0 text-xs" onClick={() => handleRemoveModel(m.id)}>删除</button>
+              <div key={m.id} className={`flex items-center gap-2 h-10 px-3 rounded-md border ${isActive ? "border-blue-300 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
+                <span className={`flex-1 text-sm truncate ${isActive ? "text-blue-700 font-medium" : "text-slate-800"}`}>{name}</span>
+                <span className="text-[11px] text-slate-400 shrink-0">{m.channelId}</span>
+                <span className="text-[11px] text-slate-500 shrink-0">{categoryLabel(category)}</span>
+                {supportsVision && <span className="text-[11px] text-emerald-700 shrink-0">识图</span>}
+                {isActive && <span className="text-[11px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full shrink-0">默认</span>}
+                {/* + 号：用同渠道添加 */}
+                <button className="text-slate-400 hover:text-blue-600 shrink-0 text-sm font-bold" title="基于此渠道添加新模型"
+                  onClick={() => handleQuickAdd(m)}>+</button>
+                {/* 下拉菜单 */}
+                <div className="relative shrink-0">
+                  <button className="text-slate-400 hover:text-slate-600 text-xs" onClick={() => setMenuOpen(menuOpen === m.id ? null : m.id)}>⋮</button>
+                  {menuOpen === m.id && (
+                    <div className="absolute right-0 top-8 z-20 bg-white border border-slate-200 rounded-md shadow-lg py-1 min-w-[120px]">
+                      {!isActive && (
+                        <button className="w-full px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-blue-50"
+                          onClick={() => handleSetDefault(name)}>设为默认</button>
+                      )}
+                      <button className="w-full px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-slate-50"
+                        onClick={() => { setEditingModel(m); setShowModal(true); setMenuOpen(null); }}>编辑</button>
+                      <button className="w-full px-3 py-1.5 text-xs text-left text-red-600 hover:bg-red-50"
+                        onClick={() => handleRemoveModel(m.id)}>删除</button>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -329,6 +380,48 @@ export default function AiModelsPage() {
         <div className="h-20 flex flex-col items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-md bg-white">
           <span>暂无模型</span>
           <button className="mt-1 text-blue-600 hover:text-blue-700 text-xs" onClick={() => setShowModal(true)}>+ 添加第一个模型</button>
+        </div>
+      )}
+
+      {/* 快速添加弹窗 */}
+      {quickAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
+              <div className="text-sm font-semibold text-slate-800">从 {quickAdd.channelName || quickAdd.channelId} 添加新模型</div>
+            </div>
+            <div className="p-5 space-y-3">
+              {quickFetching ? (
+                <div className="text-sm text-slate-500 text-center py-4">获取模型列表中…</div>
+              ) : quickModelList.length > 0 ? (
+                <>
+                  <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={quickSelected} onChange={e => setQuickSelected(e.target.value)}>
+                    {quickModelList.map(m => (
+                      <option key={m.id} value={m.id}>{m.id}{m.supportsVision ? "（识图）" : ""}</option>
+                    ))}
+                  </select>
+                  {quickModelList.length <= 20 && (
+                    <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
+                      {quickModelList.map(m => (
+                        <div key={m.id} className={`px-3 py-2 text-sm cursor-pointer ${m.id === quickSelected ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"}`}
+                          onClick={() => setQuickSelected(m.id)}>
+                          <span className="truncate">{m.id}</span>
+                          <span className="text-[11px] text-slate-500 ml-2">{categoryLabel(m.category)}</span>
+                          {m.supportsVision && <span className="text-[11px] text-emerald-700 ml-1">识图</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-sm text-red-600 text-center py-4">未获取到模型，请检查渠道配置</div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={() => setQuickAdd(null)}>取消</button>
+                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={confirmQuickAdd} disabled={!quickSelected}>确认添加</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

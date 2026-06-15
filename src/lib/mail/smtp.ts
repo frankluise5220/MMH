@@ -29,9 +29,24 @@ export function getSmtpConfig(): SmtpConfig | null {
   return { host, port, secure, user, pass, from };
 }
 
-/** 从数据库读取 SMTP 配置（用户在设置页面填写的），优先于 env */
+/** 从 EmailAccount 表读取 SMTP 配置，优先于旧 UserSettings 和 env */
 export async function getDbSmtpConfig(): Promise<SmtpConfig | null> {
   try {
+    const account = await prisma.emailAccount.findFirst({
+      where: { outboundType: "smtp", smtpHost: { not: null }, smtpFrom: { not: null } },
+      orderBy: { createdAt: "asc" },
+    });
+    if (account?.smtpHost && account?.smtpFrom) {
+      return {
+        host: account.smtpHost,
+        port: account.smtpPort ?? 465,
+        secure: account.smtpSecure ?? true,
+        user: account.username,
+        pass: account.password,
+        from: account.smtpFrom,
+      };
+    }
+    // fallback: 旧 UserSettings
     const users = await prisma.user.findMany({ where: { role: "admin" }, take: 1 });
     if (!users[0]) return null;
     const settings = await prisma.userSettings.findUnique({ where: { userId: users[0].id } });
@@ -88,24 +103,4 @@ export async function sendEmail(params: {
   });
 
   return { ok: true as const };
-}
-
-export async function sendPasswordResetEmail(params: {
-  to: string;
-  username: string;
-  code: string;
-  expiresMinutes: number;
-}) {
-  const subject = "WiseMe 密码找回验证码";
-  const text = `你正在找回 WiseMe 账号（${params.username}）的密码。\n\n验证码：${params.code}\n有效期：${params.expiresMinutes} 分钟\n\n如果不是你本人操作，请忽略本邮件。`;
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.7; color: #0f172a;">
-      <h2 style="margin: 0 0 12px;">WiseMe 密码找回验证码</h2>
-      <p>你正在找回 WiseMe 账号（${params.username}）的密码。</p>
-      <p style="font-size: 24px; letter-spacing: 6px; font-weight: 700; margin: 18px 0;">${params.code}</p>
-      <p>验证码有效期：${params.expiresMinutes} 分钟。</p>
-      <p style="color: #64748b; font-size: 13px;">如果不是你本人操作，请忽略本邮件。</p>
-    </div>
-  `;
-  return sendEmail({ to: params.to, subject, text, html });
 }

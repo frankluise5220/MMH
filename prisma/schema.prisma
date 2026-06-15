@@ -24,6 +24,7 @@ model Account {
   kind                                                       AccountKind         @default(other)
   currency                                                   String              @default("CNY")
   isActive                                                   Boolean             @default(true)
+  isPlaceholder                                              Boolean             @default(false)
   investProductType                                          FundProductType?
   creditLimit                                                Decimal?            @db.Decimal(18, 2)
   billingDay                                                 Int?
@@ -85,13 +86,14 @@ model AccountGroup {
 }
 
 model AiChannel {
-  id        String    @id @default(cuid())
-  name      String
-  baseUrl   String
-  apiKey    String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @default(now()) @updatedAt
-  AiModel   AiModel[]
+  id          String    @id @default(cuid())
+  name        String
+  channelType String    @default("custom") // openai | anthropic | deepseek | qwen | ollama | local | custom
+  baseUrl     String
+  apiKey      String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  AiModel     AiModel[]
 
   @@index([createdAt])
 }
@@ -325,6 +327,7 @@ model Household {
   Account           Account[]
   AccountGroup      AccountGroup[]
   Category          Category[]
+  EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
   ImportBatch       ImportBatch[]
   Institution       Institution[]
@@ -399,6 +402,30 @@ model SystemSetting {
   key       String   @id
   value     String
   updatedAt DateTime @default(now()) @updatedAt
+}
+
+model EmailAccount {
+  id           String   @id @default(cuid())
+  householdId  String
+  label        String
+  username     String
+  imapHost     String
+  imapPort     Int      @default(993)
+  imapSecure   Boolean  @default(true)
+  outboundType String   @default("smtp") // "smtp" | "resend"
+  smtpHost     String?
+  smtpPort     Int?     @default(465)
+  smtpSecure   Boolean? @default(true)
+  smtpFrom     String?
+  resendApiKey String?
+  resendFrom   String?
+  password     String
+  mailbox      String   @default("INBOX")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+  household    Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
 }
 
 model Tag {

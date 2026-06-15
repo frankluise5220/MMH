@@ -3,6 +3,7 @@
 import { Plus } from "lucide-react";
 import { useState, useEffect, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
@@ -67,6 +68,8 @@ export function RegularInvestForm({
   accountLabel,
   investmentAccounts,
   cashAccounts,
+  investmentAccountSSOptions,
+  cashAccountSSOptions,
   prefilledFundCode,
   prefilledFundName,
   lastUsedCashAccountId,
@@ -84,7 +87,11 @@ export function RegularInvestForm({
   accountId: string;
   accountLabel?: string;
   investmentAccounts?: { id: string; name: string; label: string }[];
-  cashAccounts?: { id: string; label: string }[];
+  cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  /** Hierarchical SmartSelect options for investment account dropdown (grouped by AccountGroup) */
+  investmentAccountSSOptions?: SmartSelectOption[];
+  /** Hierarchical SmartSelect options for cash account dropdown (grouped by AccountGroup) */
+  cashAccountSSOptions?: SmartSelectOption[];
   prefilledFundCode?: string;
   prefilledFundName?: string | null;
   lastUsedCashAccountId?: string | null;
@@ -403,16 +410,10 @@ export function RegularInvestForm({
                 {investmentAccounts && investmentAccounts.length > 0 ? (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    <select
-                      value={formData.accountId}
-                      onChange={(e) => setFormData(d => ({ ...d, accountId: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    >
-                      <option value="">选择账户</option>
-                      {investmentAccounts.map((a) => (
-                        <option key={a.id} value={a.id}>{a.label}</option>
-                      ))}
-                    </select>
+                    <SmartSelect mode="single" value={formData.accountId}
+                      onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                      options={investmentAccountSSOptions ?? investmentAccounts.map(a => ({ id: a.id, label: a.label }))}
+                      placeholder="选择账户" />
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -425,16 +426,10 @@ export function RegularInvestForm({
                 {cashAccounts && cashAccounts.length > 0 && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">资金来源账户</div>
-                    <select
-                      value={formData.cashAccountId}
-                      onChange={(e) => setFormData(d => ({ ...d, cashAccountId: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    >
-                      <option value="">不关联</option>
-                      {cashAccounts.map((a) => (
-                        <option key={a.id} value={a.id}>{a.label}</option>
-                      ))}
-                    </select>
+                    <SmartSelect mode="single" value={formData.cashAccountId}
+                      onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                      options={cashAccountSSOptions ?? cashAccounts.map(a => ({ id: a.id, label: a.label }))}
+                      placeholder="选择账户" />
                   </div>
                 )}
               </div>

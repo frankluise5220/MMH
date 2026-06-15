@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Plus, Trash2, ChevronRight, ChevronDown } from "lucide-react";
+import { Trash2, ChevronRight, ChevronDown, Plus } from "lucide-react";
+import { EntityCreateForm } from "@/components/EntityCreateForm";
 
 type Category = {
   id: string;
@@ -24,9 +25,6 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addingUnder, setAddingUnder] = useState<string | null>(null);
-  const [addType, setAddType] = useState("expense");
-  const [newName, setNewName] = useState("");
-  const [adding, setAdding] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const roots = categories.filter(c => c.parentId === null);
@@ -48,38 +46,30 @@ export default function SettingsCategoriesClient({ categories: initialCategories
 
   function openAdd(parentId: string | null, type?: string) {
     setAddingUnder(parentId);
-    if (type) setAddType(type);
-    setNewName("");
     setTimeout(() => inputRef.current?.focus(), 50);
   }
 
-  function closeAdd() { setAddingUnder(null); setNewName(""); }
+  function closeAdd() { setAddingUnder(null); }
 
-  async function handleAdd() {
-    if (!newName.trim()) return;
-    setAdding(true);
-    try {
-      const parent = addingUnder && addingUnder !== "__root__" ? categories.find(c => c.id === addingUnder) : null;
-      const res = await fetch("/api/v1/category", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newName.trim(),
-          type: parent?.type ?? addType,
-          parentId: addingUnder === "__root__" ? null : addingUnder,
-        }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        const created = data.category as Category;
-        setCategories(prev => [...prev, created]);
-        if (addingUnder && addingUnder !== "__root__") setExpanded(prev => new Set([...prev, addingUnder]));
-        setNewName("");
-      } else {
-        window.alert(data.error || "添加失败");
-      }
-    } catch { window.alert("添加失败"); }
-    finally { setAdding(false); }
+  /** Handle entity creation from EntityCreateForm */
+  function handleCategoryCreated(id: string, name: string, extra?: { parentId?: string; kind?: string }) {
+    // We need to construct the full category object. The API returns it, but
+    // EntityCreateForm only passes id/name/extra. We reconstruct from the form context.
+    const parent = addingUnder && addingUnder !== "__root__"
+      ? categories.find(c => c.id === addingUnder)
+      : null;
+    const created: Category = {
+      id,
+      name,
+      type: parent?.type ?? "expense",
+      parentId: addingUnder === "__root__" ? null : addingUnder || null,
+      isSystem: false,
+    };
+    setCategories(prev => [...prev, created]);
+    if (addingUnder && addingUnder !== "__root__") {
+      setExpanded(prev => new Set([...prev, addingUnder]));
+    }
+    setAddingUnder(null);
   }
 
   async function handleDelete(id: string) {
@@ -93,13 +83,33 @@ export default function SettingsCategoriesClient({ categories: initialCategories
       if (data.ok) {
         setCategories(prev => prev.filter(c => c.id !== id));
         if (selectedId === id) setSelectedId(null);
-        // Remove from expanded if it was expanded
         setExpanded(prev => { const next = new Set(prev); next.delete(id); return next; });
       } else {
         window.alert(data.error || "删除失败");
       }
     } catch { window.alert("删除失败"); }
   }
+
+  /** Build parent category options for EntityCreateForm — all categories with hierarchy. */
+  const parentCategoryOptions = (() => {
+    const byParentId = new Map<string | null, Category[]>();
+    for (const c of categories) {
+      const list = byParentId.get(c.parentId) ?? [];
+      list.push(c);
+      byParentId.set(c.parentId, list);
+    }
+    const opts: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string }> = [];
+    function walk(pid: string | null, depth: number, currentHeaderId?: string) {
+      const children = byParentId.get(pid) ?? [];
+      for (const child of children) {
+        const headerId = depth === 0 ? child.id : currentHeaderId;
+        opts.push({ id: child.id, name: child.name, label: `${typeLabel(child.type)} — ${child.name}`, type: child.type, depth, parentId: depth > 0 ? headerId : undefined });
+        walk(child.id, depth + 1, headerId);
+      }
+    }
+    walk(null, 0);
+    return opts;
+  })();
 
   function renderCategory(cat: Category, depth: number) {
     const children = getChildren(cat.id);
@@ -130,6 +140,19 @@ export default function SettingsCategoriesClient({ categories: initialCategories
             </button>
           )}
         </div>
+        {isExpanded && addingUnder === cat.id && (
+          <div style={{ paddingLeft: `${12 + (depth + 1) * 18}px` }}>
+            <EntityCreateForm
+              mode="full" layout="inline" entityType="category"
+              defaultParentId={cat.id}
+              defaultType={cat.type}
+              parentCategories={parentCategoryOptions}
+              onCreated={handleCategoryCreated}
+              existingNames={categories.filter(c => c.parentId === cat.id).map(c => c.name)}
+              hiddenFields={["parentId"]}
+            />
+          </div>
+        )}
         {isExpanded && children.map(child => renderCategory(child, depth + 1))}
       </div>
     );
@@ -176,14 +199,15 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                   </button>
                 </div>
 
-                {addingUnder === "__root__" && addType === type && (
-                  <div className="px-3 py-1 flex gap-1">
-                    <input ref={inputRef} value={newName} onChange={e => setNewName(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") closeAdd(); }}
-                      className="flex-1 h-7 rounded border border-blue-300 px-2 text-xs outline-none" placeholder={root ? "子分类名称" : "根分类名称"} />
-                    <button onClick={handleAdd} disabled={adding || !newName.trim()}
-                      className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50">添加</button>
-                    <button onClick={closeAdd} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs hover:bg-slate-50">×</button>
+                {addingUnder === "__root__" && (
+                  <div className="px-3 py-1">
+                    <EntityCreateForm
+                      mode="full" layout="inline" entityType="category"
+                      defaultType={type}
+                      parentCategories={parentCategoryOptions}
+                      onCreated={handleCategoryCreated}
+                      existingNames={categories.filter(c => c.parentId === null && c.type === type).map(c => c.name)}
+                    />
                   </div>
                 )}
 
@@ -219,20 +243,28 @@ export default function SettingsCategoriesClient({ categories: initialCategories
 
             <div className="bg-white border border-slate-200 rounded-xl">
               <div className="px-4 py-3 border-b border-slate-100">
-                <div className="text-sm font-medium text-slate-700">在「{selectedCategory.name}」下添加</div>
+                <div className="text-sm font-medium text-slate-700">在「{selectedCategory.name}」下添加子分类</div>
               </div>
               <div className="p-4">
-                <div className="flex gap-2">
-                  <input value={addingUnder === selectedId! ? newName : ""}
-                    onChange={e => { if (addingUnder !== selectedId!) openAdd(selectedId!); setNewName(e.target.value); }}
-                    onKeyDown={e => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") closeAdd(); }}
-                    onFocus={() => { if (addingUnder !== selectedId!) openAdd(selectedId!); }}
-                    className="flex-1 h-9 rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" placeholder="输入子分类名称" />
-                  <button onClick={handleAdd} disabled={adding || !(addingUnder === selectedId! && newName.trim())}
-                    className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1 shrink-0">
-                    <Plus className="w-3.5 h-3.5" />添加
-                  </button>
-                </div>
+                <EntityCreateForm
+                  mode="full" layout="card" entityType="category"
+                  defaultParentId={selectedId ?? undefined}
+                  defaultType={selectedCategory.type}
+                  parentCategories={parentCategoryOptions}
+                  hiddenFields={["parentId"]}
+                  onCreated={(id, name, extra) => {
+                    const created: Category = {
+                      id,
+                      name,
+                      type: selectedCategory.type,
+                      parentId: selectedId,
+                      isSystem: false,
+                    };
+                    setCategories(prev => [...prev, created]);
+                    setExpanded(prev => new Set([...prev, selectedId!]));
+                  }}
+                  existingNames={selectedChildren.map(c => c.name)}
+                />
               </div>
             </div>
 

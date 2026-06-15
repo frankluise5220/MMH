@@ -1,20 +1,28 @@
 "use client";
 
-import { ArrowLeftRight, ArrowRight, ChevronDown, Plus } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { NestedAddModal } from "./NestedAddModal";
+import { createPortal } from "react-dom";
+import { CalcInput } from "./CalcInput";
+import { NestedAddModal } from "./EntityCreateForm";
+import { SmartSelect, SmartSelectOption } from "./SmartSelect";
+import { kindLabel } from "@/lib/account-kinds";
 
 type TxType = "expense" | "income" | "transfer" | "investment";
 
 type AccountOption = {
   id: string;
   label: string;
+  icon?: string;
+  subLabel?: string;
 };
 
 type CategoryOption = {
   id: string;
   label: string;
+  parentId: string | null;
+  type: string;
 };
 
 type AiPrefillItem = {
@@ -67,6 +75,14 @@ function findCategoryIdByLabel(input: string | undefined, options: CategoryOptio
   return fuzzy?.id ?? "";
 }
 
+type TagOption = {
+  id: string;
+  name: string;
+  color?: string | null;
+};
+
+type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+
 export function TransactionFormModal({
   accounts,
   transferAccounts,
@@ -77,8 +93,13 @@ export function TransactionFormModal({
   lastRepayToAccountId,
   lastRepayFromAccountId,
   isCreditCardAccount,
+  showInvestment,
   action,
   editAction,
+  allTags,
+  accountSSOptions,
+  transferAccountSSOptions,
+  nestedFieldData,
 }: {
   accounts: AccountOption[];
   transferAccounts: AccountOption[];
@@ -89,8 +110,16 @@ export function TransactionFormModal({
   lastRepayToAccountId?: string;
   lastRepayFromAccountId?: string;
   isCreditCardAccount?: boolean;
+  showInvestment?: boolean;
   action: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  allTags?: TagOption[];
+  /** Hierarchical SmartSelect options for spending account dropdown (grouped by AccountGroup) */
+  accountSSOptions?: SmartSelectOption[];
+  /** Hierarchical SmartSelect options for transfer account dropdown (grouped by AccountGroup) */
+  transferAccountSSOptions?: SmartSelectOption[];
+  /** Groups & institutions data for NestedAddModal compact account creation */
+  nestedFieldData?: NestedFieldData;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -103,11 +132,106 @@ export function TransactionFormModal({
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
+  const [accountNestedOpen, setAccountNestedOpen] = useState(false);
+  const [tagList, setTagList] = useState(allTags ?? []);
+  const [accountList, setAccountList] = useState(accounts);
+  const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
 
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
     txType === "investment" ? "investment" : "expense",
   [txType]);
+
+  /** Build parent category options with hierarchical (indented) display.
+   *  In the expense/income context from TransactionFormModal, users can only
+   *  add sub-categories under an existing category — never create a new
+   *  root-level category directly. The "无（根分类）" option is excluded.
+   */
+  const categoryParentOptions = useMemo(() => {
+    // Build a parent-id → children map for all categories of current type
+    const byParentId = new Map<string | null, CategoryOption[]>();
+    for (const c of categoryList) {
+      const list = byParentId.get(c.parentId) ?? [];
+      list.push(c);
+      byParentId.set(c.parentId, list);
+    }
+
+    const options: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string }> = [];
+
+    // Recursively walk the tree, building indented options
+    // currentHeaderId tracks the nearest root ancestor (depth 0) for parentId linkage
+    function walk(parentId: string | null, depth: number, pathPrefix: string, currentHeaderId?: string) {
+      const children = byParentId.get(parentId) ?? [];
+      for (const child of children) {
+        const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const fullLabel = pathPrefix ? `${pathPrefix}.${shortName}` : shortName;
+        // depth 0 items are root headers; depth > 0 items link to their nearest header ancestor
+        const headerId = depth === 0 ? child.id : currentHeaderId;
+        options.push({ id: child.id, name: shortName, label: fullLabel, type: currentCategoryType, depth, parentId: depth > 0 ? headerId : undefined });
+        walk(child.id, depth + 1, fullLabel, headerId);
+      }
+    }
+
+    // Start from root (parentId=null)
+    walk(null, 0, "");
+
+    return options;
+  }, [categoryList, currentCategoryType]);
+
+  /** Build hierarchical SmartSelect options for category dropdown.
+   *  Root categories (level 0) appear as group headers (isHeader=true, non-selectable).
+   *  Level-1 categories with children appear as collapsible groups (isGroup=true, selectable).
+   *  Level-1 categories without children are regular selectable items.
+   *  Level-2+ categories are regular selectable items with parentId linking to their
+   *  nearest group ancestor (isHeader or isGroup).
+   *  Indentation: Level 1 = one indent (　), Level 2 = two (　　), etc. */
+  const categorySSOptions = useMemo(() => {
+    const byParentId = new Map<string | null, CategoryOption[]>();
+    for (const c of categoryList) {
+      const list = byParentId.get(c.parentId) ?? [];
+      list.push(c);
+      byParentId.set(c.parentId, list);
+    }
+
+    const opts: SmartSelectOption[] = [];
+    const INDENT = "　";
+
+    /** Walk the tree recursively.
+     *  currentGroupId tracks the nearest isHeader or isGroup ancestor for parentId linkage. */
+    function walk(parentId: string | null, level: number, currentGroupId?: string) {
+      const children = byParentId.get(parentId) ?? [];
+      for (const child of children) {
+        const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const grandChildren = byParentId.get(child.id) ?? [];
+
+        if (level === 0) {
+          // Root → group header (non-selectable)
+          opts.push({ id: child.id, label: shortName, isHeader: true });
+          walk(child.id, level + 1, child.id);
+        } else if (grandChildren.length > 0) {
+          // Level 1+ with children → collapsible group (selectable + has sub-items)
+          opts.push({
+            id: child.id,
+            label: `${INDENT.repeat(level)}${shortName}`,
+            isGroup: true,
+            parentId: currentGroupId,
+          });
+          walk(child.id, level + 1, child.id);
+        } else {
+          // Leaf → regular selectable item
+          opts.push({
+            id: child.id,
+            label: `${INDENT.repeat(level)}${shortName}`,
+            parentId: currentGroupId,
+          });
+          // No deeper walk needed for leaf
+        }
+      }
+    }
+
+    walk(null, 0);
+    return opts;
+  }, [categoryList]);
 
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : expenseCategories;
@@ -124,6 +248,7 @@ export function TransactionFormModal({
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const [categoryId, setCategoryId] = useState("");
   const [note, setNote] = useState("");
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
 
   function resetDraft() {
@@ -140,6 +265,7 @@ export function TransactionFormModal({
     }
     setCategoryId("");
     setNote("");
+    setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
     setFromAccountIdEdited(false);
@@ -225,6 +351,7 @@ export function TransactionFormModal({
         fundNav?: number;
         fundFee?: number;
         fundProductType?: string;
+        tagIds?: string[];
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -237,6 +364,7 @@ export function TransactionFormModal({
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setNote(detail.note ?? "");
+      setSelectedTagIds(detail.tagIds ?? []);
       if (detail.type === "transfer") {
         const nextToAccountId = detail.toAccountId ?? "";
         const nextFromAccountId = detail.fromAccountId && detail.fromAccountId !== nextToAccountId
@@ -326,6 +454,7 @@ export function TransactionFormModal({
         formData.set("accountId", accountId);
         formData.set("categoryId", categoryId);
       }
+      formData.set("tagIds", JSON.stringify(selectedTagIds));
     }
     setSubmitting(true);
     try {
@@ -367,10 +496,11 @@ export function TransactionFormModal({
         <ChevronDown className="w-4 h-4 opacity-90" />
       </button>
 
-      {open ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-xl rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+      {open ? createPortal(
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/35">
+          <div className="flex min-h-full items-start justify-center p-4 py-8">
+          <div className="w-full max-w-xl max-h-[90vh] flex flex-col rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
               <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
               <button
                 type="button"
@@ -384,7 +514,7 @@ export function TransactionFormModal({
               </button>
             </div>
 
-            <form className="p-4 space-y-4" onSubmit={onSubmit}>
+            <form className="p-4 space-y-4 overflow-y-auto" onSubmit={onSubmit}>
               <div className="flex justify-center gap-2">
                 {isCreditCardAccount ? (
                   <>
@@ -453,6 +583,7 @@ export function TransactionFormModal({
                     >
                       转账
                     </button>
+                    {showInvestment && (
                     <button
                       type="button"
                       onClick={() => setTxType("investment")}
@@ -464,6 +595,7 @@ export function TransactionFormModal({
                     >
                       投资
                     </button>
+                    )}
                   </>
                 )}
               </div>
@@ -513,8 +645,9 @@ export function TransactionFormModal({
                 </div>
               )}
 
-              {(txType === "expense" || txType === "income" || txType === "transfer") && (
+              {(txType === "expense" || txType === "income") && (
                 <div className="space-y-3">
+                  {/* 第一行：日期 | 资金账户 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">日期</div>
@@ -522,125 +655,139 @@ export function TransactionFormModal({
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">金额</div>
-                      <input name="amount" inputMode="decimal" placeholder="例如：88.50" value={amount} onChange={(e) => setAmount(e.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      <div className="text-xs font-medium text-slate-600">{txType === "income" ? "收款账户" : "资金账户"}</div>
+                      <SmartSelect mode="single" value={accountId} onChange={setAccountId}
+                        options={localAccountSSOpts ?? accountList} placeholder="请选择"
+                        onCreateClick={() => setAccountNestedOpen(true)} />
                     </div>
                   </div>
 
-                  {txType === "transfer" ? (
-                    isCreditCardAccount ? (
-                      <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
-                        <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">转出账户</div>
-                          <select name="fromAccountId" value={fromAccountId} onChange={(e) => { setFromAccountId(e.target.value); setFromAccountIdEdited(true); }}
-                            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                            <option value="">请选择</option>
-                            {transferAccounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                          </select>
-                        </div>
-                        <div className="flex flex-col items-center pb-0.5">
-                          <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
-                          <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
-                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">转入账户</div>
-                          <select name="toAccountId" value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                            <option value="">请选择</option>
-                            {accounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                          </select>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
-                        <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">转出账户</div>
-                          <select name="fromAccountId" value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)}
-                            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                            <option value="">请选择</option>
-                            {transferAccounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                          </select>
-                        </div>
-                        <div className="flex items-center justify-center pb-0.5">
-                          <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
-                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">转入账户</div>
-                          <select name="toAccountId" value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                            <option value="">请选择</option>
-                            {transferAccounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                          </select>
-                        </div>
-                      </div>
-                    )
-                  ) : txType === "income" ? (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">收款账户</div>
-                        <select name="accountId" value={accountId} onChange={(e) => setAccountId(e.target.value)}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                          <option value="">请选择</option>
-                          {accounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs font-medium text-slate-600">类别</div>
-                          <button type="button" onClick={() => setCategoryNestedOpen(true)}
-                            className="flex items-center gap-0.5 h-5 px-1 rounded text-[10px] text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200">
-                            <Plus className="w-3 h-3" />新增
-                          </button>
-                        </div>
-                        <select name="categoryId" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                          <option value="">未分类</option>
-                          {categoryList.map((c) => (<option key={c.id} value={c.id}>{c.label}</option>))}
-                        </select>
-                      </div>
+                  {/* 第二行：类别 | 标签 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">类别</div>
+                      <SmartSelect mode="single" value={categoryId} onChange={setCategoryId}
+                        options={categorySSOptions} placeholder="未分类"
+                        onCreateClick={() => setCategoryNestedOpen(true)} />
                     </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">账户</div>
-                        <select name="accountId" value={accountId} onChange={(e) => setAccountId(e.target.value)}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                          <option value="">请选择</option>
-                          {accounts.map((a) => (<option key={a.id} value={a.id}>{a.label}</option>))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs font-medium text-slate-600">类别</div>
-                          <button type="button" onClick={() => setCategoryNestedOpen(true)}
-                            className="flex items-center gap-0.5 h-5 px-1 rounded text-[10px] text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200">
-                            <Plus className="w-3 h-3" />新增
-                          </button>
-                        </div>
-                        <select name="categoryId" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                          <option value="">未分类</option>
-                          {categoryList.map((c) => (<option key={c.id} value={c.id}>{c.label}</option>))}
-                        </select>
-                      </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">标签</div>
+                      <SmartSelect mode="multi" value={selectedTagIds}
+                        onChange={(ids) => setSelectedTagIds(ids)}
+                        options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder="选择标签"
+                        onInlineCreate={async (name, color) => {
+                          const res = await fetch("/api/v1/tags", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name, color }),
+                          });
+                          const data = await res.json();
+                          if (!data.ok || !data.tag) throw new Error(data.error ?? "创建失败");
+                          return { id: data.tag.id, label: data.tag.name, color: data.tag.color };
+                        }}
+                        onCreated={(tag) => {
+                          setTagList(prev => [...prev, { id: tag.id, name: tag.label, color: tag.color }]);
+                          setSelectedTagIds(prev => [...prev, tag.id]);
+                        }}
+                      />
                     </div>
-                  )}
+                  </div>
+
+                  {/* 第三行：金额 | 附件 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">金额</div>
+                      <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">附件</div>
+                      <button type="button" className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-400 hover:bg-slate-50 flex items-center gap-1.5">
+                        <Paperclip className="w-3.5 h-3.5" />
+                        添加票据附件
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 第四行：备注 */}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">备注</div>
+                    <input
+                      name="note"
+                      placeholder="可选"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
                 </div>
               )}
 
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">备注</div>
-                <input
-                  name="note"
-                  placeholder="可选"
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                />
-              </div>
+              {txType === "transfer" && (
+                <div className="space-y-3">
+                  {/* 第一行：日期 */}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">日期</div>
+                    <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                  </div>
+
+                  {/* 第二行：转出账户 | 互换 | 转入账户 */}
+                  {isCreditCardAccount ? (
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">转出账户</div>
+                        <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
+                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                      </div>
+                      <div className="flex flex-col items-center pb-0.5">
+                        <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
+                        <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">转入账户</div>
+                        <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
+                          options={accounts} placeholder="请选择" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">转出账户</div>
+                        <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
+                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                      </div>
+                      <div className="flex items-center justify-center pb-0.5">
+                        <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">转入账户</div>
+                        <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
+                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 第三行：金额 */}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">金额</div>
+                    <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
+                  </div>
+
+                  {/* 第四行：备注 */}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">备注</div>
+                    <input
+                      name="note"
+                      placeholder="可选"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                </div>
+              )}
 
               <input type="hidden" name="type" value={txType} />
 
@@ -665,19 +812,53 @@ export function TransactionFormModal({
               </div>
             </form>
           </div>
+          </div>
         </div>
-      ) : null}
-    <NestedAddModal
-       key={currentCategoryType}
-       entityType="category"
-       open={categoryNestedOpen}
-       onClose={() => setCategoryNestedOpen(false)}
-       defaultType={currentCategoryType}
-       onCreated={(id, name) => {
-         setCategoryList(prev => [...prev, { id, label: name }]);
-         setCategoryId(id);
-       }}
-     />
+      , document.body) : null}
+    {open && categoryNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        key={currentCategoryType}
+        entityType="category"
+        open={categoryNestedOpen}
+        onClose={() => setCategoryNestedOpen(false)}
+        defaultType={currentCategoryType}
+        hiddenFields={["type"]}
+        parentCategories={categoryParentOptions}
+        onCreated={(id, name, extra) => {
+          const parentId = extra?.parentId;
+          const type = extra?.type ?? currentCategoryType;
+          if (parentId) {
+            const parent = categoryList.find(c => c.id === parentId);
+            const fullLabel = parent ? `${parent.label}.${name}` : name;
+            setCategoryList(prev => [...prev, { id, label: fullLabel, parentId, type }]);
+          } else {
+            // Should not happen — parentId is always required in this context
+            const typePrefix = currentCategoryType === "expense" ? "支出" : currentCategoryType === "income" ? "收入" : currentCategoryType;
+            setCategoryList(prev => [...prev, { id, label: `${typePrefix}.${name}`, parentId: null, type }]);
+          }
+          setCategoryId(id);
+        }}
+      />,
+      document.body,
+    )}
+    {open && accountNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="account"
+        open={accountNestedOpen}
+        onClose={() => setAccountNestedOpen(false)}
+        onCreated={(id, name, extra) => {
+          const kind = extra?.kind || "bank_debit";
+          setAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
+          setLocalAccountSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev);
+          setAccountId(id);
+          setAccountNestedOpen(false);
+        }}
+        nestedFieldData={nestedFieldData}
+      />,
+      document.body,
+    )}
     </>
   );
 }

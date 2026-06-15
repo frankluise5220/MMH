@@ -4,6 +4,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { clearStoredApiKeySession, getStoredApiKey } from "@/lib/client/apiKeySession";
+import { SmartSelect } from "./SmartSelect";
 
 type TxType = "expense" | "income" | "transfer" | "investment";
 
@@ -68,6 +69,21 @@ export function QuickAddTransaction({
     base.sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
     return base;
   }, [accounts]);
+
+  const smartAccountOptions = useMemo(
+    () => accountOptions.map(a => ({ id: a.name, label: a.label })),
+    [accountOptions]
+  );
+
+  const txTypeOptions = useMemo(
+    () => [
+      { id: "expense", label: "支出" },
+      { id: "income", label: "收入" },
+      { id: "transfer", label: "转账" },
+      { id: "investment", label: "投资" },
+    ],
+    []
+  );
 
   function resetForOpen() {
     setType(getLastType());
@@ -194,16 +210,8 @@ export function QuickAddTransaction({
 
             <div className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
-                <select
-                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  value={type}
-                  onChange={(e) => setType(e.target.value as TxType)}
-                >
-                  <option value="expense">支出</option>
-                  <option value="income">收入</option>
-                  <option value="transfer">转账</option>
-                  <option value="investment">投资</option>
-                </select>
+                <SmartSelect mode="single" value={type} onChange={(id) => setType(id as TxType)}
+                  options={txTypeOptions} placeholder="类型" searchable={false} />
                 <input
                   type="date"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tabular-nums"
@@ -221,18 +229,8 @@ export function QuickAddTransaction({
                   inputMode="decimal"
                 />
                 {!needsDouble ? (
-                  <select
-                    className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    value={account}
-                    onChange={(e) => setAccount(e.target.value)}
-                  >
-                    <option value="">选择账户（可留空用当前账户）</option>
-                    {accountOptions.map((a) => (
-                      <option key={a.name} value={a.name}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </select>
+                  <SmartSelect mode="single" value={account} onChange={setAccount}
+                    options={smartAccountOptions} placeholder="选择账户（可留空用当前账户）" />
                 ) : (
                   <div className="text-xs text-slate-500 flex items-center px-2">
                     {type === "transfer" ? "转账需要转出/转入账户" : "投资建议填写转出/转入账户"}
@@ -242,30 +240,10 @@ export function QuickAddTransaction({
 
               {needsDouble ? (
                 <div className="grid grid-cols-2 gap-2">
-                  <select
-                    className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    value={fromAccount}
-                    onChange={(e) => setFromAccount(e.target.value)}
-                  >
-                    <option value="">转出账户</option>
-                    {accountOptions.map((a) => (
-                      <option key={a.name} value={a.name}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    value={toAccount}
-                    onChange={(e) => setToAccount(e.target.value)}
-                  >
-                    <option value="">转入账户</option>
-                    {accountOptions.map((a) => (
-                      <option key={a.name} value={a.name}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </select>
+                  <SmartSelect mode="single" value={fromAccount} onChange={setFromAccount}
+                    options={smartAccountOptions} placeholder="转出账户" />
+                  <SmartSelect mode="single" value={toAccount} onChange={setToAccount}
+                    options={smartAccountOptions} placeholder="转入账户" />
                 </div>
               ) : (
                 <input

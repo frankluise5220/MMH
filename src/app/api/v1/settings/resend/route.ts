@@ -1,0 +1,41 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db/prisma";
+
+export const runtime = "nodejs";
+
+/**
+ * GET /api/v1/settings/resend
+ * 获取 Resend 发件配置（API Key 和发件地址）
+ */
+export async function GET() {
+  const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
+  if (!setting) {
+    return NextResponse.json({ ok: true, data: { apiKey: "", from: "" } });
+  }
+  try {
+    const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
+    return NextResponse.json({ ok: true, data: { apiKey: parsed.apiKey ?? "", from: parsed.from ?? "" } });
+  } catch {
+    return NextResponse.json({ ok: true, data: { apiKey: "", from: "" } });
+  }
+}
+
+/**
+ * POST /api/v1/settings/resend
+ * 保存 Resend 发件配置
+ * Body: { apiKey: string, from: string }
+ */
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const apiKey = String(body.apiKey ?? "").trim();
+  const from = String(body.from ?? "").trim();
+
+  const value = JSON.stringify({ apiKey, from });
+  await prisma.systemSetting.upsert({
+    where: { key: "resend_config" },
+    update: { value },
+    create: { key: "resend_config", value },
+  });
+
+  return NextResponse.json({ ok: true });
+}

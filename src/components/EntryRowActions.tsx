@@ -25,6 +25,7 @@ type EditPayload = {
   fundFee?: number;
   fundConfirmDate?: string;
   fundProductType?: string;
+  tagIds?: string[];
 };
 
 export function EntryRowActions({

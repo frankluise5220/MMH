@@ -5,27 +5,9 @@ import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
+import { kindLabel, kindOrder } from "@/lib/account-kinds";
 
 export const dynamic = "force-dynamic";
-
-function kindLabel(kind: AccountKind) {
-  if (kind === AccountKind.cash) return "现金";
-  if (kind === AccountKind.bank_debit) return "借记卡";
-  if (kind === AccountKind.bank_credit) return "信用卡";
-  if (kind === AccountKind.investment) return "投资";
-  if (kind === AccountKind.ewallet) return "电子钱包";
-  if (kind === AccountKind.loan) return "贷款";
-  return "其他";
-}
-
-const kindOrder: AccountKind[] = [
-  AccountKind.cash,
-  AccountKind.bank_debit,
-  AccountKind.bank_credit,
-  AccountKind.ewallet,
-  AccountKind.loan,
-  AccountKind.other,
-];
 
 export default async function AccountsPage({
   searchParams,

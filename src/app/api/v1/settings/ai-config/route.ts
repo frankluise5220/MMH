@@ -34,6 +34,7 @@ export async function GET() {
 
 const ChannelSchema = z.object({
   name: z.string().min(1).max(80),
+  channelType: z.string().min(1).max(20).optional(),
   baseUrl: z.string().min(4).max(300),
   apiKey: z.string().max(200).optional(),
 });
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
     ? encrypt(parse.data.apiKey, masterKey)
     : parse.data.apiKey;
   const created = await prisma.aiChannel.create({
-    data: { name: parse.data.name, baseUrl: parse.data.baseUrl, apiKey: encryptedApiKey },
+    data: { name: parse.data.name, channelType: parse.data.channelType ?? "custom", baseUrl: parse.data.baseUrl, apiKey: encryptedApiKey } as any,
     include: { AiModel: true },
   });
   return NextResponse.json({ ok: true, channel: created }, { headers: cors() });
@@ -77,6 +78,32 @@ const ModelSchema = z.object({
 export async function PUT(req: Request) {
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
 
+  // Update channel (channelId + name + channelType + baseUrl + apiKey)
+  if (body && "channelId" in body && "baseUrl" in body) {
+    const channelId = (body as any).channelId as string;
+    const name = (body as any).name as string | undefined;
+    const channelType = (body as any).channelType as string | undefined;
+    const baseUrl = (body as any).baseUrl as string;
+    const apiKey = (body as any).apiKey as string | undefined;
+    const existing = await prisma.aiChannel.findUnique({ where: { id: channelId } });
+    if (!existing) return NextResponse.json({ ok: false, error: "AI 渠道不存在" }, { status: 404, headers: cors() });
+    const masterKey = await getOrCreateMasterKey();
+    const encryptedApiKey = apiKey !== undefined && !isEncrypted(apiKey) ? encrypt(apiKey, masterKey) : apiKey;
+    const updated = await prisma.aiChannel.update({
+      where: { id: channelId },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(channelType !== undefined ? { channelType } : {}),
+        baseUrl,
+        ...(apiKey !== undefined ? { apiKey: encryptedApiKey } : {}),
+      } as any,
+      include: { AiModel: true },
+    });
+    const decoded = { ...updated, apiKey: updated.apiKey && isEncrypted(updated.apiKey) ? decrypt(updated.apiKey, masterKey) : updated.apiKey };
+    return NextResponse.json({ ok: true, channel: decoded }, { headers: cors() });
+  }
+
+  // Add model
   if (body && "model" in body && "channelId" in body) {
     const parse = ModelSchema.safeParse(body);
     if (!parse.success) return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400, headers: cors() });
@@ -84,6 +111,20 @@ export async function PUT(req: Request) {
       data: { model: parse.data.model, name: parse.data.name, channelId: parse.data.channelId, vision: parse.data.vision ?? false },
     });
     return NextResponse.json({ ok: true, model: created }, { headers: cors() });
+  }
+
+  // Update model (updateModelId + name + vision)
+  if (body && "updateModelId" in body) {
+    const updateModelId = (body as any).updateModelId as string;
+    const name = (body as any).name as string | undefined;
+    const vision = (body as any).vision as boolean | undefined;
+    const modelExists = await prisma.aiModel.findUnique({ where: { id: updateModelId } });
+    if (!modelExists) return NextResponse.json({ ok: false, error: "AI 模型不存在" }, { status: 404, headers: cors() });
+    const updated = await prisma.aiModel.update({
+      where: { id: updateModelId },
+      data: { ...(name !== undefined ? { name } : {}), ...(vision !== undefined ? { vision } : {}) },
+    });
+    return NextResponse.json({ ok: true, model: updated }, { headers: cors() });
   }
 
   // Set active model

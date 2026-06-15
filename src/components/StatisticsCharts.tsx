@@ -32,6 +32,14 @@ type CategoryData = {
   pct: number;
 };
 
+type TagGroupData = {
+  id: string;
+  name: string;
+  color: string;
+  value: number;
+  pct: number;
+};
+
 type PnLItem = {
   id: string;
   date: string;
@@ -47,6 +55,8 @@ type Props = {
   monthData: MonthData[];
   incomeCats: CategoryData[];
   expenseCats: CategoryData[];
+  incomeTagGroups: TagGroupData[];
+  expenseTagGroups: TagGroupData[];
   pnlList: PnLItem[];
   isRedUp: boolean;
 };
@@ -72,7 +82,7 @@ function renderPieLabel({ name, percent }: { name?: string; percent?: number }) 
   return `${name} ${(percent * 100).toFixed(1)}%`;
 }
 
-export default function StatisticsCharts({ monthData, incomeCats, expenseCats, pnlList, isRedUp }: Props) {
+export default function StatisticsCharts({ monthData, incomeCats, expenseCats, incomeTagGroups, expenseTagGroups, pnlList, isRedUp }: Props) {
   const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
@@ -226,6 +236,75 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, p
           </div>
         </div>
       </div>
+
+      {/* ===== 标签分组饼图（仅有标签数据时显示） ===== */}
+      {(incomeTagGroups.length > 0 || expenseTagGroups.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 收入标签饼图 */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
+              <div className="text-sm font-semibold text-slate-800">收入标签分布</div>
+            </div>
+            <div className="p-3">
+              {incomeTagGroups.length === 0 ? (
+                <div className="h-64 flex items-center justify-center text-xs text-slate-400">暂无标签收入数据</div>
+              ) : (
+                <div className="flex items-center">
+                  <ResponsiveContainer width="55%" height={240}>
+                    <PieChart>
+                      <Pie data={incomeTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                        {incomeTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="flex-1 space-y-1.5">
+                    {incomeTagGroups.slice(0, 6).map((t) => (
+                      <div key={t.id} className="flex items-center gap-1.5 text-xs">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.color }} />
+                        <span className="text-slate-600 truncate flex-1">{t.name}</span>
+                        <span className="tabular-nums text-slate-400">{t.pct.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 支出标签饼图 */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
+              <div className="text-sm font-semibold text-slate-800">支出标签分布</div>
+            </div>
+            <div className="p-3">
+              {expenseTagGroups.length === 0 ? (
+                <div className="h-64 flex items-center justify-center text-xs text-slate-400">暂无标签支出数据</div>
+              ) : (
+                <div className="flex items-center">
+                  <ResponsiveContainer width="55%" height={240}>
+                    <PieChart>
+                      <Pie data={expenseTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                        {expenseTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="flex-1 space-y-1.5">
+                    {expenseTagGroups.slice(0, 6).map((t) => (
+                      <div key={t.id} className="flex items-center gap-1.5 text-xs">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.color }} />
+                        <span className="text-slate-600 truncate flex-1">{t.name}</span>
+                        <span className="tabular-nums text-slate-400">{t.pct.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== 盈氯列表 ===== */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">

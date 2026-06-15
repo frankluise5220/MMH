@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 import { cookies } from "next/headers";
+import { hasEmailService } from "@/lib/mail/passwordReset";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -44,15 +45,8 @@ export async function GET() {
     orderBy: { name: "asc" },
   });
 
-  // 检查密码找回功能开关
-  let passwordResetEnabled = false;
-  try {
-    const firstUser = users.find(u => u.role === "admin" && !u.isSystem);
-    if (firstUser) {
-      const settings = await prisma.userSettings.findUnique({ where: { userId: firstUser.id } });
-      passwordResetEnabled = settings?.passwordResetEnabled !== false;
-    }
-  } catch {}
+  // 密码找回功能自动检测：有邮件发件服务则启用
+  const passwordResetEnabled = await hasEmailService();
 
   return NextResponse.json({
     ok: true,

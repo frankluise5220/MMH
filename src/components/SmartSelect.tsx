@@ -1,0 +1,830 @@
+"use client";
+
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
+import {
+  Plus, ChevronDown, ChevronRight, X, Check,
+} from "lucide-react";
+
+/* ---- Types ---- */
+
+export type SmartSelectOption = {
+  id: string;
+  label: string;
+  /** Secondary label (e.g. kind label) shown inline in smaller text, same line as primary label. */
+  subLabel?: string;
+  /** Color dot/badge — used for tags in multi mode. */
+  color?: string | null;
+  /** When true, this option acts as a group header and cannot be selected.
+   *  Used for top-level categories like "支出", "收入". */
+  isHeader?: boolean;
+  /** When true, this option is selectable but also acts as a collapsible group
+   *  for its children (options with parentId pointing to this id).
+   *  Used for mid-level categories like "餐饮" that have sub-items like "外卖". */
+  isGroup?: boolean;
+  /** For grouped options: id of the parent group this item belongs to.
+   *  For level-1 items: points to a root header (isHeader).
+   *  For level-2 items: points to a mid-level group (isGroup).
+   *  Enables search to preserve hierarchy and collapse to track group membership. */
+  parentId?: string;
+};
+
+type SingleModeProps = {
+  mode: "single";
+  value: string;
+  onChange: (id: string) => void;
+  options: SmartSelectOption[];
+  placeholder?: string;
+  searchable?: boolean;
+  onCreateClick?: () => void;
+  createLabel?: string;
+};
+
+type MultiModeProps = {
+  mode: "multi";
+  value: string[];
+  onChange: (ids: string[]) => void;
+  options: SmartSelectOption[];
+  placeholder?: string;
+  onInlineCreate?: (name: string, color: string) => Promise<SmartSelectOption>;
+  /** @deprecated Use onInlineCreate for decoupled API calls. Legacy direct /api/v1/tags call still works if onInlineCreate is omitted. */
+  onCreated?: (tag: SmartSelectOption) => void;
+};
+
+export type SmartSelectProps = SingleModeProps | MultiModeProps;
+
+/* ---- Helpers ---- */
+
+/** Strip fullwidth-space indentation from a label (for trigger display). */
+function stripIndent(label: string): string {
+  return label.replace(/^[　]+/, "");
+}
+
+function shouldShowSearch(options: SmartSelectOption[], searchable?: boolean) {
+  if (searchable === true) return true;
+  if (searchable === false) return false;
+  // Always show search when options contain group headers or collapsible groups
+  if (options.some(o => o.isHeader || o.isGroup)) return true;
+  return options.length > 10;
+}
+
+/** Build a map of groupId → count of direct children (for headers AND collapsible groups). */
+function buildGroupChildCounts(options: SmartSelectOption[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const o of options) {
+    if (o.parentId && !o.isHeader) {
+      counts.set(o.parentId, (counts.get(o.parentId) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/** Search filter that preserves group headers and collapsible groups.
+ *  When a child matches, its parent group (and ancestor groups) are kept too. */
+function filterWithGroups(options: SmartSelectOption[], search: string): SmartSelectOption[] {
+  if (!search.trim()) return options;
+  const q = search.toLowerCase();
+  const matchedIds = new Set<string>();
+  // Find all matching non-header options
+  for (const o of options) {
+    if (!o.isHeader && o.label.toLowerCase().includes(q)) {
+      matchedIds.add(o.id);
+    }
+  }
+  // Walk back up parentId chain to include ancestor groups
+  const groupIdsToKeep = new Set<string>();
+  const optionById = new Map(options.map(o => [o.id, o]));
+  for (const id of matchedIds) {
+    const o = optionById.get(id);
+    if (o?.parentId) {
+      let cur: string | undefined = o.parentId;
+      while (cur) {
+        groupIdsToKeep.add(cur);
+        const parent = optionById.get(cur);
+        cur = parent?.parentId;
+      }
+    }
+  }
+  // Return options in original order: groups that are needed + matched children
+  return options.filter(o => {
+    if (o.isHeader || o.isGroup) return groupIdsToKeep.has(o.id);
+    return matchedIds.has(o.id);
+  });
+}
+
+/** Determine which groups should be collapsed by default.
+ *  Root headers (isHeader) are expanded by default so user sees level-2 items.
+ *  Mid-level groups (isGroup) are collapsed by default so user doesn't see level-3 items. */
+function initialCollapsedGroups(options: SmartSelectOption[], value: string): Set<string> {
+  const collapsed = new Set<string>();
+  // Collapse all isGroup items by default (level-2 groups hide their level-3 children)
+  for (const o of options) {
+    if (o.isGroup) collapsed.add(o.id);
+  }
+  // If a selected value belongs to a collapsed group, expand that group so the selected item is visible
+  if (value) {
+    const optionById = new Map(options.map(o => [o.id, o]));
+    let cur = optionById.get(value);
+    while (cur?.parentId) {
+      if (collapsed.has(cur.parentId)) {
+        collapsed.delete(cur.parentId);
+      }
+      cur = optionById.get(cur.parentId);
+    }
+  }
+  return collapsed;
+}
+
+/** Build visible list: apply search + collapse filters.
+ *  Collapsed groups hide their children (recursively for nested groups).
+ *  Search forces all groups open. */
+function buildVisible(
+  options: SmartSelectOption[],
+  filtered: SmartSelectOption[],
+  collapsedGroups: Set<string>,
+  isSearching: boolean,
+): SmartSelectOption[] {
+  if (isSearching) return filtered; // search forces all groups open
+  // Non-searching: hide children of collapsed groups (headers AND isGroup)
+  return filtered.filter(o => {
+    // If this item has a parentId pointing to a collapsed group, hide it
+    // Also check if any ancestor group in the parentId chain is collapsed
+    if (o.parentId && !o.isHeader) {
+      // Direct parent collapsed → hide
+      if (collapsedGroups.has(o.parentId)) return false;
+    }
+    // isHeader items are always visible (they're root-level)
+    // isGroup items are always visible (they're level-2, shown between level-1 headers)
+    return true;
+  });
+}
+
+const PRESET_COLORS = [
+  "#7BA05B", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899",
+  "#06B6D4", "#F43F5E", "#84CC16", "#6366F1", "#14B8A6",
+  "#E11D48", "#0EA5E9",
+];
+
+/* ---- Component ---- */
+
+export function SmartSelect(props: SmartSelectProps) {
+  const { mode, value, onChange, options, placeholder } = props;
+  const searchable = shouldShowSearch(options, mode === "single" ? props.searchable : false);
+  const onCreateClick = mode === "single" ? props.onCreateClick : undefined;
+  const createLabel = mode === "single" ? props.createLabel : undefined;
+  const onInlineCreate = mode === "multi" ? props.onInlineCreate : undefined;
+  const onCreated = mode === "multi" ? props.onCreated : undefined;
+
+  const hasGroups = options.some(o => o.isHeader || o.isGroup);
+  const groupChildCounts = useMemo(() => buildGroupChildCounts(options), [options]);
+
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [flipUp, setFlipUp] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 0 });
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  /* ---- Multi mode: inline create state ---- */
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState("#7BA05B");
+  const [creating, setCreating] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  /* ---- Filtered & visible options ---- */
+  const isSearching = search.trim().length > 0;
+  const filtered = isSearching
+    ? filterWithGroups(options, search)
+    : options;
+  const visible = useMemo(() =>
+    buildVisible(options, filtered, collapsedGroups, isSearching),
+  [filtered, collapsedGroups, isSearching, options]);
+
+  /* ---- Trigger display ---- */
+  const selectedOption = mode === "single"
+    ? options.find(o => o.id === (value as string))
+    : undefined;
+  // Strip indent from label for trigger button display
+  const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : undefined;
+
+  /* ---- Toggle group collapse ---- */
+  function toggleGroup(groupId: string) {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }
+
+  /* ---- Calculate dropdown position from trigger ---- */
+  const calcPosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const estimatedHeight = searchable ? 36 : 0
+      + (onCreateClick || mode === "multi" ? 36 : 0)
+      + Math.min(visible.length, 7) * 36
+      + 16;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const shouldFlip = spaceBelow < estimatedHeight && spaceAbove > estimatedHeight;
+    setFlipUp(shouldFlip);
+    setDropdownPos({
+      top: shouldFlip ? rect.top - 4 : rect.bottom + 4,
+      left: rect.left,
+      width: rect.width,
+    });
+  }, [searchable, onCreateClick, mode, visible.length]);
+
+  /* ---- Open/close ---- */
+  const handleOpenToggle = useCallback(() => {
+    if (open) {
+      setOpen(false);
+      setSearch("");
+      setShowNew(false);
+      setFocusedIndex(-1);
+      return;
+    }
+    // Initialize collapsed groups: root headers expanded, mid-level groups collapsed
+    if (hasGroups) {
+      setCollapsedGroups(initialCollapsedGroups(options, (value as string)));
+    } else {
+      setCollapsedGroups(new Set());
+    }
+    calcPosition();
+    setOpen(true);
+    setSearch("");
+    setShowNew(false);
+
+    // Find selected item index in visible list
+    if (mode === "single") {
+      const idx = visible.findIndex(o => o.id === (value as string));
+      setFocusedIndex(idx >= 0 ? idx : 0);
+    } else {
+      setFocusedIndex(0);
+    }
+  }, [open, visible, value, mode, calcPosition, hasGroups, options]);
+
+  /* ---- Recalc position on scroll / resize while open ---- */
+  useEffect(() => {
+    if (!open) return;
+    function onScroll() { calcPosition(); }
+    function onResize() { calcPosition(); }
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, calcPosition]);
+
+  /* ---- Scroll to focused/selected item ---- */
+  useEffect(() => {
+    if (!open || focusedIndex < 0) return;
+    const listEl = listRef.current;
+    if (!listEl) return;
+    const optionEl = listEl.children[focusedIndex] as HTMLElement;
+    if (optionEl) {
+      optionEl.scrollIntoView({ block: "nearest" });
+    }
+  }, [open, focusedIndex]);
+
+  /* ---- Close on click outside ---- */
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (triggerRef.current?.contains(e.target as HTMLElement)) return;
+      if (dropdownRef.current?.contains(e.target as HTMLElement)) return;
+      setOpen(false);
+      setSearch("");
+      setShowNew(false);
+      setFocusedIndex(-1);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  /* ---- Close on ESC ---- */
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setSearch("");
+        setShowNew(false);
+        setFocusedIndex(-1);
+      }
+    }
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  /* ---- Auto-focus inline create input ---- */
+  useEffect(() => {
+    if (showNew && inputRef.current) inputRef.current.focus();
+  }, [showNew]);
+
+  /* ---- Auto-focus search input on open ---- */
+  useEffect(() => {
+    if (open && searchable) {
+      const searchInput = dropdownRef.current?.querySelector<HTMLInputElement>("input[data-search]");
+      searchInput?.focus();
+    }
+  }, [open, searchable]);
+
+  /* ---- Handlers ---- */
+
+  function selectSingle(id: string) {
+    (onChange as (id: string) => void)(id);
+    setOpen(false);
+    setSearch("");
+    setFocusedIndex(-1);
+  }
+
+  function toggleMulti(id: string) {
+    const ids = value as string[];
+    const next = ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id];
+    (onChange as (ids: string[]) => void)(next);
+  }
+
+  function handleCreateClick() {
+    setOpen(false);
+    setSearch("");
+    setFocusedIndex(-1);
+    onCreateClick?.();
+  }
+
+  async function createTag() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      if (onInlineCreate) {
+        const newOpt = await onInlineCreate(newName.trim(), newColor);
+        toggleMulti(newOpt.id);
+        onCreated?.(newOpt);
+        setNewName("");
+        setShowNew(false);
+      } else {
+        const res = await fetch("/api/v1/tags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newName.trim(), color: newColor }),
+        });
+        const data = await res.json();
+        if (data.ok && data.tag) {
+          const newTag: SmartSelectOption = { id: data.tag.id, label: data.tag.name, color: data.tag.color };
+          toggleMulti(newTag.id);
+          onCreated?.(newTag);
+          setNewName("");
+          setShowNew(false);
+        } else {
+          window.alert(data.error ?? "创建失败");
+        }
+      }
+    } catch {
+      window.alert("网络错误");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  /* ---- Keyboard navigation on dropdown ---- */
+  function handleDropdownKeyDown(e: React.KeyboardEvent) {
+    const total = visible.length;
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        setFocusedIndex(prev => {
+          let next = prev + 1;
+          return next < total ? next : 0;
+        });
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        setFocusedIndex(prev => prev > 0 ? prev - 1 : total - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        setFocusedIndex(0);
+        break;
+      case "End":
+        e.preventDefault();
+        setFocusedIndex(total - 1);
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (search.trim() && visible.length === 1) {
+          if (visible[0].isHeader) return;
+          if (mode === "single") selectSingle(visible[0].id);
+          else toggleMulti(visible[0].id);
+          return;
+        }
+        if (focusedIndex >= 0 && focusedIndex < total) {
+          const focusedOpt = visible[focusedIndex];
+          if (focusedOpt.isHeader) {
+            // Enter on a root group header → toggle collapse
+            toggleGroup(focusedOpt.id);
+            return;
+          }
+          if (focusedOpt.isGroup) {
+            // Enter on a mid-level group → toggle collapse (group is also selectable, but Enter toggles first)
+            toggleGroup(focusedOpt.id);
+            return;
+          }
+          if (mode === "single") selectSingle(focusedOpt.id);
+          else toggleMulti(focusedOpt.id);
+        }
+        break;
+      case "Tab":
+        setOpen(false);
+        setSearch("");
+        setShowNew(false);
+        setFocusedIndex(-1);
+        break;
+    }
+  }
+
+  /* ---- ARIA IDs ---- */
+  const listId = `ss-list-${useId()}`;
+
+  /* ---- Dropdown content ---- */
+
+  const dropdownContent = (
+    <div
+      ref={dropdownRef}
+      onKeyDown={handleDropdownKeyDown}
+      className="rounded-ui border border-foreground/10 bg-surface-white shadow-lg shadow-foreground/5 overflow-hidden"
+      style={{
+        position: "fixed",
+        top: dropdownPos.top,
+        left: dropdownPos.left,
+        width: dropdownPos.width,
+        zIndex: 9999,
+      }}
+    >
+      {/* Single mode */}
+      {mode === "single" && (
+        <>
+          {/* Search + Create combined row, or standalone search/create */}
+          {searchable && onCreateClick ? (
+            <div className="flex items-center gap-1 px-2 pt-2 pb-1 border-b border-foreground/5">
+              <input
+                data-search
+                value={search}
+                onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
+                className="h-7 flex-1 rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                placeholder="搜索..."
+              />
+              <button
+                type="button"
+                onClick={handleCreateClick}
+                className="h-7 px-2 rounded-ui border border-accent-green/20 bg-accent-green/5 text-xs flex items-center gap-0.5 text-accent-green font-medium shrink-0 hover:bg-accent-green/10 transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                {createLabel ?? "新增"}
+              </button>
+            </div>
+          ) : searchable ? (
+            <div className="px-2 pt-2 pb-1 border-b border-foreground/5">
+              <input
+                data-search
+                value={search}
+                onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
+                className="h-7 w-full rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                placeholder="搜索..."
+              />
+            </div>
+          ) : onCreateClick ? (
+            <button
+              type="button"
+              onClick={handleCreateClick}
+              className="w-full h-9 flex items-center justify-between px-3 text-sm bg-background/50 hover:bg-accent-green/10 transition-colors border-b border-foreground/5"
+            >
+              <span className="text-foreground/60">{placeholder || "请选择"}</span>
+              <span className="flex items-center gap-1 text-accent-green font-medium">
+                <Plus className="w-3.5 h-3.5" />
+                {createLabel ?? "新增"}
+              </span>
+            </button>
+          ) : null}
+          {/* Options list with collapsible groups */}
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            className="overflow-y-auto max-h-[240px]"
+          >
+            {visible.map((o, i) => {
+              // Root group header (isHeader) — non-selectable, collapsible
+              if (o.isHeader) {
+                return (
+                  <div
+                    key={o.id}
+                    onClick={() => toggleGroup(o.id)}
+                    className={`w-full h-8 px-3 text-xs font-medium flex items-center justify-between cursor-pointer transition-colors ${
+                      i === focusedIndex ? "bg-accent-green/10" : "hover:bg-background/30"
+                    }`}
+                    onMouseEnter={() => setFocusedIndex(i)}
+                  >
+                    <span className="flex items-center gap-1 text-foreground/60">
+                      {collapsedGroups.has(o.id) && !isSearching
+                        ? <ChevronRight className="w-3 h-3 shrink-0" />
+                        : <ChevronDown className="w-3 h-3 shrink-0" />
+                      }
+                      {o.label}
+                    </span>
+                    {!isSearching && (
+                      <span className="text-[10px] text-foreground/35 shrink-0">
+                        {groupChildCounts.get(o.id) ?? 0}
+                      </span>
+                    )}
+                  </div>
+                );
+              }
+
+              // Mid-level group (isGroup) — selectable AND collapsible
+              if (o.isGroup) {
+                const isSelected = o.id === (value as string);
+                const isCollapsed = collapsedGroups.has(o.id) && !isSearching;
+                const childCount = groupChildCounts.get(o.id) ?? 0;
+                return (
+                  <button
+                    key={o.id}
+                    id={`${listId}-${i}`}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    className={`w-full h-9 px-3 text-sm text-left flex items-center gap-1.5 transition-colors ${
+                      i === focusedIndex ? "bg-accent-green/10" : ""
+                    } ${isSelected ? "font-medium text-accent-green" : "text-foreground"}`}
+                  >
+                    {/* Collapse toggle area */}
+                    <span
+                      onClick={(e) => { e.stopPropagation(); toggleGroup(o.id); }}
+                      className="flex items-center gap-0.5 shrink-0 cursor-pointer text-foreground/40 hover:text-foreground/60"
+                    >
+                      {isCollapsed
+                        ? <ChevronRight className="w-3 h-3" />
+                        : <ChevronDown className="w-3 h-3" />
+                      }
+                      <span className="text-[10px]">{childCount}</span>
+                    </span>
+                    {/* Selectable label — click selects this item */}
+                    <span
+                      onClick={() => selectSingle(o.id)}
+                      className="truncate flex-1 cursor-pointer"
+                    >
+                      {o.label}
+                    </span>
+                    {o.subLabel && (
+                      <span className="text-[10px] text-foreground/35 shrink-0">{o.subLabel}</span>
+                    )}
+                  </button>
+                );
+              }
+
+              // Regular selectable item
+              return (
+                <button
+                  key={o.id}
+                  id={`${listId}-${i}`}
+                  type="button"
+                  role="option"
+                  aria-selected={o.id === (value as string)}
+                  onClick={() => selectSingle(o.id)}
+                  onMouseEnter={() => setFocusedIndex(i)}
+                  className={`w-full h-9 px-3 text-sm text-left flex items-center gap-1.5 transition-colors ${
+                    i === focusedIndex ? "bg-accent-green/10" : ""
+                  } ${
+                    o.id === (value as string) ? "font-medium text-accent-green" : "text-foreground"
+                  }`}
+                >
+                  <span className="truncate">{o.label}</span>
+                  {o.subLabel && (
+                    <span className="text-[10px] text-foreground/35 shrink-0">{o.subLabel}</span>
+                  )}
+                </button>
+              );
+            })}
+            {visible.length === 0 && (
+              <div className="px-3 py-4 text-xs text-foreground/40 text-center">
+                {search ? `无匹配"${search}"的结果` : "暂无选项"}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Multi mode */}
+      {mode === "multi" && (
+        <>
+          {/* Search input */}
+          {searchable && (
+            <div className="px-2 pt-2 pb-1 border-b border-foreground/5">
+              <input
+                data-search
+                value={search}
+                onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
+                className="h-7 w-full rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                placeholder="搜索标签..."
+              />
+            </div>
+          )}
+          {/* Inline create area or create button */}
+          {!showNew ? (
+            <button
+              type="button"
+              onClick={() => setShowNew(true)}
+              className="w-full h-9 flex items-center justify-between px-3 text-sm bg-background/50 hover:bg-accent-green/10 transition-colors border-b border-foreground/5"
+            >
+              <span className="text-foreground/60">{placeholder || "选择标签"}</span>
+              <span className="flex items-center gap-1 text-accent-green font-medium">
+                <Plus className="w-3.5 h-3.5" />
+                新增
+              </span>
+            </button>
+          ) : (
+            <div className="px-3 py-2 border-b border-foreground/5 bg-accent-green/5 space-y-2">
+              <div className="flex gap-2">
+                <input
+                  ref={inputRef}
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") { e.stopPropagation(); createTag(); }
+                    if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") {
+                      e.stopPropagation();
+                    }
+                  }}
+                  className="h-8 flex-1 rounded-ui border border-foreground/10 px-2 text-sm outline-none focus:border-accent-green/30"
+                  placeholder="标签名称"
+                />
+                <button
+                  onClick={createTag}
+                  disabled={!newName.trim() || creating}
+                  className="h-8 px-3 rounded-ui bg-foreground text-background text-sm hover:bg-foreground/90 disabled:opacity-50"
+                >
+                  {creating ? "…" : "创建"}
+                </button>
+                <button
+                  onClick={() => { setShowNew(false); setNewName(""); }}
+                  className="h-8 w-8 rounded-ui border border-foreground/10 bg-surface-white text-foreground/40 hover:bg-background/30"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {/* Color picker */}
+              <div className="flex gap-1.5">
+                {PRESET_COLORS.map(c => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setNewColor(c)}
+                    className={`w-5 h-5 rounded-full border-2 transition-colors ${newColor === c ? "border-foreground scale-110" : "border-transparent"}`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Options list with checkboxes */}
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            className="overflow-y-auto max-h-[240px]"
+          >
+            {filtered.map((o, i) => {
+              const checked = (value as string[]).includes(o.id);
+              const c = o.color || "#7BA05B";
+              return (
+                <button
+                  key={o.id}
+                  id={`${listId}-${i}`}
+                  type="button"
+                  role="option"
+                  aria-selected={checked}
+                  onClick={() => toggleMulti(o.id)}
+                  onMouseEnter={() => setFocusedIndex(i)}
+                  className={`w-full h-9 px-3 text-sm text-left flex items-center gap-2 transition-colors ${
+                    i === focusedIndex ? "bg-accent-green/10" : ""
+                  } ${
+                    checked ? "font-medium" : ""
+                  }`}
+                >
+                  <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                    checked ? "bg-foreground border-foreground text-background" : "border-foreground/20 bg-surface-white"
+                  }`}>
+                    {checked && <Check className="w-3 h-3" />}
+                  </span>
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: c }} />
+                  <span className={checked ? "text-foreground" : "text-foreground"}>{o.label}</span>
+                </button>
+              );
+            })}
+            {filtered.length === 0 && !showNew && (
+              <div className="px-3 py-4 text-xs text-foreground/40 text-center">暂无标签，点击上方"新增"创建</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  /* ---- Render ---- */
+
+  return (
+    <>
+      {/* Trigger button */}
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={handleOpenToggle}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}
+        className="h-9 w-full rounded-ui border border-foreground/10 bg-surface-white px-3 text-sm outline-none flex items-center justify-between hover:border-foreground/20 transition-colors focus-visible:ring-2 focus-visible:ring-accent-green/20 focus-visible:border-accent-green/30"
+      >
+        {mode === "single" ? (
+          <span className={`${selectedLabel ? "text-foreground" : "text-foreground/40"} truncate flex items-center`}>
+            {selectedLabel || placeholder || "请选择"}
+            {selectedOption?.subLabel && (
+              <span className="text-[10px] text-foreground/35 ml-1 shrink-0">{selectedOption.subLabel}</span>
+            )}
+          </span>
+        ) : (
+          <MultiTriggerDisplay
+            value={value as string[]}
+            options={options}
+            placeholder={placeholder}
+          />
+        )}
+        {mode === "single" && (value as string) ? (
+          <span className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); (onChange as (id: string) => void)(""); }}
+              className="text-foreground/30 hover:text-foreground/60 transition-colors"
+              tabIndex={-1}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+            <ChevronDown className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
+          </span>
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
+        )}
+      </button>
+
+      {/* Dropdown rendered via portal so it doesn't overflow parent container */}
+      {open && createPortal(dropdownContent, document.body)}
+    </>
+  );
+}
+
+/* ---- Multi trigger display sub-component ---- */
+
+function MultiTriggerDisplay({
+  value,
+  options,
+  placeholder,
+}: {
+  value: string[];
+  options: SmartSelectOption[];
+  placeholder?: string;
+}) {
+  const selected = options.filter(o => value.includes(o.id));
+
+  if (selected.length === 0) {
+    return <span className="text-foreground/40">{placeholder || "选择标签"}</span>;
+  }
+
+  return (
+    <span className="flex items-center gap-1.5 truncate min-w-0">
+      {selected.slice(0, 4).map(o => (
+        <span
+          key={o.id}
+          className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ backgroundColor: o.color || "#7BA05B" }}
+        />
+      ))}
+      {selected.length > 4 && (
+        <span className="text-xs text-foreground/60 shrink-0">+{selected.length - 4}</span>
+      )}
+      <span className="text-xs text-foreground/60 shrink-0">{selected.length}</span>
+    </span>
+  );
+}
+
+/* ---- useId polyfill for stable ARIA IDs ---- */
+let _idCounter = 0;
+function useId(): string {
+  const [id] = useState(() => `ss-${++_idCounter}`);
+  return id;
+}

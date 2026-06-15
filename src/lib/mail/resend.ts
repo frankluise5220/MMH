@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
 
+/** 固定发件地址 */
+const RESEND_FROM = "wiseme@floatingice.win";
+
 type ResendConfig = {
   apiKey: string;
   from: string;
@@ -7,19 +10,30 @@ type ResendConfig = {
 
 function getResendConfig(): ResendConfig | null {
   const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
-  const from = (process.env.RESEND_FROM ?? process.env.MAIL_FROM ?? "").trim();
-  if (!apiKey || !from) return null;
+  if (!apiKey) return null;
+  // env 可覆盖 from，但默认用固定值
+  const from = (process.env.RESEND_FROM ?? "").trim() || RESEND_FROM;
   return { apiKey, from };
 }
 
-/** 从数据库读取 Resend 配置（用户在设置页面填写的），优先于 env */
+/** 从 SystemSetting 表或 env 读取 Resend 配置 */
 async function getDbResendConfig(): Promise<ResendConfig | null> {
   try {
+    const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
+    if (setting) {
+      const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
+      if (parsed.apiKey) {
+        // from 优先用数据库存的，但数据库存的就是固定值
+        return { apiKey: parsed.apiKey, from: parsed.from || RESEND_FROM };
+      }
+    }
+    // fallback: 旧 UserSettings（兼容旧数据）
     const users = await prisma.user.findMany({ where: { role: "admin" }, take: 1 });
-    if (!users[0]) return null;
-    const settings = await prisma.userSettings.findUnique({ where: { userId: users[0].id } });
-    if (settings?.resendApiKey && settings?.resendFrom) {
-      return { apiKey: settings.resendApiKey, from: settings.resendFrom };
+    if (users[0]) {
+      const settings = await prisma.userSettings.findUnique({ where: { userId: users[0].id } });
+      if (settings?.resendApiKey) {
+        return { apiKey: settings.resendApiKey, from: settings.resendFrom || RESEND_FROM };
+      }
     }
   } catch {}
   return null;
@@ -67,24 +81,4 @@ export async function sendEmailByResend(params: {
   }
 
   return { ok: true as const };
-}
-
-export async function sendPasswordResetEmailByResend(params: {
-  to: string;
-  username: string;
-  code: string;
-  expiresMinutes: number;
-}) {
-  const subject = "WiseMe 密码找回验证码";
-  const text = `你正在找回 WiseMe 账号（${params.username}）的密码。\n\n验证码：${params.code}\n有效期：${params.expiresMinutes} 分钟\n\n如果不是你本人操作，请忽略本邮件。`;
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.7; color: #0f172a;">
-      <h2 style="margin: 0 0 12px;">WiseMe 密码找回验证码</h2>
-      <p>你正在找回 WiseMe 账号（${params.username}）的密码。</p>
-      <p style="font-size: 24px; letter-spacing: 6px; font-weight: 700; margin: 18px 0;">${params.code}</p>
-      <p>验证码有效期：${params.expiresMinutes} 分钟。</p>
-      <p style="color: #64748b; font-size: 13px;">如果不是你本人操作，请忽略本邮件。</p>
-    </div>
-  `;
-  return sendEmailByResend({ to: params.to, subject, text, html });
 }

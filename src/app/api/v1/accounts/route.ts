@@ -4,6 +4,8 @@ import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { verifyPassword } from "@/lib/auth/password";
+import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
 
 export const runtime = "nodejs";
 
@@ -177,13 +179,80 @@ export async function DELETE(req: NextRequest) {
 
     const existing = await prisma.account.findUnique({ where: { id } });
     if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (existing.isPlaceholder) return NextResponse.json({ ok: false, error: "占位账户不可删除" }, { status: 403 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
       return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     }
 
-    const used = await prisma.txRecord.count({ where: { accountId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });
+    // Check if account has any records referencing it
+    const recordCount = await prisma.txRecord.count({ where: { accountId: id } });
+    const toRecordCount = await prisma.txRecord.count({ where: { toAccountId: id } });
+    const hasRecords = recordCount > 0 || toRecordCount > 0;
 
+    if (!hasRecords) {
+      // No records → delete directly (cascade handles related tables)
+      await prisma.account.delete({ where: { id } });
+      return NextResponse.json({ ok: true });
+    }
+
+    // Has records → require password verification
+    let body: { password?: string } | null = null;
+    try { body = await req.json(); } catch { /* no body */ }
+    const password = (body?.password ?? "").trim();
+    if (!password) {
+      return NextResponse.json({ ok: false, error: "该账户已产生记录，需输入密码才能删除", needPassword: true }, { status: 409 });
+    }
+
+    // Verify password against current user
+    if (!user) return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!currentUser) return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+
+    if (currentUser.passwordHash) {
+      const match = await verifyPassword(password, currentUser.passwordHash);
+      if (!match) return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+    } else {
+      // No passwordHash → check legacy SystemSetting password
+      const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
+      if (!legacy || !legacy.value) {
+        return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+      }
+      if (password !== legacy.value) return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+    }
+
+    // Password verified → reassign all references to placeholder account
+    const placeholderId = await getOrCreatePlaceholderAccountId(householdId);
+
+    // Update TxRecord where accountId = deleted account
+    if (recordCount > 0) {
+      await prisma.txRecord.updateMany({
+        where: { accountId: id },
+        data: { accountId: placeholderId, accountName: "空白" },
+      });
+    }
+
+    // Update TxRecord where toAccountId = deleted account
+    if (toRecordCount > 0) {
+      await prisma.txRecord.updateMany({
+        where: { toAccountId: id },
+        data: { toAccountId: placeholderId, toAccountName: "空白" },
+      });
+    }
+
+    // Reassign other related records (these have onDelete: Cascade,
+    // but we want to preserve them by reassigning first)
+    await prisma.fundConfirmDays.updateMany({ where: { accountId: id }, data: { accountId: placeholderId } });
+    await prisma.fundFeeRate.updateMany({ where: { accountId: id }, data: { accountId: placeholderId } });
+    await prisma.regularInvestPlan.updateMany({ where: { accountId: id }, data: { accountId: placeholderId } });
+    await prisma.regularInvestPlan.updateMany({ where: { cashAccountId: id }, data: { cashAccountId: placeholderId } });
+
+    // Snapshots & other related data are no longer meaningful → delete them
+    await prisma.accountAlias.deleteMany({ where: { accountId: id } });
+    await prisma.creditCardCycle.deleteMany({ where: { accountId: id } });
+    await prisma.fundSnapshot.deleteMany({ where: { accountId: id } });
+    await prisma.fundHolding.deleteMany({ where: { accountId: id } });
+
+    // Now safe to delete the account (remaining cascade relations are already cleaned up)
     await prisma.account.delete({ where: { id } });
     return NextResponse.json({ ok: true });
   } catch (e) {

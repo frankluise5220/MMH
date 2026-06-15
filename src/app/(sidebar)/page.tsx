@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
+import { kindLabel } from "@/lib/account-kinds";
 import { EntryRowActions } from "@/components/EntryRowActions";
 import { BasicDetailBatchDeleteButton, BasicDetailBatchReplaceButton, BasicDetailRowCheckbox, BasicDetailSelectAll, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
@@ -163,7 +164,9 @@ function buildCategoryPathLabels(categories: Array<{ id: string; name: string; t
   const labelById = new Map<string, string>();
   for (const c of categories) {
     const names = pathNames(c.id);
-    labelById.set(c.id, `${typeLabel(c.type)}.${names.join(".")}`);
+    // If the first path name matches the type label (e.g. root "支出" = type "支出"), don't duplicate it
+    const prefix = names[0] === typeLabel(c.type) ? "" : `${typeLabel(c.type)}.`;
+    labelById.set(c.id, `${prefix}${names.join(".")}`);
   }
   return labelById;
 }
@@ -316,6 +319,8 @@ async function createTransaction(formData: FormData) {
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
   const note = String(formData.get("note") ?? "").trim();
+  const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
+  const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const { householdId } = await getHouseholdScope();
@@ -343,7 +348,7 @@ async function createTransaction(formData: FormData) {
             ? toStatementMonth(date, toAcc.billingDay)
             : null;
 
-        await tx.txRecord.create({
+        const created = await tx.txRecord.create({
           data: {accountId: fromAcc.id,
             accountName: fromAcc.name,
             toAccountId: toAcc.id,
@@ -356,6 +361,9 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           },
         });
+        if (tagIds.length > 0) {
+          await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId: created.id, tagId })) });
+        }
       });
 
       await recalcAndSaveAccountBalance(fromAccountId).catch(() => {});
@@ -378,7 +386,7 @@ async function createTransaction(formData: FormData) {
             ? toStatementMonth(date, acc.billingDay)
             : null;
 
-        await tx.txRecord.create({
+        const created = await tx.txRecord.create({
           data: {accountId: acc.id,
             accountName: acc.name,
             categoryId: cat?.id ?? null,
@@ -391,6 +399,9 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           },
         });
+        if (tagIds.length > 0) {
+          await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId: created.id, tagId })) });
+        }
       });
 
       await recalcAndSaveAccountBalance(accountId).catch(() => {});
@@ -409,7 +420,7 @@ async function createTransaction(formData: FormData) {
             ? toStatementMonth(date, acc.billingDay)
             : null;
 
-        await tx.txRecord.create({
+        const created = await tx.txRecord.create({
           data: { accountId: acc?.id ?? undefined,
             accountName: acc?.name ?? "未知账户",
             categoryId: cat?.id ?? undefined,
@@ -422,6 +433,9 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           } as any,
         });
+        if (tagIds.length > 0) {
+          await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId: created.id, tagId })) });
+        }
       });
 
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => {});
@@ -1241,6 +1255,8 @@ async function updateTransactionFromDialog(formData: FormData) {
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
   const note = String(formData.get("note") ?? "").trim();
+  const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
+  const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   if (!amountAbs) return { ok: false as const, error: "金额不正确" };
@@ -1249,9 +1265,15 @@ async function updateTransactionFromDialog(formData: FormData) {
     await prisma.$transaction(async (tx) => {
       const entry = await tx.txRecord.findUnique({
         where: { id: entryId },
-        
+
       });
       if (!entry) throw new Error("记录不存 ");
+
+      // Update tags: delete old, create new
+      await tx.entryTag.deleteMany({ where: { entryId } });
+      if (tagIds.length > 0) {
+        await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId, tagId })) });
+      }
 
       if (type === "transfer") {
         const fromAccountId = String(formData.get("fromAccountId") ?? "").trim();
@@ -1610,7 +1632,7 @@ export default async function Home({
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
   const pnlBinCls = (cond: boolean) => cond ? upCls : downCls;
 
-  const [categories, selectedAccount, accounts] = await Promise.all([
+  const [categories, selectedAccount, accounts, tags, groups, institutions] = await Promise.all([
     prisma.category.findMany({
       where: { ...hidFilter },
       orderBy: [{ type: "asc" }, { name: "asc" }],
@@ -1620,8 +1642,20 @@ export default async function Home({
       : null,
     prisma.account.findMany({
       where: { ...hidFilter },
-      include: { Institution: true },
+      include: { Institution: true, AccountGroup: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
+    }),
+    prisma.tag.findMany({
+      where: { ...hidFilter },
+      orderBy: { name: "asc" },
+    }),
+    prisma.accountGroup.findMany({
+      where: { ...hidFilter },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    }),
+    prisma.institution.findMany({
+      where: { ...hidFilter },
+      orderBy: { name: "asc" },
     }),
   ]);
 
@@ -1835,12 +1869,51 @@ export default async function Home({
     id: a.id,
     kind: a.kind,
     label: a.Institution?.name ? `${a.Institution?.name}·${a.name}` : a.name,
+    groupId: a.groupId ?? "",
+    groupName: a.AccountGroup?.name ?? "",
+    investProductType: a.investProductType,
+    subLabel: kindLabel(a.kind),
   }));
+
+  // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
+  // ungrouped accounts shown flat with institution as subLabel
+  type SSOpt = { id: string; label: string; subLabel?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string };
+  function buildAccountSSOptions(filter?: (a: typeof accountOptions[number]) => boolean): SSOpt[] {
+    const filtered = filter ? accountOptions.filter(filter) : accountOptions;
+    const grouped = filtered.filter(a => a.groupId);
+    const ungrouped = filtered.filter(a => !a.groupId);
+
+    // Build group header entries
+    const groupHeaders: SSOpt[] = groups
+      .filter(g => grouped.some(a => a.groupId === g.id))
+      .map(g => ({ id: `group:${g.id}`, label: g.name, isHeader: true }));
+
+    // Build grouped account entries (parentId → group header)
+    const groupedItems: SSOpt[] = grouped.map(a => ({
+      id: a.id,
+      label: a.label,
+      subLabel: a.subLabel,
+      parentId: `group:${a.groupId}`,
+    }));
+
+    // Build ungrouped account entries (no parentId)
+    const ungroupedItems: SSOpt[] = ungrouped.map(a => ({
+      id: a.id,
+      label: a.label,
+      subLabel: a.subLabel,
+    }));
+
+    return [...groupHeaders, ...groupedItems, ...ungroupedItems];
+  }
+
   const spendingAccountOptions = accounts
     .filter((a) => a.kind !== AccountKind.investment)
     .map((a) => ({
       id: a.id,
       label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
+      groupId: a.groupId ?? "",
+      groupName: a.AccountGroup?.name ?? "",
+      subLabel: kindLabel(a.kind),
     }));
   const investmentAccountOptions = accounts
     .filter((a) => a.kind === AccountKind.investment)
@@ -1848,10 +1921,28 @@ export default async function Home({
       id: a.id,
       name: a.name,
       label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
+      groupId: a.groupId ?? "",
+      groupName: a.AccountGroup?.name ?? "",
       investProductType: a.investProductType,
+      subLabel: kindLabel(a.kind),
     }));
   const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.label]));
   const investmentProductTypeByAccountId = new Map(investmentAccountOptions.map((a) => [a.id, a.investProductType]));
+
+  // Pre-computed hierarchical SS options for modal props
+  const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
+  const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
+  const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment");
+  const investmentAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment");
+  // Flat lists for components that don't use SS hierarchy (backward compat)
+  const cashAccountList = accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const investmentAccountList = accountOptions.filter(a => a.kind === "investment").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+
+  // NestedAddModal fieldData for groups & institutions
+  const nestedFieldData = {
+    groupId: groups.map(g => ({ id: g.id, name: g.name })),
+    institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
+  };
 
   // 查询最近使用的资金账户
   const lastUsedCashAccount = isInvestAccount && accountId
@@ -2344,7 +2435,7 @@ export default async function Home({
             where: {
               AND: [cycleMatch, ...(billScope ? [billScope] : [])],
             },
-            include: {},
+            include: { EntryTag: { include: { Tag: true } } },
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
             take: 500,
           });
@@ -2710,7 +2801,7 @@ export default async function Home({
                   fundName: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.name ?? undefined,
                   fundUnits: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.units ?? undefined,
                 }}
-                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
                 holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
                 allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
@@ -2725,22 +2816,25 @@ export default async function Home({
                 createAction={createTransaction}
               />
             ) : view === "regularinvest" && selectedAccount ? (
-              <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))} action={regularInvestFormAction} showTriggerButton={false} />
+              <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={cashAccountList} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} action={regularInvestFormAction} showTriggerButton={false} />
             ) : (
               <>
               <TransactionFormModal
                 accounts={spendingAccountOptions} transferAccounts={accountOptions} investmentAccounts={investmentAccountOptions}
-                expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label }))}
-                incomeCategories={incomeCategories.map((c) => ({ id: c.id, label: c.label }))}
+                accountSSOptions={spendingAccountSSOptions} transferAccountSSOptions={allAccountSSOptions}
+                nestedFieldData={nestedFieldData}
+                expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
+                incomeCategories={incomeCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
                 defaultAccountId={accountId || undefined}
                 lastRepayToAccountId={lastRepayToAccountId} lastRepayFromAccountId={lastRepayFromAccountId}
-                isCreditCardAccount={isBillAccount} action={createTransaction} editAction={updateTransactionFromDialog}
+                isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}
+                allTags={tags.map(t => ({ id: t.id, name: t.name, color: t.color }))}
               />
               <InvestmentFormModal
                 mode="edit"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 accountProductType={selectedAccount?.investProductType ?? null}
-                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
                 createAction={createTransaction}
                 editAction={editInvestment}
@@ -2748,16 +2842,22 @@ export default async function Home({
               <WealthFormModal
                 mode="edit"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
-                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
               <DepositFormModal
                 mode="edit"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
-                cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
+                cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
@@ -3002,6 +3102,7 @@ export default async function Home({
                                       toAccountLabel: e.toAccountName ?? "",
                                       categoryId: "",
                                       entryId: e.id,
+                                      tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [],
                                     }
                                   : {
                                       type: editType as "expense" | "income",
@@ -3012,6 +3113,7 @@ export default async function Home({
                                       categoryId: e.categoryId ?? "",
                                       categoryLabel: categoryLabel,
                                       entryId: e.id,
+                                      tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [],
                                     };
                             return (
                               <tr key={e.id} className="hover:bg-slate-50">
@@ -3022,6 +3124,14 @@ export default async function Home({
                                   <span className="text-xs text-slate-700">{categoryLabel}</span>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-slate-600 truncate max-w-[520px]" title={e.note ?? ""}>
+                                  {e.EntryTag && e.EntryTag.length > 0 && (
+                                    <span className="inline-flex flex-wrap gap-1 mr-1">
+                                      {e.EntryTag.map((et: any) => {
+                                        const c = et.Tag?.color || "#3B82F6";
+                                        return <span key={et.tagId} className="text-[10px] px-1 py-0.5 rounded-full border" style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}>{et.Tag?.name}</span>;
+                                      })}
+                                    </span>
+                                  )}
                                   <span className="text-xs text-slate-600">{e.note ?? ""}</span>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-slate-600">
@@ -3071,8 +3181,8 @@ export default async function Home({
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
               selectedAccountLabel={selectedAccountLabel}
               accountOptions={accountOptions}
-              cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
-              investmentAccounts={accountOptions.filter(a => a.kind === "investment").map(a => ({ id: a.id, label: a.label }))}
+              cashAccounts={cashAccountList}
+              investmentAccounts={investmentAccountList}
               createAction={createTransaction}
               editAction={editInvestment}
               fillNavAction={fillFundNavFromCache}
@@ -3098,8 +3208,8 @@ export default async function Home({
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
               selectedAccountLabel={selectedAccountLabel}
               accountOptions={accountOptions}
-              cashAccounts={accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label }))}
-              investmentAccounts={accountOptions.filter(a => a.kind === "investment").map(a => ({ id: a.id, label: a.label }))}
+              cashAccounts={cashAccountList}
+              investmentAccounts={investmentAccountList}
               createAction={createTransaction}
               editAction={editInvestment}
               fillNavAction={fillFundNavFromCache}
@@ -3251,7 +3361,7 @@ export default async function Home({
                         const entryFundProductType = e.fundProductType ?? (e.toAccountId ? investmentProductTypeByAccountId.get(e.toAccountId) : null) ?? (e.accountId ? investmentProductTypeByAccountId.get(e.accountId) : null) ?? null;
                         const isRedeemEditEntry = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
                         const editPayload = e.type !== "investment" ? undefined : { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), confirmDate: e.fundConfirmDate?.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, fundCode: e.fundCode, fundName: e.fundName, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, fundNav: e.fundNav != null ? toNumber(e.fundNav) : null, fundFee: e.fundFee != null ? toNumber(e.fundFee) : null, fundProductType: entryFundProductType, fundSubtype: e.fundSubtype, source: e.source, accountId: e.accountId, toAccountId: e.toAccountId, cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId, toAccountName: e.toAccountName, fundArrivalDate: e.fundArrivalDate?.toISOString().slice(0,10), fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null };
-                        const otherEditPayload = e.type !== "investment" ? { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, categoryId: e.categoryId, categoryName: e.categoryName, accountId: e.accountId, accountName: e.accountName, fromAccountId: e.type === "transfer" ? e.accountId : undefined, toAccountId: e.toAccountId, toAccountName: e.toAccountName } : undefined;
+                        const otherEditPayload = e.type !== "investment" ? { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, categoryId: e.categoryId, categoryName: e.categoryName, accountId: e.accountId, accountName: e.accountName, fromAccountId: e.type === "transfer" ? e.accountId : undefined, toAccountId: e.toAccountId, toAccountName: e.toAccountName, tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [] } : undefined;
                         const isToAccount = !!accountId && e.toAccountId === accountId;
                         const sourceAccountLabel = accountOptions.find((a: any) => a.id === e.accountId)?.label ?? e.accountName;
                         const targetAccountLabel = e.toAccountId ? (accountOptions.find((a: any) => a.id === e.toAccountId)?.label ?? e.toAccountName) : null;
@@ -3267,7 +3377,17 @@ export default async function Home({
                             </td>
                             {!isInvestAccount && <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">{relatedAccountLabel ? relatedAccountLabel : <span className="text-slate-300">-</span>}</td>}
                             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700"><span className="text-xs">{balance !== null ? formatMoney(balance) : ""}</span></td>
-                            <td className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[240px]" title={e.note ?? ""}><span className="text-xs text-slate-500">{e.note ?? ""}</span></td>
+                            <td className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[240px]" title={e.note ?? ""}>
+                              {e.EntryTag && e.EntryTag.length > 0 && (
+                                <span className="inline-flex flex-wrap gap-0.5 mr-1">
+                                  {e.EntryTag.map((et: any) => {
+                                    const c = et.Tag?.color || "#3B82F6";
+                                    return <span key={et.tagId} className="text-[10px] px-1 py-0.5 rounded-full border leading-none" style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}>{et.Tag?.name}</span>;
+                                  })}
+                                </span>
+                              )}
+                              <span className="text-xs text-slate-500">{e.note ?? ""}</span>
+                            </td>
                             <td className="px-3 py-1 border-b border-slate-100 text-slate-400"></td>
                             <td className="w-24 px-2 py-1 border-b border-slate-100"><div className="flex justify-end"><EntryRowActions entryId={e.id} edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any} /></div></td>
                           </tr>

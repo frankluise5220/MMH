@@ -1,44 +1,37 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote } from "lucide-react";
+import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
+import { kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
+import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { SmartSelect } from "@/components/SmartSelect";
+
+/* ---- Render icon from kindIconName ---- */
+function kindIcon(k: string) {
+  const map: Record<string, React.ReactNode> = {
+    "credit-card": <CreditCard className="w-3.5 h-3.5" />,
+    "landmark": <Landmark className="w-3.5 h-3.5" />,
+    "wallet": <Wallet className="w-3.5 h-3.5" />,
+    "banknote": <Banknote className="w-3.5 h-3.5" />,
+    "piggy-bank": <PiggyBank className="w-3.5 h-3.5" />,
+    "building-2": <Building2 className="w-3.5 h-3.5" />,
+  };
+  return map[kindIconName(k)] || <Building2 className="w-3.5 h-3.5" />;
+}
 
 type Group = { id: string; name: string; sortOrder: number };
 type Institution = { id: string; name: string; type?: string };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
+  isPlaceholder?: boolean;
   institutionId: string | null; groupId: string | null;
   Institution: { id: string; name: string } | null;
   AccountGroup: { id: string; name: string } | null;
   billingDay: number | null; repaymentDay: number | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
-};
-
-const kindIcon = (k: string) => {
-  if (k === "bank_credit") return <CreditCard className="w-3.5 h-3.5" />;
-  if (k === "bank_debit") return <Landmark className="w-3.5 h-3.5" />;
-  if (k === "ewallet") return <Wallet className="w-3.5 h-3.5" />;
-  if (k === "cash") return <Banknote className="w-3.5 h-3.5" />;
-  if (k === "investment") return <PiggyBank className="w-3.5 h-3.5" />;
-  return <Building2 className="w-3.5 h-3.5" />;
-};
-
-const kindLabel = (k: string) => {
-  const m: Record<string, string> = { bank_credit: "信用卡", bank_debit: "借记卡", ewallet: "电子钱包", cash: "现金", investment: "投资", loan: "贷款", other: "其他", bank_savings: "储蓄卡" };
-  return m[k] || k;
-};
-
-const kindColor = (k: string) => {
-  if (k === "bank_credit") return "bg-amber-50 text-amber-700 border-amber-200";
-  if (k === "bank_debit") return "bg-slate-50 text-slate-700 border-slate-200";
-  if (k === "ewallet") return "bg-blue-50 text-blue-700 border-blue-200";
-  if (k === "cash") return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (k === "investment") return "bg-purple-50 text-purple-700 border-purple-200";
-  if (k === "loan") return "bg-red-50 text-red-700 border-red-200";
-  return "bg-slate-50 text-slate-700 border-slate-200";
 };
 
 const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
@@ -48,24 +41,25 @@ export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
-  const [filterMode, setFilterMode] = useState<"group" | "institution">("group");
-  const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<string>("");
+  const [selectedInstitution, setSelectedInstitution] = useState<string>("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
+
+  // Delete account with password verification
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+
+  // Nested creation from SmartSelect in inline edit
+  const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
 
   // Group CRUD
   const [newGroupName, setNewGroupName] = useState("");
+  const [showNewGroup, setShowNewGroup] = useState(false);
   const [editGroupId, setEditGroupId] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState("");
-
-  // Add account
-  const [showAdd, setShowAdd] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-  const [addForm, setAddForm] = useState({ name: "", kind: "bank_debit", groupId: "", institutionId: "", currency: "CNY", investProductType: "fund" });
-  const [showInstitutionMenu, setShowInstitutionMenu] = useState(false);
-  const [showNewInstitution, setShowNewInstitution] = useState(false);
-  const [newInstitutionName, setNewInstitutionName] = useState("");
-  const [newInstitutionType, setNewInstitutionType] = useState("bank");
 
   useEffect(() => { loadAll(); }, []);
 
@@ -89,6 +83,7 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ name: newGroupName.trim() }),
     });
     setNewGroupName("");
+    setShowNewGroup(false);
     loadAll();
   }
 
@@ -110,7 +105,7 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ entity: "accountGroup", id }),
     });
     const data = await res.json();
-    if (data.ok) { setSelectedFilter(null); loadAll(); }
+    if (data.ok) { setSelectedGroup(""); loadAll(); }
     else window.alert(data.error);
   }
 
@@ -151,86 +146,13 @@ export default function SettingsAccountsPage() {
     loadAll();
   }
 
-  async function createInstitutionForAccount() {
-    const name = newInstitutionName.trim();
-    if (!name) return;
-    const exists = institutions.find((item) => item.name.trim() === name);
-    if (exists) {
-      setAddError(`机构“${name}”已存在，已为当前账户选中。`);
-      setAddForm((prev) => ({ ...prev, institutionId: exists.id }));
-      setShowNewInstitution(false);
-      setShowInstitutionMenu(false);
-      setNewInstitutionName("");
-      return;
-    }
-    setAddError(null);
-    const res = await fetch("/api/v1/institution", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, type: newInstitutionType }),
-    }).catch(() => null);
-    if (!res) {
-      setAddError("网络请求失败，机构未创建。");
-      return;
-    }
-    const data = await res.json().catch(() => ({ ok: false, error: "创建机构失败，返回数据格式异常" }));
-    if (!data.ok || !data.institution?.id) {
-      setAddError(data.error || "机构创建失败");
-      return;
-    }
-    setInstitutions((prev) => {
-      const exists = prev.some((item) => item.id === data.institution.id);
-      return exists ? prev : [...prev, data.institution].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-    });
-    setAddForm((prev) => ({ ...prev, institutionId: data.institution.id }));
-    setNewInstitutionName("");
-    setNewInstitutionType("bank");
-    setShowNewInstitution(false);
-    setShowInstitutionMenu(false);
-  }
-
-  const selectedInstitutionId = filterMode === "institution" && selectedFilter ? selectedFilter : addForm.institutionId;
-  const selectedInstitution = institutions.find((item) => item.id === selectedInstitutionId);
   const accountDisplayName = (account: Account) => account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
 
-  async function createAccount() {
-    if (!addForm.name.trim()) return;
-    setAddError(null);
-    const payload: Record<string, string | undefined> = { ...addForm };
-    if (filterMode === "group" && selectedFilter) payload.groupId = selectedFilter;
-    if (filterMode === "institution" && selectedFilter) payload.institutionId = selectedFilter;
-    const res = await fetch("/api/v1/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
-    if (!res) {
-      setAddError("网络请求失败，账户未创建。");
-      return;
-    }
-    const data = await res.json().catch(() => ({ ok: false, error: "创建失败，返回数据格式异常" }));
-    if (!data.ok) {
-      setAddError(data.error || "账户创建失败");
-      return;
-    }
-    setAddForm({ name: "", kind: "bank_debit", groupId: "", institutionId: "", currency: "CNY", investProductType: "fund" });
-    setShowAdd(false);
-    loadAll();
-  }
-
-  const filteredAccounts = filterMode === "group" && selectedFilter
-    ? accounts.filter(a => a.groupId === selectedFilter)
-    : filterMode === "institution" && selectedFilter
-      ? accounts.filter(a => a.institutionId === selectedFilter)
-      : accounts;
-
-  // Stats for the filter sidebar
-  const institutionAccountCounts = new Map<string, number>();
-  for (const a of accounts) {
-    if (a.institutionId) institutionAccountCounts.set(a.institutionId, (institutionAccountCounts.get(a.institutionId) || 0) + 1);
-  }
-  // Also count accounts without institution
-  const noInstitutionCount = accounts.filter(a => !a.institutionId).length;
+  const filteredAccounts = accounts.filter(a => {
+    if (selectedGroup && a.groupId !== selectedGroup) return false;
+    if (selectedInstitution && a.institutionId !== selectedInstitution) return false;
+    return true;
+  });
 
   // Group accounts by kind for display
   const grouped = new Map<string, Account[]>();
@@ -239,386 +161,352 @@ export default function SettingsAccountsPage() {
     list.push(a);
     grouped.set(a.kind, list);
   }
-  const kindOrder = ["bank_credit", "bank_debit", "bank_savings", "ewallet", "cash", "investment", "loan", "other"];
+
+  // Group/institution counts
+  const groupAccountCounts = new Map<string, number>();
+  for (const a of accounts) { if (a.groupId) groupAccountCounts.set(a.groupId, (groupAccountCounts.get(a.groupId) || 0) + 1); }
+  const institutionAccountCounts = new Map<string, number>();
+  for (const a of accounts) { if (a.institutionId) institutionAccountCounts.set(a.institutionId, (institutionAccountCounts.get(a.institutionId) || 0) + 1); }
 
   return (
-    <div className="flex min-h-0">
-      {/* ===== 左侧：筛选边栏 ===== */}
-      <div className="w-52 shrink-0 border-r border-slate-200 bg-white flex flex-col">
-        <div className="px-4 py-3 border-b border-slate-100 shrink-0">
-          <div className="text-sm font-semibold text-slate-800">筛选</div>
+    <div className="space-y-4">
+      {/* ===== 标题行 ===== */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">账户管理</h2>
+          <p className="text-xs text-slate-500 mt-0.5">共 {filteredAccounts.length} 个账户</p>
         </div>
-
-        {/* 分组 / 机构 切换 */}
-        <div className="px-3 py-2 border-b border-slate-50 flex gap-1">
-          <button onClick={() => { setFilterMode("group"); setSelectedFilter(null); }}
-            className={`flex-1 h-7 rounded text-xs font-medium transition-colors ${filterMode === "group" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-            分组
-          </button>
-          <button onClick={() => { setFilterMode("institution"); setSelectedFilter(null); }}
-            className={`flex-1 h-7 rounded text-xs font-medium transition-colors ${filterMode === "institution" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-            机构
-          </button>
-        </div>
-
-        {/* 分组模式 */}
-        {filterMode === "group" && (
-          <>
-            <div className="px-3 py-2 border-b border-slate-50">
-              <div className="flex gap-1">
-                <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && createGroup()}
-                  className="flex-1 h-7 rounded border border-slate-200 px-2 text-xs outline-none focus:border-blue-400"
-                  placeholder="新建分组…" />
-                <button onClick={createGroup} disabled={!newGroupName.trim()}
-                  className="h-7 w-7 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shrink-0">
-                  <Plus className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto py-1">
-              <button onClick={() => setSelectedFilter(null)}
-                className={`w-full text-left px-3 py-1.5 text-sm ${!selectedFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
-                全部 ({accounts.length})
-              </button>
-              {groups.map(g => (
-                <div key={g.id} className="group">
-                  {editGroupId === g.id ? (
-                    <div className="flex items-center gap-1 px-3 py-1">
-                      <input value={editGroupName} onChange={e => setEditGroupName(e.target.value)}
-                        onKeyDown={e => e.key === "Enter" && updateGroup()}
-                        className="flex-1 h-7 rounded border border-blue-300 px-2 text-xs outline-none" autoFocus />
-                      <button onClick={updateGroup} className="h-6 w-6 flex items-center justify-center rounded text-emerald-600 hover:bg-emerald-50"><Check className="w-3 h-3" /></button>
-                      <button onClick={() => setEditGroupId(null)} className="h-6 w-6 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100"><X className="w-3 h-3" /></button>
-                    </div>
-                  ) : (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedFilter(g.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedFilter(g.id);
-                        }
-                      }}
-                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 cursor-pointer ${selectedFilter === g.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
-                    >
-                      <span className="flex-1 truncate">{g.name}</span>
-                      <span className="text-[10px] text-slate-400">{accounts.filter(a => a.groupId === g.id).length}</span>
-                      <button type="button" onClick={e => { e.stopPropagation(); setEditGroupId(g.id); setEditGroupName(g.name); }}
-                        className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-blue-600 shrink-0">
-                        <Pencil className="w-3 h-3" />
-                      </button>
-                      <button type="button" onClick={e => { e.stopPropagation(); if (confirm("删除分组？")) deleteGroup(g.id); }}
-                        className="h-5 w-5 hidden group-hover:flex items-center justify-center rounded text-slate-400 hover:text-red-500 shrink-0">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* 机构模式 */}
-        {filterMode === "institution" && (
-          <div className="flex-1 overflow-y-auto py-1">
-            <button onClick={() => setSelectedFilter(null)}
-              className={`w-full text-left px-3 py-1.5 text-sm ${!selectedFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
-              全部 ({accounts.length})
-            </button>
-            {institutions.map(i => (
-              <button key={i.id}
-                onClick={() => setSelectedFilter(i.id)}
-                className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1 ${selectedFilter === i.id ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}`}>
-                <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
-                <span className="flex-1 truncate">{i.name}</span>
-                <span className="text-[10px] text-slate-400">{institutionAccountCounts.get(i.id) || 0}</span>
-              </button>
-            ))}
-            {noInstitutionCount > 0 && (
-              <div className="px-3 py-2 text-xs text-slate-400">
-                未关联机构：{noInstitutionCount} 个
-              </div>
-            )}
-          </div>
-        )}
+        <EntityCreateForm
+          mode="full" layout="card" entityType="account"
+          fieldData={{ groupId: groups, institutionId: institutions }}
+          onCreated={() => loadAll()}
+          existingNames={accounts.map(a => a.name)}
+        />
       </div>
 
-     
-{/* ===== 右侧：账户列表 ===== */}
-      <div className="flex-1 bg-slate-50 p-5 min-w-0 overflow-y-auto" style={{ height: "calc(100vh - 8.5rem)" }}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-800">
-              {selectedFilter
-                ? (filterMode === "group"
-                    ? groups.find(g => g.id === selectedFilter)?.name
-                    : institutions.find(i => i.id === selectedFilter)?.name) + " 的账户"
-                : "所有账户"}
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">共 {filteredAccounts.length} 个账户</p>
-          </div>
-          <button onClick={() => { setShowAdd(!showAdd); setAddError(null); }}
-            className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
-            <Plus className="w-3.5 h-3.5" />新增
-          </button>
-        </div>
-
-        {/* Add account form */}
-        {showAdd && (
-          <div className="bg-white border border-blue-200 rounded-xl p-4 mb-4">
-            <div className="text-sm font-medium text-slate-700 mb-3">新增账户</div>
-            {addError && <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{addError}</div>}
-            <div className="grid grid-cols-5 gap-3">
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">名称</label>
-                <input value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" placeholder="账户名称" />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">类型</label>
-                <select value={addForm.kind} onChange={e => setAddForm(f => ({ ...f, kind: e.target.value, investProductType: e.target.value === "investment" ? f.investProductType || "fund" : "fund" }))}
-                  className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none">
-                  {kindOrder.map(k => <option key={k} value={k}>{kindLabel(k)}</option>)}
-                </select>
-              </div>
-              {addForm.kind === "investment" && (
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
-                  <select value={addForm.investProductType} onChange={e => setAddForm(f => ({ ...f, investProductType: e.target.value }))}
-                    className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none">
-                    {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </div>
-              )}
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">分组</label>
-                <select value={filterMode === "group" && selectedFilter ? selectedFilter : addForm.groupId} onChange={e => setAddForm(f => ({ ...f, groupId: e.target.value }))}
-                  disabled={filterMode === "group" && !!selectedFilter}
-                  className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-400">
-                  <option value="">自动/默认</option>
-                  {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">机构</label>
-                <div className="relative">
-                  <button type="button"
-                    onClick={() => {
-                      if (filterMode === "institution" && selectedFilter) return;
-                      setShowInstitutionMenu((open) => !open);
-                    }}
-                    disabled={filterMode === "institution" && !!selectedFilter}
-                    className="flex h-9 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-left text-sm outline-none disabled:bg-slate-50 disabled:text-slate-400">
-                    <span className={selectedInstitution ? "text-slate-800" : "text-slate-400"}>{selectedInstitution?.name || "无"}</span>
-                    <span className="text-xs text-slate-400">▾</span>
-                  </button>
-                  {showInstitutionMenu && !(filterMode === "institution" && selectedFilter) && (
-                    <div className="absolute left-0 right-0 top-10 z-20 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
-                      <button type="button" onClick={() => setShowNewInstitution((open) => !open)}
-                        className="flex h-9 w-full items-center px-3 text-left text-xs font-medium text-blue-600 hover:bg-blue-50">
-                        + 新增机构
-                      </button>
-                      <div className="max-h-44 overflow-y-auto border-t border-slate-100">
-                        <button type="button" onClick={() => { setAddForm(f => ({ ...f, institutionId: "" })); setShowInstitutionMenu(false); }}
-                          className={`flex h-8 w-full items-center px-3 text-left text-xs hover:bg-slate-50 ${!selectedInstitutionId ? "bg-slate-50 text-blue-700" : "text-slate-700"}`}>
-                          无
-                        </button>
-                        {institutions.map(i => (
-                          <button key={i.id} type="button" onClick={() => { setAddForm(f => ({ ...f, institutionId: i.id })); setShowInstitutionMenu(false); }}
-                            className={`flex h-8 w-full items-center px-3 text-left text-xs hover:bg-slate-50 ${selectedInstitutionId === i.id ? "bg-slate-50 text-blue-700" : "text-slate-700"}`}>
-                            {i.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {showNewInstitution && (
-                  <div className="mt-2 rounded-md border border-blue-100 bg-blue-50 p-2 space-y-2">
-                    <input value={newInstitutionName} onChange={e => setNewInstitutionName(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && createInstitutionForAccount()}
-                      className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400" placeholder="新机构名称，如 招商银行" autoFocus />
-                    <div className="flex gap-1">
-                      <select value={newInstitutionType} onChange={e => setNewInstitutionType(e.target.value)}
-                        className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 text-xs outline-none">
-                        <option value="bank">银行</option>
-                        <option value="brokerage">券商</option>
-                        <option value="payment">支付机构</option>
-                        <option value="ewallet">电子钱包</option>
-                        <option value="other">其他</option>
-                      </select>
-                      <button type="button" onClick={createInstitutionForAccount} disabled={!newInstitutionName.trim()}
-                        className="h-8 rounded bg-blue-600 px-2 text-xs text-white hover:bg-blue-700 disabled:opacity-50">保存</button>
-                      <button type="button" onClick={() => { setShowNewInstitution(false); setNewInstitutionName(""); }}
-                        className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-slate-50">取消</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="flex items-end gap-2">
-                <button onClick={createAccount} disabled={!addForm.name.trim()}
-                  className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">创建</button>
-                <button onClick={() => setShowAdd(false)}
-                  className="h-9 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50">取消</button>
-              </div>
+      {/* ===== 顶部筛选条 ===== */}
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          <select value={selectedGroup} onChange={e => setSelectedGroup(e.target.value)}
+            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400">
+            <option value="">全部分组</option>
+            {groups.map(g => <option key={g.id} value={g.id}>{g.name} ({groupAccountCounts.get(g.id) || 0})</option>)}
+          </select>
+          {/* 分组管理：新建/编辑/删除 */}
+          {!showNewGroup ? (
+            <button onClick={() => setShowNewGroup(true)} title="新建分组"
+              className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:text-blue-600 hover:bg-blue-50">
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1">
+              <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && createGroup()}
+                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" placeholder="分组名称" autoFocus />
+              <button onClick={createGroup} disabled={!newGroupName.trim()}
+                className="h-9 w-9 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={() => { setShowNewGroup(false); setNewGroupName(""); }}
+                className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:bg-slate-50">
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
-          </div>
-        )}
-
-        {/* Account cards grouped by kind */}
-        <div className="space-y-5">
-          {kindOrder.map(kind => {
-            const list = grouped.get(kind);
-            if (!list || list.length === 0) return null;
-            return (
-              <div key={kind}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${kindColor(kind)}`}>
-                    {kindIcon(kind)} {kindLabel(kind)}
-                  </span>
-                  <span className="text-[10px] text-slate-400">{list.length} 个</span>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                  {list.map(a => (
-                    <div key={a.id}
-                      className={`border rounded-lg bg-white transition-colors ${!a.isActive ? "opacity-60 bg-slate-50" : ""} ${editingId === a.id ? "border-blue-300 ring-1 ring-blue-100" : "border-slate-200"}`}>
-                      {editingId === a.id ? (
-                        /* ---- Edit mode ---- */
-                        <div className="p-4 space-y-3">
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-xs text-slate-500 mb-1">名称</label>
-                              <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                                className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
-                            </div>
-                            <div>
-                              <label className="block text-xs text-slate-500 mb-1">分组</label>
-                              <select value={editForm.groupId || ""} onChange={e => setEditForm(f => ({ ...f, groupId: e.target.value }))}
-                                className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none">
-                                <option value="">未分组</option>
-                                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                              </select>
-                            </div>
-                          </div>
-
-                          {a.kind === "investment" && (
-                            <div className="grid grid-cols-2 gap-3">
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
-                                <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none">
-                                  {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">成本摊薄方式</label>
-                                <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none">
-                                  <option value="moving_avg">移动平均</option>
-                                  <option value="fifo">先进先出</option>
-                                  <option value="lifo">后进先出</option>
-                                </select>
-                              </div>
-                            </div>
-                          )}
-
-                          {(a.kind === "bank_credit" || a.kind === "loan") && (
-                            <div className="grid grid-cols-4 gap-3">
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">账单日</label>
-                                <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                              </div>
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">还款日</label>
-                                <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                              </div>
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">额度</label>
-                                <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none" />
-                              </div>
-                              <div>
-                                <label className="block text-xs text-slate-500 mb-1">卡号后四位</label>
-                                <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
-                                  className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none" />
-                              </div>
-                            </div>
-                          )}
-
-                          <div className="flex justify-end gap-2 pt-1">
-                            <button onClick={() => setEditingId(null)}
-                              className="h-7 px-3 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">取消</button>
-                            <button onClick={saveEdit}
-                              className="h-7 px-3 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">保存</button>
-                          </div>
-                        </div>
-                      ) : (
-                        /* ---- View mode ---- */
-                        <div className="p-3 flex items-center justify-between">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
-                                {a.isActive ? "启用" : "停用"}
-                              </span>
-                              {a.kind === "investment" && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
-                                  {investmentProductTypeLabel(a.investProductType)}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
-                              {a.AccountGroup && <span>{a.AccountGroup.name}</span>}
-                              {(a.billingDay) && <span>账单日{a.billingDay}日</span>}
-                              {(a.repaymentDay) && <span>还款{a.repaymentDay}日</span>}
-                              {a.creditLimit && <span>额度￥{a.creditLimit}</span>}
-                              {a.numberMasked && <span>尾号{a.numberMasked}</span>}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0 ml-3">
-                            <button onClick={() => toggleActive(a.id)}
-                              className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                              title={a.isActive ? "停用" : "启用"}>
-                              {a.isActive ? <PowerOff className="w-3 h-3 text-slate-400" /> : <Power className="w-3 h-3 text-amber-500" />}
-                            </button>
-                            <button onClick={() => openEdit(a)}
-                              className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                              title="编辑">
-                              <Pencil className="w-3 h-3 text-slate-400" />
-                            </button>
-                            <button onClick={async () => {
-                              if (!confirm(`删除账户「${a.name}」？`)) return;
-                              const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
-                              const data = await res.json();
-                              if (data.ok) loadAll(); else window.alert(data.error);
-                            }}
-                              className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-red-50"
-                              title="删除">
-                              <Trash2 className="w-3 h-3 text-slate-400 hover:text-red-500" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-
-          {filteredAccounts.length === 0 && (
-            <div className="text-sm text-slate-400 text-center py-12">
-              暂无账户。点击右上角"新增"按钮添加。
+          )}
+          {editGroupId && (
+            <div className="flex items-center gap-1">
+              <input value={editGroupName} onChange={e => setEditGroupName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && updateGroup()}
+                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" autoFocus />
+              <button onClick={updateGroup}
+                className="h-9 w-9 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700">
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={() => setEditGroupId(null)}
+                className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:bg-slate-50">
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
         </div>
+        <select value={selectedInstitution} onChange={e => setSelectedInstitution(e.target.value)}
+          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400">
+          <option value="">全部机构</option>
+          {institutions.map(i => <option key={i.id} value={i.id}>{i.name} ({institutionAccountCounts.get(i.id) || 0})</option>)}
+        </select>
+        {/* 分组列表（编辑/删除） */}
+        {groups.length > 0 && (
+          <div className="flex items-center gap-1 text-xs text-slate-400">
+            {groups.map(g => (
+              <span key={g.id} className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 hover:border-slate-300">
+                <span className="text-slate-600">{g.name}</span>
+                <button onClick={() => { setEditGroupId(g.id); setEditGroupName(g.name); }} title="编辑分组"
+                  className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-blue-600">
+                  <Pencil className="w-2.5 h-2.5" />
+                </button>
+                <button onClick={() => { if (confirm("删除分组？")) deleteGroup(g.id); }} title="删除分组"
+                  className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-red-500">
+                  <Trash2 className="w-2.5 h-2.5" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
+
+      {/* ===== 账户列表（按类型分组，可折叠） ===== */}
+      {kindOrder.map(kind => {
+        const list = grouped.get(kind);
+        if (!list || list.length === 0) return null;
+        const collapsed = collapsedKinds.has(kind);
+        return (
+          <div key={kind} className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <button onClick={() => setCollapsedKinds(prev => { const s = new Set(prev); if (s.has(kind)) s.delete(kind); else s.add(kind); return s; })}
+              className="w-full px-4 py-3 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-50/50 transition-colors">
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${kindColor(kind)}`}>
+                  {kindIcon(kind)} {kindLabel(kind)}
+                </span>
+                <span className="text-xs text-slate-500">{list.length} 个</span>
+              </div>
+              {collapsed ? <ChevronRight className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
+            {!collapsed && (
+            <div className="divide-y divide-slate-100">
+              {list.map(a => (
+                editingId === a.id ? (
+                  /* ---- Edit mode ---- */
+                  <div key={a.id} className="p-4 bg-blue-50/30">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">名称</label>
+                        <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">分组</label>
+                        <SmartSelect mode="single" value={editForm.groupId || ""}
+                          onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
+                          options={groups.map(g => ({ id: g.id, label: g.name }))}
+                          placeholder="选择分组"
+                          onCreateClick={() => setNestedEntityType("group")} createLabel="新增分组" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">机构</label>
+                        <SmartSelect mode="single" value={editForm.institutionId || ""}
+                          onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
+                          options={institutions.map(i => ({
+                            id: i.id, label: i.name,
+
+                            subLabel: institutionTypeLabel(i.type ?? null),
+                          }))}
+                          placeholder="选择机构"
+                          onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
+                      </div>
+                      {a.kind === "investment" && (
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
+                          <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                            {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+
+                    {a.kind === "investment" && (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">成本摊薄方式</label>
+                          <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                            <option value="moving_avg">移动平均</option>
+                            <option value="fifo">先进先出</option>
+                            <option value="lifo">后进先出</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {(a.kind === "bank_credit" || a.kind === "loan") && (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">账单日</label>
+                          <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">还款日</label>
+                          <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">额度</label>
+                          <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">卡号后四位</label>
+                          <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2 mt-3">
+                      <button onClick={() => setEditingId(null)}
+                        className="h-7 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">取消</button>
+                      <button onClick={saveEdit}
+                        className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">保存</button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ---- View mode ---- */
+                  <div key={a.id} className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "hover:bg-slate-50" : ""} transition-colors`}>
+                    <div className="flex-1 min-w-0 flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
+                      {a.isPlaceholder && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">占位</span>
+                      )}
+                      {a.AccountGroup && (
+                        <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>
+                      )}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
+                        {a.isActive ? "启用" : "停用"}
+                      </span>
+                      {a.kind === "investment" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
+                          {investmentProductTypeLabel(a.investProductType)}
+                        </span>
+                      )}
+                      {(a.kind === "bank_credit" || a.kind === "loan") && (
+                        <>
+                          {a.billingDay && <span className="text-[10px] text-slate-400">账单{a.billingDay}日</span>}
+                          {a.repaymentDay && <span className="text-[10px] text-slate-400">还款{a.repaymentDay}日</span>}
+                          {a.creditLimit && <span className="text-[10px] text-slate-400">额度￥{a.creditLimit}</span>}
+                          {a.numberMasked && <span className="text-[10px] text-slate-400">尾号{a.numberMasked}</span>}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0 ml-3">
+                      {!a.isPlaceholder && (
+                      <button onClick={() => toggleActive(a.id)}
+                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
+                        title={a.isActive ? "停用" : "启用"}>
+                        {a.isActive ? <PowerOff className="w-3 h-3 text-slate-400" /> : <Power className="w-3 h-3 text-amber-500" />}
+                      </button>
+                      )}
+                      {!a.isPlaceholder && (
+                      <button onClick={() => openEdit(a)}
+                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
+                        title="编辑">
+                        <Pencil className="w-3 h-3 text-slate-400" />
+                      </button>
+                      )}
+                      {!a.isPlaceholder && (
+                      <button onClick={async () => {
+                        if (!confirm(`删除账户"${a.name}"？`)) return;
+                        const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
+                        const data = await res.json();
+                        if (data.ok) { loadAll(); return; }
+                        if (data.needPassword) {
+                          setDeleteTarget(a);
+                          setDeletePassword("");
+                          setDeleteError("");
+                          return;
+                        }
+                        window.alert(data.error);
+                      }}
+                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200"
+                        title="删除">
+                        <Trash2 className="w-3 h-3 text-slate-400" />
+                      </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              ))}
+            </div>
+            )}
+          </div>
+        );
+      })}
+
+      {filteredAccounts.length === 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
+          暂无账户。点击右上角"新增账户"按钮添加。
+        </div>
+      )}
+
+      {/* Nested creation modals from SmartSelect in inline edit */}
+      {nestedEntityType && (
+        <EntityCreateForm
+          mode="compact"
+          entityType={nestedEntityType}
+          open={true}
+          onClose={() => setNestedEntityType(null)}
+          onCreated={(id, name, extra) => {
+            if (nestedEntityType === "institution") {
+              setInstitutions(prev => [...prev, { id, name, type: extra?.type }]);
+              setEditForm(f => ({ ...f, institutionId: id }));
+            } else if (nestedEntityType === "group") {
+              setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);
+              setEditForm(f => ({ ...f, groupId: id }));
+            }
+            setNestedEntityType(null);
+          }}
+        />
+      )}
+
+      {/* Password confirmation dialog for deleting account with records */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
+          onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
+          <div className="w-[340px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
+            onMouseDown={e => e.stopPropagation()}>
+            <div className="text-sm font-semibold text-slate-800 mb-1">验证密码</div>
+            <div className="text-xs text-slate-500 mb-3">
+              账户「{deleteTarget.name}」已产生记录，需输入密码确认删除。删除后记录中的账户将变为「空白」。
+            </div>
+            <input
+              type="password"
+              value={deletePassword}
+              onChange={e => { setDeletePassword(e.target.value); setDeleteError(""); }}
+              onKeyDown={async e => {
+                if (e.key === "Enter") {
+                  const res = await fetch(`/api/v1/accounts?id=${deleteTarget.id}`, {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: deletePassword }),
+                  });
+                  const data = await res.json();
+                  if (data.ok) { setDeleteTarget(null); loadAll(); }
+                  else setDeleteError(data.error);
+                }
+              }}
+              placeholder="输入密码"
+              autoFocus
+              className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
+            />
+            {deleteError && <div className="text-xs text-red-500 mt-1">{deleteError}</div>}
+            <div className="flex justify-end gap-2 mt-3">
+              <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
+                className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">取消</button>
+              <button onClick={async () => {
+                const res = await fetch(`/api/v1/accounts?id=${deleteTarget.id}`, {
+                  method: "DELETE",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ password: deletePassword }),
+                });
+                const data = await res.json();
+                if (data.ok) { setDeleteTarget(null); loadAll(); }
+                else setDeleteError(data.error);
+              }}
+                className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">确认删除</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

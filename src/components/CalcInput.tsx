@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
 
 /**
@@ -143,12 +144,7 @@ export function CalcInput({
           className="h-9 w-9 flex items-center justify-center rounded-md border border-l-0 border-slate-200 bg-white text-blue-600 hover:bg-blue-50"
           title={`计算器${label ? `：${label}` : ""}`}
         >
-          <span className="grid grid-cols-2 gap-px w-3.5 h-[15px]">
-            <span className="text-[10px] leading-none flex items-center justify-center">+</span>
-            <span className="text-[10px] leading-none flex items-center justify-center">−</span>
-            <span className="text-[10px] leading-none flex items-center justify-center">×</span>
-            <span className="text-[10px] leading-none flex items-center justify-center">÷</span>
-          </span>
+          <Calculator className="w-4 h-4" />
         </button>
       </div>
 

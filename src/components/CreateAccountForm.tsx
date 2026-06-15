@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Plus } from "lucide-react";
-import { NestedAddModal } from "./NestedAddModal";
+import { NestedAddModal } from "./EntityCreateForm";
+import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { institutionTypeLabel } from "@/lib/account-kinds";
 
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "investment" | "loan" | "other";
 type FundProductTypeValue = "fund" | "money" | "wealth" | "deposit";
@@ -14,13 +15,15 @@ const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   deposit: "活期/存款",
 };
 
+type InstitutionWithType = { id: string; name: string; type?: string };
+
 export function CreateAccountForm({
   groups,
   institutions,
   action,
 }: {
   groups: { id: string; name: string }[];
-  institutions: { id: string; name: string }[];
+  institutions: InstitutionWithType[];
   action: (formData: FormData) => void | Promise<void>;
 }) {
   const [kind, setKind] = useState<AccountKindValue>("other");
@@ -28,13 +31,13 @@ export function CreateAccountForm({
   const [groupId, setGroupId] = useState("");
   const [institutionId, setInstitutionId] = useState("");
   const [groupList, setGroupList] = useState(groups);
-  const [institutionList, setInstitutionList] = useState(institutions);
+  const [institutionList, setInstitutionList] = useState<InstitutionWithType[]>(institutions);
   const [nestedOpen, setNestedOpen] = useState<"institution" | "group" | null>(null);
 
   const isBillLike = kind === "bank_credit" || kind === "loan";
 
-  function handleInstitutionCreated(id: string, name: string) {
-    setInstitutionList(prev => [...prev, { id, name }]);
+  function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
+    setInstitutionList(prev => [...prev, { id, name, type: extra?.type }]);
     setInstitutionId(id);
   }
 
@@ -42,6 +45,21 @@ export function CreateAccountForm({
     setGroupList(prev => [...prev, { id, name }]);
     setGroupId(id);
   }
+
+  const institutionOptions: SmartSelectOption[] = [
+    ...institutionList.map(it => ({
+      id: it.id,
+      label: it.name,
+      subLabel: institutionTypeLabel(it.type ?? null),
+    })),
+  ];
+
+  const groupOptions: SmartSelectOption[] = [
+    ...groupList.map(g => ({
+      id: g.id,
+      label: g.name,
+    })),
+  ];
 
   return (
     <>
@@ -117,45 +135,31 @@ export function CreateAccountForm({
         )}
 
         <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <div className="text-xs text-slate-500">分组</div>
-            <button type="button" onClick={() => setNestedOpen("group")}
-              className="flex items-center gap-0.5 h-6 px-1.5 rounded text-[10px] text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200">
-              <Plus className="w-3 h-3" />新增分组
-            </button>
-          </div>
-          <select
-            name="groupId"
-            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none w-full"
+          <div className="text-xs text-slate-500">分组</div>
+          <SmartSelect
+            mode="single"
             value={groupId}
-            onChange={(e) => setGroupId(e.target.value)}
-          >
-            <option value="">未指定分组</option>
-            {groupList.map((g) => (
-              <option key={g.id} value={g.id}>{g.name}</option>
-            ))}
-          </select>
+            onChange={setGroupId}
+            options={groupOptions}
+            placeholder="选择分组"
+            onCreateClick={() => setNestedOpen("group")}
+            createLabel="新增分组"
+          />
+          <input type="hidden" name="groupId" value={groupId} />
         </div>
 
         <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <div className="text-xs text-slate-500">机构</div>
-            <button type="button" onClick={() => setNestedOpen("institution")}
-              className="flex items-center gap-0.5 h-6 px-1.5 rounded text-[10px] text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200">
-              <Plus className="w-3 h-3" />新增机构
-            </button>
-          </div>
-          <select
-            name="institutionId"
-            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none w-full"
+          <div className="text-xs text-slate-500">机构</div>
+          <SmartSelect
+            mode="single"
             value={institutionId}
-            onChange={(e) => setInstitutionId(e.target.value)}
-          >
-            <option value="">不指定机构</option>
-            {institutionList.map((it) => (
-              <option key={it.id} value={it.id}>{it.name}</option>
-            ))}
-          </select>
+            onChange={setInstitutionId}
+            options={institutionOptions}
+            placeholder="选择机构"
+            onCreateClick={() => setNestedOpen("institution")}
+            createLabel="新增机构"
+          />
+          <input type="hidden" name="institutionId" value={institutionId} />
         </div>
 
         <button
@@ -167,12 +171,14 @@ export function CreateAccountForm({
       </form>
 
       <NestedAddModal
+        mode="compact"
         entityType="group"
         open={nestedOpen === "group"}
         onClose={() => setNestedOpen(null)}
         onCreated={handleGroupCreated}
       />
       <NestedAddModal
+        mode="compact"
         entityType="institution"
         open={nestedOpen === "institution"}
         onClose={() => setNestedOpen(null)}

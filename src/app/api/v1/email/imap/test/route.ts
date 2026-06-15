@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { closeImap, connectAndOpenBox } from "@/lib/mail/imap-client";
+import { prisma } from "@/lib/db/prisma";
 
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
-  host: z.string().min(1),
+  accountId: z.string().optional(),
+  host: z.string().optional(),
   port: z.number().int().min(1).max(65535).default(993),
   secure: z.boolean().default(true),
-  user: z.string().min(1),
-  password: z.string().min(1),
+  user: z.string().optional(),
+  password: z.string().optional(),
   mailbox: z.string().min(1).default("INBOX"),
 });
 
@@ -18,7 +20,24 @@ export async function POST(req: NextRequest) {
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
 
-  const { host, port, secure, user, password, mailbox } = parsed.data;
+  let { host, port, secure, user, password, mailbox } = parsed.data;
+
+  // 如果传了 accountId，从数据库读取配置
+  if (parsed.data.accountId) {
+    const account = await prisma.emailAccount.findUnique({ where: { id: parsed.data.accountId } });
+    if (!account) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    host = account.imapHost;
+    port = account.imapPort;
+    secure = account.imapSecure;
+    user = account.username;
+    password = account.password;
+    mailbox = account.mailbox;
+  }
+
+  if (!host || !user || !password) {
+    return NextResponse.json({ ok: false, error: "请填写完整配置" }, { status: 400 });
+  }
+
   const trace: string[] = [];
   let imap: Awaited<ReturnType<typeof connectAndOpenBox>>["imap"] | null = null;
 

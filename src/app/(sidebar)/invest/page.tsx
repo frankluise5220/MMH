@@ -245,6 +245,8 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
             monthData={earningsData.monthData}
             incomeCats={earningsData.incCats}
             expenseCats={earningsData.expCats}
+            incomeTagGroups={[]}
+            expenseTagGroups={[]}
             pnlList={earningsData.profitItems}
             isRedUp={isRedUp}
           />

@@ -2,9 +2,13 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { NestedAddModal } from "./EntityCreateForm";
+import { kindLabel } from "@/lib/account-kinds";
 
 type Entry = {
   id?: string;
@@ -20,20 +24,31 @@ type Entry = {
   toAccountName?: string | null;
 };
 
+type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+
 export function WealthFormModal({
   mode = "create",
   accountId: defaultAccountId,
   entry,
   cashAccounts = [],
   investmentAccounts = [],
+  cashAccountSSOptions,
+  investmentAccountSSOptions,
+  nestedFieldData,
   createAction,
   editAction,
 }: {
   mode?: "create" | "edit";
   accountId: string;
   entry?: Entry;
-  cashAccounts?: { id: string; label: string }[];
-  investmentAccounts?: { id: string; label: string }[];
+  cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  investmentAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  /** Hierarchical SmartSelect options for cash account dropdown (grouped by AccountGroup) */
+  cashAccountSSOptions?: SmartSelectOption[];
+  /** Hierarchical SmartSelect options for investment account dropdown (grouped by AccountGroup) */
+  investmentAccountSSOptions?: SmartSelectOption[];
+  /** Groups & institutions data for NestedAddModal compact account creation */
+  nestedFieldData?: NestedFieldData;
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
@@ -68,6 +83,19 @@ export function WealthFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
+
+  // Mutable account lists for NestedAddModal onCreated updates
+  const [cashAccountList, setCashAccountList] = useState(cashAccounts);
+  const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts);
+  // Mutable SS options — onCreated appends new account to these too
+  const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
+  const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
+
+  useEffect(() => { setCashAccountList(cashAccounts); }, [cashAccounts]);
+  useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
+  useEffect(() => { setLocalCashSSOpts(cashAccountSSOptions); }, [cashAccountSSOptions]);
+  useEffect(() => { setLocalInvestSSOpts(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
 
   function reset() {
     setSubtype("buy");
@@ -176,6 +204,7 @@ export function WealthFormModal({
   const isRedeem = subtype === "redeem";
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
       <div className="w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
@@ -244,19 +273,15 @@ export function WealthFormModal({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">{isRedeem ? "到账账户" : "资金来源账户"}</div>
-              <select value={cashAccountId} onChange={(e) => setCashAccountId(e.target.value)}
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                <option value="">不关联</option>
-                {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-              </select>
+              <SmartSelect mode="single" value={cashAccountId} onChange={setCashAccountId}
+                options={localCashSSOpts ?? cashAccountList} placeholder="选择账户"
+                onCreateClick={() => setNestedEntityType("cash-account")} createLabel="新增账户" />
             </div>
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">理财账户</div>
-              <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
-                <option value="">选择理财账户</option>
-                {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-              </select>
+              <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
+                options={localInvestSSOpts ?? investmentAccountList} placeholder="选择理财账户"
+                onCreateClick={() => setNestedEntityType("invest-account")} createLabel="新增账户" />
             </div>
           </div>
 
@@ -276,5 +301,25 @@ export function WealthFormModal({
         </form>
       </div>
     </div>
+    {nestedEntityType && createPortal(
+      <NestedAddModal mode="compact" entityType="account" open={true}
+        onClose={() => setNestedEntityType(null)}
+        onCreated={(id, name, extra) => {
+          const kind = extra?.kind || "investment";
+          setCashAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }]);
+          setInvestmentAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
+          setLocalCashSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }] : prev);
+          setLocalInvestSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev);
+          if (nestedEntityType === "cash-account") setCashAccountId(id);
+          else setToAccountId(id);
+          setNestedEntityType(null);
+        }}
+        extraFields={{ kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment", investProductType: "wealth" }}
+        hiddenFields={["kind"]}
+        nestedFieldData={nestedFieldData}
+      />,
+      document.body,
+    )}
+    </>
   );
 }
