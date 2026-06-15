@@ -24,14 +24,24 @@ export async function GET() {
   const { householdId } = await getHouseholdScope();
 
   const adminUsers = await prisma.user.findMany({
-    where: { householdId, role: "admin" },
+    where: {
+      householdId, role: "admin",
+    },
     select: { id: true, name: true, passwordHash: true },
     orderBy: { createdAt: "asc" },
   });
 
-  const hasPassword = adminUsers.some(u => !!u.passwordHash);
-  const adminUser = adminUsers.length > 0
-    ? { id: adminUsers[0].id, name: adminUsers[0].name }
+  // 也检查 isSystem 系统管理员（householdId=null），他们属于所有账簿
+  const systemAdmins = await prisma.user.findMany({
+    where: { isSystem: true, role: "admin" },
+    select: { id: true, name: true, passwordHash: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const allAdmins = [...adminUsers, ...systemAdmins];
+  const hasPassword = allAdmins.some(u => !!u.passwordHash);
+  const adminUser = allAdmins.length > 0
+    ? { id: allAdmins[0].id, name: allAdmins[0].name }
     : null;
 
   return NextResponse.json({ ok: true, hasPassword, adminUser });
