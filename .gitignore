@@ -77,6 +77,8 @@ _fix_*.mjs
 _tmp_*.cjs
 _tmp_*.ts
 temp-*.ts
+verify-modal*.js
+verify*.js
 
 # personal test scripts
 *_debug.ps1
@@ -100,6 +102,13 @@ restart_and_build.ps1
 
 # personal debug data
 .dbg/
+
+# personal screenshots
+email-settings*.png
+settings-accounts*.png
+
+# personal docs (only nas-install-manual.md is kept)
+docs/迁移指南.md
 
 # personal data files
 cookies*.txt
