@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
+import { defaultCategoryTemplates } from "@/lib/default-categories";
 import { getCurrentUser, isAdmin, type CurrentUser } from "@/lib/server/auth";
 
 export type HouseholdContext = {
@@ -107,22 +108,7 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
     });
   }
 
-  const defaultCategories = [
-    { type: "expense", name: "餐饮", parentId: null },
-    { type: "expense", name: "交通", parentId: null },
-    { type: "expense", name: "购物", parentId: null },
-    { type: "expense", name: "居住", parentId: null },
-    { type: "expense", name: "医疗", parentId: null },
-    { type: "expense", name: "教育", parentId: null },
-    { type: "expense", name: "娱乐", parentId: null },
-    { type: "expense", name: "通讯", parentId: null },
-    { type: "expense", name: "其他支出", parentId: null },
-    { type: "income", name: "工资", parentId: null },
-    { type: "income", name: "奖金", parentId: null },
-    { type: "income", name: "投资收益", parentId: null },
-    { type: "income", name: "其他收入", parentId: null },
-  ];
-  for (const cat of defaultCategories) {
+  for (const cat of defaultCategoryTemplates) {
     await prisma.category.create({ data: { ...cat, householdId: household.id } });
   }
 
