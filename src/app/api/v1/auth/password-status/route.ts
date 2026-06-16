@@ -74,10 +74,11 @@ export async function POST(req: NextRequest) {
       ? await prisma.user.findFirst({ where: { name: username } })
       : null;
 
-  // 如果没找到且指定了 username，创建新用户
-  // 非 admin/system 用户需要分配 householdId
+  // 如果没找到且指定了 username，创建首个管理员用户
   if (!user && username) {
-    const isSystemUser = username === "admin";
+    const existingUser = await prisma.user.findFirst({ select: { id: true } });
+    const isFirstUser = !existingUser;
+    const isSystemUser = isFirstUser || username === "admin";
     let householdId: string | null = null;
 
     if (!isSystemUser) {
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest) {
     }
 
     user = await prisma.user.create({
-      data: { name: username, role: isSystemUser ? "admin" : "user", isSystem: isSystemUser, householdId },
+      data: { name: username, role: isFirstUser || isSystemUser ? "admin" : "user", isSystem: isSystemUser, householdId },
     });
   }
 

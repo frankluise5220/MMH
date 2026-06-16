@@ -6,6 +6,9 @@ import { hashPassword } from "@/lib/auth/password";
 
 export async function GET() {
   const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+  }
 
   // 始终返回全部账簿（用于切换列表），isAdmin/isSystem 仍基于当前用户权限
   const households = await prisma.household.findMany({
@@ -36,6 +39,9 @@ export async function GET() {
  */
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+  }
   const body = await req.json().catch(() => ({}));
   const name = String(body.name ?? "").trim();
   const adminName = String(body.adminName ?? name).trim();

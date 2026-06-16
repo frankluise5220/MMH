@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
 
 const USERNAME_KEY = "mmh_username";
+const VERIFIED_KEY = "mmh_access_password_verified";
 
 export type CurrentUser = {
   id: string;
@@ -12,14 +13,15 @@ export type CurrentUser = {
 };
 
 /**
- * 从 cookie 读取 mmh_username，查 DB 得到当前登录用户。
- * 未登录时返回 null。
+ * 从 cookie 读取已验证登录态和 mmh_username，查 DB 得到当前登录用户。
+ * 未登录或未完成密码验证时返回 null。
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const cookieStore = await cookies();
-  const username = cookieStore.get(USERNAME_KEY)?.value;
+  const verified = cookieStore.get(VERIFIED_KEY)?.value === "ok";
+  const username = cookieStore.get(USERNAME_KEY)?.value?.trim();
 
-  if (!username) return null;
+  if (!verified || !username) return null;
 
   const user = await prisma.user.findFirst({
     where: { name: username },

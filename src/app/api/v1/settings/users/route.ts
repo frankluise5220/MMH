@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { isAdmin } from "@/lib/server/auth";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -19,26 +19,20 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: cors() });
 }
 
-// #region debug-point B:users-route
-function reportDebug(hypothesisId: string, msg: string, data?: Record<string, unknown>) {
-  void fetch("http://192.168.2.199:7778/event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: "fund-users-balance", runId: "pre-fix", hypothesisId, location: "api/v1/settings/users/route.ts", msg: `[DEBUG] ${msg}`, data, ts: Date.now() }),
-  }).catch(() => {});
+function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
+  if (!user) return { ok: false as const, error: "未登录", status: 401 };
+  if (!isAdmin(user)) return { ok: false as const, error: "需要管理员权限", status: 403 };
+  return { ok: true as const };
 }
-// #endregion
 
 /** GET /api/v1/settings/users — 返回当前账簿内的所有用户 */
 export async function GET() {
   try {
+    const currentUser = await getCurrentUser();
+    const auth = requireAdmin(currentUser);
+    if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status, headers: cors() });
+
     const { householdId, user } = await getHouseholdScope();
-    // #region debug-point B:users-scope
-    reportDebug("B", "users get entered", {
-      householdId,
-      currentUser: user ? { id: user.id, name: user.name, role: user.role, isSystem: user.isSystem, userHouseholdId: user.householdId } : null,
-    });
-    // #endregion
     const orFilters: Array<Record<string, unknown>> = [
       { householdId },
       { isSystem: true },
@@ -66,9 +60,6 @@ export async function GET() {
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      // #region debug-point B:users-findmany-error
-      reportDebug("B", "users findMany failed", { error: msg, stack: error instanceof Error ? (error.stack ?? "").slice(0, 1200) : "" });
-      // #endregion
       const looksLikeMissingEmailColumn = msg.toLowerCase().includes("email") && (msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("unknown column") || msg.toLowerCase().includes("column"));
       if (looksLikeMissingEmailColumn) {
         const fallback = await prisma.user.findMany({
@@ -83,9 +74,6 @@ export async function GET() {
     }
 
     if (users.length === 0) {
-      // #region debug-point B:users-empty-initial
-      reportDebug("B", "users empty after initial query", { householdId });
-      // #endregion
       const householdCount = await prisma.household.count();
       if (householdCount <= 1) {
         const legacyUsers = await prisma.user.findMany({
@@ -96,9 +84,6 @@ export async function GET() {
           select: { id: true },
         });
         if (legacyUsers.length > 0) {
-          // #region debug-point B:users-legacy-found
-          reportDebug("B", "legacy users found", { householdId, legacyCount: legacyUsers.length });
-          // #endregion
           await prisma.user.updateMany({
             where: {
               id: { in: legacyUsers.map((item) => item.id) },
@@ -115,42 +100,11 @@ export async function GET() {
       }
     }
 
-    if (users.length === 0) {
-      // #region debug-point B:users-bootstrap-admin
-      reportDebug("B", "creating bootstrap admin", { householdId });
-      // #endregion
-      await prisma.user.create({
-        data: {
-          name: "管理员",
-          role: "admin",
-          isSystem: false,
-          householdId,
-        },
-      });
-      users = await prisma.user.findMany({
-        where,
-        orderBy: { name: "asc" },
-        select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
-      });
-    }
-    // #region debug-point B:users-result
-    reportDebug("B", "users get completed", {
-      householdId,
-      count: users.length,
-      sample: users.slice(0, 5).map((item) => ({ id: item.id, name: item.name, role: item.role, householdId: householdId })),
-    });
-    // #endregion
     return NextResponse.json({
       ok: true,
       users: users.map(u => ({ ...u, hasPassword: !!u.passwordHash, passwordHash: undefined })),
     }, { headers: cors() });
-  } catch (error) {
-    // #region debug-point B:users-route-error
-    reportDebug("B", "users get threw", {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? (error.stack ?? "").slice(0, 1200) : "",
-    });
-    // #endregion
+  } catch {
     return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500, headers: cors() });
   }
 }
@@ -164,6 +118,10 @@ const CreateSchema = z.object({
 
 /** POST /api/v1/settings/users — 在当前账簿内创建用户 */
 export async function POST(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  const auth = requireAdmin(currentUser);
+  if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status, headers: cors() });
+
   const { householdId } = await getHouseholdScope();
   const body = await req.json().catch(() => null);
   const parse = CreateSchema.safeParse(body);
@@ -203,6 +161,10 @@ const UpdateSchema = z.object({
 
 /** PUT /api/v1/settings/users — 更新当前账簿内的用户 */
 export async function PUT(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  const auth = requireAdmin(currentUser);
+  if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status, headers: cors() });
+
   const { householdId } = await getHouseholdScope();
   const body = await req.json().catch(() => null);
   const parse = UpdateSchema.safeParse(body);
@@ -253,6 +215,10 @@ export async function PUT(req: NextRequest) {
 
 /** DELETE /api/v1/settings/users?id=xxx — 删除当前账簿内的用户 */
 export async function DELETE(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  const auth = requireAdmin(currentUser);
+  if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status, headers: cors() });
+
   const { householdId } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";
