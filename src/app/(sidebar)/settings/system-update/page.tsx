@@ -3,11 +3,12 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   RefreshCw, CheckCircle2, XCircle, Loader2, Circle,
-  AlertTriangle, Download,
+  AlertTriangle, Download, Terminal,
 } from "lucide-react";
 
 type VersionInfo = {
   ok: boolean;
+  isDocker?: boolean;
   localVersion: string;
   localCommit: string;
   localCommitMsg: string;
@@ -38,6 +39,10 @@ const REBUILD_STEPS: string[] = [
   "生成 Prisma Client",
   "同步数据库",
   "构建项目",
+];
+
+const DOCKER_UPDATE_STEPS: string[] = [
+  "触发 Watchtower 更新",
 ];
 
 export default function SystemUpdatePage() {
@@ -84,11 +89,31 @@ export default function SystemUpdatePage() {
     setUpdateOk(false);
     setUpdateError("");
 
-    const stepLabels = updateMode === "update" ? UPDATE_STEPS : REBUILD_STEPS;
+    const stepLabels = versionInfo?.isDocker ? DOCKER_UPDATE_STEPS : updateMode === "update" ? UPDATE_STEPS : REBUILD_STEPS;
     setSteps(initSteps(stepLabels));
 
     try {
       const res = await fetch(`/api/v1/settings/system-update?mode=${updateMode}`, { method: "POST" });
+      // Docker 环境下 POST 返回 JSON 结果，非 SSE
+      if (versionInfo?.isDocker) {
+        const data = await res.json();
+        setSteps([{ label: "触发 Watchtower 更新", status: res.ok && data.ok ? "completed" : "failed", output: data.message || data.error || "" }]);
+        setUpdateDone(true);
+        setUpdateOk(res.ok && data.ok);
+        setUpdateError(res.ok && data.ok ? "" : data.error || "更新不可用");
+        setUpdating(false);
+        return;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json();
+        setUpdateDone(true);
+        setUpdateOk(false);
+        setUpdateError(errData.error || "更新不可用");
+        setUpdating(false);
+        return;
+      }
+
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -158,6 +183,7 @@ export default function SystemUpdatePage() {
 
   const isLatest = versionInfo?.ok && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && versionInfo.needsUpdate;
+  const isDocker = versionInfo?.ok && versionInfo.isDocker;
 
   return (
     <div className="space-y-4">
@@ -187,33 +213,73 @@ export default function SystemUpdatePage() {
             <div className="flex items-center gap-3">
               <div className="text-sm text-slate-700">当前版本</div>
               <span className="text-sm font-medium text-slate-900">{versionInfo.localVersion}</span>
-              <span className={`text-xs px-2 py-0.5 rounded ${
-                isLatest
-                  ? "bg-emerald-50 text-emerald-700"
-                  : needsUpdate
-                    ? "bg-amber-50 text-amber-700"
-                    : "bg-slate-100 text-slate-500"
-              }`}>
-                {isLatest ? "最新版本" : needsUpdate ? "有新版本" : "检测中"}
-              </span>
+              {isDocker ? (
+                <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+                  Docker 容器部署
+                </span>
+              ) : (
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  isLatest
+                    ? "bg-emerald-50 text-emerald-700"
+                    : needsUpdate
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-slate-100 text-slate-500"
+                }`}>
+                  {isLatest ? "最新版本" : needsUpdate ? "有新版本" : "检测中"}
+                </span>
+              )}
             </div>
             <div className="text-xs text-slate-500">
-              本地提交 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
-              {" "}{versionInfo.localCommitMsg}
-              {" "}&middot; {versionInfo.localCommitDate}
+              {isDocker
+                ? "Docker 容器部署模式，版本信息来自构建时的镜像"
+                : <>
+                    本地提交 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
+                    {" "}{versionInfo.localCommitMsg}
+                    {" "}&middot; {versionInfo.localCommitDate}
+                  </>
+              }
             </div>
-            <div className="text-xs text-slate-500">
-              远程提交 <span className="font-medium text-slate-700">{versionInfo.remoteCommit}</span>
-              {versionInfo.remoteCommitMsg && ` ${versionInfo.remoteCommitMsg}`}
-            </div>
+            {!isDocker && (
+              <div className="text-xs text-slate-500">
+                远程提交 <span className="font-medium text-slate-700">{versionInfo.remoteCommit}</span>
+                {versionInfo.remoteCommitMsg && ` ${versionInfo.remoteCommitMsg}`}
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-xs text-red-600">获取版本信息失败</div>
         )}
       </div>
 
-      {/* 更新操作 */}
-      {!updating && !updateDone && (
+      {/* Docker 环境下的更新提示 */}
+      {isDocker && !updating && !updateDone && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Terminal className="w-4 h-4 text-blue-500 shrink-0" />
+            <div className="text-sm font-medium text-blue-800">Docker 环境下的更新方式</div>
+          </div>
+          <div className="text-xs text-blue-700 mb-3">
+            当前系统运行在 Docker 容器内，页面确认后会通过 Watchtower 自动拉取新镜像并重启应用容器。
+          </div>
+          <div className="text-xs text-blue-600 mt-3">
+            说明：
+          </div>
+          <ul className="text-xs text-blue-600 mt-1 space-y-1 list-disc list-inside">
+            <li>点击下方按钮只需要用户确认，系统会自动调用 Watchtower API</li>
+            <li>更新完成后刷新浏览器页面即可看到新版本</li>
+            <li>数据库数据不受影响，无需担心数据丢失</li>
+          </ul>
+          <button
+            onClick={() => startUpdate("update")}
+            className="mt-3 h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+          >
+            确认更新
+          </button>
+        </div>
+      )}
+
+      {/* 非 Docker 环境下的更新操作 */}
+      {!isDocker && !updating && !updateDone && (
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           {needsUpdate && (
             <>

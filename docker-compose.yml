@@ -19,9 +19,7 @@ services:
       retries: 5
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/frankluise5220/mmh:latest
     container_name: mmh-app
     restart: unless-stopped
     ports:
@@ -29,14 +27,29 @@ services:
     env_file:
       - .env
     environment:
+      DOCKER_CONTAINER: "true"
       NODE_ENV: production
       POSTGRES_DB: ${POSTGRES_DB:-mmh}
       POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
       DATABASE_URL: postgresql://${POSTGRES_USER:-mmh-fs}:${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}@postgres:5432/${POSTGRES_DB:-mmh}?schema=public
       PGPASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
+      WATCHTOWER_API_URL: http://watchtower:8080
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-MMH_INTERNAL_WATCHTOWER_TOKEN}
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     depends_on:
       - postgres
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: mmh-watchtower
+    restart: unless-stopped
+    command: --label-enable --http-api-update --cleanup --interval 86400
+    environment:
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-MMH_INTERNAL_WATCHTOWER_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   pgdata:

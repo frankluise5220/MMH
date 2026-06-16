@@ -1,21 +1,66 @@
 import { NextRequest, NextResponse } from "next/server";
 import { exec, execSync } from "child_process";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 export const runtime = "nodejs";
 
+function getWatchtowerConfig() {
+  return {
+    url: process.env.WATCHTOWER_API_URL || "http://watchtower:8080",
+    token: process.env.WATCHTOWER_HTTP_API_TOKEN || "",
+  };
+}
+
+/**
+ * 检测当前是否运行在 Docker 容器内
+ * Docker 容器内通过 Watchtower HTTP API 触发宿主机更新
+ */
+function isDockerEnvironment(): boolean {
+  // 方法1：检查 /.dockerenv 文件（Docker 官方标记）
+  if (existsSync("/.dockerenv")) return true;
+  // 方法2：检查 /proc/1/cgroup 是否包含 docker/kubernetes
+  try {
+    const cgroup = readFileSync("/proc/1/cgroup", "utf-8");
+    if (cgroup.includes("docker") || cgroup.includes("kubepods")) return true;
+  } catch { /* 文件不存在则忽略 */ }
+  // 方法3：环境变量标记
+  if (process.env.DOCKER_CONTAINER === "true") return true;
+  return false;
+}
+
 /**
  * GET /api/v1/settings/system-update
  * 查询当前版本信息和远程是否有新版本
+ *
+ * Docker 环境下：
+ * - 容器内没有 .git 目录，git 命令全部失败
+ * - 通过 Watchtower HTTP API 触发宿主机拉取新镜像并重启容器
  */
 export async function GET() {
+  const dockerMode = isDockerEnvironment();
+
   try {
     const projectRoot = process.cwd();
 
     // 当前版本号
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
+
+    // Docker 环境下：容器内无 .git，无法做 git 操作，直接返回 Docker/Watchtower 状态
+    if (dockerMode) {
+      return NextResponse.json({
+        ok: true,
+        isDocker: true,
+        localVersion,
+        localCommit: "docker",
+        localCommitMsg: "Docker 容器部署（无 git 信息）",
+        localCommitDate: "",
+        remoteCommit: "unknown",
+        remoteCommitMsg: "",
+        needsUpdate: false,
+      });
+    }
 
     // 当前 commit
     let localCommit = "";
@@ -46,6 +91,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
+      isDocker: false,
       localVersion,
       localCommit,
       localCommitMsg,
@@ -67,7 +113,9 @@ export async function GET() {
  *   mode=update   - 拉取代码 + 安装依赖 + 生成 Prisma + 同步数据库 + 构建（默认）
  *   mode=rebuild  - 仅 安装依赖 + 生成 Prisma + 同步数据库 + 构建（跳过 git pull）
  *
- * 返回 SSE 流：每个事件格式为 data: {JSON}\n\n
+ * Docker 环境下通过 Watchtower HTTP API 触发宿主机容器更新。
+ *
+ * 非 Docker 环境返回 SSE 流：每个事件格式为 data: {JSON}\n\n
  * 事件类型：
  *   { step: string, status: "running" }
  *   { step: string, status: "completed", output: string }
@@ -75,6 +123,34 @@ export async function GET() {
  *   { type: "done", ok: boolean, error?: string }
  */
 export async function POST(req: NextRequest) {
+  if (isDockerEnvironment()) {
+    const watchtower = getWatchtowerConfig();
+    if (!watchtower.token) {
+      return NextResponse.json({
+        ok: false,
+        error: "Docker 环境更新服务未就绪，请重启容器后再试。",
+      }, { status: 400 });
+    }
+
+    const response = await fetch(`${watchtower.url}/v1/update`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${watchtower.token}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return NextResponse.json({
+        ok: false,
+        error: `触发 Watchtower 更新失败：${text || response.statusText}`,
+      }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, message: "已触发宿主机更新，请稍候刷新页面。" });
+  }
+
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("mode") || "update";
   const projectRoot = process.cwd();
