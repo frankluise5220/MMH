@@ -121,3 +121,34 @@ git pull
 sudo docker compose pull
 sudo docker compose up -d
 ```
+
+---
+
+## 4) 完全删除项目
+
+适合：确认不再保留 MMH 数据，或需要彻底清空后重新安装。
+
+注意：下面命令会删除：
+- MMH 容器（Web、数据库、Watchtower）
+- MMH 数据库数据卷（账本数据会一起删除）
+- MMH 应用镜像和 Watchtower 镜像
+- `~/mmh` 项目目录
+
+把下面整段命令一次性复制粘贴执行：
+
+```bash
+sh -c 'set -e
+APP_DIR="$HOME/mmh"
+
+cd "$APP_DIR" 2>/dev/null || true
+sudo docker compose down -v --remove-orphans 2>/dev/null || true
+
+sudo docker rm -f mmh-app mmh-db mmh-watchtower 2>/dev/null || true
+sudo docker volume rm mmh_pgdata 2>/dev/null || true
+sudo docker image rm ghcr.io/frankluise5220/mmh:latest containrrr/watchtower:latest 2>/dev/null || true
+
+rm -rf "$APP_DIR"
+
+echo "MMH 已完全删除：容器、数据卷、镜像和项目目录均已清理。"
+'
+```
