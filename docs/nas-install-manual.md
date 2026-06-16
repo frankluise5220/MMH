@@ -131,25 +131,42 @@ sudo docker compose up -d
 
 注意：下面命令会删除：
 - MMH 容器（Web、数据库、Watchtower）
+- MMH Compose 项目相关容器、网络和孤儿容器
 - MMH 数据库数据卷（账本数据会一起删除）
 - MMH 应用镜像和 Watchtower 镜像
 - `~/mmh` 项目目录
+
+如果 NAS 图形界面里还有旧的 Stack/Compose 项目记录，命令行删除容器后，仍需要在 NAS 容器管理页面里把对应项目/Stack 记录手动删除；有些 NAS 会保留“创建时间”元数据，不代表容器和数据卷还在。
 
 把下面整段命令一次性复制粘贴执行：
 
 ```bash
 sh -c 'set -e
 APP_DIR="$HOME/mmh"
+PROJECT_NAME="mmh"
 
-cd "$APP_DIR" 2>/dev/null || true
-sudo docker compose down -v --remove-orphans 2>/dev/null || true
+if [ -d "$APP_DIR" ]; then
+  cd "$APP_DIR"
+  sudo docker compose -p "$PROJECT_NAME" down -v --remove-orphans 2>/dev/null || true
+  sudo docker compose down -v --remove-orphans 2>/dev/null || true
+fi
 
 sudo docker rm -f mmh-app mmh-db mmh-watchtower 2>/dev/null || true
+for id in $(sudo docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null); do
+  sudo docker rm -f "$id" 2>/dev/null || true
+done
 sudo docker volume rm mmh_pgdata 2>/dev/null || true
+for vol in $(sudo docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null); do
+  sudo docker volume rm "$vol" 2>/dev/null || true
+done
+for net in $(sudo docker network ls -q --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null); do
+  sudo docker network rm "$net" 2>/dev/null || true
+done
 sudo docker image rm ghcr.io/frankluise5220/mmh:latest containrrr/watchtower:latest 2>/dev/null || true
 
 rm -rf "$APP_DIR"
 
-echo "MMH 已完全删除：容器、数据卷、镜像和项目目录均已清理。"
+echo "MMH 容器、Compose 项目资源、数据卷、镜像和项目目录已清理。"
+echo "如果 NAS 图形界面仍显示旧 Stack/Compose，请在 NAS 容器管理页面手动删除该项目记录。"
 '
 ```

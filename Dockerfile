@@ -28,7 +28,8 @@ RUN npm config set fetch-retries 5 \
 # 先 copy prisma schema 和 config，让 generate 层能被缓存
 COPY prisma ./prisma/
 COPY next.config.ts tsconfig.json ./
-RUN npx prisma generate
+RUN npx prisma generate \
+  && test -x node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 
 # 源码最后 copy（变更最频繁）
 COPY . .
@@ -54,6 +55,11 @@ RUN apt-get update \
 COPY --from=build /app/package.json /app/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
+# 复用构建阶段已经生成的 Prisma Client 和下载好的 Linux schema-engine，避免容器启动时访问 binaries.prisma.sh
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
+COPY --from=build /app/node_modules/@prisma/engines ./node_modules/@prisma/engines
+
 COPY --from=build /app/next.config.ts ./next.config.ts
 COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /app/public ./public
@@ -62,7 +68,9 @@ COPY --from=build /app/.next ./.next
 
 ENV NODE_ENV=production
 ENV PORT=7777
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
+ENV PRISMA_MIGRATION_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && npx prisma generate && echo '[mmh] prisma setup complete, starting app...' && npm run start"]
+CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && echo '[mmh] prisma setup complete, starting app...' && npm run start"]
