@@ -16,6 +16,7 @@ type VersionInfo = {
   remoteCommit: string;
   remoteCommitMsg: string;
   needsUpdate: boolean;
+  canCheckUpdate?: boolean;
 };
 
 type StepStatus = "pending" | "running" | "completed" | "failed";
@@ -193,6 +194,7 @@ export default function SystemUpdatePage() {
   const isLatest = versionInfo?.ok && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && versionInfo.needsUpdate;
   const isDocker = versionInfo?.ok && versionInfo.isDocker;
+  const canCheckUpdate = versionInfo?.ok && versionInfo.canCheckUpdate !== false;
 
   return (
     <div className="space-y-4">
@@ -268,22 +270,34 @@ export default function SystemUpdatePage() {
             <div className="text-sm font-medium text-blue-800">Docker 环境下的更新方式</div>
           </div>
           <div className="text-xs text-blue-700 mb-3">
-            当前系统运行在 Docker 容器内，页面确认后会通过 Watchtower 自动拉取新镜像并重启应用容器。
+            当前系统运行在 Docker 容器内，系统会先比对构建提交与 GitHub main 分支最新提交，再决定是否触发 Watchtower 更新。
           </div>
           <div className="text-xs text-blue-600 mt-3">
             说明：
           </div>
           <ul className="text-xs text-blue-600 mt-1 space-y-1 list-disc list-inside">
-            <li>点击下方按钮只需要用户确认，系统会自动调用 Watchtower API</li>
+            <li>只有检测到有新版本时，才会显示更新按钮</li>
             <li>更新完成后刷新浏览器页面即可看到新版本</li>
             <li>数据库数据不受影响，无需担心数据丢失</li>
           </ul>
-          <button
-            onClick={() => startUpdate("update")}
-            className="mt-3 h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
-          >
-            确认更新
-          </button>
+          {canCheckUpdate ? (
+            needsUpdate ? (
+              <button
+                onClick={() => startUpdate("update")}
+                className="mt-3 h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+              >
+                确认更新
+              </button>
+            ) : (
+              <div className="mt-3 text-xs text-emerald-700 rounded-md bg-emerald-50 px-3 py-2">
+                当前已是最新版本，无需更新。
+              </div>
+            )
+          ) : (
+            <div className="mt-3 text-xs text-amber-700 rounded-md bg-amber-50 px-3 py-2">
+              当前无法确认远程版本，请先刷新版本信息，或等新镜像包含构建提交信息后再试。
+            </div>
+          )}
         </div>
       )}
 

@@ -12,6 +12,61 @@ function getWatchtowerConfig() {
   };
 }
 
+type DockerVersionInfo = {
+  localCommit: string;
+  localCommitMsg: string;
+  localCommitDate: string;
+  remoteCommit: string;
+  remoteCommitMsg: string;
+  needsUpdate: boolean;
+  canCheckUpdate: boolean;
+};
+
+async function getDockerVersionInfo(): Promise<DockerVersionInfo> {
+  const localFullCommit = process.env.APP_COMMIT || "";
+  const localCommit = localFullCommit ? localFullCommit.slice(0, 7) : "unknown";
+  const localCommitMsg = process.env.APP_COMMIT_MESSAGE || (localFullCommit ? "Docker 镜像构建版本" : "当前镜像缺少构建版本信息");
+  const localCommitDate = process.env.APP_COMMIT_DATE || "";
+
+  try {
+    const response = await fetch("https://api.github.com/repos/frankluise5220/MMH/commits/main", {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "MMH-System-Update" },
+      cache: "no-store",
+    });
+
+    if (!response.ok) throw new Error(response.statusText);
+
+    const data = await response.json() as {
+      sha?: string;
+      commit?: { message?: string };
+    };
+    const remoteFullCommit = data.sha || "";
+    const remoteCommit = remoteFullCommit ? remoteFullCommit.slice(0, 7) : "unknown";
+    const remoteCommitMsg = data.commit?.message?.split("\n")[0] || "";
+    const canCheckUpdate = Boolean(localFullCommit && remoteFullCommit);
+
+    return {
+      localCommit,
+      localCommitMsg,
+      localCommitDate,
+      remoteCommit,
+      remoteCommitMsg,
+      needsUpdate: canCheckUpdate && localFullCommit !== remoteFullCommit,
+      canCheckUpdate,
+    };
+  } catch {
+    return {
+      localCommit,
+      localCommitMsg,
+      localCommitDate,
+      remoteCommit: "unknown",
+      remoteCommitMsg: "",
+      needsUpdate: false,
+      canCheckUpdate: false,
+    };
+  }
+}
+
 /**
  * 检测当前是否运行在 Docker 容器内
  * Docker 容器内通过 Watchtower HTTP API 触发宿主机更新
@@ -47,18 +102,14 @@ export async function GET() {
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
 
-    // Docker 环境下：容器内无 .git，无法做 git 操作，直接返回 Docker/Watchtower 状态
+    // Docker 环境下：读取镜像构建提交，并查询 GitHub main 最新提交判断是否可更新
     if (dockerMode) {
+      const dockerVersion = await getDockerVersionInfo();
       return NextResponse.json({
         ok: true,
         isDocker: true,
         localVersion,
-        localCommit: "docker",
-        localCommitMsg: "Docker 容器部署（无 git 信息）",
-        localCommitDate: "",
-        remoteCommit: "unknown",
-        remoteCommitMsg: "",
-        needsUpdate: false,
+        ...dockerVersion,
       });
     }
 
@@ -124,6 +175,20 @@ export async function GET() {
  */
 export async function POST(req: NextRequest) {
   if (isDockerEnvironment()) {
+    const dockerVersion = await getDockerVersionInfo();
+    if (!dockerVersion.canCheckUpdate) {
+      return NextResponse.json({
+        ok: false,
+        error: "无法确认是否有新版本，请先刷新版本信息或重新安装新版镜像后再试。",
+      }, { status: 409 });
+    }
+    if (!dockerVersion.needsUpdate) {
+      return NextResponse.json({
+        ok: false,
+        error: "当前已是最新版本，无需更新。",
+      }, { status: 409 });
+    }
+
     const watchtower = getWatchtowerConfig();
     if (!watchtower.token) {
       return NextResponse.json({

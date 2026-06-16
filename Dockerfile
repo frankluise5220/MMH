@@ -1,8 +1,15 @@
 FROM node:20-bookworm AS build
 
+ARG APP_COMMIT=unknown
+ARG APP_COMMIT_MESSAGE=""
+ARG APP_COMMIT_DATE=""
+
 WORKDIR /app
 ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV APP_COMMIT=${APP_COMMIT}
+ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
+ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ openssl ca-certificates \
@@ -29,8 +36,15 @@ RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
 
+ARG APP_COMMIT=unknown
+ARG APP_COMMIT_MESSAGE=""
+ARG APP_COMMIT_DATE=""
+
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV APP_COMMIT=${APP_COMMIT}
+ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
+ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates \
