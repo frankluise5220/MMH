@@ -26,6 +26,7 @@
 ```sh
 sh -c 'set -e
 APP_DIR="$HOME/mmh"
+cd "$HOME"
 
 # 注意：这行会删除旧目录后重装；不想删除就把这一行删掉，并确保目录为空
 rm -rf "$APP_DIR"
