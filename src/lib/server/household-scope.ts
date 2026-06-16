@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
-import { defaultCategoryTemplates } from "@/lib/default-categories";
+import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { getCurrentUser, isAdmin, type CurrentUser } from "@/lib/server/auth";
 
 export type HouseholdContext = {
@@ -108,9 +108,7 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
     });
   }
 
-  for (const cat of defaultCategoryTemplates) {
-    await prisma.category.create({ data: { ...cat, householdId: household.id } });
-  }
+  await createDefaultCategoriesForHousehold(prisma, household.id);
 
   if (user && !user.householdId) {
     await prisma.user.update({ where: { id: user.id }, data: { householdId: household.id } });
