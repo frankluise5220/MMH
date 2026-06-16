@@ -160,6 +160,15 @@ export default function SystemUpdatePage() {
         }
       }
     } catch (e) {
+      if (versionInfo?.isDocker) {
+        setSteps([{ label: "触发 Watchtower 更新", status: "completed", output: "已触发 Watchtower 更新，容器可能正在重启，请稍后刷新页面。" }]);
+        setUpdateDone(true);
+        setUpdateOk(true);
+        setUpdateError("");
+        setUpdating(false);
+        return;
+      }
+
       setUpdateDone(true);
       setUpdateOk(false);
       setUpdateError(e instanceof Error ? e.message : "网络错误");

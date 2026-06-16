@@ -132,23 +132,38 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    const response = await fetch(`${watchtower.url}/v1/update`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${watchtower.token}`,
-        "Content-Type": "application/json",
-      },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
 
-    if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json({
-        ok: false,
-        error: `触发 Watchtower 更新失败：${text || response.statusText}`,
-      }, { status: 500 });
+    try {
+      const response = await fetch(`${watchtower.url}/v1/update`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${watchtower.token}`,
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        return NextResponse.json({
+          ok: false,
+          error: `触发 Watchtower 更新失败：${text || response.statusText}`,
+        }, { status: 500 });
+      }
+    } catch (e) {
+      if (!(e instanceof Error) || e.name !== "AbortError") {
+        return NextResponse.json({
+          ok: false,
+          error: `触发 Watchtower 更新失败：${e instanceof Error ? e.message : "网络错误"}`,
+        }, { status: 500 });
+      }
+    } finally {
+      clearTimeout(timeout);
     }
 
-    return NextResponse.json({ ok: true, message: "已触发宿主机更新，请稍候刷新页面。" });
+    return NextResponse.json({ ok: true, message: "已触发 Watchtower 更新，容器可能正在重启，请稍后刷新页面。" });
   }
 
   const { searchParams } = new URL(req.url);
