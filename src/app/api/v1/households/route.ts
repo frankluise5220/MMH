@@ -4,6 +4,7 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { hashPassword } from "@/lib/auth/password";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
+import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -96,8 +97,9 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 创建默认分类模板
+  // 创建默认分类和机构模板
   await createDefaultCategoriesForHousehold(prisma, household.id);
+  await createDefaultInstitutionsForHousehold(prisma, household.id);
 
   // 为新账簿创建管理员用户（创建时即设置密码哈希）
   // 处理同名用户冲突：追加数字后缀
