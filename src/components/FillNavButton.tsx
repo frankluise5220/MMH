@@ -1,19 +1,19 @@
-"use client";
+﻿"use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { DatabaseZap } from "lucide-react";
 
 export function FillNavButton({
   entryId,
   fundCode,
   action,
+  onFilled,
 }: {
   entryId: string;
   fundCode: string;
-  action?: (formData: FormData) => Promise<{ ok: boolean; error?: string; nav?: number; confirmDate?: string }>;
+  action?: (formData: FormData) => Promise<{ ok: boolean; error?: string; nav?: number; confirmDate?: string; units?: number }>;
+  onFilled?: (data: { nav: number; confirmDate: string; units: number; arrivalDate?: string }) => void;
 }) {
-  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [done, setDone] = useState(false);
 
@@ -30,8 +30,9 @@ export function FillNavButton({
             return;
           }
           setDone(true);
-          await new Promise(resolve => setTimeout(resolve, 100));
-          router.refresh();
+          if (data.nav != null) {
+            onFilled?.({ nav: data.nav, confirmDate: data.confirmDate ?? "", units: data.units ?? 0, arrivalDate: (data as any).arrivalDate ?? "" });
+          }
           return;
         }
 
@@ -46,8 +47,9 @@ export function FillNavButton({
           return;
         }
         setDone(true);
-        await new Promise(resolve => setTimeout(resolve, 100));
-        router.refresh();
+        if (data.nav != null && onFilled) {
+          onFilled({ nav: data.nav, confirmDate: data.confirmDate ?? "", units: data.units ?? 0 });
+        }
       } catch (e) {
         window.alert(e instanceof Error ? e.message : "获取失败");
       }
@@ -63,9 +65,9 @@ export function FillNavButton({
       disabled={pending}
       className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
       title="获取净值"
-      aria-label={`获取基金 ${fundCode} 净值`}
+      aria-label={'获取基金 ' + fundCode + ' 净值'}
     >
-      <DatabaseZap className={`h-3.5 w-3.5 ${pending ? "animate-pulse" : ""}`} />
+      <DatabaseZap className={"h-3.5 w-3.5" + (pending ? " animate-pulse" : "")} />
     </button>
   );
 }

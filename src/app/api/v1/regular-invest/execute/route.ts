@@ -4,7 +4,6 @@ import { Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@pri
 import { isWeekend, nextMonday, addDays, addWeeks, addMonths } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
@@ -105,6 +104,7 @@ export async function POST(req: NextRequest) {
       const runDateStr = formatDateUtc(runDate);
       const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
       const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");
       const confirmDate = new Date(Date.UTC(
         parseInt(confirmDateStr.slice(0, 4)),
         parseInt(confirmDateStr.slice(5, 7)) - 1,
@@ -258,7 +258,7 @@ export async function POST(req: NextRequest) {
     if (cashAcc?.id) await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
     await recalcAndSaveAccountBalance(fundAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh via mmh:fund:refresh
 
     if (result.buyFailed) {
       return NextResponse.json({

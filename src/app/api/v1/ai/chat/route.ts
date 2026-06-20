@@ -22,7 +22,6 @@ import {
   parseFundTradeFromText,
 } from "@/lib/ai/parser";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -440,7 +439,7 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
       }),
     ]);
     await Promise.all([oldAccount.id, newAccount.id].map((id) => recalcAndSaveAccountBalance(id)));
-    revalidateAfterTxChange();
+    // Client-side handles page refresh
     return {
       ok: true,
       updatedCount: sourceResult.count + targetResult.count,
@@ -515,7 +514,7 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
     data,
   });
   await Promise.all([...affectedAccountIds].map((id) => recalcAndSaveAccountBalance(id)));
-  revalidateAfterTxChange();
+  // Client-side handles page refresh
 
   return {
     ok: true,

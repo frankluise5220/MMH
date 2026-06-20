@@ -7,6 +7,7 @@
  */
 
 import { prisma } from "@/lib/db/prisma";
+import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
@@ -51,7 +52,8 @@ export type ClearedPositionRow = {
  * 数据源：fundHolding 表（由 recalcFundPositions 在写入时维护）
  * 不再在此处调用 recalcFundPositions，避免读取时触发全量重算
  */
-export async function computeInvestBalances(ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> {
+export const computeInvestBalances = cache(
+  async (ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> => {
   const accounts = await prisma.account.findMany({
     where: { kind: AccountKind.investment, ...ctx.hidFilter },
     select: { id: true },
@@ -103,7 +105,8 @@ export async function computeInvestBalances(ctx: HouseholdContext): Promise<Map<
   }
 
   return result;
-}
+},
+);
 
 /**
  * 计算单个投资账户的持仓明细显示数据（显示层）
@@ -111,13 +114,18 @@ export async function computeInvestBalances(ctx: HouseholdContext): Promise<Map<
  * 数据源：fundHolding 表 + fundNavCache 表
  * 不再从 entries 逐条累加计算，保证与 Sidebar/invest 页面数字一致
  */
-export async function computePositionDisplay(ctx: HouseholdContext, accountId: string): Promise<{
-  positions: PositionDisplayRow[];
-  clearedPositions: ClearedPositionRow[];
-  totalMarketValue: number;
-  totalCost: number;
-  totalHistoricalProfit: number;
-}> {
+/** 缓存版本：同一 HTTP 请求内不重复计算 */
+export const computePositionDisplay = cache(
+  async (
+    ctx: HouseholdContext,
+    accountId: string,
+  ): Promise<{
+    positions: PositionDisplayRow[];
+    clearedPositions: ClearedPositionRow[];
+    totalMarketValue: number;
+    totalCost: number;
+    totalHistoricalProfit: number;
+  }> => {
   const account = await prisma.account.findFirst({
     where: { id: accountId, ...ctx.hidFilter },
     select: { investProductType: true },
@@ -303,4 +311,5 @@ export async function computePositionDisplay(ctx: HouseholdContext, accountId: s
     clearedPositions.reduce((s, c) => s + c.historicalProfit, 0);
 
   return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
-}
+},
+);

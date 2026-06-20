@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -316,8 +315,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (investChanged) revalidateAfterInvestChange();
-    else revalidateAfterTxChange();
+    // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
       updatedCount,

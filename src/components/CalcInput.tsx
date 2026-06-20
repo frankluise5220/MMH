@@ -4,13 +4,6 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
 
-/**
- * 带计算器的输入框。可在任意表单中复用。
- * - 右侧按钮显示四则运算符号，点击弹出计算器
- * - 弹出层通过 Portal 渲染到 body，不影响表单布局
- * - 支持快速分数按钮 (1/4, 1/3, 1/2)
- * - 支持在输入框内手写运算式，按回车求值
- */
 export function CalcInput({
   value,
   onChange,
@@ -31,7 +24,6 @@ export function CalcInput({
   const dialogRef = useRef<HTMLDivElement>(null);
   const numVal = parseFloat(value) || 0;
 
-  // ---- eval helper ----
   const doEval = useCallback((expression: string) => {
     let full = expression;
     if (/^[+\-*/]/.test(full)) full = `${numVal}${full}`;
@@ -40,34 +32,34 @@ export function CalcInput({
       if (!/^[\d+\-*/().\s]+$/.test(full)) throw new Error("invalid");
       const safe = full.replace(/\s+/g, "");
       const computed = eval(safe);
-      if (typeof computed === "number" && !isNaN(computed) && isFinite(computed)) {
+      if (typeof computed === "number" && !Number.isNaN(computed) && Number.isFinite(computed)) {
         onChange(computed.toFixed(3));
       }
-    } catch { /* ignore */ }
+    } catch {
+      // ignore invalid expressions
+    }
   }, [numVal, onChange]);
 
-  // ---- reset expr on open, position dialog relative to trigger ----
   useEffect(() => {
     if (!open) return;
     setExpr("");
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect();
-      // Position below trigger, but clamp to viewport
       const top = Math.min(rect.bottom + 4, window.innerHeight - 420);
       const left = Math.max(8, Math.min(rect.left, window.innerWidth - 280));
       setDialogPos({ top, left });
     }
   }, [open]);
 
-  // ---- body scroll lock ----
   useEffect(() => {
     if (!open) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    return () => {
+      document.body.style.overflow = prev;
+    };
   }, [open]);
 
-  // ---- click outside to close ----
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -77,36 +69,60 @@ export function CalcInput({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  // ---- keyboard in popup ----
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (/^[\d+\-*/.]$/.test(e.key)) { e.preventDefault(); setExpr(p => p + e.key); }
-      else if (e.key === "Enter" || e.key === "=") { e.preventDefault(); doEval(expr); setOpen(false); }
-      else if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
-      else if (e.key === "Backspace") { e.preventDefault(); setExpr(p => p.slice(0, -1)); }
+      if (/^[\d+\-*/.]$/.test(e.key)) {
+        e.preventDefault();
+        setExpr((prev) => prev + e.key);
+      } else if (e.key === "Enter" || e.key === "=") {
+        e.preventDefault();
+        doEval(expr);
+        setOpen(false);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        setExpr((prev) => prev.slice(0, -1));
+      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [open, expr, doEval]);
 
   function press(key: string) {
-    if (key === "=") { doEval(expr); setOpen(false); return; }
-    if (key === "C") { setExpr(""); return; }
-    if (key === "1/4") { onChange((numVal * 0.25).toFixed(3)); return; }
-    if (key === "1/3") { onChange((numVal * 0.333333).toFixed(3)); return; }
-    if (key === "1/2") { onChange((numVal * 0.5).toFixed(3)); return; }
-    setExpr(p => p + key);
+    if (key === "=") {
+      doEval(expr);
+      setOpen(false);
+      return;
+    }
+    if (key === "C") {
+      setExpr("");
+      return;
+    }
+    if (key === "1/4") {
+      onChange((numVal * 0.25).toFixed(3));
+      return;
+    }
+    if (key === "1/3") {
+      onChange((numVal * 0.333333).toFixed(3));
+      return;
+    }
+    if (key === "1/2") {
+      onChange((numVal * 0.5).toFixed(3));
+      return;
+    }
+    setExpr((prev) => prev + key);
   }
 
-  // ---- inline eval: user types operator in input → Enter → evaluate, no form submit ----
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const v = value.trim();
-    if (!/^[\d.]+[+\-*/\d.()\s]+$/.test(v)) return;
+    const raw = value.trim();
+    if (!/^[\d.]+[+\-*/\d.()\s]+$/.test(raw)) return;
     e.preventDefault();
     e.stopPropagation();
-    doEval(v);
+    doEval(raw);
   }
 
   const keyRows = [
@@ -124,7 +140,6 @@ export function CalcInput({
 
   return (
     <div className={`relative ${className ?? ""}`}>
-      {/* Input — inline evaluation on Enter, no form submit */}
       <input
         inputMode="decimal"
         value={value}
@@ -132,26 +147,23 @@ export function CalcInput({
         onKeyDown={handleInputKeyDown}
         placeholder={placeholder}
         style={{ caretColor: "var(--foreground)" }}
-        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm font-mono text-slate-800 placeholder:text-slate-300 outline-none caret-slate-800"
+        className="form-input pr-10 font-mono placeholder:text-slate-300 caret-slate-800"
       />
 
-      {/* Trigger button */}
       <div className="absolute right-0 top-0">
         <button
           ref={triggerRef}
           type="button"
           onClick={() => setOpen(true)}
-          className="h-9 w-9 flex items-center justify-center rounded-md border border-l-0 border-slate-200 bg-white text-blue-600 hover:bg-blue-50"
-          title={`计算器${label ? `：${label}` : ""}`}
+          className="flex h-9 w-9 items-center justify-center rounded-r-[10px] border border-l-0 border-slate-200 bg-white text-blue-600 hover:bg-blue-50"
+          title={`计算器${label ? `（${label}）` : ""}`}
         >
-          <Calculator className="w-4 h-4" />
+          <Calculator className="h-4 w-4" />
         </button>
       </div>
 
-      {/* Popup calculator — Portal to body */}
-      {open && dialogPos && createPortal(
+      {open && dialogPos ? createPortal(
         <div className="fixed inset-0 z-[9999] flex items-start justify-start" style={{ pointerEvents: "none" }}>
-          {/* Invisible backdrop */}
           <div className="absolute inset-0" style={{ pointerEvents: "auto" }} onClick={() => setOpen(false)} />
           <div
             ref={dialogRef}
@@ -161,63 +173,60 @@ export function CalcInput({
               left: dialogPos.left,
               pointerEvents: "auto",
             }}
-            className="w-[272px] rounded-xl border border-slate-200 bg-white shadow-2xl select-none overflow-hidden"
+            className="modal-surface w-[272px] select-none"
           >
-            {/* Display */}
-            <div className="px-3 pt-2.5 pb-2 border-b border-slate-100 bg-slate-50">
-              <div className="text-[11px] text-slate-400 tabular-nums">当前值: {numVal.toFixed(3)}</div>
-              <div className="h-5 mt-0.5 text-sm font-mono text-slate-800 text-right tabular-nums">
-                {expr || <span className="text-slate-300 text-xs">输入运算式…</span>}
+            <div className="border-b border-slate-100 bg-slate-50 px-3 pt-2.5 pb-2">
+              <div className="tabular-nums text-[11px] text-slate-400">当前值 {numVal.toFixed(3)}</div>
+              <div className="mt-0.5 h-5 text-right font-mono text-sm tabular-nums text-slate-800">
+                {expr || <span className="text-xs text-slate-300">输入运算式</span>}
               </div>
             </div>
 
-            {/* Quick fraction buttons */}
-            <div className="px-3 py-2 flex gap-2">
-              {fractionBtns.map(f => (
+            <div className="flex gap-2 px-3 py-2">
+              {fractionBtns.map((item) => (
                 <button
-                  key={f.val}
+                  key={item.val}
                   type="button"
-                  onClick={() => press(f.val)}
-                  className="flex-1 h-7 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-xs font-medium hover:bg-amber-100 active:bg-amber-200"
+                  onClick={() => press(item.val)}
+                  className="flex-1 h-7 rounded-[10px] border border-amber-200 bg-amber-50 text-xs font-medium text-amber-700 hover:bg-amber-100 active:bg-amber-200"
                 >
-                  {f.label}
+                  {item.label}
                 </button>
               ))}
             </div>
 
-            {/* Number pad */}
             <div className="grid grid-cols-4 gap-1 px-3 pb-3">
               {keyRows.flat().map((key) => (
                 <button
                   key={key}
                   type="button"
                   onClick={() => press(key)}
-                  className={`h-9 rounded-md text-sm font-medium active:scale-95 transition-transform ${
+                  className={`h-9 rounded-[10px] text-sm font-medium transition-transform active:scale-95 ${
                     /[+\-*/]/.test(key)
-                      ? "bg-blue-50 text-blue-600 hover:bg-blue-100 text-base"
+                      ? "bg-blue-50 text-base text-blue-600 hover:bg-blue-100"
                       : key === "C"
-                      ? "bg-red-50 text-red-500 hover:bg-red-100"
-                      : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        ? "bg-red-50 text-red-500 hover:bg-red-100"
+                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                   }`}
                 >
                   {key}
                 </button>
               ))}
-              {/* = button fills the last row as a tall merge — but we keep it simple: add = at bottom */}
             </div>
+
             <div className="px-3 pb-3">
               <button
                 type="button"
                 onClick={() => press("=")}
-                className="h-9 w-full rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 active:bg-blue-800"
+                className="primary-button h-9 w-full rounded-[10px] text-sm font-semibold active:bg-blue-800"
               >
-                = 求值
+                = 计算
               </button>
             </div>
           </div>
         </div>,
         document.body,
-      )}
+      ) : null}
     </div>
   );
 }

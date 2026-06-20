@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/db/prisma";
+﻿import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 
@@ -66,9 +66,9 @@ function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
 
     if (subtype === "buy_failed") {
       const rec = map.get(code) ?? { fundName, units: 0, cost: 0, pendingCost: 0, historicalProfit: 0 };
-      const principal = buyPrincipal(amount, e.fee);
-      if (e.source === "regular_invest_refund") rec.pendingCost -= principal;
-      else rec.pendingCost += principal;
+      const a = Math.abs(toNum(amount));
+      if (e.source === "regular_invest_refund") rec.pendingCost -= a;
+      else rec.pendingCost += a;
       map.set(code, rec);
       continue;
     }
@@ -77,8 +77,9 @@ function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
 
     if (subtype === "buy") {
       const principal = buyPrincipal(amount, e.fee);
+      const a = Math.abs(toNum(amount));
       const u = e.units ?? 0;
-      if (u === 0) rec.pendingCost += principal;
+      if (u === 0) rec.pendingCost += a;
       else { rec.cost += principal; rec.units += u; }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += Math.abs(amount);
@@ -123,9 +124,9 @@ function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
 
     if (subtype === "buy_failed") {
       const rec = result.get(code) ?? { fundName, units: 0, cost: 0, pendingCost: 0, historicalProfit: 0 };
-      const principal = buyPrincipal(amount, e.fee);
-      if (e.source === "regular_invest_refund") rec.pendingCost -= principal;
-      else rec.pendingCost += principal;
+      const a = Math.abs(toNum(amount));
+      if (e.source === "regular_invest_refund") rec.pendingCost -= a;
+      else rec.pendingCost += a;
       result.set(code, rec);
       continue;
     }
@@ -136,8 +137,9 @@ function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
 
     if (subtype === "buy") {
       const principal = buyPrincipal(amount, e.fee);
+      const a = Math.abs(toNum(amount));
       const u = e.units ?? 0;
-      if (u === 0) { rec.pendingCost += principal; }
+      if (u === 0) { rec.pendingCost += a; }
       else { codeLots.push({ units: u, costPerUnit: principal / u }); rec.units += u; rec.cost += principal; }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += Math.abs(amount);

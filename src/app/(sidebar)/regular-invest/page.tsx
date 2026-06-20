@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { RegularInvestClient } from "./RegularInvestClient";
 
 export default async function RegularInvestPage() {
@@ -11,83 +12,85 @@ export default async function RegularInvestPage() {
       orderBy: { nextRunDate: "asc" },
     }),
     prisma.account.findMany({
-      where: hidFilter,
-      include: { Institution: true },
+      where: { isPlaceholder: { not: true }, ...hidFilter },
+      include: { Institution: true, AccountGroup: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
   ]);
 
-  // 批量查询所有计划执行统计（一次查询，避免 N+1）
-  const planIds = plans.map(p => p.id);
-  const allEntries = planIds.length > 0 ? await prisma.txRecord.findMany({
-    where: {
-      regularInvestPlanId: { in: planIds },
-      source: "regular_invest",
-      deletedAt: null,
-    },
-    select: {
-      regularInvestPlanId: true,
-      amount: true,
-      fundUnits: true,
-    },
-  }) : [];
+  const planIds = plans.map((plan) => plan.id);
+  const allEntries = planIds.length > 0
+    ? await prisma.txRecord.findMany({
+        where: {
+          regularInvestPlanId: { in: planIds },
+          source: "regular_invest",
+          deletedAt: null,
+        },
+        select: {
+          regularInvestPlanId: true,
+          amount: true,
+          fundUnits: true,
+        },
+      })
+    : [];
 
-  // 按 planId 聚合
   const statsByPlanId = new Map<string, { executedCount: number; executedAmount: number; confirmedCount: number; confirmedAmount: number }>();
-  for (const e of allEntries) {
-    const pid = e.regularInvestPlanId;
-    if (!pid) continue;
-    if (!statsByPlanId.has(pid)) statsByPlanId.set(pid, { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 });
-    const s = statsByPlanId.get(pid)!;
-    s.executedCount++;
-    s.executedAmount += Math.abs(Number(e.amount));
-    if (e.fundUnits != null && Number(e.fundUnits) > 0) {
-      s.confirmedCount++;
-      s.confirmedAmount += Math.abs(Number(e.amount));
+  for (const entry of allEntries) {
+    const planId = entry.regularInvestPlanId;
+    if (!planId) continue;
+    if (!statsByPlanId.has(planId)) {
+      statsByPlanId.set(planId, { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 });
+    }
+    const stats = statsByPlanId.get(planId)!;
+    stats.executedCount++;
+    stats.executedAmount += Math.abs(Number(entry.amount));
+    if (entry.fundUnits != null && Number(entry.fundUnits) > 0) {
+      stats.confirmedCount++;
+      stats.confirmedAmount += Math.abs(Number(entry.amount));
     }
   }
 
-  // 将 Decimal 类型转换为 Number，以便传递给客户端组件
-  const plansData = plans.map((p) => {
-    const stats = statsByPlanId.get(p.id) || { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 };
+  const accountOptions = accounts.map(buildAccountDisplayOption);
+  const accountById = new Map(accountOptions.map((account) => [account.id, account]));
+
+  const plansData = plans.map((plan) => {
+    const stats = statsByPlanId.get(plan.id) ?? { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 };
+    const fundAccount = accountById.get(plan.accountId);
+    const cashAccount = plan.cashAccountId ? accountById.get(plan.cashAccountId) : null;
+
     return {
-      ...p,
-      amount: Number(p.amount),
-      feeRate: p.feeRate ? Number(p.feeRate) : null,
-      startDate: p.startDate && Number.isFinite(p.startDate.getTime()) ? p.startDate.toISOString() : null,
-      endDate: p.endDate && Number.isFinite(p.endDate.getTime()) ? p.endDate.toISOString() : null,
-      nextRunDate: p.nextRunDate && Number.isFinite(p.nextRunDate.getTime()) ? p.nextRunDate.toISOString() : null,
-      lastRunDate: p.lastRunDate && Number.isFinite(p.lastRunDate.getTime()) ? p.lastRunDate.toISOString() : null,
-      createdAt: p.createdAt && Number.isFinite(p.createdAt.getTime()) ? p.createdAt.toISOString() : null,
-      updatedAt: p.updatedAt && Number.isFinite(p.updatedAt.getTime()) ? p.updatedAt.toISOString() : null,
+      ...plan,
+      amount: Number(plan.amount),
+      feeRate: plan.feeRate ? Number(plan.feeRate) : null,
+      startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,
+      endDate: plan.endDate && Number.isFinite(plan.endDate.getTime()) ? plan.endDate.toISOString() : null,
+      nextRunDate: plan.nextRunDate && Number.isFinite(plan.nextRunDate.getTime()) ? plan.nextRunDate.toISOString() : null,
+      lastRunDate: plan.lastRunDate && Number.isFinite(plan.lastRunDate.getTime()) ? plan.lastRunDate.toISOString() : null,
+      createdAt: plan.createdAt && Number.isFinite(plan.createdAt.getTime()) ? plan.createdAt.toISOString() : null,
+      updatedAt: plan.updatedAt && Number.isFinite(plan.updatedAt.getTime()) ? plan.updatedAt.toISOString() : null,
       executedCount: stats.executedCount,
       executedAmount: stats.executedAmount,
       confirmedCount: stats.confirmedCount,
       confirmedAmount: stats.confirmedAmount,
+      accountLabel: fundAccount?.label ?? plan.accountName,
+      accountFullLabel: fundAccount?.fullLabel ?? plan.accountName,
+      accountGroupName: fundAccount?.groupName ?? "",
+      cashAccountLabel: cashAccount?.label ?? plan.cashAccountName,
+      cashAccountFullLabel: cashAccount?.fullLabel ?? plan.cashAccountName,
+      cashAccountGroupName: cashAccount?.groupName ?? "",
     };
   });
 
-  const investmentAccounts = accounts
-    .filter((a) => a.kind === "investment" && a.investProductType === "fund")
-    .map((a) => ({
-      id: a.id,
-      name: a.name,
-      label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
-    }));
-
-  const cashAccounts = accounts
-    .filter((a) => ["bank_debit", "ewallet", "cash"].includes(a.kind))
-    .map((a) => ({
-      id: a.id,
-      name: a.name,
-      label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
-    }));
+  const investmentAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "fund");
+  const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash"].includes(account.kind));
 
   return (
     <RegularInvestClient
       initialPlans={plansData}
       investmentAccounts={investmentAccounts}
       cashAccounts={cashAccounts}
+      investmentAccountSSOptions={buildGroupedAccountOptions(investmentAccounts)}
+      cashAccountSSOptions={buildGroupedAccountOptions(cashAccounts)}
     />
   );
 }

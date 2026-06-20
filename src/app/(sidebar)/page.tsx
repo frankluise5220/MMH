@@ -1,12 +1,11 @@
-import { redirect } from "next/navigation";
+﻿import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
-import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { kindLabel } from "@/lib/account-kinds";
 import { EntryRowActions } from "@/components/EntryRowActions";
-import { BasicDetailBatchDeleteButton, BasicDetailBatchReplaceButton, BasicDetailRowCheckbox, BasicDetailSelectAll, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import { BasicDetailBatchDeleteButton, BasicDetailBatchReplaceButton, BasicDetailRowCheckbox, BasicDetailSelectAll, BasicDetailSelectionProvider, BasicDetailBatchDeleteMessage } from "@/components/BasicDetailSelection";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
@@ -16,6 +15,7 @@ import { FundShell } from "@/components/FundShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
+import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
@@ -30,7 +30,8 @@ import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-bala
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
 import { getFundNav } from "@/lib/fund/navCache";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
+import { loadCommonData, loadSelectedAccount, loadEntriesForAccount } from "@/lib/server/cached-data";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +94,27 @@ function ymdUtc(d: Date) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function toValidDate(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
+
+function toIsoOrNull(value: unknown) {
+  const date = toValidDate(value);
+  return date ? date.toISOString() : null;
+}
+
+function toYmdOrNull(value: unknown) {
+  const date = toValidDate(value);
+  return date ? ymdUtc(date) : null;
 }
 
 function escapeCsvCell(value: string) {
@@ -305,10 +327,7 @@ if (tagNames.length) {
     }
   });
 
-  revalidatePath("/");
-  revalidatePath("/", "layout");
-  revalidatePath("/overview");
-  revalidatePath("/accounts");
+  // Client-side handles refresh via mmh:fund:refresh
 }
 
 async function createTransaction(formData: FormData) {
@@ -540,6 +559,7 @@ async function createTransaction(formData: FormData) {
           const confirmStr = computedConfirmDate
             ? computedConfirmDate.toISOString().slice(0, 10)
             : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
+          if (confirmStr < applyDateStr) console.warn(`[createTransaction] confirmDate ${confirmStr} < applyDate ${applyDateStr}`);
           computedConfirmDate = new Date(`${confirmStr}T00:00:00.000Z`);
 
           if (!computedArrivalDate) {
@@ -583,11 +603,7 @@ async function createTransaction(formData: FormData) {
       return { ok: false as const, error: "类型不正确" };
     }
 
-    revalidatePath("/");
-    revalidatePath("/overview");
-    revalidatePath("/accounts");
-    revalidatePath("/invest");
-    revalidatePath("/funds");
+    // Client-side handles refresh via mmh:fund:refresh
     return { ok: true as const };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "记账失败";
@@ -827,11 +843,7 @@ async function editInvestment(formData: FormData) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    revalidatePath("/funds");
-    revalidatePath("/accounts");
+    // Client-side handles refresh via mmh:fund:refresh
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "保存失败" };
@@ -887,6 +899,9 @@ async function fillFundNavFromCache(formData: FormData) {
     const amount = Math.abs(toNumber(txRecord.amount));
 
     // 从费率库查询费率（按确认日期）
+    const arrivalDays = await getFundArrivalDays(investmentAccId, txRecord.fundCode);
+    const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDate, arrivalDays) : confirmDate;
+    const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
     const feeType = isRedeemFill ? "redeem" : "buy";
     const feeRateRaw = await getFundFeeRateByDate(investmentAccId, txRecord.fundCode, navDate, feeType);
     const feeRate = feeRateRaw / 100;
@@ -901,10 +916,12 @@ async function fillFundNavFromCache(formData: FormData) {
       fundFee: number;
       fundUnits?: number;
       fundName?: string;
+      fundArrivalDate?: Date;
     } = {
       fundConfirmDate: navDate,
       fundNav: nav,
       fundFee: fee,
+      fundArrivalDate: arrivalDate,
     };
     if (units != null) {
       updateData.fundUnits = Number(units.toFixed(6));
@@ -919,10 +936,10 @@ async function fillFundNavFromCache(formData: FormData) {
     });
 
     await recalcFundPositions(investmentAccId, [txRecord.fundCode]).catch(() => {});
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    return { ok: true as const, nav, units: units != null ? Number(units.toFixed(6)) : null, fee, confirmDate };
+    // revalidation handled by FundShell optimistic update
+
+
+    return { ok: true as const, nav, units: units != null ? Number(units.toFixed(6)) : null, fee, confirmDate, arrivalDate: arrivalDateStr };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "获取净值失败" };
   }
@@ -1015,12 +1032,12 @@ async function createRegularInvest(formData: FormData) {
       }
     });
 
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    revalidatePath("/funds");
-    revalidatePath("/accounts");
-    revalidatePath("/regular-invest");
+
+
+
+
+
+
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "创建失败" };
@@ -1082,12 +1099,7 @@ async function regularInvestAction(formData: FormData) {
       return { ok: false as const, error: "未知操作类型" };
     }
 
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    revalidatePath("/funds");
-    revalidatePath("/accounts");
-    revalidatePath("/regular-invest");
+    // Client-side handles page refresh via router.refresh() + mmh:fund:refresh
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "操作失败" };
@@ -1179,12 +1191,7 @@ async function updateRegularInvest(formData: FormData) {
       }
     }
 
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    revalidatePath("/funds");
-    revalidatePath("/accounts");
-    revalidatePath("/regular-invest");
+    // Client-side handles page refresh
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "更新失败" };
@@ -1221,12 +1228,7 @@ async function deleteRegularInvest(formData: FormData) {
       await recalcFundPositions(plan.accountId, [plan.fundCode]).catch(() => {});
     }
 
-    revalidatePath("/");
-    revalidatePath("/invest");
-    revalidatePath("/overview");
-    revalidatePath("/funds");
-    revalidatePath("/accounts");
-    revalidatePath("/regular-invest");
+    // Client-side handles page refresh
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "删除失败" };
@@ -1480,9 +1482,7 @@ async function updateTransactionFromDialog(formData: FormData) {
       });
     });
 
-    revalidatePath("/");
-    revalidatePath("/overview");
-    revalidatePath("/accounts");
+    // Client-side handles refresh via mmh:fund:refresh
     return { ok: true as const };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "保存失败";
@@ -1536,7 +1536,7 @@ async function backfillStatementMonthForAccount(formData: FormData) {
     }
   });
 
-  revalidatePath("/");
+  // Client-side handles page refresh
 }
 
 export default async function Home({
@@ -1624,7 +1624,7 @@ export default async function Home({
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const isRedUp = colorScheme === "red_up_green_down";
-  const ctx = await getHouseholdScope();
+  const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
   // 颜色辅助函数
   const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
@@ -1632,32 +1632,11 @@ export default async function Home({
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
   const pnlBinCls = (cond: boolean) => cond ? upCls : downCls;
 
-  const [categories, selectedAccount, accounts, tags, groups, institutions] = await Promise.all([
-    prisma.category.findMany({
-      where: { ...hidFilter },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-    }),
-    accountId
-      ? prisma.account.findUnique({ where: { id: accountId }, include: { Institution: true, AccountGroup: true } })
-      : null,
-    prisma.account.findMany({
-      where: { ...hidFilter },
-      include: { Institution: true, AccountGroup: true },
-      orderBy: [{ isActive: "desc" }, { name: "asc" }],
-    }),
-    prisma.tag.findMany({
-      where: { ...hidFilter },
-      orderBy: { name: "asc" },
-    }),
-    prisma.accountGroup.findMany({
-      where: { ...hidFilter },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    }),
-    prisma.institution.findMany({
-      where: { ...hidFilter },
-      orderBy: { name: "asc" },
-    }),
-  ]);
+  // Common data: 跨账户共享，跨请求缓存
+  const common = await loadCommonData(hidFilter);
+  const { categories, accounts, tags, groups, institutions } = common;
+  // selectedAccount: per-account，请求级缓存去重
+  const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
 
   const legacyNames = (() => {
     if (!selectedAccount) return [];
@@ -1679,25 +1658,29 @@ export default async function Home({
       ? { accountName: accountName, deletedAt: null, ...hid }
       : { deletedAt: null, account: { kind: { not: AccountKind.investment }, ...hidFilter } };
 
-  const rawEntries = await prisma.txRecord.findMany({
-    where,
-    include: { EntryTag: { include: { Tag: true } } },
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    take: 5000,
-  });
+  const rawEntries = accountId
+    ? await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
+    : await prisma.txRecord.findMany({
+        where,
+        include: { EntryTag: { include: { Tag: true } } },
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+        take: 5000,
+      });
+  const toDateValue = (value: unknown) => {
+    return toValidDate(value) ?? new Date(0);
+  };
   const entryDisplayDate = (e: (typeof rawEntries)[number]) => {
     const isCashSide = !!accountId && e.toAccountId === accountId;
     const isBuyFailedRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
     const isCashInByInvest = e.type === TransactionType.investment
       && isCashSide
       && (e.fundSubtype === "redeem" || e.fundSubtype === "switch_out" || e.fundSubtype === "dividend_cash" || isBuyFailedRefund);
-    if (isCashInByInvest) return e.fundArrivalDate ?? e.fundConfirmDate ?? e.date;
-    return e.date;
+    return toDateValue(isCashInByInvest ? (e.fundArrivalDate ?? e.fundConfirmDate ?? e.date) : e.date);
   };
   const entries = [...rawEntries].sort((a, b) => {
     const byDate = entryDisplayDate(b).getTime() - entryDisplayDate(a).getTime();
     if (byDate !== 0) return byDate;
-    return b.createdAt.getTime() - a.createdAt.getTime();
+    return toDateValue(b.createdAt).getTime() - toDateValue(a.createdAt).getTime();
   });
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
@@ -1846,7 +1829,7 @@ export default async function Home({
     const asc = [...rawEntries].sort((a, b) => {
       const byDate = entryDisplayDate(a).getTime() - entryDisplayDate(b).getTime();
       if (byDate !== 0) return byDate;
-      return a.createdAt.getTime() - b.createdAt.getTime();
+      return toDateValue(a.createdAt).getTime() - toDateValue(b.createdAt).getTime();
     });
     let running = 0;
     for (const e of asc) {
@@ -1860,7 +1843,9 @@ export default async function Home({
   const selectedAccountLabel = (() => {
     if (selectedAccount) {
       const inst = (selectedAccount.Institution?.name ?? "").trim();
-      return inst ? `${inst}·${selectedAccount.name}` : selectedAccount.name;
+      const group = (selectedAccount.AccountGroup?.name ?? "").trim();
+      const accountLabel = inst ? `${inst}·${selectedAccount.name}` : selectedAccount.name;
+      return [group, accountLabel].filter(Boolean).join(" / ");
     }
     return accountName || "";
   })();
@@ -1928,6 +1913,7 @@ export default async function Home({
     }));
   const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.label]));
   const investmentProductTypeByAccountId = new Map(investmentAccountOptions.map((a) => [a.id, a.investProductType]));
+  const investmentProductTypeByAccountIdObj = Object.fromEntries(investmentProductTypeByAccountId);
 
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
@@ -2767,12 +2753,42 @@ export default async function Home({
     );
   };
 
+  // Convert pagedEntries to serializable format for DetailViewClient
+  const pagedDetailEntries: DetailEntry[] = (pagedEntries || []).map((e) => ({
+    id: e.id,
+    date: entryDisplayDate(e).toISOString().slice(0, 10),
+    amount: toNumber(e.amount),
+    type: e.type,
+    categoryId: e.categoryId,
+    categoryName: e.categoryName,
+    accountId: e.accountId,
+    accountName: e.accountName,
+    toAccountId: e.toAccountId,
+    toAccountName: e.toAccountName,
+    note: e.note,
+    fundSubtype: e.fundSubtype,
+    fundCode: e.fundCode,
+    fundName: e.fundName,
+    source: e.source,
+    fundProductType: e.fundProductType,
+    fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
+    fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
+    fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
+    fundConfirmDate: toIsoOrNull(e.fundConfirmDate),
+    fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
+    fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+    entryTags: (e.EntryTag || []).map((et: any) => ({
+      tagId: et.tagId,
+      Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
+    })),
+  }));
+
   return (
-    <div className="flex h-full w-full">
-      <div className="flex-1 flex flex-col min-w-0 relative">
+    <div className="flex h-full w-full bg-transparent">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         <header className="page-header">
-          <div className="h-12 flex items-center justify-between px-4">
-            <div className="flex items-center gap-3 text-sm">
+          <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
+            <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
               <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
               {!selectedAccount ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(totalNetWorthValue)}`}>{formatMoney(totalNetWorthValue)}</span>
@@ -2785,12 +2801,12 @@ export default async function Home({
               )}
               {isBillAccount && (
                 <div className="flex items-center gap-2">
-                  <a href={hrefBill} className={`h-7 px-2 rounded-md border text-xs flex items-center ${view === "bill" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>账单</a>
-                  <a href={hrefDetail} className={`h-7 px-2 rounded-md border text-xs flex items-center ${view === "detail" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>明细</a>
+                  <a href={hrefBill} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "bill" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>账单</a>
+                  <a href={hrefDetail} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "detail" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>明细</a>
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             {((view === "investfund" || view === "investmoney") && selectedAccount) ? (
               <InvestmentFormModal
                 mode="create"
@@ -2805,9 +2821,9 @@ export default async function Home({
                 investmentAccounts={investmentAccountOptions}
                 holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
                 allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
-                  date: ymdUtc(e.date),
-                  fundConfirmDate: e.fundConfirmDate ? ymdUtc(e.fundConfirmDate) : null,
-                  fundArrivalDate: e.fundArrivalDate ? ymdUtc(e.fundArrivalDate) : null,
+                  date: toYmdOrNull(e.date) ?? "",
+                  fundConfirmDate: toYmdOrNull(e.fundConfirmDate),
+                  fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
                   fundCode: e.fundCode ?? "",
                   fundSubtype: e.fundSubtype ?? "",
                   fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
@@ -2820,7 +2836,7 @@ export default async function Home({
             ) : (
               <>
               <TransactionFormModal
-                accounts={spendingAccountOptions} transferAccounts={accountOptions} investmentAccounts={investmentAccountOptions}
+                accounts={spendingAccountOptions} transferAccounts={accountOptions}
                 accountSSOptions={spendingAccountSSOptions} transferAccountSSOptions={allAccountSSOptions}
                 nestedFieldData={nestedFieldData}
                 expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
@@ -2861,14 +2877,14 @@ export default async function Home({
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
-              {isBillAccount && !isInvestAccount ? <a href="/invest" className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 flex items-center">投资</a> : null}
+              {isBillAccount && !isInvestAccount ? <a href="/invest" className="h-8 px-3 rounded-[10px] border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 flex items-center">投资</a> : null}
               </>
             )}
             </div>
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex flex-1 flex-col overflow-hidden bg-transparent">
           {isOverview ? (
             <DashboardOverview 
               totalNetWorth={totalNetWorthValue} 
@@ -2877,11 +2893,11 @@ export default async function Home({
               createAction={createTransaction}
             />
           ) : view === "bill" && isBillAccount ? (
-            <div className="flex-1 overflow-auto bg-white">
-              <div className="p-4 space-y-4">
+            <div className="flex-1 overflow-auto bg-transparent">
+              <div className="space-y-4 p-4 md:p-5">
                 {billSummariesWithCumulative.length > 0 ? (
-                  <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                    <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                  <div className="panel-surface overflow-hidden">
+                    <div className="panel-header">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-slate-800">账单列表</span>
                         <a
@@ -2980,7 +2996,7 @@ export default async function Home({
                             return (
                               <tr
                                 key={s.month}
-                                className={`hover:bg-slate-50 ${active ? "bg-blue-100" : ""}`}
+                                className={`hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`}
                               >
                                 <td className="px-4 py-2 border-b border-slate-100">
                                   <a href={href} className="block">
@@ -3023,8 +3039,8 @@ export default async function Home({
                   </div>
                 ) : null}
 
-                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                  <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
+                <div className="panel-surface overflow-hidden">
+                  <div className="panel-header block">
                     <div className="text-sm font-semibold text-slate-800">
                       {creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
                     </div>
@@ -3047,10 +3063,10 @@ export default async function Home({
                           <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">操作</th>
                         </tr>
                       </thead>
-                      <tbody className="text-sm">
+                        <tbody className="text-sm">
                         {creditCardBillDetails?.cycleEntries?.length ? (
                           creditCardBillDetails!.cycleEntries.map((e) => {
-                            const date = e.date.toISOString().slice(0, 10);
+                            const date = toYmdOrNull(e.date) ?? "";
                             const amount = toNumber(e.amount);
                             const isTransferToCurrentBillAccount =
                               e.type === "transfer" && !!selectedAccount?.id && e.toAccountId === selectedAccount.id;
@@ -3116,7 +3132,7 @@ export default async function Home({
                                       tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [],
                                     };
                             return (
-                              <tr key={e.id} className="hover:bg-slate-50">
+                              <tr key={e.id} className="hover:bg-blue-50/40">
                                 <td className="px-4 py-2 border-b border-slate-100 tabular-nums">
                                   <span className="text-xs text-slate-700">{date}</span>
                                 </td>
@@ -3165,6 +3181,7 @@ export default async function Home({
             </div>
           ) : view === "investmoney" && investmoneyData ? (
             <FundShell
+              key={`investmoney-${accountId}`}
               view="investmoney"
               initialFundCode={investmoneyData.selectedFundCode}
               positions={investmoneyData.positions}
@@ -3192,6 +3209,7 @@ export default async function Home({
             />
           ) : view === "investfund" && investfundData ? (
             <FundShell
+              key={`investfund-${accountId}`}
               view="investfund"
               initialFundCode={investfundData.selectedFundCode}
               positions={investfundData.positions}
@@ -3218,10 +3236,11 @@ export default async function Home({
               isRedUp={isRedUp}
             />
           ) : (
-            <div className="flex-1 min-h-0 flex flex-col p-4 bg-slate-50">
-              <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
+            <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
+              <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
                 <BasicDetailSelectionProvider>
-                <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
+                <BasicDetailBatchDeleteMessage />
+                <div className="panel-header shrink-0">
                   <div className="flex items-center gap-2">
                     <div className="text-sm font-semibold text-slate-800">资金明细</div>
                     <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
@@ -3349,53 +3368,13 @@ export default async function Home({
                         </th>
                       </tr>
                     </thead>
-                    <tbody className="text-sm">
-                      {pagedEntries.length ? (pagedEntries.map((e) => {
-                        const date = entryDisplayDate(e).toISOString().slice(0, 10);
-                        const amount = toNumber(e.amount);
-                        const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
-                        const inflow = effectiveAmount > 0 ? effectiveAmount : null;
-                        const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
-                        const balance = where ? balanceByEntryId.get(e.id) ?? null : null;
-                        const activity = e.type === "investment" && e.fundSubtype ? (() => { const info = fundSubtypeInfo(e.fundSubtype, e.source, amount); return info ? info.label : formatType(e.type); })() : formatType(e.type);
-                        const entryFundProductType = e.fundProductType ?? (e.toAccountId ? investmentProductTypeByAccountId.get(e.toAccountId) : null) ?? (e.accountId ? investmentProductTypeByAccountId.get(e.accountId) : null) ?? null;
-                        const isRedeemEditEntry = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
-                        const editPayload = e.type !== "investment" ? undefined : { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), confirmDate: e.fundConfirmDate?.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, fundCode: e.fundCode, fundName: e.fundName, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, fundNav: e.fundNav != null ? toNumber(e.fundNav) : null, fundFee: e.fundFee != null ? toNumber(e.fundFee) : null, fundProductType: entryFundProductType, fundSubtype: e.fundSubtype, source: e.source, accountId: e.accountId, toAccountId: e.toAccountId, cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId, toAccountName: e.toAccountName, fundArrivalDate: e.fundArrivalDate?.toISOString().slice(0,10), fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null };
-                        const otherEditPayload = e.type !== "investment" ? { id: e.id, transactionId: e.id, date: e.date.toISOString().slice(0, 10), type: e.type, amount: toNumber(e.amount), note: e.note, categoryId: e.categoryId, categoryName: e.categoryName, accountId: e.accountId, accountName: e.accountName, fromAccountId: e.type === "transfer" ? e.accountId : undefined, toAccountId: e.toAccountId, toAccountName: e.toAccountName, tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [] } : undefined;
-                        const isToAccount = !!accountId && e.toAccountId === accountId;
-                        const sourceAccountLabel = accountOptions.find((a: any) => a.id === e.accountId)?.label ?? e.accountName;
-                        const targetAccountLabel = e.toAccountId ? (accountOptions.find((a: any) => a.id === e.toAccountId)?.label ?? e.toAccountName) : null;
-                        const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
-                        return (
-                          <tr key={e.id} className="hover:bg-slate-50">
-                            <td className="px-3 py-1 border-b border-slate-100"><BasicDetailRowCheckbox id={e.id} /></td>
-                            <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{date}</td>
-                            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">{inflow !== null ? formatMoney(inflow) : ""}</td>
-                            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">{outflow !== null ? formatMoney(outflow) : ""}</td>
-                            <td className="px-3 py-1 border-b border-slate-100">
-                              {e.type === "investment" && e.fundSubtype ? (() => { const info = fundSubtypeInfo(e.fundSubtype, e.source, amount); return info ? <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${info.cls}`}>{info.label}</span> : <span className="text-xs text-slate-700">{activity}</span>; })() : <span className="text-xs text-slate-700">{activity}</span>}
-                            </td>
-                            {!isInvestAccount && <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">{relatedAccountLabel ? relatedAccountLabel : <span className="text-slate-300">-</span>}</td>}
-                            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700"><span className="text-xs">{balance !== null ? formatMoney(balance) : ""}</span></td>
-                            <td className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[240px]" title={e.note ?? ""}>
-                              {e.EntryTag && e.EntryTag.length > 0 && (
-                                <span className="inline-flex flex-wrap gap-0.5 mr-1">
-                                  {e.EntryTag.map((et: any) => {
-                                    const c = et.Tag?.color || "#3B82F6";
-                                    return <span key={et.tagId} className="text-[10px] px-1 py-0.5 rounded-full border leading-none" style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}>{et.Tag?.name}</span>;
-                                  })}
-                                </span>
-                              )}
-                              <span className="text-xs text-slate-500">{e.note ?? ""}</span>
-                            </td>
-                            <td className="px-3 py-1 border-b border-slate-100 text-slate-400"></td>
-                            <td className="w-24 px-2 py-1 border-b border-slate-100"><div className="flex justify-end"><EntryRowActions entryId={e.id} edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any} /></div></td>
-                          </tr>
-                        );
-                      })
-                    ) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={isInvestAccount ? 9 : 10}>暂无记录</td></tr>)
-                    }
-                    </tbody>
+                    <DetailViewClient
+                      accountId={accountId}
+                      isInvestAccount={isInvestAccount}
+                      initialEntries={pagedDetailEntries}
+                      accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))}
+                      investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
+                    />
                   </table>
                 </div>
                 </BasicDetailSelectionProvider>

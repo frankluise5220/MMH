@@ -181,7 +181,6 @@ export function SmartSelect(props: SmartSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(-1);
-  const [flipUp, setFlipUp] = useState(false);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 0 });
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
@@ -233,7 +232,6 @@ export function SmartSelect(props: SmartSelectProps) {
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
     const shouldFlip = spaceBelow < estimatedHeight && spaceAbove > estimatedHeight;
-    setFlipUp(shouldFlip);
     setDropdownPos({
       top: shouldFlip ? rect.top - 4 : rect.bottom + 4,
       left: rect.left,
@@ -459,7 +457,7 @@ export function SmartSelect(props: SmartSelectProps) {
     <div
       ref={dropdownRef}
       onKeyDown={handleDropdownKeyDown}
-      className="rounded-ui border border-foreground/10 bg-surface-white shadow-lg shadow-foreground/5 overflow-hidden"
+      className="overflow-hidden rounded-[12px] border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
       style={{
         position: "fixed",
         top: dropdownPos.top,
@@ -473,30 +471,30 @@ export function SmartSelect(props: SmartSelectProps) {
         <>
           {/* Search + Create combined row, or standalone search/create */}
           {searchable && onCreateClick ? (
-            <div className="flex items-center gap-1 px-2 pt-2 pb-1 border-b border-foreground/5">
+            <div className="flex items-center gap-1 border-b border-slate-200/70 px-2 pt-2 pb-1">
               <input
                 data-search
                 value={search}
                 onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
-                className="h-7 flex-1 rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                className="h-7 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 placeholder="搜索..."
               />
               <button
                 type="button"
                 onClick={handleCreateClick}
-                className="h-7 px-2 rounded-ui border border-accent-green/20 bg-accent-green/5 text-xs flex items-center gap-0.5 text-accent-green font-medium shrink-0 hover:bg-accent-green/10 transition-colors"
+                className="secondary-button h-7 shrink-0 gap-0.5 px-2 text-xs text-blue-700 hover:bg-blue-50"
               >
                 <Plus className="w-3 h-3" />
                 {createLabel ?? "新增"}
               </button>
             </div>
           ) : searchable ? (
-            <div className="px-2 pt-2 pb-1 border-b border-foreground/5">
+            <div className="border-b border-slate-200/70 px-2 pt-2 pb-1">
               <input
                 data-search
                 value={search}
                 onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
-                className="h-7 w-full rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                className="h-7 w-full rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 placeholder="搜索..."
               />
             </div>
@@ -504,10 +502,10 @@ export function SmartSelect(props: SmartSelectProps) {
             <button
               type="button"
               onClick={handleCreateClick}
-              className="w-full h-9 flex items-center justify-between px-3 text-sm bg-background/50 hover:bg-accent-green/10 transition-colors border-b border-foreground/5"
+              className="flex h-9 w-full items-center justify-between border-b border-slate-200/70 bg-slate-50/90 px-3 text-sm transition-colors hover:bg-blue-50/70"
             >
-              <span className="text-foreground/60">{placeholder || "请选择"}</span>
-              <span className="flex items-center gap-1 text-accent-green font-medium">
+              <span className="text-slate-500">{placeholder || "请选择"}</span>
+              <span className="flex items-center gap-1 font-medium text-blue-700">
                 <Plus className="w-3.5 h-3.5" />
                 {createLabel ?? "新增"}
               </span>
@@ -527,12 +525,12 @@ export function SmartSelect(props: SmartSelectProps) {
                   <div
                     key={o.id}
                     onClick={() => toggleGroup(o.id)}
-                    className={`w-full h-8 px-3 text-xs font-medium flex items-center justify-between cursor-pointer transition-colors ${
-                      i === focusedIndex ? "bg-accent-green/10" : "hover:bg-background/30"
+                    className={`flex h-8 w-full cursor-pointer items-center justify-between px-3 text-xs font-medium transition-colors ${
+                      i === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
                     }`}
                     onMouseEnter={() => setFocusedIndex(i)}
                   >
-                    <span className="flex items-center gap-1 text-foreground/60">
+                    <span className="flex items-center gap-1 text-slate-500">
                       {collapsedGroups.has(o.id) && !isSearching
                         ? <ChevronRight className="w-3 h-3 shrink-0" />
                         : <ChevronDown className="w-3 h-3 shrink-0" />
@@ -540,7 +538,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       {o.label}
                     </span>
                     {!isSearching && (
-                      <span className="text-[10px] text-foreground/35 shrink-0">
+                      <span className="shrink-0 text-[10px] text-slate-400">
                         {groupChildCounts.get(o.id) ?? 0}
                       </span>
                     )}
@@ -560,14 +558,14 @@ export function SmartSelect(props: SmartSelectProps) {
                     type="button"
                     role="option"
                     aria-selected={isSelected}
-                    className={`w-full h-9 px-3 text-sm text-left flex items-center gap-1.5 transition-colors ${
-                      i === focusedIndex ? "bg-accent-green/10" : ""
-                    } ${isSelected ? "font-medium text-accent-green" : "text-foreground"}`}
+                    className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
+                      i === focusedIndex ? "bg-blue-50" : ""
+                    } ${isSelected ? "font-medium text-blue-700" : "text-slate-700"}`}
                   >
                     {/* Collapse toggle area */}
                     <span
                       onClick={(e) => { e.stopPropagation(); toggleGroup(o.id); }}
-                      className="flex items-center gap-0.5 shrink-0 cursor-pointer text-foreground/40 hover:text-foreground/60"
+                      className="flex shrink-0 cursor-pointer items-center gap-0.5 text-slate-400 hover:text-slate-600"
                     >
                       {isCollapsed
                         ? <ChevronRight className="w-3 h-3" />
@@ -583,7 +581,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       {o.label}
                     </span>
                     {o.subLabel && (
-                      <span className="text-[10px] text-foreground/35 shrink-0">{o.subLabel}</span>
+                      <span className="shrink-0 text-[10px] text-slate-400">{o.subLabel}</span>
                     )}
                   </button>
                 );
@@ -599,21 +597,21 @@ export function SmartSelect(props: SmartSelectProps) {
                   aria-selected={o.id === (value as string)}
                   onClick={() => selectSingle(o.id)}
                   onMouseEnter={() => setFocusedIndex(i)}
-                  className={`w-full h-9 px-3 text-sm text-left flex items-center gap-1.5 transition-colors ${
-                    i === focusedIndex ? "bg-accent-green/10" : ""
+                  className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
+                    i === focusedIndex ? "bg-blue-50" : ""
                   } ${
-                    o.id === (value as string) ? "font-medium text-accent-green" : "text-foreground"
+                    o.id === (value as string) ? "font-medium text-blue-700" : "text-slate-700"
                   }`}
                 >
                   <span className="truncate">{o.label}</span>
                   {o.subLabel && (
-                    <span className="text-[10px] text-foreground/35 shrink-0">{o.subLabel}</span>
+                    <span className="shrink-0 text-[10px] text-slate-400">{o.subLabel}</span>
                   )}
                 </button>
               );
             })}
             {visible.length === 0 && (
-              <div className="px-3 py-4 text-xs text-foreground/40 text-center">
+              <div className="px-3 py-4 text-center text-xs text-slate-400">
                 {search ? `无匹配"${search}"的结果` : "暂无选项"}
               </div>
             )}
@@ -631,7 +629,7 @@ export function SmartSelect(props: SmartSelectProps) {
                 data-search
                 value={search}
                 onChange={e => { setSearch(e.target.value); setFocusedIndex(0); }}
-                className="h-7 w-full rounded-ui border border-foreground/10 px-2 text-xs outline-none focus:border-accent-green/30 bg-surface-white"
+                className="h-7 w-full rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 placeholder="搜索标签..."
               />
             </div>
@@ -641,16 +639,16 @@ export function SmartSelect(props: SmartSelectProps) {
             <button
               type="button"
               onClick={() => setShowNew(true)}
-              className="w-full h-9 flex items-center justify-between px-3 text-sm bg-background/50 hover:bg-accent-green/10 transition-colors border-b border-foreground/5"
+              className="flex h-9 w-full items-center justify-between border-b border-slate-200/70 bg-slate-50/90 px-3 text-sm transition-colors hover:bg-blue-50/70"
             >
-              <span className="text-foreground/60">{placeholder || "选择标签"}</span>
-              <span className="flex items-center gap-1 text-accent-green font-medium">
+              <span className="text-slate-500">{placeholder || "选择标签"}</span>
+              <span className="flex items-center gap-1 font-medium text-blue-700">
                 <Plus className="w-3.5 h-3.5" />
                 新增
               </span>
             </button>
           ) : (
-            <div className="px-3 py-2 border-b border-foreground/5 bg-accent-green/5 space-y-2">
+            <div className="space-y-2 border-b border-slate-200/70 bg-blue-50/60 px-3 py-2">
               <div className="flex gap-2">
                 <input
                   ref={inputRef}
@@ -662,19 +660,19 @@ export function SmartSelect(props: SmartSelectProps) {
                       e.stopPropagation();
                     }
                   }}
-                  className="h-8 flex-1 rounded-ui border border-foreground/10 px-2 text-sm outline-none focus:border-accent-green/30"
+                  className="h-8 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                   placeholder="标签名称"
                 />
                 <button
                   onClick={createTag}
                   disabled={!newName.trim() || creating}
-                  className="h-8 px-3 rounded-ui bg-foreground text-background text-sm hover:bg-foreground/90 disabled:opacity-50"
+                  className="primary-button h-8 px-3 text-sm disabled:opacity-50"
                 >
                   {creating ? "…" : "创建"}
                 </button>
                 <button
                   onClick={() => { setShowNew(false); setNewName(""); }}
-                  className="h-8 w-8 rounded-ui border border-foreground/10 bg-surface-white text-foreground/40 hover:bg-background/30"
+                  className="secondary-button h-8 w-8 px-0 text-slate-400"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -712,24 +710,24 @@ export function SmartSelect(props: SmartSelectProps) {
                   aria-selected={checked}
                   onClick={() => toggleMulti(o.id)}
                   onMouseEnter={() => setFocusedIndex(i)}
-                  className={`w-full h-9 px-3 text-sm text-left flex items-center gap-2 transition-colors ${
-                    i === focusedIndex ? "bg-accent-green/10" : ""
+                  className={`flex h-9 w-full items-center gap-2 px-3 text-left text-sm transition-colors ${
+                    i === focusedIndex ? "bg-blue-50" : ""
                   } ${
                     checked ? "font-medium" : ""
                   }`}
                 >
-                  <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                    checked ? "bg-foreground border-foreground text-background" : "border-foreground/20 bg-surface-white"
+                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                    checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-surface-white"
                   }`}>
                     {checked && <Check className="w-3 h-3" />}
                   </span>
                   <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: c }} />
-                  <span className={checked ? "text-foreground" : "text-foreground"}>{o.label}</span>
+                  <span className="text-slate-700">{o.label}</span>
                 </button>
               );
             })}
             {filtered.length === 0 && !showNew && (
-              <div className="px-3 py-4 text-xs text-foreground/40 text-center">暂无标签，点击上方"新增"创建</div>
+              <div className="px-3 py-4 text-center text-xs text-slate-400">暂无标签，点击上方"新增"创建</div>
             )}
           </div>
         </>
@@ -749,13 +747,13 @@ export function SmartSelect(props: SmartSelectProps) {
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}
-        className="h-9 w-full rounded-ui border border-foreground/10 bg-surface-white px-3 text-sm outline-none flex items-center justify-between hover:border-foreground/20 transition-colors focus-visible:ring-2 focus-visible:ring-accent-green/20 focus-visible:border-accent-green/30"
+        className="flex h-9 w-full items-center justify-between rounded-[10px] border border-slate-300/70 bg-surface-white px-3 text-sm outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100"
       >
         {mode === "single" ? (
-          <span className={`${selectedLabel ? "text-foreground" : "text-foreground/40"} truncate flex items-center`}>
+          <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex truncate items-center`}>
             {selectedLabel || placeholder || "请选择"}
             {selectedOption?.subLabel && (
-              <span className="text-[10px] text-foreground/35 ml-1 shrink-0">{selectedOption.subLabel}</span>
+              <span className="ml-1 shrink-0 text-[10px] text-slate-400">{selectedOption.subLabel}</span>
             )}
           </span>
         ) : (
@@ -770,15 +768,15 @@ export function SmartSelect(props: SmartSelectProps) {
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); (onChange as (id: string) => void)(""); }}
-              className="text-foreground/30 hover:text-foreground/60 transition-colors"
+              className="text-slate-300 transition-colors hover:text-slate-500"
               tabIndex={-1}
             >
               <X className="w-3.5 h-3.5" />
             </button>
-            <ChevronDown className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           </span>
         ) : (
-          <ChevronDown className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
         )}
       </button>
 
@@ -802,7 +800,7 @@ function MultiTriggerDisplay({
   const selected = options.filter(o => value.includes(o.id));
 
   if (selected.length === 0) {
-    return <span className="text-foreground/40">{placeholder || "选择标签"}</span>;
+    return <span className="text-slate-400">{placeholder || "选择标签"}</span>;
   }
 
   return (
@@ -815,9 +813,9 @@ function MultiTriggerDisplay({
         />
       ))}
       {selected.length > 4 && (
-        <span className="text-xs text-foreground/60 shrink-0">+{selected.length - 4}</span>
+        <span className="shrink-0 text-xs text-slate-500">+{selected.length - 4}</span>
       )}
-      <span className="text-xs text-foreground/60 shrink-0">{selected.length}</span>
+      <span className="shrink-0 text-xs text-slate-500">{selected.length}</span>
     </span>
   );
 }

@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 
 /**
@@ -33,7 +32,6 @@ export function DeleteButton({
   showIcon?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
-  const router = useRouter();
 
   const handleDelete = async () => {
     const message = confirmMessage || `确认删除"${displayName || resourceName || resourceId}"吗？`;
@@ -50,8 +48,8 @@ export function DeleteButton({
       const data = await res.json();
 
       if (data.ok) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        router.refresh();
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+
         onSuccess?.();
       } else {
         const error = data.error ?? "删除失败";

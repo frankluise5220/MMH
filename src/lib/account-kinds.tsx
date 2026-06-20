@@ -16,7 +16,7 @@ export function kindLabel(k: string): string {
   return m[k] || k;
 }
 
-/* ---- Kind color (Tailwind badge classes) — for badges ---- */
+/* ---- Kind color (Tailwind badge classes) ---- */
 
 export function kindColor(k: string): string {
   if (k === "bank_credit") return "bg-amber-50 text-amber-700 border-amber-200";
@@ -28,7 +28,7 @@ export function kindColor(k: string): string {
   return "bg-slate-50 text-slate-700 border-slate-200";
 }
 
-/* ---- Kind color (CSS hex) — for SmartSelect option tinting ---- */
+/* ---- Kind color (CSS hex) for SmartSelect option tinting ---- */
 
 export function kindHex(k: string): string {
   if (k === "bank_credit") return "#F59E0B";
@@ -40,7 +40,7 @@ export function kindHex(k: string): string {
   return "#64748B";
 }
 
-/* ---- Kind → lucide icon name (string, resolved by SmartSelect) ---- */
+/* ---- Kind to lucide icon name (string, resolved by SmartSelect) ---- */
 
 export function kindIconName(k: string): string {
   if (k === "bank_credit") return "credit-card";
@@ -58,14 +58,14 @@ export function institutionTypeLabel(t: string | null): string {
   const m: Record<string, string> = {
     bank: "银行",
     brokerage: "证券",
-    payment: "三方支付",
+    payment: "第三方支付",
     ewallet: "钱包",
     other: "其他",
   };
   return m[t ?? "other"] ?? t ?? "其他";
 }
 
-/* ---- Institution type → lucide icon name (string, resolved by SmartSelect) ---- */
+/* ---- Institution type to lucide icon name (string, resolved by SmartSelect) ---- */
 
 export function institutionTypeIconName(t: string | null): string {
   if (t === "bank") return "landmark";

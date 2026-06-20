@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
+import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS, PATH_PLACEHOLDER } from "@/lib/urlInput";
+import type { ParsedUrl } from "@/lib/urlInput";
 
 type ModelEntry = {
   id: string;
@@ -70,6 +72,59 @@ async function fetchModelsForChannel(baseUrl: string, apiKey: string, modelsUrl:
 
 type ModelInfo = ReturnType<typeof detectModelInfo>;
 
+function UrlInputGroup({
+  value,
+  onChange,
+}: {
+  value: ParsedUrl;
+  onChange: (next: ParsedUrl) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <select
+          value={value.protocol}
+          onChange={e => onChange({ ...value, protocol: e.target.value })}
+          className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm outline-none shrink-0"
+        >
+          {PROTOCOL_OPTIONS.map(op => (
+            <option key={op.value} value={op.value}>{op.label}</option>
+          ))}
+        </select>
+        <span className="text-slate-300 text-sm font-mono">://</span>
+        <input
+          value={value.host}
+          onChange={e => onChange({ ...value, host: e.target.value })}
+          placeholder="api.example.com"
+          className="h-9 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono"
+        />
+        <span className="text-slate-300 text-sm font-mono">:</span>
+        <input
+          value={value.port}
+          onChange={e => onChange({ ...value, port: e.target.value })}
+          type="number"
+          placeholder="端口"
+          list="port-suggestions"
+          className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2.5 text-sm outline-none font-mono"
+        />
+        <datalist id="port-suggestions">
+          {PORT_SUGGESTIONS.filter(s => s.value).map(s => (
+            <option key={s.value} value={s.value}>{s.label} ({s.description})</option>
+          ))}
+        </datalist>
+      </div>
+      <div>
+        <input
+          value={value.path}
+          onChange={e => onChange({ ...value, path: e.target.value })}
+          placeholder={PATH_PLACEHOLDER}
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono"
+        />
+      </div>
+    </div>
+  );
+}
+
 function ModelModal({
   initial,
   onSave,
@@ -82,7 +137,7 @@ function ModelModal({
   const [step, setStep] = useState<"config" | "models">("config");
   const [channelName, setChannelName] = useState(initial?.name ?? "");
   const [channelType, setChannelType] = useState(initial?.channelType ?? initial?.channelId ?? "openai");
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
+  const [urlParts, setUrlParts] = useState<ParsedUrl>(parseBaseUrl(initial?.baseUrl));
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState("");
@@ -90,14 +145,15 @@ function ModelModal({
     initial?.model ? [{ id: initial.model, category: initial.category ?? detectModelInfo(initial.model).category, supportsVision: initial.supportsVision ?? detectModelInfo(initial.model).supportsVision }] : []
   );
   const [selectedModel, setSelectedModel] = useState(initial?.model ?? "");
-  const currentType = CHANNEL_TYPES.find(t => t.id === channelType) ?? CHANNEL_TYPES[0];
+
+  const currentBaseUrl = buildBaseUrl(urlParts);
 
   async function handleFetch() {
-    if (!baseUrl.trim()) { setError("请先填写 Base URL"); return; }
+    if (!currentBaseUrl) { setError("请先填写地址和域名"); return; }
     if (channelType !== "ollama" && !apiKey.trim()) { setError("请先填写 API Key"); return; }
     setFetching(true); setError("");
     try {
-      const models = await fetchModelsForChannel(baseUrl.trim(), apiKey.trim(), getModelsUrl(channelType));
+      const models = await fetchModelsForChannel(currentBaseUrl, apiKey.trim(), getModelsUrl(channelType));
       if (models.length === 0) { setError("未获取到模型，请检查 URL 和 Key"); setFetching(false); return; }
       setModelList(models); setSelectedModel(models[0]?.id ?? ""); setStep("models");
     } catch (e) {
@@ -112,7 +168,7 @@ function ModelModal({
     onSave({
       id: initial?.id ?? genId(), name, channelId: "", channelType,
       channelName: name,
-      baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: selectedModel,
+      baseUrl: currentBaseUrl, apiKey: apiKey.trim(), model: selectedModel,
       category: info.category, supportsVision: info.supportsVision,
     });
   }
@@ -134,71 +190,61 @@ function ModelModal({
                   placeholder="给这个模型配置起个名字（可选）" value={channelName} onChange={e => setChannelName(e.target.value)} />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">接口类型</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">渠道类型</label>
                 <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  value={channelType} onChange={e => { setChannelType(e.target.value); if (e.target.value === "ollama") setBaseUrl("http://localhost:11434"); }}>
-                  {CHANNEL_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  value={channelType} onChange={e => { setChannelType(e.target.value); if (e.target.value === "ollama" && !urlParts.host) { setUrlParts({ protocol: "http:", host: "localhost", port: "11434", path: "" }); } }}>
+                  {CHANNEL_TYPES.map(t => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">Base URL</label>
-                <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder="https://api.openai.com/v1" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">服务地址</label>
+                <UrlInputGroup value={urlParts} onChange={setUrlParts} />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">{channelType === "ollama" ? "API Key（可选）" : "API Key"}</label>
-                <input type="password" className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder={channelType === "ollama" ? "本地 Ollama 通常不需要" : "sk-..."} value={apiKey} onChange={e => setApiKey(e.target.value)} />
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">API Key</label>
+                <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} />
+                {channelType === "ollama" && <p className="text-[11px] text-slate-400 mt-1">Ollama 无需 API Key</p>}
               </div>
-              {initial && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">模型</label>
-                  <div className="flex gap-2">
-                    <input className="h-9 flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none" value={selectedModel || initial.model || ""} readOnly />
-                    <button className="h-9 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={handleFetch} disabled={fetching}>{fetching ? "获取中…" : "更换"}</button>
-                  </div>
-                </div>
-              )}
-              {error && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-2">{error}</div>}
+              {error && <div className="text-xs text-red-600">{error}</div>}
               <div className="flex justify-end gap-2">
-                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={onCancel}>取消</button>
-                {initial ? (
-                  <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700" onClick={handleConfirm} disabled={!selectedModel}>保存</button>
-                ) : (
-                  <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={handleFetch} disabled={fetching}>{fetching ? "获取中…" : "获取模型"}</button>
-                )}
+                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                  onClick={onCancel}>取消</button>
+                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                  onClick={handleFetch} disabled={fetching}>
+                  {fetching ? "获取中…" : "获取模型列表"}
+                </button>
               </div>
             </>
           ) : (
             <>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">选择模型（{modelList.length} 个可用）</label>
-                <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={selectedModel} onChange={e => setSelectedModel(e.target.value)}>
-                  {modelList.map(m => (
-                    <option key={m.id} value={m.id}>{m.id}{m.supportsVision ? "（识图）" : ""}〔{categoryLabel(m.category)}〕</option>
-                  ))}
-                </select>
-              </div>
+              <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                value={selectedModel} onChange={e => setSelectedModel(e.target.value)}>
+                {modelList.map(m => (
+                  <option key={m.id} value={m.id}>{m.id}{m.supportsVision ? "（识图）" : ""}</option>
+                ))}
+              </select>
               {modelList.length <= 20 && (
-                <div className="max-h-48 overflow-auto rounded-md border border-slate-200">
+                <div className="max-h-40 overflow-auto">
                   {modelList.map(m => (
-                    <div key={m.id} className={`px-3 py-2 text-sm cursor-pointer flex items-center justify-between ${m.id === selectedModel ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"}`}
+                    <div key={m.id} className={`px-3 py-2 text-sm cursor-pointer ${m.id === selectedModel ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"}`}
                       onClick={() => setSelectedModel(m.id)}>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate">{m.id}</div>
-                        <div className="mt-0.5 text-[11px] text-slate-500 flex items-center gap-2">
-                          <span>{categoryLabel(m.category)}</span>
-                          {m.supportsVision ? <span className="text-emerald-700">识图</span> : <span>不识图</span>}
-                        </div>
-                      </div>
-                      {m.id === selectedModel && <span className="text-blue-500 text-xs shrink-0 ml-2">✓</span>}
+                      <span className="truncate">{m.id}</span>
+                      <span className="text-[11px] text-slate-500 ml-2">{categoryLabel(m.category)}</span>
+                      {m.supportsVision && <span className="text-[11px] text-emerald-700 ml-1">识图</span>}
                     </div>
                   ))}
                 </div>
               )}
               <div className="flex justify-end gap-2">
-                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={() => setStep("config")}>上一步</button>
-                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={handleConfirm} disabled={!selectedModel}>{initial ? "确认保存" : "确认添加"}</button>
+                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                  onClick={() => { setStep("config"); }}>返回</button>
+                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                  onClick={handleConfirm} disabled={!selectedModel}>
+                  {initial ? "保存" : "添加"}
+                </button>
               </div>
             </>
           )}
@@ -208,134 +254,195 @@ function ModelModal({
   );
 }
 
-export default function AiModelsPage() {
+export default function AISettingsPage() {
+  const [pageReady, setPageReady] = useState(false);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [activeModel, setActiveModel] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
-  const [quickAdd, setQuickAdd] = useState<ModelEntry | null>(null); // + 号：用同渠道快速添加
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [quickAdd, setQuickAdd] = useState<ModelEntry | null>(null);
+  const [quickFetching, setQuickFetching] = useState(false);
   const [quickModelList, setQuickModelList] = useState<ModelInfo[]>([]);
   const [quickSelected, setQuickSelected] = useState("");
-  const [quickFetching, setQuickFetching] = useState(false);
-  const [menuOpen, setMenuOpen] = useState<string | null>(null); // 下拉菜单打开的模型 id
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
-    setModels(loadModels());
-    setActiveModel(loadActiveModel());
-    syncModelsToDB();
+    const load = () => {
+      const list = loadModels();
+      setModels(list);
+      setActiveModel(loadActiveModel());
+      setPageReady(true);
+    };
+    load();
+
+    if (!pageReady) return;
+
+    syncFromServer();
   }, []);
 
-  async function syncModelsToDB() {
+  useEffect(() => {
+    if (!pageReady) return;
+    saveModels(models);
+  }, [models, pageReady]);
+
+  useEffect(() => {
+    if (!pageReady) return;
+    const handler = () => {
+      setModels(loadModels());
+      setActiveModel(loadActiveModel());
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, [pageReady]);
+
+  async function syncFromServer() {
+    setSyncing(true);
     try {
       const res = await fetch("/api/v1/settings/ai-config");
-      const data = await res.json();
-      const dbModelCount = (data.ok && data.channels) ? data.channels.reduce((s: number, c: any) => s + (c.AiModel?.length ?? 0), 0) : 0;
-      const localModels = loadModels();
-      if (localModels.length === 0 || dbModelCount >= localModels.length) return;
-      const localActive = loadActiveModel();
-      for (const m of localModels) {
-        const chRes = await fetch("/api/v1/settings/ai-config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: m.channelName || m.name, channelType: m.channelType || "custom", baseUrl: m.baseUrl, apiKey: m.apiKey }),
-        });
-        const chData = await chRes.json();
-        if (!chData.ok || !chData.channel) continue;
-        await fetch("/api/v1/settings/ai-config", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: m.model, name: m.name, channelId: chData.channel.id, vision: m.supportsVision || false }),
-        });
-        if ((m.name || m.model) === localActive) {
-          const modelRes = await fetch("/api/v1/settings/ai-config");
-          const modelData = await modelRes.json();
-          const matchModel = modelData.channels?.flatMap((c: any) => c.AiModel).find((mm: any) => mm.model === m.model);
-          if (matchModel) {
-            await fetch("/api/v1/settings/ai-config", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ activeModelId: matchModel.id }),
+      const data = await res.json() as { ok: boolean; channels?: Array<{ id: string; name: string; channelType: string; baseUrl: string; apiKey: string; AiModel: Array<{ id: string; name: string; model: string; vision: boolean; active: boolean }> }> };
+      if (data.ok && data.channels?.length) {
+        const merged: ModelEntry[] = [];
+        for (const ch of data.channels) {
+          for (const m of ch.AiModel) {
+            const info = detectModelInfo(m.model);
+            merged.push({
+              id: m.id,
+              name: m.name || m.model,
+              channelId: ch.id,
+              channelType: ch.channelType || "custom",
+              channelName: ch.name,
+              baseUrl: ch.baseUrl,
+              apiKey: ch.apiKey ?? "",
+              model: m.model,
+              category: info.category,
+              supportsVision: m.vision || info.supportsVision,
             });
           }
         }
+
+        const localMap = new Map<string, ModelEntry>(models.map(m => [m.id, m]));
+        for (const m of merged) {
+          const local = localMap.get(m.id);
+          if (!local) {
+            localMap.set(m.id, m);
+          } else {
+            localMap.set(m.id, { ...local, ...m, id: local.id, name: local.name || m.name });
+          }
+        }
+        setModels(Array.from(localMap.values()));
+        setActiveModel(loadActiveModel());
+        saveModels(Array.from(localMap.values()));
       }
-    } catch { /* ignore */ }
+    } catch {
+    } finally {
+      setSyncing(false);
+    }
   }
 
   function handleAddModel(entry: ModelEntry) {
-    const existingIdx = models.findIndex(m => m.id === entry.id);
-    const next = existingIdx >= 0
-      ? models.map((m, i) => i === existingIdx ? entry : m)
-      : [...models, entry];
-    setModels(next); saveModels(next);
-    if (!activeModel) { setActiveModel(entry.name || entry.model); saveActiveModel(entry.name || entry.model); }
+    if (models.some(m => m.id !== entry.id && m.model === entry.model && m.channelName === entry.channelName)) {
+      alert("该渠道下已存在相同的模型选择");
+      return;
+    }
+    const idx = models.findIndex(m => m.id === entry.id);
+    let next: ModelEntry[];
+    if (idx >= 0) {
+      next = [...models]; next[idx] = entry;
+    } else {
+      next = [...models, entry];
+    }
+    setModels(next);
     setShowModal(false);
+    setEditingModel(null);
+
+    syncToServer(entry);
+  }
+
+  async function syncToServer(entry: ModelEntry) {
+    try {
+      await fetch("/api/v1/settings/ai-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: entry.channelName || entry.name, channelType: entry.channelType || "custom", baseUrl: entry.baseUrl, apiKey: entry.apiKey }),
+      });
+    } catch {}
   }
 
   function handleRemoveModel(id: string) {
-    const removed = models.find(m => m.id === id);
-    const next = models.filter(m => m.id !== id);
-    setModels(next); saveModels(next);
-    if (activeModel === (removed?.name || removed?.model)) {
-      const fallback = next[0];
-      const name = fallback?.name || fallback?.model || "";
-      setActiveModel(name); saveActiveModel(name);
-    }
+    const entry = models.find(m => m.id === id);
+    if (!entry) return;
+    setModels(prev => prev.filter(m => m.id !== id));
     setMenuOpen(null);
+    if (activeModel === entry.name) {
+      const remaining = models.filter(m => m.id !== id);
+      const nextActive = remaining[0]?.name ?? "";
+      saveActiveModel(nextActive);
+      setActiveModel(nextActive);
+    }
   }
 
   function handleSetDefault(name: string) {
-    setActiveModel(name); saveActiveModel(name);
+    saveActiveModel(name);
+    setActiveModel(name);
     setMenuOpen(null);
   }
 
-  // + 号：用同渠道快速添加模型
-  async function handleQuickAdd(channel: ModelEntry) {
-    setQuickAdd(channel); setQuickFetching(true); setQuickSelected("");
-    try {
-      const type = CHANNEL_TYPES.find(t => t.id === channel.channelId) ?? CHANNEL_TYPES[0];
-      const modelsInfo = await fetchModelsForChannel(channel.baseUrl, channel.apiKey, type.modelsUrl);
-      setQuickModelList(modelsInfo);
-      setQuickSelected(modelsInfo[0]?.id ?? "");
-    } catch {
-      setQuickModelList([]);
-    } finally {
-      setQuickFetching(false);
-    }
+  function handleQuickAdd(base: ModelEntry) {
+    setQuickAdd(base);
+    setQuickFetching(true);
+    setQuickModelList([]);
+    setQuickSelected("");
+
+    const modelsUrl = getModelsUrl(base.channelType);
+    fetchModelsForChannel(base.baseUrl, base.apiKey ?? "", modelsUrl)
+      .then(list => {
+        setQuickModelList(list);
+        setQuickSelected(list[0]?.id ?? "");
+      })
+      .catch(() => {})
+      .finally(() => setQuickFetching(false));
   }
 
   function confirmQuickAdd() {
-    if (!quickAdd || !quickSelected) return;
+    if (!quickSelected || !quickAdd) return;
     const info = quickModelList.find(m => m.id === quickSelected) ?? detectModelInfo(quickSelected);
-    const entry: ModelEntry = {
+    handleAddModel({
       id: genId(),
       name: quickSelected,
-      channelId: quickAdd.channelId,
-      channelType: quickAdd.channelType || "custom",
-      channelName: quickAdd.channelName,
+      channelId: "",
+      channelType: quickAdd.channelType,
+      channelName: quickAdd.channelName || quickAdd.name,
       baseUrl: quickAdd.baseUrl,
-      apiKey: quickAdd.apiKey,
+      apiKey: quickAdd.apiKey ?? "",
       model: quickSelected,
       category: info.category,
       supportsVision: info.supportsVision,
-    };
-    const next = [...models, entry];
-    setModels(next); saveModels(next);
-    if (!activeModel) { setActiveModel(entry.name || entry.model); saveActiveModel(entry.name || entry.model); }
-    setQuickAdd(null);
+    });
+  }
+
+  if (!pageReady) {
+    return <div className="text-sm text-slate-400">加载中...</div>;
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-800">AI 模型</h2>
-          <p className="mt-1 text-xs text-slate-500">为每个模型配置独立的渠道。点击 + 号可基于同渠道快速添加新模型。</p>
+          <h2 className="text-sm font-semibold text-slate-800">AI 模型管理</h2>
+          <p className="text-xs text-slate-500 leading-relaxed mt-1">
+            管理 AI 渠道和模型，设置默认使用的模型。
+          </p>
         </div>
-        <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
-          onClick={() => { setEditingModel(null); setShowModal(true); }}>
-          + 新渠道
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {syncing && <span className="text-[11px] text-slate-400">同步中...</span>}
+          <button
+            onClick={() => { setEditingModel(null); setShowModal(true); }}
+            className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+          >
+            + 新渠道
+          </button>
+        </div>
       </div>
 
       {models.length > 0 ? (

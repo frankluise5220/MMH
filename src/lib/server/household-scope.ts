@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { cache } from "react";
 import { prisma } from "@/lib/db/prisma";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
@@ -118,3 +119,6 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
 
   return { householdId: household.id, hidFilter: { householdId: household.id }, user };
 }
+
+/** 请求级缓存版本：同一 HTTP 请求内只执行一次，消除 page.tsx + Sidebar.tsx 重复调用 */
+export const getCachedHouseholdScope = cache(getHouseholdScope);

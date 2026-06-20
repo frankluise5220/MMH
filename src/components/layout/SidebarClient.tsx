@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, startTransition } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -10,13 +10,23 @@ import {
   CalendarClock,
   Leaf,
   ChevronDown,
-  Circle,
   ArrowUpDown,
-  EyeOff
+  EyeOff,
+  Landmark,
+  BarChart3,
 } from "lucide-react";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
+import { InitModal } from "../InitModal";
+import { DailyTaskCheck } from "../DailyTaskCheck";
 import { formatMoney } from "@/lib/format";
+import { getHouseholdDisplayName } from "@/lib/household-display";
+import {
+  APP_PREFS_EVENT,
+  getAppPreferences,
+  setSidebarGroupPreference,
+  setSidebarHideZeroPreference,
+} from "@/lib/client/appPreferences";
 
 type AccountItem = {
   id?: string | null;
@@ -31,8 +41,13 @@ type AccountItem = {
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet"];
 const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
 const LIABILITY_KINDS = ["bank_credit", "loan", "other"];
+const SECTION_ICON: Record<string, React.ElementType> = {
+  资产: Landmark,
+  投资: BarChart3,
+  负债: Landmark,
+};
 
-export function SidebarClient({ items, household, isRedUp, user }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean; user: { id: string; name: string; role: string } | null }) {
+export function SidebarClient({ items: initialItems, household, isRedUp, user }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean; user: { id: string; name: string; role: string } | null }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
@@ -42,7 +57,10 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
   const [hideZero, setHideZero] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [items, setItems] = useState(initialItems);
+  const [initOpen, setInitOpen] = useState(false);
   const footerAvatarRef = useRef<HTMLDivElement>(null);
+  const householdDisplayName = getHouseholdDisplayName(household);
 
   async function handleLogout() {
     if (!window.confirm("确认退出当前账号吗？")) return;
@@ -61,21 +79,87 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
     }
   }
 
+  // Refresh items when fund data changes (debounced)
+  // Only updates items whose data actually changed to minimize React re-renders
+  const sidebarRefreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const sidebarRefreshBusy = useRef(false);
   useEffect(() => {
-    setGroupByInstitution(localStorage.getItem("sidebar_group_by") === "institution");
-    setHideZero(localStorage.getItem("sidebar_hide_zero") === "true");
+    const debouncedRefresh = () => {
+      if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
+      sidebarRefreshTimer.current = setTimeout(async () => {
+        if (sidebarRefreshBusy.current) return;
+        sidebarRefreshBusy.current = true;
+        try {
+          const res = await fetch("/api/v1/accounts/internal");
+          const data = await res.json();
+          if (data.ok && data.accounts) {
+            startTransition(() => {
+              setItems(prev => {
+                const fresh: AccountItem[] = data.accounts.map((a: any) => ({
+                  id: a.id,
+                  name: a.name,
+                  label: (a.Institution?.name?.trim() || "") + (a.Institution?.name?.trim() ? "·" : "") + a.name,
+                  balance: Number(a.balance ?? 0),
+                  kind: a.kind,
+                  institution: a.Institution?.name?.trim() || undefined,
+                  investProductType: a.investProductType || undefined,
+                }));
+                // Merge: only update items whose data actually changed
+                // Unchanged items keep their object reference → React skips re-render
+                let changed = false;
+                const next = prev.map(p => {
+                  const f = fresh.find(f => f.id === p.id);
+                  if (f && (p.balance !== f.balance || p.name !== f.name || p.institution !== f.institution)) {
+                    changed = true;
+                    return f;
+                  }
+                  return p;
+                });
+                // Handle newly created accounts
+                for (const f of fresh) {
+                  if (!prev.some(p => p.id === f.id)) {
+                    next.push(f);
+                    changed = true;
+                  }
+                }
+                return changed ? next : prev;
+              });
+            });
+          }
+        } catch {
+        } finally {
+          sidebarRefreshBusy.current = false;
+        }
+      }, 100);
+    };
+    window.addEventListener("mmh:fund:refresh", debouncedRefresh);
+    return () => {
+      window.removeEventListener("mmh:fund:refresh", debouncedRefresh);
+      if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const applyPrefs = () => {
+      const prefs = getAppPreferences();
+      setGroupByInstitution(prefs.sidebarGroupBy === "institution");
+      setHideZero(prefs.sidebarHideZero);
+    };
+    applyPrefs();
+    window.addEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
+    return () => window.removeEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
   }, []);
 
   function toggleGroupBy() {
     const next = !groupByInstitution;
     setGroupByInstitution(next);
-    localStorage.setItem("sidebar_group_by", next ? "institution" : "kind");
+    setSidebarGroupPreference(next ? "institution" : "kind");
   }
 
   function toggleHideZero() {
     const next = !hideZero;
     setHideZero(next);
-    localStorage.setItem("sidebar_hide_zero", String(next));
+    setSidebarHideZeroPreference(next);
   }
 
   function toggleSection(key: string) {
@@ -87,15 +171,17 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
   }
 
   const navItemCls = (href: string) => 
-    `flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300 ${
+    `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-200 ${
       (href === "/" ? pathname === "/" : pathname.startsWith(href))
         ? "sidebar-item-active"
-        : "text-foreground/60 hover:bg-white/50 hover:text-foreground"
+        : "text-slate-600 hover:bg-white hover:text-slate-900"
     }`;
 
   const accountLinkCls = (active: boolean) =>
-    `flex items-center justify-between px-3 py-1.5 text-xs font-medium hover:bg-white/50 rounded-lg group transition-all duration-200 ${
-      active ? "bg-white/60 text-foreground font-semibold shadow-sm" : "text-foreground/80"
+    `flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-all duration-200 ${
+      active
+        ? "border border-blue-100 bg-blue-50/80 text-slate-900 shadow-sm"
+        : "border border-transparent text-slate-600 hover:border-slate-100 hover:bg-white hover:text-slate-900"
     }`;
 
   const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
@@ -134,33 +220,36 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
   }, [visibleItems, groupByInstitution]);
 
   return (
-    <aside className="w-72 bg-background border-r border-foreground/5 flex flex-col shrink-0 h-screen overflow-hidden">
+    <aside className="h-screen w-72 shrink-0 overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl">
       {/* Fixed Header */}
-      <div className="px-8 pt-8 pb-4 shrink-0">
+      <div className="shrink-0 px-5 pt-5 pb-3">
         <div
           ref={footerAvatarRef}
           onClick={() => setSwitcherOpen(!switcherOpen)}
-          className="flex items-center gap-3 rounded-2xl cursor-pointer hover:bg-white/30 transition-colors group"
+          className="group flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-3 shadow-sm transition-colors hover:bg-white"
         >
-          <div className="w-10 h-10 bg-foreground rounded-xl flex items-center justify-center shadow-lg shadow-foreground/10 text-accent-green shrink-0">
-            <Leaf size={20} />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+            <Leaf size={18} />
           </div>
-          <div className="flex-1 min-w-0 text-foreground">
-            <p className="font-heading text-lg font-bold tracking-tight text-foreground leading-none truncate">{user?.name || "未登录"}@{household?.name || "默认"}</p>
+          <div className="min-w-0 flex-1 text-slate-900">
+            <p className="truncate text-sm font-semibold leading-none">{user?.name || "未登录"}</p>
             <div className="mt-1 flex items-center gap-2">
-              <p className="text-[10px] opacity-40 uppercase font-bold tracking-widest truncate">{user?.role === "admin" ? "管理员" : "用户"}</p>
+              <p className="truncate text-[11px] text-slate-400">{householdDisplayName}</p>
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                {user?.role === "admin" ? "管理员" : "用户"}
+              </span>
               <button
                 onClick={(e) => { e.stopPropagation(); handleLogout(); }}
-                className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
+                className="whitespace-nowrap rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
                 title="退出当前用户"
               >
                 退出
               </button>
             </div>
           </div>
-          <ChevronDown size={16} className={`text-foreground/20 group-hover:text-foreground/50 transition-all duration-200 ${switcherOpen ? "rotate-180" : ""}`} />
-          <Link href="/settings" onClick={(e) => e.stopPropagation()} className="text-foreground/20 hover:text-foreground p-1 transition-colors">
-            <Settings size={20} />
+          <ChevronDown size={16} className={`text-slate-300 transition-all duration-200 group-hover:text-slate-500 ${switcherOpen ? "rotate-180" : ""}`} />
+          <Link href="/settings" onClick={(e) => e.stopPropagation()} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600">
+            <Settings size={18} />
           </Link>
         </div>
         <LedgerSwitcher
@@ -172,25 +261,33 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
       </div>
 
       {/* Main Body (Accounts scroll, bottom nav pinned) */}
-      <div className="px-8 pb-4 flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4">
         <div className="shrink-0">
           <nav className="space-y-1">
             <Link href="/overview" className={navItemCls("/overview")}>
               <LayoutDashboard size={18} />
-              <span className="font-ui font-semibold text-sm">概览</span>
+              <span className="font-medium">概览</span>
+            </Link>
+            <Link href="/accounts" className={navItemCls("/accounts")}>
+              <Landmark size={18} />
+              <span className="font-medium">资金账户</span>
+            </Link>
+            <Link href="/invest" className={navItemCls("/invest")}>
+              <BarChart3 size={18} />
+              <span className="font-medium">投资</span>
             </Link>
           </nav>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <nav className="space-y-1">
-            <div className="mt-6 flex items-center justify-between px-4 mb-4">
-              <span className="text-[10px] font-bold text-foreground/30 uppercase tracking-[0.2em]">账户</span>
+            <div className="mb-3 mt-5 flex items-center justify-between px-2">
+              <span className="text-[11px] font-medium tracking-[0.14em] text-slate-400 uppercase">账户</span>
               <div className="flex items-center gap-1">
-                <button onClick={toggleHideZero} className={`p-1 transition-colors ${hideZero ? "text-foreground/60" : "text-foreground/20 hover:text-foreground"}`} title="隐藏余额为0的账户">
+                <button onClick={toggleHideZero} className={`rounded-md p-1 transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title="隐藏余额为0的账户">
                   <EyeOff size={14} />
                 </button>
-                <button onClick={toggleGroupBy} className="text-foreground/20 hover:text-foreground p-1 transition-colors" title="切换分组方式">
+                <button onClick={toggleGroupBy} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-500" title="切换分组方式">
                   <ArrowUpDown size={14} />
                 </button>
               </div>
@@ -199,33 +296,31 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
             <div className="space-y-2">
               {sections.map((sec) => {
                 const collapsed = collapsedSections.has(sec.kind);
+                const SectionIcon = SECTION_ICON[sec.label] ?? Landmark;
                 return (
                   <div key={sec.kind}>
                     <div
-                      className="sticky top-0 z-10 flex items-center px-3 py-1.5 w-full rounded-lg transition-all duration-300 hover:bg-white/60 group"
-                      style={{ background: "rgba(255,255,255,0.7)" }}
+                      className="sticky top-0 z-10 flex w-full items-center rounded-lg bg-white/92 px-3 py-2 backdrop-blur transition-all duration-200 hover:bg-white group"
                     >
                       <Link
-                        href={sec.label === "资产" ? "/assets" : sec.label === "投资" ? "/investments" : "/liabilities"}
-                        className="flex items-center text-base font-bold text-foreground"
+                        href={sec.label === "投资" ? "/investments" : "/accounts"}
+                        className="flex items-center gap-2 text-sm font-semibold text-slate-800"
                       >
-                        <span className="mr-2">
-                          {sec.label === "资产" && "💰"}
-                          {sec.label === "投资" && "📈"}
-                          {sec.label === "负债" && "💳"}
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+                          <SectionIcon size={14} />
                         </span>
                         <span>{sec.label}</span>
                       </Link>
                       <span className="flex-1" />
                       <button
                         onClick={() => toggleSection(sec.kind)}
-                        className={`text-[11px] tabular-nums font-semibold mr-1 ${balCls(sec.total)}`}
+                        className={`mr-1 text-[11px] font-semibold tabular-nums ${balCls(sec.total)}`}
                       >
                         {formatMoney(sec.total)}
                       </button>
                       <button
                         onClick={() => toggleSection(sec.kind)}
-                        className="text-foreground/30 group-hover:text-foreground/50 transition-all duration-200"
+                        className="text-slate-300 transition-all duration-200 group-hover:text-slate-500"
                       >
                         <ChevronDown
                           size={14}
@@ -234,7 +329,7 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
                       </button>
                     </div>
                     {!collapsed && (
-                      <div className="space-y-0.5">
+                      <div className="mt-1 space-y-1">
                         {sec.accounts.map((it) => {
                           const active = pathname === "/" && (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name);
                           const href = (() => {
@@ -249,8 +344,8 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
                           })();
                           return (
                             <Link key={`${it.id}:${it.name}`} href={href} className={accountLinkCls(active)}>
-                              <span className="truncate pr-2">{it.label}</span>
-                              <span className={`text-[10px] tabular-nums font-medium ${balCls(it.balance)}`}>{formatMoney(it.balance)}</span>
+                              <span className="min-w-0 flex-1 truncate pr-2">{it.label}</span>
+                              <span className={`text-[11px] font-medium tabular-nums ${balCls(it.balance)}`}>{formatMoney(it.balance)}</span>
                             </Link>
                           );
                         })}
@@ -263,19 +358,30 @@ export function SidebarClient({ items, household, isRedUp, user }: { items: Acco
           </nav>
         </div>
 
-        <div className="mt-4 border-t border-foreground/5 pt-4 space-y-1 shrink-0">
+        <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
           <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
             <CalendarClock size={18} />
-            <span className="font-ui font-semibold text-sm">定投</span>
+            <span className="font-medium">定投</span>
           </Link>
-          <Link href="/accounts" className={navItemCls("/accounts")}>
+          <button
+            onClick={() => setInitOpen(true)}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
+          >
+            <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v20M2 12h20" />
+            </svg>
+            <span className="font-medium">初始数据</span>
+          </button>
+          <Link href="/settings" className={navItemCls("/settings")}>
             <Users size={18} />
-            <span className="font-ui font-semibold text-sm">账户管理</span>
+            <span className="font-medium">账户管理</span>
           </Link>
         </div>
       </div>
 
       <NewLedgerSetupCheck />
+      <InitModal open={initOpen} onOpenChange={setInitOpen} />
+      <DailyTaskCheck />
     </aside>
   );
 }

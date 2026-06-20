@@ -4,7 +4,6 @@ import { Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@pri
 import { isWeekend, nextMonday, addDays, addWeeks, addMonths } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
@@ -170,6 +169,7 @@ export async function POST(req: NextRequest) {
       const runDateStr = formatDateUtc(runDate);
       const confirmDays = normalizeNonNegativeDays(plan.confirmDays, 0);
       const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "auto-execute");
       const confirmDate = new Date(Date.UTC(parseInt(confirmDateStr.slice(0, 4)), parseInt(confirmDateStr.slice(5, 7)) - 1, parseInt(confirmDateStr.slice(8, 10))));
       const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays, 2);
       const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
@@ -210,6 +210,7 @@ export async function POST(req: NextRequest) {
       const aDays = arrivalDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.arrivalDays, 2);
       // Always recompute confirmDate/arrivalDate from final confirmDays+arrivalDays
       const cdStr = addWorkdaysUtc(formatDateUtc(e.runDate), cDays);
+      if (cdStr < formatDateUtc(e.runDate)) logger.warn(`confirmDate ${cdStr} < runDate ${formatDateUtc(e.runDate)}, cDays=${cDays}`, "auto-execute");
       e.confirmDate = new Date(Date.UTC(parseInt(cdStr.slice(0, 4)), parseInt(cdStr.slice(5, 7)) - 1, parseInt(cdStr.slice(8, 10))));
       e.confirmDateStr = cdStr;
       const adStr = aDays > 0 ? addWorkdaysUtc(cdStr, aDays) : cdStr;
@@ -390,7 +391,7 @@ export async function POST(req: NextRequest) {
     }
     logger.info(`Phase5 重算持仓完成: 耗时 ${Date.now() - recalcStart}ms`, "auto-execute");
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
       message: `执行完成：${executed.length} 条已执行，${skipped.length} 条已跳过${skippedPaused > 0 ? `（暂停申购 ${skippedPaused}` : ""}${skippedGap > 0 ? `${skippedPaused > 0 ? "，" : "（无净值 "}${skippedGap}` : ""}${skippedPaused + skippedGap > 0 ? "）" : ""}，${completed.length} 条已完成`,

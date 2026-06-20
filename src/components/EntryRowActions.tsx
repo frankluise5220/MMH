@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 
@@ -35,7 +34,6 @@ export function EntryRowActions({
   entryId: string;
   edit?: Omit<EditPayload, "entryId">;
 }) {
-  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
   function onEdit() {
@@ -77,8 +75,8 @@ export function EntryRowActions({
       if (!data?.ok) {
         throw new Error(data?.error ?? `删除失败（HTTP ${res.status}）`);
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
+
     } catch (e) {
       const msg =
         e instanceof Error

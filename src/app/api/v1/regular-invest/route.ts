@@ -4,7 +4,6 @@ import { IntervalUnit, TransactionType, RegularInvestStatus } from "@prisma/clie
 import { addDays, addWeeks, addMonths, isWeekend, nextMonday } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { addWorkdaysUtc } from "@/lib/date-utils";
@@ -192,7 +191,7 @@ export async function POST(req: NextRequest) {
       return plan;
     });
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
       message: "定投计划已创建，请点击批量生成按钮生成交易明细",
@@ -243,7 +242,7 @@ export async function PUT(req: NextRequest) {
         where: { id },
         data: { status: RegularInvestStatus.paused },
       });
-      revalidateAfterInvestChange();
+      // Client-side handles page refresh
       return NextResponse.json({ ok: true, plan, message: "定投计划已暂停" });
     }
 
@@ -265,7 +264,7 @@ export async function PUT(req: NextRequest) {
           nextRunDate: skipWeekend(actualNextRun),
         },
       });
-      revalidateAfterInvestChange();
+      // Client-side handles page refresh
       return NextResponse.json({ ok: true, plan, message: "定投计划已恢复" });
     }
 
@@ -277,7 +276,7 @@ export async function PUT(req: NextRequest) {
         where: { id },
         data: { status: RegularInvestStatus.stopped },
       });
-      revalidateAfterInvestChange();
+      // Client-side handles page refresh
       return NextResponse.json({ ok: true, plan, message: "定投计划已终止" });
     }
 
@@ -332,7 +331,7 @@ export async function PUT(req: NextRequest) {
       await setFundFeeRate(effectiveAccountId, effectiveFundCode, parseFloat(feeRate));
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true, plan });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
@@ -394,7 +393,7 @@ export async function DELETE(req: NextRequest) {
       for (const acctId of accountsToRecalc) {
         if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
       }
-      revalidateAfterInvestChange();
+      // Client-side handles page refresh
       return NextResponse.json({
         ok: true,
         deletedEntries: true,
@@ -454,7 +453,7 @@ export async function DELETE(req: NextRequest) {
       if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true, deletedEntries: deleteEntries });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });

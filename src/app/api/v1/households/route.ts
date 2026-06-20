@@ -5,6 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { hashPassword } from "@/lib/auth/password";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
+import { getHouseholdDisplayName } from "@/lib/household-display";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -19,11 +20,16 @@ export async function GET() {
   });
 
   const { householdId: activeId } = await getHouseholdScope();
+  const displayHouseholds = households.map((household) => ({
+    ...household,
+    name: getHouseholdDisplayName(household),
+  }));
+  const active = households.find(h => h.id === activeId) ?? households[0] ?? null;
 
   return NextResponse.json({
     ok: true,
-    active: households.find(h => h.id === activeId) ?? households[0] ?? null,
-    households,
+    active: active ? { ...active, name: getHouseholdDisplayName(active) } : null,
+    households: displayHouseholds,
     isAdmin: isAdmin(user),
     isSystem: user?.isSystem === true,
   });

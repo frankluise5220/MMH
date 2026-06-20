@@ -455,22 +455,22 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return (
       <>
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-sm rounded-xl bg-surface-white border border-foreground/10 shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-foreground/10 bg-background/50 flex items-center justify-between">
-              <div className="text-sm font-semibold text-foreground">{config.title}</div>
+          <div className="modal-surface w-full max-w-sm">
+            <div className="modal-header">
+              <div className="text-sm font-semibold text-slate-800">{config.title}</div>
               <button type="button" onClick={onClose}
-                className="h-8 px-2 rounded-ui border border-foreground/10 bg-surface-white text-sm text-foreground hover:bg-background/30">
+                className="secondary-button h-8 px-2">
                 关闭
               </button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-foreground/60">{config.nameLabel}</div>
+                <div className="form-label">{config.nameLabel}</div>
                 <input
                   value={form.name ?? ""}
                   onChange={(e) => { setForm(prev => ({ ...prev, name: e.target.value })); checkDuplicate(e.target.value); }}
                   placeholder={config.namePlaceholder}
-                  className="h-9 w-full rounded-ui border border-foreground/10 bg-surface-white px-3 text-sm outline-none focus:border-accent-green/30"
+                  className="form-input"
                   autoFocus
                   required
                 />
@@ -478,11 +478,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </div>
               {!shouldHideType && config.typeLabel && config.types.length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-foreground/60">{config.typeLabel}</div>
+                  <div className="form-label">{config.typeLabel}</div>
                   <select
                     value={form.type ?? ""}
                     onChange={(e) => setForm(prev => ({ ...prev, type: e.target.value }))}
-                    className="h-9 w-full rounded-ui border border-foreground/10 bg-surface-white px-3 text-sm outline-none focus:border-accent-green/30"
+                    className="form-input"
                   >
                     {config.types.map((t) => (
                       <option key={t.value} value={t.value}>{t.label}</option>
@@ -543,11 +543,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               {error && <div className="text-xs text-red-500">{error}</div>}
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={onClose}
-                  className="h-9 px-3 rounded-ui border border-foreground/10 bg-surface-white text-sm text-foreground hover:bg-background/30">
+                  className="secondary-button h-9 px-3">
                   取消
                 </button>
                 <button type="submit" disabled={saving || !(form.name?.trim())}
-                  className="h-9 px-4 rounded-ui bg-foreground text-background text-sm hover:bg-foreground/90 disabled:opacity-50">
+                  className="primary-button h-9 disabled:opacity-50">
                   {saving ? "保存中…" : "保存"}
                 </button>
               </div>
@@ -591,7 +591,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   value={form[field.key] ?? ""}
                   onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                   placeholder={field.placeholder ?? field.label}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 flex-1 min-w-[120px]"
+                  className="form-input flex-1 min-w-[120px]"
                   required={field.key === "name"}
                 />
               );
@@ -604,7 +604,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 key={field.key}
                 value={form[field.key] ?? ""}
                 onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                className="form-input"
               >
                 {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -613,7 +613,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           <button
             type="submit"
             disabled={saving || !(form.name?.trim())}
-            className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 shrink-0"
+            className="primary-button h-9 shrink-0"
           >
             {saving ? "…" : "新增"}
           </button>
@@ -641,13 +641,13 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1.5 shrink-0"
+          className="primary-button h-9 gap-1.5 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" />{config.title}
         </button>
       ) : (
-        <div className="bg-white border border-blue-200 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="panel-surface overflow-hidden">
+          <div className="panel-header">
             <div className="text-sm font-medium text-slate-700">{config.title}</div>
             {error && <div className="text-xs text-red-600">{error}</div>}
           </div>
@@ -657,12 +657,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 if (field.type === "text") {
                   return (
                     <div key={field.key}>
-                      <label className="block text-xs text-slate-500 mb-1">{field.label}</label>
+                      <label className="form-label mb-1 block">{field.label}</label>
                       <input
                         value={form[field.key] ?? ""}
                         onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                         placeholder={field.placeholder ?? ""}
-                        className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
+                        className="form-input"
                         inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
                         required={field.key === "name"}
                       />
@@ -698,7 +698,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
                   return (
                     <div key={field.key}>
-                      <label className="block text-xs text-slate-500 mb-1">{field.label}</label>
+                      <label className="form-label mb-1 block">{field.label}</label>
                       <SmartSelect
                         mode="single"
                         value={form[field.key] ?? ""}
@@ -715,11 +715,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 // Static select (kind, type, costBasisMethod, etc.)
                 return (
                   <div key={field.key}>
-                    <label className="block text-xs text-slate-500 mb-1">{field.label}</label>
+                    <label className="form-label mb-1 block">{field.label}</label>
                     <select
                       value={form[field.key] ?? ""}
                       onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none"
+                      className="form-input"
                     >
                       {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
@@ -732,14 +732,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               <button
                 type="button"
                 onClick={() => { setExpanded(false); setError(""); initForm(); }}
-                className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50"
+                className="secondary-button h-9 px-4"
               >
                 取消
               </button>
               <button
                 type="submit"
                 disabled={saving || !(form.name?.trim())}
-                className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                className="primary-button h-9"
               >
                 {saving ? "保存中…" : "创建"}
               </button>

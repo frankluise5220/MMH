@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mmh-preview-db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mmh_preview}
+      POSTGRES_USER: ${POSTGRES_USER:-mmh_preview}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mmh_preview_password}
+    volumes:
+      - mmh_preview_pgdata:/var/lib/postgresql/data
+      - ./postgres-entrypoint.sh:/docker-entrypoint-initdb.d/init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mmh_preview} -d ${POSTGRES_DB:-mmh_preview}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.preview
+    container_name: mmh-preview-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "7777:7777"
+    environment:
+      NODE_ENV: development
+      PORT: 7777
+      POSTGRES_DB: ${POSTGRES_DB:-mmh_preview}
+      POSTGRES_USER: ${POSTGRES_USER:-mmh_preview}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mmh_preview_password}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mmh_preview}:${POSTGRES_PASSWORD:-mmh_preview_password}@postgres:5432/${POSTGRES_DB:-mmh_preview}?schema=public
+      PASSWORD_RESET_SECRET: ${PASSWORD_RESET_SECRET:-preview-only-secret}
+      PRISMA_CLIENT_ENGINE_TYPE: binary
+      LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:-}
+      LOCAL_AI_BASE_URL: ${LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_AI_MODEL_NAME: ${LOCAL_AI_MODEL_NAME:-gpt-4o}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      STATEMENT_API_KEY: ${STATEMENT_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mmh_preview_pgdata:

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 
 export const runtime = "nodejs";
 
@@ -11,29 +12,17 @@ function corsHeaders() {
   } as const;
 }
 
-function getProvidedApiKey(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-  const key = req.headers.get("x-api-key");
-  return key?.trim() || null;
-}
-
-function requireApiKey(req: Request) {
-  const required = (process.env.STATEMENT_API_KEY ?? "").trim();
-  if (!required) return { ok: true as const };
-  const provided = getProvidedApiKey(req);
-  if (!provided || provided !== required) return { ok: false as const };
-  return { ok: true as const };
-}
-
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
 export async function GET(req: Request) {
-  if (!requireApiKey(req).ok) {
+  let scope;
+  try {
+    scope = await getApiHouseholdScope(req);
+  } catch (e) {
     return NextResponse.json(
-      { ok: false, error: "未授权" },
+      { ok: false, error: e instanceof Error ? e.message : "未授权" },
       { status: 401, headers: corsHeaders() },
     );
   }
@@ -41,9 +30,17 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const accountName = (url.searchParams.get("accountName") ?? "").trim();
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "200") || 200, 1), 1000);
+  const where = {
+    ...scope.hidFilter,
+    ...(accountName
+      ? {
+          OR: [{ accountName }, { toAccountName: accountName }],
+        }
+      : {}),
+  };
 
   const entries = await prisma.txRecord.findMany({
-    where: accountName ? { accountName } : undefined,
+    where,
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: limit,
   });
@@ -54,7 +51,10 @@ export async function GET(req: Request) {
     date: e.date.toISOString(),
     type: e.type,
     amount: e.amount,
+    accountId: e.accountId,
     accountName: e.accountName,
+    toAccountId: e.toAccountId,
+    toAccountName: e.toAccountName,
     categoryName: e.categoryName,
     note: e.note,
     counterparty: null,

@@ -129,14 +129,10 @@ sudo docker compose up -d
 
 适合：确认不再保留 MMH 数据，或需要彻底清空后重新安装。
 
-注意：下面命令会删除：
-- MMH 容器（Web、数据库、Watchtower）
-- MMH Compose 项目相关容器、网络和孤儿容器
-- MMH 数据库数据卷（账本数据会一起删除）
-- MMH 应用镜像和 Watchtower 镜像
-- `~/mmh` 项目目录
-
-如果 NAS 图形界面里还有旧的 Stack/Compose 项目记录，命令行删除容器后，仍需要在 NAS 容器管理页面里把对应项目/Stack 记录手动删除；有些 NAS 会保留“创建时间”元数据，不代表容器和数据卷还在。
+注意：
+- 下面命令会删除 MMH 容器、Compose 项目网络、孤儿容器、数据卷、镜像和 `~/mmh` 项目目录。
+- 只要下面的验证命令查不到任何 `mmh` 相关容器、网络和卷，就说明 Docker 层已经完全删除干净。
+- 如果 NAS 图形界面仍保留一条旧的 Stack/Compose 记录，那是面板自己的项目元数据，不是 Docker 运行资源；需要在 NAS 容器管理页面把这条记录单独删掉。
 
 把下面整段命令一次性复制粘贴执行：
 
@@ -166,7 +162,17 @@ sudo docker image rm ghcr.io/frankluise5220/mmh:latest containrrr/watchtower:lat
 
 rm -rf "$APP_DIR"
 
-echo "MMH 容器、Compose 项目资源、数据卷、镜像和项目目录已清理。"
-echo "如果 NAS 图形界面仍显示旧 Stack/Compose，请在 NAS 容器管理页面手动删除该项目记录。"
+echo "MMH 已清理完成。"
 '
 ```
+
+删除后建议再执行这几条验证：
+
+```bash
+sudo docker ps -a --filter "label=com.docker.compose.project=mmh"
+sudo docker volume ls --filter "label=com.docker.compose.project=mmh"
+sudo docker network ls --filter "label=com.docker.compose.project=mmh"
+sudo docker image ls | grep -E 'mmh|watchtower' || true
+```
+
+如果这些命令都没有输出，就说明 Docker 层已经删干净了；如果 NAS 面板里还显示旧记录，只删面板那条项目元数据即可。

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 
@@ -29,7 +28,7 @@ export async function POST(req: Request) {
     const used = await prisma.account.count({ where: { groupId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该分组，无法删除" }, { status: 409 });
     await prisma.accountGroup.delete({ where: { id } });
-    revalidateAfterSettingsChange();
+    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
     return NextResponse.json({ ok: true });
   }
 
@@ -40,7 +39,7 @@ export async function POST(req: Request) {
     const used = await prisma.txRecord.count({ where: { accountId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });
     await prisma.account.delete({ where: { id } });
-    revalidateAfterSettingsChange();
+    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
     return NextResponse.json({ ok: true });
   }
 
@@ -51,7 +50,7 @@ export async function POST(req: Request) {
     const used = await prisma.account.count({ where: { institutionId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该机构，无法删除" }, { status: 409 });
     await prisma.institution.delete({ where: { id } });
-    revalidateAfterSettingsChange();
+    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
     return NextResponse.json({ ok: true });
   }
 
@@ -78,7 +77,7 @@ export async function POST(req: Request) {
   if (used > 0) return NextResponse.json({ ok: false, error: "该类别已产生流水记录，无法删除" }, { status: 409 });
 
   await prisma.category.delete({ where: { id } });
-  revalidateAfterSettingsChange();
+  // Client-side handles page refresh
   return NextResponse.json({ ok: true });
 }
 

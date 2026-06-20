@@ -1,6 +1,5 @@
-"use client";
+﻿"use client";
 
-import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
@@ -11,6 +10,8 @@ type SelectionContextValue = {
   toggleOne: (id: string) => void;
   toggleAll: (ids: string[]) => void;
   clear: () => void;
+  deleteMessage: string;
+  setDeleteMessage: (msg: string) => void;
 };
 
 type AccountOption = { id: string; label: string };
@@ -41,9 +42,11 @@ function useSelection() {
 
 export function BasicDetailSelectionProvider({ children }: { children: ReactNode }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteMessage, setDeleteMessage] = useState<string>("");
 
   const value = useMemo<SelectionContextValue>(() => ({
     selectedIds,
+    deleteMessage,
     toggleOne: (id: string) => {
       setSelectedIds((prev) => {
         const next = new Set(prev);
@@ -63,8 +66,12 @@ export function BasicDetailSelectionProvider({ children }: { children: ReactNode
         return next;
       });
     },
-    clear: () => setSelectedIds(new Set()),
-  }), [selectedIds]);
+    clear: () => {
+      setSelectedIds(new Set());
+      setDeleteMessage("");
+    },
+    setDeleteMessage,
+  }), [selectedIds, deleteMessage]);
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
 }
@@ -103,7 +110,6 @@ export function BasicDetailRowCheckbox({ id }: { id: string }) {
 }
 
 export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptions: AccountOption[] }) {
-  const router = useRouter();
   const { selectedIds, clear } = useSelection();
   const selectedCount = selectedIds.size;
   const fields = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => [
@@ -128,7 +134,7 @@ export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptio
     const result = await batchReplaceEntries({ ids: Array.from(selectedIds), field, value });
     if (!result.ok) throw new Error(result.error ?? "批量替换失败");
     clear();
-    router.refresh();
+    window.dispatchEvent(new Event("mmh:fund:refresh"));
     return `已替换 ${result.updatedCount ?? 0} 条记录`;
   }
 
@@ -143,10 +149,8 @@ export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptio
 }
 
 export function BasicDetailBatchDeleteButton() {
-  const router = useRouter();
-  const { selectedIds, clear } = useSelection();
+  const { selectedIds, clear, setDeleteMessage } = useSelection();
   const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState("");
   const selectedCount = selectedIds.size;
   const disabled = selectedCount === 0 || submitting;
 
@@ -156,7 +160,7 @@ export function BasicDetailBatchDeleteButton() {
     if (!window.confirm(`确认删除已选 ${entryIds.length} 条资金明细？删除后会进入回收站。`)) return;
 
     setSubmitting(true);
-    setMessage("");
+    setDeleteMessage("");
     try {
       const res = await fetch("/api/v1/entries/delete", {
         method: "POST",
@@ -165,32 +169,40 @@ export function BasicDetailBatchDeleteButton() {
       });
       const data = await res.json().catch(() => ({ ok: false, error: "批量删除失败" }));
       if (!res.ok || !data.ok) {
-        setMessage(data.error ?? "批量删除失败");
+        setDeleteMessage(data.error ?? "批量删除失败");
         return;
       }
-      setMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
+      setDeleteMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
       clear();
-      router.refresh();
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
     } catch {
-      setMessage("批量删除失败");
+      setDeleteMessage("批量删除失败");
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="relative flex items-center gap-2">
-      {message ? <span className="text-xs text-rose-500">{message}</span> : null}
-      <button
-        type="button"
-        onClick={applyDelete}
-        disabled={disabled}
-        className="h-8 w-8 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-        title={selectedCount === 0 ? "请先勾选记录" : `批量删除已选 ${selectedCount} 条记录`}
-        aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : `批量删除已选 ${selectedCount} 条记录`}
-      >
-        <Trash2 className="w-4 h-4" />
-      </button>
+    <button
+      type="button"
+      onClick={applyDelete}
+      disabled={disabled}
+      className="h-8 w-8 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+      title={selectedCount === 0 ? "请先勾选记录" : `批量删除已选 ${selectedCount} 条记录`}
+      aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : `批量删除已选 ${selectedCount} 条记录`}
+    >
+      <Trash2 className="w-4 h-4" />
+    </button>
+  );
+}
+
+
+export function BasicDetailBatchDeleteMessage() {
+  const { deleteMessage } = useSelection();
+  if (!deleteMessage) return null;
+  return (
+    <div className="px-4 py-2 bg-rose-50 border-b border-rose-100 text-xs text-rose-600">
+      {deleteMessage}
     </div>
   );
 }

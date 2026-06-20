@@ -2,12 +2,12 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { InvestHeaderSync } from "@/components/InvestHeaderSync";
+import { formatAccountDisplayName } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan } from "@/lib/format";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { DailyPnlCalendar } from "@/components/DailyPnlCalendar";
 
@@ -16,6 +16,12 @@ export const dynamic = "force-dynamic";
 const fmt = formatMoneyYuan;
 
 const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
+
+const investProductTypeLabel = (type: string | null) => {
+  if (type === "fund") return "开放式基金";
+  if (type === "money") return "货币基金";
+  return "投资账户";
+};
 
   export default async function InvestPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
@@ -34,7 +40,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
 
   const accounts = await prisma.account.findMany({
     where: { kind: AccountKind.investment, isActive: true, ...hidFilter },
-    include: { Institution: true },
+    include: { AccountGroup: true, Institution: true },
     orderBy: [{ name: "asc" }],
   });
 
@@ -128,6 +134,8 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
   type AccountRow = {
     id: string;
     label: string;
+    groupName: string;
+    productTypeLabel: string;
     balance: number;
     marketValue: number;
     totalCost: number;
@@ -181,11 +189,15 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
     const totalReturn = floatingPnL + realizedPnL;
     const totalReturnRate = totalBuy > 0 ? totalReturn / totalBuy : 0;
 
-    const label = a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name;
+    const label = formatAccountDisplayName(a.name, a.Institution?.name);
+    const groupName = a.AccountGroup?.name?.trim() || "未分组";
+    const productTypeLabel = investProductTypeLabel(a.investProductType);
 
     return {
       id: a.id,
       label,
+      groupName,
+      productTypeLabel,
       balance: toNumber(a.balance),
       marketValue,
       totalCost,
@@ -262,7 +274,7 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
             { label: "历史收益", value: fmt(totalRealizedPnL), sub: null, color: pnlClass(totalRealizedPnL) },
             { label: "总收益", value: fmt(totalReturn), sub: fmtRate(totalReturnRate), color: pnlClass(totalReturn) },
             { label: "累计买入", value: fmt(totalBuyAll), sub: null, color: "text-slate-600" },
-            { label: "累计手续费", value: fmt(totalFeeAll), sub: null, color: totalFeeAll > 0 ? "text-orange-600" : "text-slate-600" },
+            { label: "累计手续费", value: fmt(totalFeeAll), sub: null, color: "text-slate-600" },
           ].map((item) => (
             <div key={item.label} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
               <div className="text-xs text-slate-500 mb-1">{item.label}</div>
@@ -292,10 +304,10 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
             <span className="text-xs text-slate-400">{filteredRows.length} 个账户</span>
           </div>
           <div className="overflow-auto">
-            <table className="min-w-[800px] w-full border-separate border-spacing-0">
+            <table className="min-w-[960px] w-full border-separate border-spacing-0">
               <thead className="sticky top-0 z-10 bg-white">
                 <tr>
-                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">账户</th>
+                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200 min-w-[220px]">账户</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">持仓成本</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">市值</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">浮动盈亏</th>
@@ -312,7 +324,15 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
                   <tr><td className="px-4 py-6 text-xs text-slate-500 text-center" colSpan={10}>暂无数据</td></tr>
                 ) : pagedRows.map((r) => (
                   <tr key={r.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2 border-b border-slate-100 text-xs font-medium text-slate-800 truncate max-w-[180px]">{r.label}</td>
+                    <td className="px-4 py-2.5 border-b border-slate-100">
+                      <div className="max-w-[240px]">
+                        <div className="truncate text-xs font-semibold text-slate-800">{r.label}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{r.groupName}</span>
+                          <span>{r.productTypeLabel}</span>
+                        </div>
+                      </div>
+                    </td>
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{r.totalCost > 0 ? fmt(r.totalCost) : <span className="text-slate-300">-</span>}</td>
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-800">{r.marketValue > 0 ? fmt(r.marketValue) : <span className="text-slate-300">-</span>}</td>
                     <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlClass(r.floatingPnL)}`}>{r.marketValue > 0 ? fmt(r.floatingPnL) : <span className="text-slate-300">-</span>}</td>

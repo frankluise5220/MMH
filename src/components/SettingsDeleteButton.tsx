@@ -35,7 +35,10 @@ export function SettingsDeleteButton({
         window.alert(data?.error ?? "删除失败");
         return;
       }
-      if (refresh !== false) router.refresh();
+      if (refresh !== false) {
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        router.refresh();
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "删除失败";
       window.alert(msg);

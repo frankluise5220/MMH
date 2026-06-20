@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Check, Pencil, X, Trash2, Shield } from "lucide-react";
+import { getHouseholdDisplayName } from "@/lib/household-display";
 
 type Household = { id: string; name: string; createdAt?: string };
 
@@ -199,15 +200,16 @@ export function LedgerSwitcher({
     setDeletingId(id);
     setDeleteConfirmName("");
     setDeleteDbPassword("");
-    setDeleteError(h ? `请输入账簿名称 "${h.name}" 以确认删除` : "");
+    setDeleteError(h ? `请输入账簿名称 "${getHouseholdDisplayName(h)}" 以确认删除` : "");
   }
 
   async function handleDelete() {
     if (!deletingId) return;
     const h = households.find(x => x.id === deletingId);
     if (!h) return;
-    if (deleteConfirmName.trim() !== h.name) {
-      setDeleteError(`名称不匹配，请输入 "${h.name}" 以确认删除`);
+    const displayName = getHouseholdDisplayName(h);
+    if (deleteConfirmName.trim() !== displayName) {
+      setDeleteError(`名称不匹配，请输入 "${displayName}" 以确认删除`);
       return;
     }
     if (!deleteDbPassword.trim()) {
@@ -305,6 +307,7 @@ export function LedgerSwitcher({
             {households.map((h) => {
               const isActive = current?.id === h.id;
               const isEditing = editingId === h.id;
+              const displayName = getHouseholdDisplayName(h);
               return (
                 <div key={h.id}>
                   {isEditing ? (
@@ -341,7 +344,7 @@ export function LedgerSwitcher({
                         isActive ? "bg-foreground/8 text-foreground font-semibold" : "text-foreground/70"
                       }`}
                     >
-                      <span className="truncate pr-2">{h.name}</span>
+                      <span className="truncate pr-2">{displayName}</span>
                       <div className="flex items-center gap-1.5">
                         {isSystemUser && !isActive && households.length > 1 && (
                           <Trash2
@@ -391,11 +394,12 @@ export function LedgerSwitcher({
         {switchTargetId && (() => {
           const h = households.find(x => x.id === switchTargetId);
           if (!h) return null;
+          const displayName = getHouseholdDisplayName(h);
           return (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                 <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-                  <div className="text-base font-semibold text-slate-800">切换到 "{h.name}"</div>
+                  <div className="text-base font-semibold text-slate-800">切换到 "{displayName}"</div>
                   <div className="mt-1 text-xs text-slate-500">请输入该账簿的管理员用户名和密码</div>
                 </div>
 
@@ -554,6 +558,7 @@ export function LedgerSwitcher({
         {deletingId && (() => {
           const h = households.find(x => x.id === deletingId);
           if (!h) return null;
+          const displayName = getHouseholdDisplayName(h);
           return (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
@@ -565,14 +570,14 @@ export function LedgerSwitcher({
                 <div className="p-6 space-y-4">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      请输入账簿名称 <span className="font-bold text-slate-800">"{h.name}"</span> 以确认删除
+                      请输入账簿名称 <span className="font-bold text-slate-800">"{displayName}"</span> 以确认删除
                     </div>
                     <input
                       value={deleteConfirmName}
                       onChange={(e) => { setDeleteConfirmName(e.target.value); setDeleteError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleDelete(); }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-red-100 focus:border-red-400"
-                      placeholder={h.name}
+                      placeholder={displayName}
                       autoFocus
                     />
                   </div>
@@ -615,7 +620,7 @@ export function LedgerSwitcher({
                     <button
                       type="button"
                       onClick={handleDelete}
-                      disabled={deleting || deleteConfirmName.trim() !== h.name || !deleteDbPassword.trim()}
+                      disabled={deleting || deleteConfirmName.trim() !== displayName || !deleteDbPassword.trim()}
                       className="flex-1 h-10 rounded-md bg-red-600 text-white text-sm hover:bg-red-700 disabled:opacity-50"
                     >
                       {deleting ? "删除中…" : "确认删除"}

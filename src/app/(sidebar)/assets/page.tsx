@@ -18,7 +18,7 @@ export default async function AssetsPage() {
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
 
   const accounts = await prisma.account.findMany({
-    where: { isActive: true, kind: { in: ASSET_KINDS }, ...hidFilter },
+    where: { isActive: true, isPlaceholder: { not: true }, kind: { in: ASSET_KINDS }, ...hidFilter },
     include: { AccountGroup: true, Institution: true },
     orderBy: [{ name: "asc" }],
   });

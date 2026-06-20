@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
@@ -48,7 +47,7 @@ export async function POST(req: Request) {
       for (const acctId of accountsToRecalc) {
         await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
       }
-      revalidateAfterInvestChange();
+      // Client-side will handle page refresh
       return NextResponse.json({ ok: true, count: res.count, message: `已恢复 ${res.count} 条记录` });
     }
 
@@ -114,7 +113,7 @@ export async function POST(req: Request) {
       );
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh via router.refresh() + mmh:fund:refresh
     return NextResponse.json({
       ok: true,
       message: `已删除 ${deletedCount} 条记录`,

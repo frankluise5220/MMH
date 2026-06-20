@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { toNumber } from "@/lib/date-utils";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { logger } from "@/lib/logger";
@@ -666,7 +665,7 @@ export async function POST(req: NextRequest) {
     if (fundContext?.accountId) {
       await recalcFundPositions(fundContext.accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
   }
 
   return NextResponse.json({

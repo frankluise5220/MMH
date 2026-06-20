@@ -3,9 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
-import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 
 export const runtime = "nodejs";
 
@@ -28,21 +28,6 @@ function corsHeaders() {
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;
-}
-
-function getProvidedApiKey(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-  const key = req.headers.get("x-api-key");
-  return key?.trim() || null;
-}
-
-function requireApiKey(req: Request) {
-  const required = (process.env.STATEMENT_API_KEY ?? "").trim();
-  if (!required) return { ok: true as const };
-  const provided = getProvidedApiKey(req);
-  if (!provided || provided !== required) return { ok: false as const };
-  return { ok: true as const };
 }
 
 export async function OPTIONS() {
@@ -90,7 +75,7 @@ export async function POST(req: NextRequest) {
         defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
       },
     });
-    revalidateAfterSettingsChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true, account });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
@@ -227,7 +212,7 @@ export async function DELETE(req: NextRequest) {
     if (recordCount > 0) {
       await prisma.txRecord.updateMany({
         where: { accountId: id },
-        data: { accountId: placeholderId, accountName: "空白" },
+        data: { accountId: placeholderId, accountName: "" },
       });
     }
 
@@ -235,7 +220,7 @@ export async function DELETE(req: NextRequest) {
     if (toRecordCount > 0) {
       await prisma.txRecord.updateMany({
         where: { toAccountId: id },
-        data: { toAccountId: placeholderId, toAccountName: "空白" },
+        data: { toAccountId: placeholderId, toAccountName: "" },
       });
     }
 
@@ -260,14 +245,18 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
-// === External: GET (summaries, requires API key) ===
+// === External: GET (summaries, supports cookie session and API key fallback) ===
 export async function GET(req: Request) {
-  if (!requireApiKey(req).ok) {
-    return NextResponse.json({ ok: false, error: "未授权" }, { status: 401, headers: corsHeaders() });
+  let scope;
+  try {
+    scope = await getApiHouseholdScope(req);
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "未授权" }, { status: 401, headers: corsHeaders() });
   }
 
   const rows = await prisma.txRecord.groupBy({
     by: ["accountName"],
+    where: scope.hidFilter,
     _sum: { amount: true },
     _count: { _all: true },
   });
@@ -277,4 +266,12 @@ export async function GET(req: Request) {
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
   return NextResponse.json({ ok: true, accounts }, { headers: corsHeaders() });
+}
+
+/**
+ * Android-friendly investment account list.
+ * Returns real Account ids so native clients can call investment/fund APIs that require accountId.
+ */
+export async function HEAD() {
+  return new NextResponse(null, { status: 405, headers: corsHeaders() });
 }

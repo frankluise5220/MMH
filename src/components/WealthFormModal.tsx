@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
@@ -52,7 +51,6 @@ export function WealthFormModal({
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
@@ -182,49 +180,39 @@ export function WealthFormModal({
       }
       setOpen(false);
       if (mode === "create") reset();
-      await new Promise(resolve => setTimeout(resolve, 300));
-      router.refresh();
+       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSubmitting(false);
     }
   }
-
-  function openCreate(cashAccId?: string) {
-    setCashAccountId(cashAccId ?? "");
-    reset();
-    setDate(today);
-    setToAccountId(defaultAccountId);
-    setOpen(true);
-  }
-
   if (!open) return null;
 
   const isRedeem = subtype === "redeem";
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-      <div className="w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
+      <div className="modal-surface w-full max-w-md">
+        <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">
             {mode === "edit" ? "编辑理财记录" : "新增理财记录"}
             <span className="ml-2 text-xs font-normal text-slate-500">银行理财</span>
           </div>
           <button type="button" onClick={() => { setOpen(false); if (mode === "create") reset(); }}
-            className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
+            className="secondary-button h-8 px-2">关闭</button>
         </div>
 
         <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
           {/* 交易类型 */}
           <div className="flex gap-2">
             <button type="button" onClick={() => setSubtype("buy")}
-              className={`flex-1 h-8 rounded-md border text-xs ${subtype === "buy" ? "bg-blue-50 text-blue-700 border-blue-200 font-medium" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}>
               存入
             </button>
             <button type="button" onClick={() => setSubtype("redeem")}
-              className={`flex-1 h-8 rounded-md border text-xs ${subtype === "redeem" ? "bg-blue-50 text-blue-700 border-blue-200 font-medium" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}>
               取出
             </button>
           </div>
@@ -232,53 +220,53 @@ export function WealthFormModal({
           {/* 日期 + 金额 */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">日期</div>
+              <div className="form-label">日期</div>
               <DateStepper value={date} onChange={setDate} />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{isRedeem ? "取出金额" : "存入金额"}</div>
+              <div className="form-label">{isRedeem ? "取出金额" : "存入金额"}</div>
               <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={isRedeem ? "取出" : "存入"} />
             </div>
           </div>
 
           {/* 产品名称 */}
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">产品名称</div>
+            <div className="form-label">产品名称</div>
             <input value={fundName} onChange={(e) => setFundName(e.target.value)} placeholder="例如：招行朝朝宝"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              className="form-input" />
           </div>
 
           {/* 年化收益率 + 期限天数 */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">年化收益率（%）</div>
+              <div className="form-label">年化收益率（%）</div>
               <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder="如：3.5"
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                className="form-input" />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">期限天数</div>
+              <div className="form-label">期限天数</div>
               <input inputMode="numeric" value={termDays} onChange={(e) => setTermDays(e.target.value)} placeholder="如：30"
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                className="form-input" />
             </div>
           </div>
 
           {/* 最低持有金额 */}
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">最低持有金额</div>
+            <div className="form-label">最低持有金额</div>
             <input inputMode="decimal" value={minAmount} onChange={(e) => setMinAmount(e.target.value)} placeholder="如：10000"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              className="form-input" />
           </div>
 
           {/* 资金账户 + 理财账户 */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{isRedeem ? "到账账户" : "资金来源账户"}</div>
+              <div className="form-label">{isRedeem ? "到账账户" : "资金来源账户"}</div>
               <SmartSelect mode="single" value={cashAccountId} onChange={setCashAccountId}
                 options={localCashSSOpts ?? cashAccountList} placeholder="选择账户"
                 onCreateClick={() => setNestedEntityType("cash-account")} createLabel="新增账户" />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">理财账户</div>
+              <div className="form-label">理财账户</div>
               <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
                 options={localInvestSSOpts ?? investmentAccountList} placeholder="选择理财账户"
                 onCreateClick={() => setNestedEntityType("invest-account")} createLabel="新增账户" />
@@ -287,14 +275,14 @@ export function WealthFormModal({
 
           {/* 备注 */}
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">备注</div>
+            <div className="form-label">备注</div>
             <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              className="form-input" />
           </div>
 
           <div className="flex justify-end gap-2 pt-1">
             <button type="submit" disabled={submitting}
-              className={`h-9 px-4 rounded-md text-white text-sm disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "bg-blue-600 hover:bg-blue-700"}`}>
+              className={`h-9 px-4 rounded-[10px] text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}>
               {submitting ? "保存中…" : mode === "edit" ? "保存修改" : isRedeem ? "记账（取出）" : "记账（存入）"}
             </button>
           </div>

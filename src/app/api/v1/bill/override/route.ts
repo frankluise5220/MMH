@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -60,7 +59,7 @@ export async function POST(req: Request) {
         data: { accountId, statementMonth, amount: String(amount), note },
       });
     }
-    revalidateAfterTxChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true, override }, { headers: cors() });
   } catch (err) {
     console.error("[bill/override POST]", err);
@@ -84,6 +83,6 @@ export async function DELETE(req: Request) {
   }
 
   await prisma.billOverride.delete({ where: { id: existing.id } });
-  revalidateAfterTxChange();
+  // Client-side handles page refresh
   return NextResponse.json({ ok: true }, { headers: cors() });
 }

@@ -3,9 +3,6 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
-/**
- * 编辑模态框字段定义
- */
 export interface EditField {
   name: string;
   label: string;
@@ -15,16 +12,11 @@ export interface EditField {
   options?: { value: string; label: string }[];
   required?: boolean;
   disabled?: boolean;
-  step?: string; // for number inputs
-  min?: string; // for number inputs
+  step?: string;
+  min?: string;
   className?: string;
 }
 
-/**
- * 统一的编辑模态框组件
- *
- * 提供打开/关闭逻辑、表单处理、刷新等标准功能
- */
 export function BaseEditModal({
   title,
   fields,
@@ -66,7 +58,7 @@ export function BaseEditModal({
       if (result.ok) {
         onOpenChange(false);
         if (refreshOnSave) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 100));
           router.refresh();
         }
       } else {
@@ -86,30 +78,30 @@ export function BaseEditModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-      <div className={`w-full ${maxWidth} rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden`}>
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
+      <div className={`modal-surface w-full ${maxWidth}`}>
+        <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{title}</div>
-          {showCloseButton && (
+          {showCloseButton ? (
             <button
               type="button"
               onClick={() => onOpenChange(false)}
-              className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+              className="secondary-button h-8 px-2"
             >
               关闭
             </button>
-          )}
+          ) : null}
         </div>
 
-        <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={handleSubmit}>
+        <form className="max-h-[80vh] space-y-3 overflow-y-auto p-4" onSubmit={handleSubmit}>
           {fields.map((field) => (
             <div key={field.name} className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">
+              <div className="form-label">
                 {field.label}
-                {field.required && <span className="text-red-500 ml-1">*</span>}
+                {field.required ? <span className="ml-1 text-red-500">*</span> : null}
               </div>
 
-              {field.type === "text" && (
+              {field.type === "text" ? (
                 <input
                   type="text"
                   value={formData[field.name]}
@@ -117,11 +109,11 @@ export function BaseEditModal({
                   placeholder={field.placeholder}
                   required={field.required}
                   disabled={field.disabled}
-                  className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-600 ${field.className || ""}`}
+                  className={`form-input ${field.className || ""}`}
                 />
-              )}
+              ) : null}
 
-              {field.type === "number" && (
+              {field.type === "number" ? (
                 <input
                   type="number"
                   step={field.step}
@@ -131,39 +123,39 @@ export function BaseEditModal({
                   placeholder={field.placeholder}
                   required={field.required}
                   disabled={field.disabled}
-                  className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-600 ${field.className || ""}`}
+                  className={`form-input ${field.className || ""}`}
                 />
-              )}
+              ) : null}
 
-              {field.type === "select" && (
+              {field.type === "select" ? (
                 <select
                   value={formData[field.name]}
                   onChange={(e) => updateField(field.name, e.target.value)}
                   required={field.required}
                   disabled={field.disabled}
-                  className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 ${field.className || ""}`}
+                  className={`form-input ${field.className || ""}`}
                 >
-                  {!field.required && <option value="">请选择</option>}
+                  {!field.required ? <option value="">请选择</option> : null}
                   {field.options?.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
                   ))}
                 </select>
-              )}
+              ) : null}
 
-              {field.type === "date" && (
+              {field.type === "date" ? (
                 <input
                   type="date"
                   value={formData[field.name]}
                   onChange={(e) => updateField(field.name, e.target.value)}
                   required={field.required}
                   disabled={field.disabled}
-                  className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-600 ${field.className || ""}`}
+                  className={`form-input ${field.className || ""}`}
                 />
-              )}
+              ) : null}
 
-              {field.type === "textarea" && (
+              {field.type === "textarea" ? (
                 <textarea
                   value={formData[field.name]}
                   onChange={(e) => updateField(field.name, e.target.value)}
@@ -171,11 +163,11 @@ export function BaseEditModal({
                   required={field.required}
                   disabled={field.disabled}
                   rows={3}
-                  className={`w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-600 ${field.className || ""}`}
+                  className={`form-textarea ${field.className || ""}`}
                 />
-              )}
+              ) : null}
 
-              {field.type === "checkbox" && (
+              {field.type === "checkbox" ? (
                 <input
                   type="checkbox"
                   checked={formData[field.name] === "true"}
@@ -183,16 +175,12 @@ export function BaseEditModal({
                   disabled={field.disabled}
                   className="h-4 w-4 rounded border-slate-200"
                 />
-              )}
+              ) : null}
             </div>
           ))}
 
           <div className="flex justify-end pt-1">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-            >
+            <button type="submit" disabled={submitting} className="primary-button h-9 px-4">
               {submitting ? "保存中…" : submitButtonText}
             </button>
           </div>

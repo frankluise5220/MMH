@@ -1,0 +1,24 @@
+FROM node:20-bookworm
+
+WORKDIR /app
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=development
+ENV PORT=7777
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+COPY prisma ./prisma
+COPY prisma.config.ts ./
+
+RUN npm ci
+RUN npx prisma generate
+
+COPY . .
+
+EXPOSE 7777
+
+CMD ["sh", "-c", "until pg_isready -h postgres -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"; do echo '[preview] waiting for postgres...'; sleep 1; done; npx prisma db push && npm run dev"]

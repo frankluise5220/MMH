@@ -1,7 +1,7 @@
-"use client";
+﻿"use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { startTransition, useState } from "react";
 
 export function DeleteEntryButton({ entryId, entryName }: { entryId: string; entryName?: string }) {
   const [busy, setBusy] = useState(false);
@@ -19,8 +19,8 @@ export function DeleteEntryButton({ entryId, entryName }: { entryId: string; ent
       });
       const data = await res.json();
       if (data.ok) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        router.refresh();
+        startTransition(() => router.refresh());
+
       } else {
         alert(data.error ?? "删除失败");
       }

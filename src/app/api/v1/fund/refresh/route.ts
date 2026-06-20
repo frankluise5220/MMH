@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { addWorkdaysUtc } from "@/lib/date-utils";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, fetchHistoricalNavList, findNavFallback, preloadNavListToCache, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -94,6 +93,7 @@ export async function POST(req: NextRequest) {
         const applyDate = entry.date.toISOString().slice(0, 10);
         const confirmDays = await getFundConfirmDays(accountId, entry.fundCode);
         const confirmDate = addWorkdaysUtc(applyDate, confirmDays);
+        if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
         // 先从预加载的净值列表中查找
         const navList = navCacheByFund.get(entry.fundCode);
@@ -216,7 +216,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
 
     return NextResponse.json({
       ok: true,

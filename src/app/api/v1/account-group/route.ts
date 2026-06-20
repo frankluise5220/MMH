@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 
@@ -28,7 +27,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
   }
 
-  revalidateAfterSettingsChange();
+  // Client-side handles page refresh
   return NextResponse.json({ ok: true, group: { id: created.id, name: created.name } });
 }
 
@@ -48,6 +47,6 @@ export async function PUT(req: NextRequest) {
   if (!isAdmin(user) && group.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
 
   await prisma.accountGroup.update({ where: { id }, data: { name } });
-  revalidateAfterSettingsChange();
+  // Client-side handles page refresh
   return NextResponse.json({ ok: true });
 }

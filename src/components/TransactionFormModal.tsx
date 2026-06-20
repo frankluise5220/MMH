@@ -1,8 +1,7 @@
-"use client";
+﻿"use client";
 
 import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -86,7 +85,6 @@ type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: s
 export function TransactionFormModal({
   accounts,
   transferAccounts,
-  investmentAccounts,
   expenseCategories,
   incomeCategories,
   defaultAccountId,
@@ -103,7 +101,6 @@ export function TransactionFormModal({
 }: {
   accounts: AccountOption[];
   transferAccounts: AccountOption[];
-  investmentAccounts: AccountOption[];
   expenseCategories: CategoryOption[];
   incomeCategories: CategoryOption[];
   defaultAccountId?: string;
@@ -121,7 +118,6 @@ export function TransactionFormModal({
   /** Groups & institutions data for NestedAddModal compact account creation */
   nestedFieldData?: NestedFieldData;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
   const [submitting, setSubmitting] = useState(false);
@@ -416,8 +412,7 @@ export function TransactionFormModal({
         setSubmitting(true);
         try {
           await (editAction ?? action)(formData);
-          await new Promise(resolve => setTimeout(resolve, 300));
-          router.refresh();
+           requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
           resetDraft();
         } catch (err) {
           window.alert(String(err));
@@ -470,8 +465,7 @@ export function TransactionFormModal({
       }
       setOpen(false);
       resetDraft();
-      await new Promise(resolve => setTimeout(resolve, 300));
-      router.refresh();
+       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
     } catch (err) {
       const msg = err instanceof Error ? err.message : "记账失败";
       window.alert(msg);
@@ -489,7 +483,7 @@ export function TransactionFormModal({
           setIsFromButton(true);
           resetDraft();
         }}
-        className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1 shadow-sm"
+        className="primary-button h-8 gap-1 px-3"
       >
         <Plus className="w-4 h-4" />
         记账
@@ -497,10 +491,10 @@ export function TransactionFormModal({
       </button>
 
       {open ? createPortal(
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/35">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
           <div className="flex min-h-full items-start justify-center p-4 py-8">
-          <div className="w-full max-w-xl max-h-[90vh] flex flex-col rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
+          <div className="modal-surface flex max-h-[90vh] w-full max-w-xl flex-col">
+            <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
               <button
                 type="button"
@@ -508,7 +502,7 @@ export function TransactionFormModal({
                   setOpen(false);
                   resetDraft();
                 }}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                className="secondary-button h-8 px-2"
               >
                 关闭
               </button>
@@ -521,10 +515,10 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => setTxType("expense")}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "expense"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       支出
@@ -539,10 +533,10 @@ export function TransactionFormModal({
                           setToAccountId(defaultAccountId ?? "");
                         }
                       }}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "transfer"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       还款
@@ -553,10 +547,10 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => setTxType("expense")}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "expense"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       支出
@@ -564,10 +558,10 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => setTxType("income")}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "income"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       收入
@@ -575,10 +569,10 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => setTxType("transfer")}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "transfer"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       转账
@@ -587,10 +581,10 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => setTxType("investment")}
-                      className={`h-9 flex-1 rounded-md border text-sm ${
+                      className={`segment-button h-9 flex-1 ${
                         txType === "investment"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          ? "segment-button-active"
+                          : ""
                       }`}
                     >
                       投资
@@ -612,7 +606,7 @@ export function TransactionFormModal({
                         detail: { requestId: `create-${Date.now()}`, item: { type: "investment", date, amount: Number(amount) || undefined }, defaultAccountId, defaultCashAccountId: accountId },
                       }));
                     }}
-                    className="w-full h-10 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-sm hover:bg-blue-100"
+                    className="segment-button segment-button-active h-10 w-full"
                   >
                     开放式基金 / 货币基金
                   </button>
@@ -625,7 +619,7 @@ export function TransactionFormModal({
                         detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
                       }));
                     }}
-                    className="w-full h-10 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-sm hover:bg-amber-100"
+                    className="h-10 w-full rounded-[10px] border border-amber-200 bg-amber-50 text-sm text-amber-700 transition-colors hover:bg-amber-100"
                   >
                     银行理财
                   </button>
@@ -638,7 +632,7 @@ export function TransactionFormModal({
                         detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
                       }));
                     }}
-                    className="w-full h-10 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm hover:bg-emerald-100"
+                    className="h-10 w-full rounded-[10px] border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 transition-colors hover:bg-emerald-100"
                   >
                     活期 / 存款
                   </button>
@@ -650,12 +644,12 @@ export function TransactionFormModal({
                   {/* 第一行：日期 | 资金账户 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">日期</div>
+                      <div className="form-label">日期</div>
                       <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{txType === "income" ? "收款账户" : "资金账户"}</div>
+                      <div className="form-label">{txType === "income" ? "收款账户" : "资金账户"}</div>
                       <SmartSelect mode="single" value={accountId} onChange={setAccountId}
                         options={localAccountSSOpts ?? accountList} placeholder="请选择"
                         onCreateClick={() => setAccountNestedOpen(true)} />
@@ -665,13 +659,13 @@ export function TransactionFormModal({
                   {/* 第二行：类别 | 标签 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">类别</div>
+                      <div className="form-label">类别</div>
                       <SmartSelect mode="single" value={categoryId} onChange={setCategoryId}
                         options={categorySSOptions} placeholder="未分类"
                         onCreateClick={() => setCategoryNestedOpen(true)} />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">标签</div>
+                      <div className="form-label">标签</div>
                       <SmartSelect mode="multi" value={selectedTagIds}
                         onChange={(ids) => setSelectedTagIds(ids)}
                         options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder="选择标签"
@@ -696,12 +690,12 @@ export function TransactionFormModal({
                   {/* 第三行：金额 | 附件 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">金额</div>
+                      <div className="form-label">金额</div>
                       <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">附件</div>
-                      <button type="button" className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-400 hover:bg-slate-50 flex items-center gap-1.5">
+                      <div className="form-label">附件</div>
+                      <button type="button" className="secondary-button h-9 w-full justify-start gap-1.5 px-3 text-slate-400">
                         <Paperclip className="w-3.5 h-3.5" />
                         添加票据附件
                       </button>
@@ -710,13 +704,13 @@ export function TransactionFormModal({
 
                   {/* 第四行：备注 */}
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">备注</div>
+                    <div className="form-label">备注</div>
                     <input
                       name="note"
                       placeholder="可选"
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      className="form-input"
                     />
                   </div>
                 </div>
@@ -726,7 +720,7 @@ export function TransactionFormModal({
                 <div className="space-y-3">
                   {/* 第一行：日期 */}
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">日期</div>
+                    <div className="form-label">日期</div>
                     <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
                   </div>
@@ -735,17 +729,17 @@ export function TransactionFormModal({
                   {isCreditCardAccount ? (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">转出账户</div>
+                        <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
                           options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
                         <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
-                        <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
+                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
                           onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">转入账户</div>
+                        <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
                           options={accounts} placeholder="请选择" />
                       </div>
@@ -753,16 +747,16 @@ export function TransactionFormModal({
                   ) : (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">转出账户</div>
+                        <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
                           options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
                       </div>
                       <div className="flex items-center justify-center pb-0.5">
-                        <button type="button" className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center justify-center"
+                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
                           onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">转入账户</div>
+                        <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
                           options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
                       </div>
@@ -771,19 +765,19 @@ export function TransactionFormModal({
 
                   {/* 第三行：金额 */}
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">金额</div>
+                    <div className="form-label">金额</div>
                     <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
                   </div>
 
                   {/* 第四行：备注 */}
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">备注</div>
+                    <div className="form-label">备注</div>
                     <input
                       name="note"
                       placeholder="可选"
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      className="form-input"
                     />
                   </div>
                 </div>
@@ -795,7 +789,7 @@ export function TransactionFormModal({
                 {isFromButton && !editEntryId ? (
                   <button
                     type="button"
-                    className="h-9 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+                    className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
                     onClick={resetDraft}
                     disabled={submitting}
                   >
@@ -804,7 +798,7 @@ export function TransactionFormModal({
                 ) : null}
                 <button
                   type="submit"
-                  className="h-9 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                  className="primary-button h-9 px-3"
                   disabled={submitting}
                 >
                   {submitting ? "保存中…" : editEntryId ? "保存修改" : "保存"}

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
@@ -351,7 +350,7 @@ export async function POST(req: Request) {
     }
   }
 
-  revalidateAfterTxChange();
+  // Client-side handles page refresh
   return NextResponse.json({
     ok: true,
     createdCount: created.length,

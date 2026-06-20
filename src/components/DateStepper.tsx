@@ -21,14 +21,14 @@ export function DateStepper({ value, onChange, onBlur, min, className }: {
       <input type="date" value={value} min={min}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
-        className={`h-9 w-full rounded-md border border-slate-200 bg-white pl-2.5 pr-7 text-sm outline-none ${className ?? ""}`} />
+        className={`form-input pl-2.5 pr-8 ${className ?? ""}`} />
       <div className="absolute right-0.5 top-0 bottom-0 flex flex-col justify-center">
         <button type="button" onClick={() => shift(1)} tabIndex={-1}
-          className="h-[18px] w-5 flex items-center justify-center rounded-t-sm hover:bg-slate-100 text-slate-400 hover:text-slate-700">
+          className="flex h-[18px] w-5 items-center justify-center rounded-t-[6px] text-slate-400 hover:bg-slate-100 hover:text-slate-700">
           <ChevronUp className="w-3 h-3" />
         </button>
         <button type="button" onClick={() => shift(-1)} tabIndex={-1}
-          className="h-[18px] w-5 flex items-center justify-center rounded-b-sm hover:bg-slate-100 text-slate-400 hover:text-slate-700">
+          className="flex h-[18px] w-5 items-center justify-center rounded-b-[6px] text-slate-400 hover:bg-slate-100 hover:text-slate-700">
           <ChevronDown className="w-3 h-3" />
         </button>
       </div>

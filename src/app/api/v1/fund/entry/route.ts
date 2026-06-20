@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
@@ -93,7 +92,7 @@ export async function PUT(req: NextRequest) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true, entry: updated });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "修改失败" }, { status: 500 });
@@ -145,7 +144,7 @@ export async function DELETE(req: NextRequest) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });

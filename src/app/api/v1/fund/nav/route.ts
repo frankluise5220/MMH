@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -230,7 +229,7 @@ export async function POST(req: NextRequest) {
 
     // 重新计算持仓
     await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
 
     return NextResponse.json({
       ok: true,

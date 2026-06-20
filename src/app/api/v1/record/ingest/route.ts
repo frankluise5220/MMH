@@ -4,7 +4,6 @@ import { z } from "zod";
 import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { defaultModel, localProvider } from "@/lib/ai/config";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 
@@ -417,7 +416,7 @@ export async function POST(req: Request) {
       await recalcAndSaveAccountBalance(accountId);
     }
 
-    revalidateAfterTxChange();
+    // Client-side handles page refresh
     return NextResponse.json(
       {
         ok: true,

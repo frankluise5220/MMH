@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
+import type { ParsedUrl } from "@/lib/urlInput";
 
 type FundQueryApiRecord = {
   id: string;
@@ -12,12 +14,91 @@ type FundQueryApiRecord = {
   isActive: boolean;
 };
 
+type EditForm = Omit<Partial<FundQueryApiRecord>, "baseUrl"> & {
+  urlParts: ParsedUrl;
+};
+
+function makeForm(api?: Partial<FundQueryApiRecord> | null): EditForm {
+  return {
+    code: api?.code ?? "",
+    name: api?.name ?? "",
+    urlParts: parseBaseUrl(api?.baseUrl),
+    apiKey: api?.apiKey ?? "",
+    priority: api?.priority ?? 0,
+    isActive: api?.isActive ?? true,
+  };
+}
+
+function flatForm(f: EditForm): Omit<EditForm, "urlParts"> & { baseUrl: string } {
+  return {
+    code: f.code,
+    name: f.name,
+    baseUrl: buildBaseUrl(f.urlParts),
+    apiKey: f.apiKey,
+    priority: f.priority,
+    isActive: f.isActive,
+  };
+}
+
+function UrlInputGroup({
+  value,
+  onChange,
+}: {
+  value: ParsedUrl;
+  onChange: (next: ParsedUrl) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <select
+          value={value.protocol}
+          onChange={e => onChange({ ...value, protocol: e.target.value })}
+          className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm outline-none shrink-0"
+        >
+          {PROTOCOL_OPTIONS.map(op => (
+            <option key={op.value} value={op.value}>{op.label}</option>
+          ))}
+        </select>
+        <span className="text-slate-300 text-sm font-mono">://</span>
+        <input
+          value={value.host}
+          onChange={e => onChange({ ...value, host: e.target.value })}
+          placeholder="fund.example.com"
+          className="h-9 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono"
+        />
+        <span className="text-slate-300 text-sm font-mono">:</span>
+        <input
+          value={value.port}
+          onChange={e => onChange({ ...value, port: e.target.value })}
+          type="number"
+          placeholder="端口"
+          list="port-suggestions"
+          className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2.5 text-sm outline-none font-mono"
+        />
+        <datalist id="port-suggestions">
+          {PORT_SUGGESTIONS.filter(s => s.value).map(s => (
+            <option key={s.value} value={s.value}>{s.label} ({s.description})</option>
+          ))}
+        </datalist>
+      </div>
+      <div>
+        <input
+          value={value.path}
+          onChange={e => onChange({ ...value, path: e.target.value })}
+          placeholder="/api/fund（可选）"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono"
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function FundQueryApiPage() {
   const [apis, setApis] = useState<FundQueryApiRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<Partial<FundQueryApiRecord>>({});
+  const [form, setForm] = useState<EditForm>(makeForm());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -43,7 +124,7 @@ export default function FundQueryApiPage() {
           setLoadError(hint);
         }
       })
-      .catch((error) => {
+      .catch(() => {
         setApis([]);
         setLoadError("请求失败（网络或服务异常）");
       })
@@ -52,25 +133,12 @@ export default function FundQueryApiPage() {
 
   function openEdit(api: FundQueryApiRecord) {
     setEditingId(api.id);
-    setForm({
-      name: api.name,
-      baseUrl: api.baseUrl,
-      apiKey: api.apiKey,
-      priority: api.priority,
-      isActive: api.isActive,
-    });
+    setForm(makeForm(api));
   }
 
   function openCreate() {
     setEditingId("__new__");
-    setForm({
-      code: "",
-      name: "",
-      baseUrl: "",
-      apiKey: "",
-      priority: apis.length,
-      isActive: true,
-    });
+    setForm(makeForm({ code: "", name: "", priority: apis.length, isActive: true }));
   }
 
   async function save() {
@@ -78,20 +146,22 @@ export default function FundQueryApiPage() {
     setSaving(true);
     try {
       const isCreate = editingId === "__new__";
+      const body = isCreate ? flatForm(form) : { id: editingId, ...flatForm(form) };
       const res = await fetch("/api/v1/settings/fund-query-api", {
         method: isCreate ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(isCreate ? form : { id: editingId, ...form }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.ok) {
         if (isCreate && data.api) {
           setApis(prev => [...prev, data.api].sort((a, b) => a.priority - b.priority));
         } else {
-          setApis(prev => prev.map(a => a.id === editingId ? { ...a, ...form } as FundQueryApiRecord : a));
+          const flat = flatForm(form);
+          setApis(prev => prev.map(a => a.id === editingId ? { ...a, ...flat } as FundQueryApiRecord : a));
         }
         setEditingId(null);
-        setForm({});
+        setForm(makeForm());
       } else {
         alert(data.error || "保存失败");
       }
@@ -173,8 +243,7 @@ export default function FundQueryApiPage() {
               </div>
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">请求地址</div>
-                <input value={form.baseUrl ?? ""} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                <UrlInputGroup value={form.urlParts} onChange={next => setForm(f => ({ ...f, urlParts: next }))} />
               </div>
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">API Key（可选）</div>
@@ -182,7 +251,7 @@ export default function FundQueryApiPage() {
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
               </div>
               <div className="flex justify-end gap-2">
-                <button onClick={() => { setEditingId(null); setForm({}); }}
+                <button onClick={() => { setEditingId(null); setForm(makeForm()); }}
                   className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">取消</button>
                 <button onClick={save} disabled={saving}
                   className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">创建</button>
@@ -193,7 +262,7 @@ export default function FundQueryApiPage() {
 
         {apis.length === 0 && editingId !== "__new__" && (
           <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-400">
-            暂无基金查询 API，请点击右上角“添加 API”。
+            暂无基金查询 API，请点击右上角"添加 API"。
           </div>
         )}
         {apis.map((api) => (
@@ -216,8 +285,7 @@ export default function FundQueryApiPage() {
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">请求地址</div>
-                  <input value={form.baseUrl ?? ""} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                  <UrlInputGroup value={form.urlParts} onChange={next => setForm(f => ({ ...f, urlParts: next }))} />
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">API Key（可选）</div>

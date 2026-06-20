@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -89,7 +88,7 @@ export async function POST(req: Request) {
   }
 
   if (result.permanentlyDeleted > 0) {
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
   }
 
   return NextResponse.json({

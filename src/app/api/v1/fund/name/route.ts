@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { toNumber } from "@/lib/date-utils";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 
 /**
@@ -39,14 +40,14 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
     const patterns = [
       /基金简称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
       /基金名称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
-      /<title[^>]*>([^<]{2,30})（\d{6}）/,  // title 格式: "基金名称（代码）"
+      /<title[^>]*>([^<]{2,30})[（(]\d{6}[）)]/,  // title: "基金名称(代码)" or "基金名称（代码）"
       /f_name[^>]*>\s*([^<]{2,30})\s*</,    // 天天基金页面变量
     ];
     for (const pattern of patterns) {
       const match = html2.match(pattern);
       if (match && match[1]) {
         const name = match[1].trim();
-        if (name && name.length >= 2 && name.length <= 30 && !/基金历史净值|基金档案|天天基金|基金吧/.test(name)) return name;
+        if (name && name.length > 2 && !/基金历史净值|基金档案|天天基金|基金吧/.test(name)) return name;
       }
     }
   } catch {}
@@ -86,7 +87,7 @@ async function fetchFromFund123(fundCode: string, headers: Record<string, string
     const match = html.match(new RegExp(`${fundCode}[^<]*?([^<]+?)</a>`));
     if (match && match[1]) {
       const name = match[1].trim();
-      if (name && name.length > 2 && !name.includes("基金代码")) return name;
+      if (name && name.length > 2 && !name.includes("基金代码") && !/基金历史净值|基金档案|天天基金|基金吧/.test(name)) return name;
     }
   } catch {}
   return null;
@@ -111,7 +112,7 @@ async function fetchFromAlipay(fundCode: string, headers: Record<string, string>
       const match = html.match(pattern);
       if (match && match[1]) {
         const name = match[1].trim();
-        if (name && name.length > 2) return name;
+        if (name && name.length > 2 && !/基金历史净值|基金档案|天天基金|基金吧/.test(name)) return name;
       }
     }
   } catch {}
@@ -132,6 +133,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         name: latestNav.name,
+        nav: toNumber(latestNav.nav),
+        navDate: latestNav.navDate?.toISOString?.()?.slice(0, 10) ?? null,
         source: "navcache",
       });
     }

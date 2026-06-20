@@ -1,11 +1,10 @@
 ﻿﻿﻿﻿﻿"use client";
 
-import { ChevronDown, ChevronUp, DatabaseZap, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, DatabaseZap, Pencil, Plus, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
-import { HoldingPicker, type HoldingItem } from "./HoldingPicker";
+import { HoldingPicker } from "./HoldingPicker";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import {
   type FundSubtype,
   type ProductType,
@@ -18,13 +17,10 @@ import {
   isRedeemLike,
   isBuyLike,
   isDividend,
-  showNavFor,
   showConfirmFor,
   showAccountSelectorsFor,
   showUnitsFor,
   showFeeFor,
-  amountLabel,
-  subtypeDisplay,
 } from "@/lib/investment-config";
 
 function pnlCls(n: number | null | undefined): string {
@@ -102,7 +98,6 @@ export function InvestmentFormModal({
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const fixedProductType: ProductType =
@@ -163,7 +158,6 @@ export function InvestmentFormModal({
   const [open, setOpen] = useState(false);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
   const [subtype, setSubtype] = useState<FundSubtype>(initSubtype);
-  const [switchDir, setSwitchDir] = useState<"in" | "out">("in");
   const [applyDate, setApplyDate] = useState(initDate);
   const [confirmDate, setConfirmDate] = useState(initConfirmDate);
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
@@ -235,7 +229,6 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (!open || mode !== "edit" || !entry) return;
     setSubtype(initSubtype);
-    setSwitchDir("in");
     setApplyDate(initDate);
     setConfirmDate(initConfirmDate);
     setCashAccountId(initCashAccountId);
@@ -297,8 +290,6 @@ export function InvestmentFormModal({
       .then(d => { if (d.ok && d.name) setFundName(d.name); })
       .catch(() => {})
       .finally(() => setNameLoading(false));
-    // Only fire once when modal opens
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, fundCode]);
 
   // Listen for AI panel "open create transaction" event — only in create mode
@@ -802,7 +793,6 @@ export function InvestmentFormModal({
       setFeeRateEdited(false);
     }
     // 共享重置：日期、金额、份额、净值、手续费、备注
-    setSwitchDir("in");
     setApplyDate(today);
     setConfirmDate(confirmDays > 0 ? addDays(today, confirmDays) : today);
     cashAccountTouchedRef.current = false;
@@ -877,34 +867,6 @@ export function InvestmentFormModal({
     } finally {
       setNavLoading(false);
     }
-  }
-
-  async function fetchName() {
-    const code = fundCode.trim();
-    if (!code) return;
-    setNameLoading(true);
-    try {
-      const res = await fetch(`/api/v1/fund/nav?code=${encodeURIComponent(code)}`);
-      const data = await res.json();
-      if (data.ok) {
-        if (data.name) setFundName(data.name);
-        if (data.nav && !confirmDate) setNavFromApi(String(data.nav));
-      }
-      if (confirmDate) {
-        const dateRes = await fetch(`/api/v1/fund/nav?code=${encodeURIComponent(code)}&date=${encodeURIComponent(confirmDate)}`);
-        const dateData = await dateRes.json();
-        if (dateData.ok && dateData.nav) {
-          setNavFromApi(String(dateData.nav));
-        } else if (!data.ok && !data.nav) {
-          window.alert(dateData.error ?? data.error ?? "获取失败");
-          return;
-        }
-      }
-      if (!confirmDate && !data.ok) {
-        window.alert(data.error ?? "获取失败");
-      }
-    } catch { window.alert("获取失败"); }
-    finally { setNameLoading(false); }
   }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>, keepOpen = false) {
@@ -1066,13 +1028,11 @@ export function InvestmentFormModal({
               .catch(() => {});
           }
         }
-        await new Promise(resolve => setTimeout(resolve, 300));
-        router.refresh();
+         requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
-        await new Promise(resolve => setTimeout(resolve, 300));
-        router.refresh();
+         requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
       }
     } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
     finally { setSubmitting(false); }
@@ -1090,8 +1050,7 @@ export function InvestmentFormModal({
       });
       const data = await res.json();
       if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
+       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
     } catch {
       window.alert("删除失败");
     } finally {
@@ -1100,7 +1059,6 @@ export function InvestmentFormModal({
   }
 
   const showCode = productType === "fund" || productType === "money";
-  const showUnits = showUnitsFor(subtype, productType);
   const showFee = showFeeFor(subtype, productType);
 
   const title = mode === "edit" ? "编辑基金记录" : "投资记账";
@@ -1110,18 +1068,18 @@ export function InvestmentFormModal({
     entry ? (
       <div className="flex h-7 items-center gap-1">
         <button type="button" onClick={() => setOpen(true)}
-          className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-blue-600 hover:border-blue-200">
+          className="secondary-button h-7 w-7 px-0 text-slate-500 hover:text-blue-600">
           <Pencil className="w-3.5 h-3.5" />
         </button>
         <button type="button" onClick={onDelete} disabled={deleting}
-          className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50">
+          className="secondary-button h-7 w-7 px-0 text-slate-500 hover:text-red-600 disabled:opacity-50">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
     ) : null
   ) : (
     <button type="button" onClick={() => { resetForCreate(); setOpen(true); }}
-      className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1 shadow-sm">
+      className="primary-button h-8 gap-1 px-3 shadow-sm">
       <Plus className="w-4 h-4" />记账
     </button>
   );
@@ -1131,26 +1089,26 @@ export function InvestmentFormModal({
       {triggerButton}
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
+          <div className="modal-surface w-full max-w-md">
+            <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
                 {title}
                 <span className="ml-2 text-xs font-normal text-slate-500">{PRODUCT_LABELS[productType]}</span>
               </div>
               <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
+                className="secondary-button h-8 px-2">关闭</button>
             </div>
 
             <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">交易类型</div>
+                <div className="form-label">交易类型</div>
                 <div className="space-y-1.5">
                   {PRODUCT_SUBTYPES[productType].map((group, gi) => (
                     <div key={gi} className="flex gap-1.5">
                       {group.map((s) => (
                         <button key={s} type="button" onClick={() => selectSubtype(s)}
-                          className={`h-8 flex-1 rounded-md border text-xs ${subtype === s ? "bg-blue-50 text-blue-700 border-blue-200 font-medium" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+                          className={`segment-button h-8 flex-1 text-xs ${subtype === s ? "segment-button-active font-medium" : ""}`}>
                           {productType === "deposit" ? (DEPOSIT_LABELS[s as FundSubtype] ?? SUBTYPE_LABELS[s as FundSubtype]) : SUBTYPE_LABELS[s as FundSubtype]}
                         </button>
                       ))}
@@ -1167,7 +1125,7 @@ export function InvestmentFormModal({
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">基金账户</div>
                       <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                        className="form-input">
                         <option value="">选择基金账户</option>
                         {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                       </select>
@@ -1194,7 +1152,7 @@ export function InvestmentFormModal({
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-600">基金账户</div>
                             <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                              className="form-input">
                               <option value="">选择基金账户</option>
                               {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                             </select>
@@ -1204,7 +1162,7 @@ export function InvestmentFormModal({
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-600">到账资金账户</div>
                             <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                              className="form-input">
                               <option value="">不关聓</option>
                               {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                             </select>
@@ -1230,14 +1188,14 @@ export function InvestmentFormModal({
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">基金代码</div>
                         <input value={fundCode} onChange={(e) => changeFundCode(e.target.value)} onBlur={handleFundCodeBlur} placeholder="6位代码"
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                          className="form-input" />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
                           基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
                         </div>
                         <input value={fundName} readOnly
-                          className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
+                          className="form-input" />
                       </div>
                     </div>
                   ) : null}
@@ -1247,7 +1205,7 @@ export function InvestmentFormModal({
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">现金红利金额</div>
                       <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                        className="form-input" />
                     </div>
                   )}
 
@@ -1265,19 +1223,19 @@ export function InvestmentFormModal({
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">备注</div>
                     <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      className="form-input" />
                   </div>
 
                   {/* 保存按钮 */}
                   <div className="flex justify-end gap-2 pt-1">
                     {mode === "create" && (
                       <button type="button" disabled={submitting} onClick={(e) => { e.preventDefault(); onSubmit(e as any, true); }}
-                        className="h-9 px-4 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-sm hover:bg-blue-100 disabled:opacity-50">
+                        className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50">
                         {submitting ? "保存中…" : "保存并继续"}
                       </button>
                     )}
                     <button type="submit" disabled={submitting}
-                      className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                      className="primary-button h-9 disabled:opacity-50">
                       {submitting ? "保存中…" : "保存"}
                     </button>
                   </div>
@@ -1308,7 +1266,7 @@ export function InvestmentFormModal({
                         if (applyDate) setConfirmDate(addDays(applyDate, days));
                       }}
                       placeholder="0"
-                      className="h-7 w-8 rounded border border-slate-200 bg-white text-xs outline-none px-1 text-center" />
+                      className="h-7 w-8 rounded-[8px] border border-slate-300/70 bg-white text-center text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100" />
                   </div>
                 )}
                 {showConfirmFor(subtype) && (
@@ -1328,7 +1286,7 @@ export function InvestmentFormModal({
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">基金账户</div>
                         <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                          className="form-input">
                           <option value="">选择基金账户</option>
                           {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                         </select>
@@ -1336,7 +1294,7 @@ export function InvestmentFormModal({
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">赎回到账账户</div>
                         <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                          className="form-input">
                           <option value="">不关联</option>
                           {cashAccounts?.map(a => <option key={a.id} value={a.id}>{a.label}</option>) ?? []}
                         </select>
@@ -1364,14 +1322,14 @@ export function InvestmentFormModal({
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">基金代码</div>
                         <input value={fundCode} onChange={(e) => changeFundCode(e.target.value)} onBlur={handleFundCodeBlur} placeholder="6位代码"
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                          className="form-input" />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
                           基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
                         </div>
                         <input value={fundName} readOnly
-                          className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
+                          className="form-input" />
                       </div>
                     </div>
                   ) : null}
@@ -1379,7 +1337,7 @@ export function InvestmentFormModal({
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">产品名称</div>
                       <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                        className="form-input" />
                     </div>
                   )}
 
@@ -1393,7 +1351,7 @@ export function InvestmentFormModal({
                         label="份额" />
                     </div>
                     <button type="button" onClick={fetchNav} disabled={navLoading || !fundCode}
-                      className="h-9 w-9 flex items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50 shrink-0"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
                       title="获取净值">
                       <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                     </button>
@@ -1405,14 +1363,14 @@ export function InvestmentFormModal({
                       <input inputMode="decimal" value={nav} onChange={(e) => { setNav(e.target.value); navEditedRef.current = true; }} onBlur={autoCalcUnits}
                         placeholder="1.2345"
                         style={{ caretColor: "var(--foreground)" }}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none caret-slate-800" />
+                        className="form-input caret-slate-800" />
                     </div>
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">赎回金额</div>
                     <input inputMode="decimal" value={amount} onChange={(e) => { amountEditedRef.current = true; setAmount(e.target.value); }} onBlur={autoCalcUnits}
                       style={{ caretColor: "var(--foreground)" }}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none caret-slate-800" />
+                      className="form-input caret-slate-800" />
                   </div>
 
                   {/* 赎回：手续费率 + 手续费金额 */}
@@ -1435,13 +1393,13 @@ export function InvestmentFormModal({
                           }}
                           placeholder="0.15"
                           style={{ caretColor: "var(--foreground)" }}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none caret-slate-800" />
+                          className="form-input caret-slate-800" />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">手续费金额</div>
                         <input inputMode="decimal" value={fee} onChange={(e) => { setFee(e.target.value); setFeeEdited(true); }} onBlur={autoCalcUnits} placeholder={computedFee || "0.00"}
                           style={{ caretColor: "var(--foreground)" }}
-                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none caret-slate-800" />
+                          className="form-input caret-slate-800" />
                       </div>
                     </div>
                   )}
@@ -1481,7 +1439,7 @@ export function InvestmentFormModal({
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">资金来源账户</div>
                     <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                      className="form-input">
                       <option value="">不关联</option>
                       {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                     </select>
@@ -1489,7 +1447,7 @@ export function InvestmentFormModal({
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">基金账户</div>
                     <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                      className="form-input">
                       <option value="">选择基金账户</option>
                       {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                     </select>
@@ -1499,7 +1457,7 @@ export function InvestmentFormModal({
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">资金来源账户</div>
                   <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                    className="form-input">
                     <option value="">不关联</option>
                     {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                   </select>
@@ -1508,7 +1466,7 @@ export function InvestmentFormModal({
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">基金账户</div>
                   <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none">
+                    className="form-input">
                     <option value="">选择基金账户</option>
                     {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                   </select>
@@ -1522,19 +1480,19 @@ export function InvestmentFormModal({
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">基金代码</div>
                       <input value={fundCode} onChange={(e) => changeFundCode(e.target.value)} onBlur={handleFundCodeBlur} placeholder="6位代码"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                        className="form-input" />
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">
                         基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
                       </div>
-                      <input value={fundName} readOnly
-                        className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none text-slate-600 cursor-not-allowed" />
+                        <input value={fundName} readOnly
+                          className="form-input" />
                     </div>
                     {effectiveHoldings && effectiveHoldings.length > 0 && (
                       <div className="flex items-end">
                         <button type="button" onClick={() => setShowHoldingDropdown(!showHoldingDropdown)}
-                          className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 shrink-0"
+                          className="secondary-button h-9 w-9 shrink-0 px-0 text-slate-500"
                           title="从持仓选择">
                           <ChevronDown className="h-4 w-4" />
                         </button>
@@ -1543,9 +1501,9 @@ export function InvestmentFormModal({
                   </div>
                   {effectiveHoldings && effectiveHoldings.length > 0 && showHoldingDropdown && (
                     <div className="relative" ref={holdingDropdownRef}>
-                      <div className="absolute z-50 w-full max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                      <div className="absolute z-50 w-full max-h-56 overflow-y-auto rounded-[12px] border border-slate-200/80 bg-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
                         {filteredHoldings.map(h => (
-                          <button key={h.fundCode} type="button" className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
+                          <button key={h.fundCode} type="button" className="w-full border-b border-slate-100 px-3 py-2 text-left text-sm transition-colors hover:bg-blue-50/80 last:border-b-0"
                             onClick={() => {
                               changeFundCode(h.fundCode);
                               setFundName(h.name);
@@ -1565,7 +1523,7 @@ export function InvestmentFormModal({
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">产品名称</div>
                   <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    className="form-input" />
                 </div>
               )}
 
@@ -1578,10 +1536,10 @@ export function InvestmentFormModal({
                   </div>
                   <input inputMode="decimal" value={nav} onChange={(e) => setNav(e.target.value)} onBlur={autoCalcUnits}
                     placeholder="1.2345"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    className="form-input" />
                 </div>
                 <button type="button" onClick={fetchNav} disabled={navLoading || !fundCode}
-                  className="h-9 w-9 flex items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50 shrink-0"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
                   title="获取净值">
                   <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                 </button>
@@ -1611,7 +1569,7 @@ export function InvestmentFormModal({
                         if (!feeEdited) autoCalcUnits();
                       }}
                       placeholder="0.15"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      className="form-input" />
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">手续费金额</div>
@@ -1619,7 +1577,7 @@ export function InvestmentFormModal({
                       onChange={(e) => { setFee(e.target.value); setFeeEdited(true); }}
                       onBlur={autoCalcUnits}
                       placeholder={computedFee || "0.00"}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      className="form-input" />
                   </div>
                 </div>
               )}
@@ -1645,18 +1603,18 @@ export function InvestmentFormModal({
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">备注</div>
                 <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    className="form-input" />
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
                 {mode === "create" && (
                   <button type="button" disabled={submitting} onClick={(e) => { e.preventDefault(); onSubmit(e as any, true); }}
-                    className="h-9 px-4 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-sm hover:bg-blue-100 disabled:opacity-50">
+                    className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50">
                     {submitting ? "保存中…" : "保存并继续"}
                   </button>
                 )}
                 <button type="submit" disabled={submitting}
-                  className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                  className="primary-button h-9 disabled:opacity-50">
                   {submitting ? "保存中…" : "保存"}
                 </button>
               </div>

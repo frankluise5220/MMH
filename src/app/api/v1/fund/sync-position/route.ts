@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function POST(req: NextRequest) {
@@ -41,7 +40,7 @@ export async function POST(req: NextRequest) {
       syncedCount += holdings;
     }
 
-    revalidateAfterInvestChange();
+    // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
       synced: syncedCount,
