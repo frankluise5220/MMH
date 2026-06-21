@@ -254,15 +254,30 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "未授权" }, { status: 401, headers: corsHeaders() });
   }
 
-  const rows = await prisma.txRecord.groupBy({
-    by: ["accountName"],
-    where: scope.hidFilter,
-    _sum: { amount: true },
-    _count: { _all: true },
+  const rows = await prisma.account.findMany({
+    where: {
+      ...scope.hidFilter,
+      isActive: true,
+      isPlaceholder: { not: true },
+    },
+    include: {
+      AccountGroup: { select: { name: true } },
+      Institution: { select: { name: true } },
+    },
+    orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
   const accounts = rows
-    .map((r) => ({ name: r.accountName, balance: toNumber(r._sum.amount), count: r._count._all }))
+    .map((account) => ({
+      id: account.id,
+      name: account.name,
+      balance: toNumber(account.balance),
+      count: 0,
+      kind: account.kind,
+      currency: account.currency,
+      groupName: account.AccountGroup?.name ?? "",
+      institutionName: account.Institution?.name ?? "",
+    }))
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
   return NextResponse.json({ ok: true, accounts }, { headers: corsHeaders() });

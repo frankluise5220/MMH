@@ -41,6 +41,10 @@ export async function GET(req: Request) {
 
   const entries = await prisma.txRecord.findMany({
     where,
+    include: {
+      account: { include: { Institution: { select: { name: true } } } },
+      toAccount: { include: { Institution: { select: { name: true } } } },
+    },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: limit,
   });
@@ -53,8 +57,10 @@ export async function GET(req: Request) {
     amount: e.amount,
     accountId: e.accountId,
     accountName: e.accountName,
+    accountInstitutionName: e.account?.Institution?.name ?? "",
     toAccountId: e.toAccountId,
     toAccountName: e.toAccountName,
+    toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
     categoryName: e.categoryName,
     note: e.note,
     counterparty: null,
@@ -69,4 +75,3 @@ export async function GET(req: Request) {
     { headers: corsHeaders() },
   );
 }
-

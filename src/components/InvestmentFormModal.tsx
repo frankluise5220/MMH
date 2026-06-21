@@ -1028,11 +1028,15 @@ export function InvestmentFormModal({
               .catch(() => {});
           }
         }
-         requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event("mmh:fund:refresh"));
+        });
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
-         requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event("mmh:fund:refresh"));
+        });
       }
     } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
     finally { setSubmitting(false); }
@@ -1050,7 +1054,9 @@ export function InvestmentFormModal({
       });
       const data = await res.json();
       if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
-       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+      });
     } catch {
       window.alert("删除失败");
     } finally {

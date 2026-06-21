@@ -235,9 +235,6 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
             <p className="truncate text-sm font-semibold leading-none">{user?.name || "未登录"}</p>
             <div className="mt-1 flex items-center gap-2">
               <p className="truncate text-[11px] text-slate-400">{householdDisplayName}</p>
-              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                {user?.role === "admin" ? "管理员" : "用户"}
-              </span>
               <button
                 onClick={(e) => { e.stopPropagation(); handleLogout(); }}
                 className="whitespace-nowrap rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
@@ -267,14 +264,6 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
             <Link href="/overview" className={navItemCls("/overview")}>
               <LayoutDashboard size={18} />
               <span className="font-medium">概览</span>
-            </Link>
-            <Link href="/accounts" className={navItemCls("/accounts")}>
-              <Landmark size={18} />
-              <span className="font-medium">资金账户</span>
-            </Link>
-            <Link href="/invest" className={navItemCls("/invest")}>
-              <BarChart3 size={18} />
-              <span className="font-medium">投资</span>
             </Link>
           </nav>
         </div>

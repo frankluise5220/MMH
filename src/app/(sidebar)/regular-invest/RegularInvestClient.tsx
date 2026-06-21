@@ -113,11 +113,10 @@ function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
     .map(([label, items]) => ({ label, items }));
 }
 
-function AccountCell({ label, groupName }: { label: string; groupName?: string | null }) {
+function AccountCell({ label }: { label: string }) {
   return (
     <div className="min-w-0">
       <div className="truncate text-slate-700">{label}</div>
-      <div className="mt-0.5 truncate text-[11px] text-slate-400">{groupName || "未分组"}</div>
     </div>
   );
 }
@@ -420,10 +419,10 @@ export function RegularInvestClient({
         </td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">{formatDate(plan.startDate)}</td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <AccountCell label={planAccountLabel(plan)} groupName={plan.accountGroupName} />
+          <AccountCell label={planAccountLabel(plan)} />
         </td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <AccountCell label={planCashAccountLabel(plan)} groupName={plan.cashAccountGroupName} />
+          <AccountCell label={planCashAccountLabel(plan)} />
         </td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs text-slate-500">{formatInterval(plan)}</td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs">

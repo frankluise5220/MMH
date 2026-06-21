@@ -79,10 +79,25 @@ export async function GET(req: NextRequest) {
         ...(accountId ? { accountId } : {}),
         ...(status ? { status } : {}),
       },
+      include: {
+        Account_RegularInvestPlan_accountIdToAccount: {
+          include: { Institution: { select: { name: true } } },
+        },
+        Account_RegularInvestPlan_cashAccountIdToAccount: {
+          include: { Institution: { select: { name: true } } },
+        },
+      },
       orderBy: { nextRunDate: "asc" },
     });
 
-    return NextResponse.json({ ok: true, plans });
+    return NextResponse.json({
+      ok: true,
+      plans: plans.map((plan) => ({
+        ...plan,
+        accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
+        cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
+      })),
+    });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
   }

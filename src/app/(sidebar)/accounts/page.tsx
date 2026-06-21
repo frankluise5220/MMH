@@ -1,4 +1,4 @@
-import { AccountKind } from "@prisma/client";
+﻿import { AccountKind } from "@prisma/client";
 import { Banknote, Coins, CreditCard, HandCoins, Landmark, Plus, Wallet } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";

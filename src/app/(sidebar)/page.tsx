@@ -23,15 +23,18 @@ import EditBillAmount from "@/components/EditBillAmount";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload } from "lucide-react";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
+import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { getFundNav } from "@/lib/fund/navCache";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount } from "@/lib/server/cached-data";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 
 export const dynamic = "force-dynamic";
 
@@ -603,7 +606,8 @@ async function createTransaction(formData: FormData) {
       return { ok: false as const, error: "类型不正确" };
     }
 
-    // Client-side handles refresh via mmh:fund:refresh
+    if (type === "investment") revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
     return { ok: true as const };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "记账失败";
@@ -843,7 +847,7 @@ async function editInvestment(formData: FormData) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 
-    // Client-side handles refresh via mmh:fund:refresh
+    revalidateAfterInvestChange();
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "保存失败" };
@@ -1264,6 +1268,8 @@ async function updateTransactionFromDialog(formData: FormData) {
   if (!amountAbs) return { ok: false as const, error: "金额不正确" };
 
   try {
+    let investRecalcAccountId: string | null = null;
+    let investRecalcFundCode: string | null = null;
     await prisma.$transaction(async (tx) => {
       const entry = await tx.txRecord.findUnique({
         where: { id: entryId },
@@ -1305,12 +1311,10 @@ async function updateTransactionFromDialog(formData: FormData) {
             categoryId: null,
             categoryName: null,
             statementMonth: toStatementMonthValue,
+            date,
+            type: TransactionType.transfer,
+            note: note || null,
           },
-        });
-
-        await tx.txRecord.update({
-          where: { id: entry.id },
-          data: { date, type: TransactionType.transfer, note: note || null },
         });
         return;
       }
@@ -1391,16 +1395,14 @@ async function updateTransactionFromDialog(formData: FormData) {
             fundCode: fundCode || null,
             fundProductType: (productType as any) || null,
             fundSubtype: (subtype as any) || null,
+            date,
+            type: TransactionType.investment,
             note: note || null,
           },
         });
 
-        await tx.txRecord.update({
-          where: { id: entry.id },
-          data: { date, type: TransactionType.investment, note: note || null },
-        });
-
-        await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(() => {});
+        investRecalcAccountId = investAcc.id;
+        investRecalcFundCode = fundCode || null;
         return;
       }
 
@@ -1419,70 +1421,51 @@ async function updateTransactionFromDialog(formData: FormData) {
       // 检查是否是基金交易（通过 toAccountId + fundProductType）
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
 
-      if (isFundTransaction) {
-        if (keepFundDetail) {
-          // 保留基金明细，但清空资金账户关联
-          await tx.txRecord.update({
-            where: { id: entryId },
-            data: {
-              accountId: entry.toAccountId ?? undefined,
-              accountName: entry.toAccountName ?? "",
-              amount: Math.abs(Number(entry.amount)), // 改为正数
-            } as any,
-          });
-        } else {
-          // 清空基金字段，转为普通交易
-          await tx.txRecord.update({
-            where: { id: entryId },
-            data: {
-              toAccountId: null,
-              toAccountName: null,
-              fundCode: null,
-              fundProductType: null,
-              fundSubtype: null,
-              fundUnits: null,
-              fundNav: null,
-              fundFee: null,
-              fundConfirmDate: null,
-              fundArrivalDate: null,
-              fundArrivalAmount: null,
-            },
-          });
-        }
-      }
-
       const statementMonth =
         (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
           ? toStatementMonth(date, acc.billingDay)
           : null;
 
-      await tx.txRecord.update({
-        where: { id: entryId },
-        data: {
-          amount: type === "income" ? amountAbs : -amountAbs,
-          accountId: acc.id,
-          accountName: acc.name,
-          categoryId: cat ? cat.id : null,
-          categoryName: cat?.name ?? null,
-          statementMonth,
-          toAccountId: null,
-          toAccountName: null,
-          fundCode: null,
-          fundProductType: null,
-        },
-      });
+      const expenseOrIncomeData: Record<string, unknown> = {
+        amount: type === "income" ? amountAbs : -amountAbs,
+        accountId: acc.id,
+        accountName: acc.name,
+        categoryId: cat ? cat.id : null,
+        categoryName: cat?.name ?? null,
+        statementMonth,
+        toAccountId: null,
+        toAccountName: null,
+        fundCode: null,
+        fundProductType: null,
+        date,
+        type: type === "income" ? TransactionType.income : TransactionType.expense,
+        note: note || null,
+      };
+      if (isFundTransaction && !keepFundDetail) {
+        expenseOrIncomeData.fundSubtype = null;
+        expenseOrIncomeData.fundUnits = null;
+        expenseOrIncomeData.fundNav = null;
+        expenseOrIncomeData.fundFee = null;
+        expenseOrIncomeData.fundConfirmDate = null;
+        expenseOrIncomeData.fundArrivalDate = null;
+        expenseOrIncomeData.fundArrivalAmount = null;
+      }
 
       await tx.txRecord.update({
-        where: { id: entry.id },
-        data: {
-          date,
-          type: type === "income" ? TransactionType.income : TransactionType.expense,
-          note: note || null,
-        },
+        where: { id: entryId },
+        data: expenseOrIncomeData,
       });
     });
 
-    // Client-side handles refresh via mmh:fund:refresh
+    if (investRecalcAccountId) {
+      await recalcFundPositions(
+        investRecalcAccountId,
+        investRecalcFundCode ? [investRecalcFundCode] : undefined,
+      ).catch(() => {});
+    }
+
+    if (type === "investment") revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
     return { ok: true as const };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "保存失败";
@@ -1669,19 +1652,8 @@ export default async function Home({
   const toDateValue = (value: unknown) => {
     return toValidDate(value) ?? new Date(0);
   };
-  const entryDisplayDate = (e: (typeof rawEntries)[number]) => {
-    const isCashSide = !!accountId && e.toAccountId === accountId;
-    const isBuyFailedRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
-    const isCashInByInvest = e.type === TransactionType.investment
-      && isCashSide
-      && (e.fundSubtype === "redeem" || e.fundSubtype === "switch_out" || e.fundSubtype === "dividend_cash" || isBuyFailedRefund);
-    return toDateValue(isCashInByInvest ? (e.fundArrivalDate ?? e.fundConfirmDate ?? e.date) : e.date);
-  };
-  const entries = [...rawEntries].sort((a, b) => {
-    const byDate = entryDisplayDate(b).getTime() - entryDisplayDate(a).getTime();
-    if (byDate !== 0) return byDate;
-    return toDateValue(b.createdAt).getTime() - toDateValue(a.createdAt).getTime();
-  });
+  const entryDisplayDate = (e: (typeof rawEntries)[number]) => getDetailEntryDisplayDate(e, accountId);
+  const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
     const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
@@ -1803,6 +1775,13 @@ export default async function Home({
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
 
+  const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+    accounts
+      .filter((account) => account.kind !== AccountKind.investment)
+      .map((account) => ({ id: account.id, kind: account.kind, billingDay: account.billingDay })),
+    hidFilter,
+  );
+
   const total = filteredEntries.reduce(
     (acc, e) => {
       const amount = toNumber(e.amount);
@@ -1821,16 +1800,17 @@ export default async function Home({
     { in: 0, out: 0, net: 0 },
   );
 
-  const totalNetWorthValue = accounts.reduce((s, a) => s + toNumber(a.balance), 0);
+  const totalNetWorthValue = accounts.reduce((sum, account) => {
+    if (account.kind === AccountKind.investment) {
+      return sum + toNumber(account.balance);
+    }
+    return sum + (cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
+  }, 0);
   const monthGrowthValue = 0; // TODO: Real calculation
 
   const balanceByEntryId = new Map<string, number>();
   if (where) {
-    const asc = [...rawEntries].sort((a, b) => {
-      const byDate = entryDisplayDate(a).getTime() - entryDisplayDate(b).getTime();
-      if (byDate !== 0) return byDate;
-      return toDateValue(a.createdAt).getTime() - toDateValue(b.createdAt).getTime();
-    });
+    const asc = [...rawEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let running = 0;
     for (const e of asc) {
       const amount = toNumber(e.amount);
@@ -2396,8 +2376,12 @@ export default async function Home({
     return cum?.cumulativeRemain ?? creditCardBill?.remain ?? 0;
   })();
 
-  const investBalByAccountId = isInvestAccount ? await computeInvestBalances(ctx) : new Map();
-  const selectedAccountBalanceValue = selectedAccount ? Number(selectedAccount.balance) : 0;
+  const investBalByAccountId = await computeInvestBalances(ctx);
+  const selectedAccountBalanceValue = selectedAccount
+    ? selectedAccount.kind === AccountKind.investment
+      ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
+      : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
+    : 0;
 
   const creditCardBillDetails =
     view === "bill" && creditCardBill && isBillAccount
@@ -2757,7 +2741,9 @@ export default async function Home({
   const pagedDetailEntries: DetailEntry[] = (pagedEntries || []).map((e) => ({
     id: e.id,
     date: entryDisplayDate(e).toISOString().slice(0, 10),
+    createdAt: toIsoOrNull(e.createdAt),
     amount: toNumber(e.amount),
+    runningBalance: balanceByEntryId.get(e.id) ?? null,
     type: e.type,
     categoryId: e.categoryId,
     categoryName: e.categoryName,
@@ -2791,13 +2777,13 @@ export default async function Home({
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
               <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
               {!selectedAccount ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(totalNetWorthValue)}`}>{formatMoney(totalNetWorthValue)}</span>
+                <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
               ) : view === "investmoney" && investmoneyData ? (
                 <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investmoneyData.totalMarketValue)}</span>
               ) : view === "investfund" && investfundData ? (
                 <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investfundData.totalMarketValue)}</span>
               ) : (
-                <span className={`tabular-nums font-semibold ${pnlCls(selectedAccountBalanceValue)}`}>{formatMoney(selectedAccountBalanceValue)}</span>
+                <LiveAccountBalance mode="account" accountId={selectedAccount.id} initialValue={selectedAccountBalanceValue} isRedUp={isRedUp} />
               )}
               {isBillAccount && (
                 <div className="flex items-center gap-2">

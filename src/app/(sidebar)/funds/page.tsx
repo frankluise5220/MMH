@@ -98,7 +98,7 @@ export default async function FundsPage({
           </div>
           <div className="grid grid-cols-3 divide-x divide-slate-100">
             {[
-              { label: "总市值", value: formatMoney(totalMarketValue) },
+              { label: "总市值", value: formatMoney(totalMarketValue), cls: pnlCls(totalMarketValue) },
               { label: "持仓成本", value: formatMoney(totalCost) },
               { label: "浮盈", value: formatMoney(totalPnL), cls: totalPnL > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : totalPnL < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-slate-800" },
             ].map((d) => (
@@ -131,7 +131,7 @@ export default async function FundsPage({
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{p.units.toFixed(2)}</td>
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.nav != null ? p.nav.toFixed(4) : "—"}{p.navDate ? <span className="ml-0.5 text-slate-400">({p.navDate})</span> : null}</td>
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{formatMoney(p.cost)}</td>
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
+                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlCls(p.marketValue)}`}>
                         {formatMoney(p.marketValue)}
                         {p.pendingCost > 0 && <span className="ml-1 text-amber-600">({formatMoney(p.pendingCost)})</span>}
                       </td>
@@ -144,7 +144,7 @@ export default async function FundsPage({
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-600">{positions.reduce((s, p) => s + p.units, 0).toFixed(2)}</td>
                     <td className="px-3 py-2 border-t border-slate-200"></td>
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold text-slate-800">{formatMoney(totalCost)}</td>
-                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold text-slate-800">{formatMoney(totalMarketValue)}</td>
+                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlCls(totalMarketValue)}`}>{formatMoney(totalMarketValue)}</td>
                   </tr>
                 </tfoot>
               </table>

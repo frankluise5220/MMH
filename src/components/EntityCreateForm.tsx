@@ -155,7 +155,7 @@ const ENTITY_CONFIG = {
   },
   group: {
     title: "新增分组",
-    namePlaceholder: "例如：我的银行卡",
+    namePlaceholder: "所有人",
     nameLabel: "分组名称",
     typeLabel: null,
     typeKey: null,
@@ -163,7 +163,7 @@ const ENTITY_CONFIG = {
     apiPath: "/api/v1/account-group",
     bodyKey: { name: "name" },
     fullFields: [
-      { key: "name", label: "分组名称", type: "text", placeholder: "例如：我的银行卡" },
+      { key: "name", label: "分组名称", type: "text", placeholder: "所有人" },
     ] as FieldDef[],
   },
   category: {
@@ -204,7 +204,7 @@ function buildSelectOptions(
   if (field.optionsFromData && fieldData) {
     const data = fieldData[field.optionsFromData];
     if (data) {
-      const emptyLabel = field.key === "groupId" ? "未指定分组" : field.key === "institutionId" ? "无" : "无";
+      const emptyLabel = field.key === "groupId" ? "所有人" : field.key === "institutionId" ? "无" : "无";
       return [{ value: "", label: emptyLabel }, ...data.map(d => ({ value: d.id, label: d.name }))];
     }
   }
@@ -358,6 +358,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         if (typeKey && form.type) {
           body[typeKey] = form.type;
         }
+        if (entityType === "account") {
+          body.groupId = form.groupId ?? "";
+          body.institutionId = form.institutionId ?? "";
+        }
         if (extraFields) {
           Object.entries(extraFields).forEach(([k, v]) => {
             if (v !== undefined && v !== "") body[k] = v;
@@ -441,6 +445,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     // Build SmartSelect options for account compact mode
     const groupList = nestedFieldData.groupId ?? [];
     const compactGroupOptions: SmartSelectOption[] = [
+      { id: "", label: "所有人" },
       ...groupList.map(g => ({ id: g.id, label: g.name })),
     ];
     const instList = nestedFieldData.institutionId ?? [];
@@ -496,7 +501,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   <div className="text-xs font-medium text-foreground/60">分组</div>
                   <SmartSelect mode="single" value={form.groupId ?? ""}
                     onChange={id => setForm(prev => ({ ...prev, groupId: id }))}
-                    options={compactGroupOptions} placeholder="选择分组"
+                    options={compactGroupOptions} placeholder="所有人"
                     onCreateClick={() => { setNestedEntityType("group"); setNestedOpen(true); }}
                     createLabel="新增分组" />
                 </div>

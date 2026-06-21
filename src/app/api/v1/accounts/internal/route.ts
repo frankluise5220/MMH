@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 
 /**
  * 获取账户设置页面所需全部数据（按当前账簿筛选）
@@ -27,12 +28,19 @@ export async function GET() {
 
     // For investment accounts, use market value instead of raw balance
     const investBalByAccountId = await computeInvestBalances({ hidFilter, householdId: hidFilter.householdId ?? "", user: null });
+    const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+      accounts
+        .filter((account) => account.kind !== AccountKind.investment)
+        .map((account) => ({ id: account.id, kind: account.kind, billingDay: account.billingDay })),
+      hidFilter,
+    );
     const enrichedAccounts = accounts.map((a) => {
       if (a.kind === AccountKind.investment) {
         const detail = investBalByAccountId.get(a.id);
         if (detail) return { ...a, balance: detail.marketValue };
       }
-      return a;
+      const displayBalance = cashDisplayBalanceByAccountId.get(a.id);
+      return displayBalance == null ? a : { ...a, balance: displayBalance };
     });
 
     return NextResponse.json({ ok: true, accounts: enrichedAccounts, groups, institutions });

@@ -25,6 +25,7 @@ import { getFundConfirmDays, getFundArrivalDays, setFundConfirmDaysInTx } from "
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,14 @@ function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: str
   }));
 }
 
+function effectiveAmountForAccount(
+  entry: { amount: unknown; accountId: string | null; toAccountId: string | null },
+  accountId: string,
+) {
+  const amount = toNumber(entry.amount);
+  return entry.toAccountId === accountId ? Math.abs(amount) : amount;
+}
+
 /* ────────────────── GET ────────────────── */
 
 export async function GET(req: Request) {
@@ -70,7 +79,11 @@ export async function GET(req: Request) {
     if (entryId) {
       const record = await prisma.txRecord.findUnique({
         where: { id: entryId },
-        include: { EntryTag: { include: { Tag: true } } },
+        include: {
+          EntryTag: { include: { Tag: true } },
+          account: { include: { Institution: { select: { name: true } } } },
+          toAccount: { include: { Institution: { select: { name: true } } } },
+        },
       });
       if (!record || record.deletedAt || record.householdId !== hidFilter.householdId) {
         return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
@@ -84,8 +97,10 @@ export async function GET(req: Request) {
         categoryName: record.categoryName,
         accountId: record.accountId,
         accountName: record.accountName,
+        accountInstitutionName: record.account?.Institution?.name ?? "",
         toAccountId: record.toAccountId,
         toAccountName: record.toAccountName,
+        toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
         fundSubtype: record.fundSubtype,
         fundCode: record.fundCode,
@@ -107,7 +122,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
     }
 
-    const [account, totalCount, rawEntries] = await Promise.all([
+    const [account, totalCount, allEntries] = await Promise.all([
       prisma.account.findUnique({ where: { id: accountId } }),
       prisma.txRecord.count({
         where: {
@@ -122,10 +137,12 @@ export async function GET(req: Request) {
           deletedAt: null,
           ...hidFilter,
         },
-        include: { EntryTag: { include: { Tag: true } } },
+        include: {
+          EntryTag: { include: { Tag: true } },
+          account: { include: { Institution: { select: { name: true } } } },
+          toAccount: { include: { Institution: { select: { name: true } } } },
+        },
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
       }),
     ]);
 
@@ -133,17 +150,31 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
     }
 
-    const entries = rawEntries.map((e) => ({
+    const orderedEntries = [...allEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+    const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+    const runningBalanceById = new Map<string, number>();
+    let runningBalance = 0;
+    for (const entry of ascEntries) {
+      runningBalance += effectiveAmountForAccount(entry, accountId);
+      runningBalanceById.set(entry.id, runningBalance);
+    }
+
+    const pagedEntries = orderedEntries.slice((page - 1) * pageSize, page * pageSize);
+    const entries = pagedEntries.map((e) => ({
       id: e.id,
-      date: e.date.toISOString().slice(0, 10),
+      date: getDetailEntryDisplayDate(e, accountId).toISOString().slice(0, 10),
+      createdAt: e.createdAt?.toISOString?.() ?? null,
       amount: toNumber(e.amount),
+      runningBalance: runningBalanceById.get(e.id) ?? null,
       type: e.type,
       categoryId: e.categoryId,
       categoryName: e.categoryName,
       accountId: e.accountId,
       accountName: e.accountName,
+      accountInstitutionName: e.account?.Institution?.name ?? "",
       toAccountId: e.toAccountId,
       toAccountName: e.toAccountName,
+      toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
       fundSubtype: e.fundSubtype,
       fundCode: e.fundCode,
@@ -506,7 +537,11 @@ export async function POST(req: Request) {
     if (createdId) {
       const created = await prisma.txRecord.findUnique({
         where: { id: createdId },
-        include: { EntryTag: { include: { Tag: true } } },
+        include: {
+          EntryTag: { include: { Tag: true } },
+          account: { include: { Institution: { select: { name: true } } } },
+          toAccount: { include: { Institution: { select: { name: true } } } },
+        },
       });
       if (created) {
         return NextResponse.json({
@@ -520,8 +555,10 @@ export async function POST(req: Request) {
             categoryName: created.categoryName,
             accountId: created.accountId,
             accountName: created.accountName,
+            accountInstitutionName: created.account?.Institution?.name ?? "",
             toAccountId: created.toAccountId,
             toAccountName: created.toAccountName,
+            toAccountInstitutionName: created.toAccount?.Institution?.name ?? "",
             note: created.note,
             fundSubtype: created.fundSubtype,
             fundCode: created.fundCode,
@@ -676,6 +713,7 @@ export async function PUT(req: Request) {
         const productType = String(body.fundProductType ?? "fund").trim();
         const subtype = String(body.fundSubtype ?? "buy").trim();
         const redeemLike = subtype === "redeem" || subtype === "switch_out";
+        const cashReceivingLike = redeemLike || subtype === "dividend_cash";
 
         const investAcc = accountIdFormData ? await tx.account.findUnique({ where: { id: accountIdFormData } }) : null;
         if (!investAcc) throw new Error("请选择投资账户");
@@ -710,14 +748,16 @@ export async function PUT(req: Request) {
         const fundArrivalAmount = parseMoney(body.fundArrivalAmount);
         const fundFee = parseMoney(body.fundFee);
 
-        if (redeemLike) {
+        if (cashReceivingLike) {
           recordAccountId = investAcc.id;
           recordAccountName = investAcc.name;
           recordToAccountId = cashAccId ?? investAcc.id;
           recordToAccountName = cashAccName ?? investAcc.name;
-          signedAmount = fundArrivalAmount > 0
-            ? fundArrivalAmount
-            : Math.max(0, amountAbs - (fundFee > 0 ? fundFee : 0));
+          signedAmount = subtype === "dividend_cash"
+            ? amountAbs
+            : (fundArrivalAmount > 0
+                ? fundArrivalAmount
+                : Math.max(0, amountAbs - (fundFee > 0 ? fundFee : 0)));
         } else {
           recordAccountId = cashAccId ?? investAcc.id;
           recordAccountName = cashAccName ?? investAcc.name;
@@ -854,7 +894,11 @@ export async function PUT(req: Request) {
     // 返回更新后的记录
     const updated = await prisma.txRecord.findUnique({
       where: { id: entryId },
-      include: { EntryTag: { include: { Tag: true } } },
+      include: {
+        EntryTag: { include: { Tag: true } },
+        account: { include: { Institution: { select: { name: true } } } },
+        toAccount: { include: { Institution: { select: { name: true } } } },
+      },
     });
 
     if (!updated) {
@@ -872,8 +916,10 @@ export async function PUT(req: Request) {
         categoryName: updated.categoryName,
         accountId: updated.accountId,
         accountName: updated.accountName,
+        accountInstitutionName: updated.account?.Institution?.name ?? "",
         toAccountId: updated.toAccountId,
         toAccountName: updated.toAccountName,
+        toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",
         note: updated.note,
         fundSubtype: updated.fundSubtype,
         fundCode: updated.fundCode,

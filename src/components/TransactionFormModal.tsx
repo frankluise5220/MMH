@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -81,6 +81,7 @@ type TagOption = {
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+type SubmitMode = "close" | "repeat";
 
 export function TransactionFormModal({
   accounts,
@@ -132,6 +133,8 @@ export function TransactionFormModal({
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
+  const formRef = useRef<HTMLFormElement>(null);
+  const submitModeRef = useRef<SubmitMode>("close");
 
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
@@ -264,7 +267,20 @@ export function TransactionFormModal({
     setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
+    setEditEntryOriginalType(null);
+    setEditEntryHasFundDetail(false);
     setFromAccountIdEdited(false);
+  }
+
+  function repeatDraft() {
+    setAmount("");
+    setRequestId(null);
+    setEditEntryId(null);
+    setEditEntryOriginalType(null);
+    setEditEntryHasFundDetail(false);
+    if (txType === "transfer" && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
+      setFromAccountId(defaultAccountId);
+    }
   }
 
   function swapTransferAccounts() {
@@ -411,8 +427,14 @@ export function TransactionFormModal({
         formData.set("keepFundDetail", "true");
         setSubmitting(true);
         try {
-          await (editAction ?? action)(formData);
-           requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+          const res = await (editAction ?? action)(formData);
+          if (!res.ok) {
+            window.alert(res.error);
+            return;
+          }
+          requestAnimationFrame(() => {
+            window.dispatchEvent(new Event("mmh:fund:refresh"));
+          });
           resetDraft();
         } catch (err) {
           window.alert(String(err));
@@ -463,13 +485,20 @@ export function TransactionFormModal({
           new CustomEvent(editEntryId ? "mmh:transaction:edit:success" : "mmh:create-transaction:success", { detail: { requestId } }),
         );
       }
-      setOpen(false);
-      resetDraft();
-       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+      });
+      if (submitModeRef.current === "repeat" && !editEntryId) {
+        repeatDraft();
+      } else {
+        setOpen(false);
+        resetDraft();
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "记账失败";
       window.alert(msg);
     } finally {
+      submitModeRef.current = "close";
       setSubmitting(false);
     }
   }
@@ -508,7 +537,7 @@ export function TransactionFormModal({
               </button>
             </div>
 
-            <form className="p-4 space-y-4 overflow-y-auto" onSubmit={onSubmit}>
+            <form ref={formRef} className="p-4 space-y-4 overflow-y-auto" onSubmit={onSubmit}>
               <div className="flex justify-center gap-2">
                 {isCreditCardAccount ? (
                   <>
@@ -568,7 +597,12 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTxType("transfer")}
+                      onClick={() => {
+                        setTxType("transfer");
+                        setFromAccountId(defaultAccountId ?? "");
+                        setToAccountId("");
+                        setFromAccountIdEdited(false);
+                      }}
                       className={`segment-button h-9 flex-1 ${
                         txType === "transfer"
                           ? "segment-button-active"
@@ -790,15 +824,19 @@ export function TransactionFormModal({
                   <button
                     type="button"
                     className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                    onClick={resetDraft}
+                    onClick={() => {
+                      submitModeRef.current = "repeat";
+                      formRef.current?.requestSubmit();
+                    }}
                     disabled={submitting}
                   >
-                    再记一笔
+                    保存并再记一笔
                   </button>
                 ) : null}
                 <button
                   type="submit"
                   className="primary-button h-9 px-3"
+                  onClick={() => { submitModeRef.current = "close"; }}
                   disabled={submitting}
                 >
                   {submitting ? "保存中…" : editEntryId ? "保存修改" : "保存"}

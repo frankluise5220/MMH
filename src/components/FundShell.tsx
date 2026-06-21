@@ -531,7 +531,7 @@ export function FundShell(props: Props) {
 
     if (!info) return "(空)";
 
-    return info.groupName ? `${info.groupName} / ${info.label}` : info.label;
+    return info.label;
 
   };
 
@@ -1129,7 +1129,7 @@ export function FundShell(props: Props) {
 
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(displayMV)}</td>
+                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
 
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
 
@@ -1157,7 +1157,7 @@ export function FundShell(props: Props) {
 
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-800">{formatMoney(d.totalCost)}</td>
 
-                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-800">{formatMoney(d.totalMarketValue)}</td>
+                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</td>
 
                     <td className="px-3 py-2 border-t border-slate-200"></td>
 
@@ -1191,7 +1191,7 @@ export function FundShell(props: Props) {
 
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">申购金额</th>
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">赎回金额</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">回收金额</th>
 
                   <SortHead sk="historicalProfit" label="清仓收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" />
 
@@ -1802,8 +1802,6 @@ export function FundShell(props: Props) {
                           <div className="min-w-0">
 
                             <div className="truncate text-slate-600">{info.label}</div>
-
-                            <div className="mt-0.5 truncate text-[10px] text-slate-400">{info.groupName || "未分组"}</div>
 
                           </div>
 

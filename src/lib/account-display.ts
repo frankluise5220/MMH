@@ -25,8 +25,11 @@ export type AccountDisplayOption = {
 };
 
 export function formatAccountDisplayName(accountName: string, institutionName?: string | null) {
+  const account = accountName.trim();
   const institution = institutionName?.trim() ?? "";
-  return institution ? `${institution}·${accountName}` : accountName;
+  if (!institution) return account;
+  if (!account || account === institution || account.startsWith(`${institution}·`)) return account;
+  return `${institution}·${account}`;
 }
 
 export function buildAccountDisplayOption(account: AccountDisplaySource): AccountDisplayOption {
@@ -35,7 +38,6 @@ export function buildAccountDisplayOption(account: AccountDisplaySource): Accoun
   const groupName = account.AccountGroup?.name?.trim() ?? "";
   const label = formatAccountDisplayName(account.name, institutionName);
   const subLabel = kindLabel(account.kind);
-  const fullLabel = [groupName, label].filter(Boolean).join(" / ");
 
   return {
     id: account.id,
@@ -47,7 +49,7 @@ export function buildAccountDisplayOption(account: AccountDisplaySource): Accoun
     institutionName,
     investProductType: account.investProductType ?? null,
     subLabel,
-    fullLabel: fullLabel || label,
+    fullLabel: label,
   };
 }
 

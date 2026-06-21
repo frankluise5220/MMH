@@ -40,6 +40,7 @@ export async function GET(req: Request) {
       balance: true,
       investProductType: true,
       currency: true,
+      Institution: { select: { name: true } },
     },
     orderBy: [{ name: "asc" }],
   });
@@ -53,6 +54,7 @@ export async function GET(req: Request) {
         balance: toNumber(account.balance),
         investProductType: account.investProductType ?? "fund",
         currency: account.currency,
+        institutionName: account.Institution?.name ?? "",
       })),
     },
     { headers: corsHeaders() }

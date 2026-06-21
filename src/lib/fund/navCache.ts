@@ -342,7 +342,7 @@ export async function setFundNavInTx(
  */
 export async function getLatestFundNav(
   fundCode: string
-): Promise<{ nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
   const record = await prisma.fundNavCache.findFirst({
     where: { fundCode },
     orderBy: { navDate: "desc" },
@@ -351,9 +351,36 @@ export async function getLatestFundNav(
   if (!record) return null;
 
   return {
+    id: record.id,
     nav: Number(record.nav),
     cumNav: record.cumNav ? Number(record.cumNav) : null,
     navDate: record.navDate,
     name: record.name,
   };
+}
+
+/**
+ * Refresh the latest available NAV for a fund and persist it through FundNavCache.
+ *
+ * This is intended for mobile/background daily sync. It deliberately asks the
+ * configured fund API for the latest available trading-day NAV without using
+ * the phone's local date as business truth. The API result's own date is used
+ * as the cache key.
+ */
+export async function refreshLatestFundNav(
+  fundCode: string,
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+  const apiData = await queryFundNav(fundCode);
+  if (!apiData?.date || !Number.isFinite(apiData.nav)) return getLatestFundNav(fundCode);
+
+  const navDate = utcDate(apiData.date);
+  await setFundNav(
+    fundCode,
+    navDate,
+    apiData.nav,
+    apiData.cumNav ?? null,
+    apiData.name ?? null,
+  );
+
+  return getLatestFundNav(fundCode);
 }

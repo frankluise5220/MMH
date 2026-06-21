@@ -177,7 +177,9 @@ export function DepositFormModal({
       }
       setOpen(false);
       if (mode === "create") reset();
-       requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+      });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "保存失败");
     } finally {

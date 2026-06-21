@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
+import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { EntryRowActions } from "./EntryRowActions";
 import { BasicDetailRowCheckbox } from "./BasicDetailSelection";
 
@@ -11,7 +12,9 @@ import { BasicDetailRowCheckbox } from "./BasicDetailSelection";
 export type DetailEntry = {
   id: string;
   date: string;
+  createdAt?: string | null;
   amount: number;
+  runningBalance?: number | null;
   type: string;
   categoryId: string | null;
   categoryName: string | null;
@@ -95,6 +98,12 @@ export function DetailViewClient({
 }) {
   const [entries, setEntries] = useState<DetailEntry[]>(() => []);
   const [entriesKey, setEntriesKey] = useState(0);
+  const colorScheme =
+    typeof document === "undefined"
+      ? "red_up_green_down"
+      : getColorSchemeFromCookie(document.cookie ?? null);
+  const inflowCls = pnlColor(1, colorScheme);
+  const outflowCls = pnlColor(-1, colorScheme);
 
   // When initialEntries change (account switch), reset entries
   useEffect(() => {
@@ -105,31 +114,18 @@ export function DetailViewClient({
   // Listen for mmh:fund:refresh → re-fetch from detail API
   useEffect(() => {
     const handler = () => {
-      fetch(`/api/v1/transactions/detail?accountId=${encodeURIComponent(accountId)}`)
+      fetch(`/api/v1/transactions/detail?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((data) => {
-          if (data.ok) {
+          if (data?.ok && Array.isArray(data?.data?.entries)) {
             setEntries(data.data.entries);
           }
-        });
+        })
+        .catch(() => {});
     };
     window.addEventListener("mmh:fund:refresh", handler);
     return () => window.removeEventListener("mmh:fund:refresh", handler);
   }, [accountId]);
-
-  // Compute running balance from entries (ascending order)
-  const balanceByEntryId = useMemo(() => {
-    const map = new Map<string, number>();
-    const asc = [...entries].sort((a, b) => a.date.localeCompare(b.date));
-    let running = 0;
-    for (const e of asc) {
-      const amount = toNumber(e.amount);
-      const isToAccount = !!accountId && e.toAccountId === accountId;
-      running += isToAccount ? Math.abs(amount) : amount;
-      map.set(e.id, running);
-    }
-    return map;
-  }, [entries, accountId]);
 
   if (!entries.length) {
     return (
@@ -155,7 +151,7 @@ export function DetailViewClient({
           !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
-        const bal = balanceByEntryId.get(e.id) ?? null;
+        const bal = e.runningBalance != null ? toNumber(e.runningBalance) : null;
         const subtypeLabel = e.type === "investment" && e.fundSubtype
           ? subtypeLabelInfo(e.fundSubtype, e.source, amount)
           : null;
@@ -235,10 +231,10 @@ export function DetailViewClient({
             <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">
               {dateStr}
             </td>
-            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">
+            <td className={`px-3 py-1 border-b border-slate-100 text-right tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
               {inflow !== null ? formatMoney(inflow) : ""}
             </td>
-            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">
+            <td className={`px-3 py-1 border-b border-slate-100 text-right tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
               {outflow !== null ? formatMoney(outflow) : ""}
             </td>
             <td className="px-3 py-1 border-b border-slate-100">

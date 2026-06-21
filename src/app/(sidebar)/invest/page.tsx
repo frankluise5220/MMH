@@ -268,7 +268,7 @@ const investProductTypeLabel = (type: string | null) => {
         <DailyPnlCalendar accountId={accounts[0]?.id ?? ""} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {[
-            { label: "总市值", value: fmt(totalMarketValue), sub: null, color: "text-slate-800" },
+            { label: "总市值", value: fmt(totalMarketValue), sub: null, color: pnlClass(totalMarketValue) },
             { label: "持仓成本", value: fmt(totalCostAll), sub: null, color: "text-slate-600" },
             { label: "浮动盈亏", value: fmt(totalFloatingPnL), sub: fmtRate(totalFloatingRate), color: pnlClass(totalFloatingPnL) },
             { label: "历史收益", value: fmt(totalRealizedPnL), sub: null, color: pnlClass(totalRealizedPnL) },
@@ -334,7 +334,7 @@ const investProductTypeLabel = (type: string | null) => {
                       </div>
                     </td>
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{r.totalCost > 0 ? fmt(r.totalCost) : <span className="text-slate-300">-</span>}</td>
-                    <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-800">{r.marketValue > 0 ? fmt(r.marketValue) : <span className="text-slate-300">-</span>}</td>
+                    <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlClass(r.marketValue)}`}>{r.marketValue > 0 ? fmt(r.marketValue) : <span className="text-slate-300">-</span>}</td>
                     <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlClass(r.floatingPnL)}`}>{r.marketValue > 0 ? fmt(r.floatingPnL) : <span className="text-slate-300">-</span>}</td>
                     <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlClass(r.floatingPnLRate)}`}>{r.marketValue > 0 ? fmtRate(r.floatingPnLRate) : <span className="text-slate-300">-</span>}</td>
                     <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlClass(r.realizedPnL)}`}>{r.realizedPnL !== 0 ? fmt(r.realizedPnL) : <span className="text-slate-300">-</span>}</td>
@@ -352,7 +352,7 @@ const investProductTypeLabel = (type: string | null) => {
                   <tr>
                     <td className="px-4 py-2 border-t border-slate-200 text-xs font-semibold text-slate-700">合计</td>
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-600">{fmt(totalCostAll)}</td>
-                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold text-slate-800">{fmt(totalMarketValue)}</td>
+                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlClass(totalMarketValue)}`}>{fmt(totalMarketValue)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlClass(totalFloatingPnL)}`}>{fmt(totalFloatingPnL)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnlClass(totalFloatingRate)}`}>{fmtRate(totalFloatingRate)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlClass(totalRealizedPnL)}`}>{fmt(totalRealizedPnL)}</td>

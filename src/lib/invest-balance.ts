@@ -266,14 +266,15 @@ export const computePositionDisplay = cache(
         clearedDateMap.set(row.fundCode, row._max.date.toISOString().slice(0, 10));
       }
     }
-    // 申购金额和赎回金额：只统计清仓日期之前的交易
+    // 申购金额和回收金额：只统计清仓日期之前的交易
+    // 回收金额 = 赎回到账 + 现金分红到账，和清仓收益保持同一现金流口径
     const clearedTxRows = await prisma.txRecord.findMany({
       where: {
         ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         OR: [
           { toAccountId: accountId, fundSubtype: "buy" },
-          { accountId: accountId, fundSubtype: { in: ["redeem"] } },
+          { accountId: accountId, fundSubtype: { in: ["redeem", "dividend_cash"] } },
         ],
         deletedAt: null,
       },
@@ -296,11 +297,12 @@ export const computePositionDisplay = cache(
     }
     for (const c of clearedPositions) {
       c.totalInvested = investedMap.get(c.fundCode) ?? 0;
-      c.returnRate = c.totalInvested > 0 ? c.historicalProfit / c.totalInvested : 0;
       c.firstBuyDate = firstBuyMap.get(c.fundCode) ?? "";
       c.clearedDate = clearedDateMap.get(c.fundCode) ?? "";
       c.totalBuyAmount = buyAmountMap.get(c.fundCode) ?? 0;
       c.totalRedeemAmount = redeemAmountMap.get(c.fundCode) ?? 0;
+      c.historicalProfit = c.totalRedeemAmount - c.totalBuyAmount;
+      c.returnRate = c.totalInvested > 0 ? c.historicalProfit / c.totalInvested : 0;
     }
   }
 

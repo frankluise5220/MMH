@@ -2,32 +2,83 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 
+type AccountBalanceLike = {
+  id: string;
+  kind: AccountKind;
+  billingDay?: number | null;
+};
+
+export async function computeAccountDisplayBalances(
+  accounts: AccountBalanceLike[],
+  hidFilter?: { householdId?: string },
+) {
+  const accountIds = accounts.map((account) => account.id).filter(Boolean);
+  const result = new Map<string, number>();
+  if (accountIds.length === 0) return result;
+
+  const txWhere = {
+    deletedAt: null,
+    ...(hidFilter ?? {}),
+  };
+
+  const [fromAgg, toRecords] = await Promise.all([
+    prisma.txRecord.groupBy({
+      by: ["accountId"],
+      where: {
+        ...txWhere,
+        accountId: { in: accountIds },
+      },
+      _sum: { amount: true },
+    }),
+    prisma.txRecord.findMany({
+      where: {
+        ...txWhere,
+        toAccountId: { in: accountIds },
+      },
+      select: { toAccountId: true, amount: true },
+    }),
+  ]);
+
+  const fromById = new Map<string, number>();
+  for (const row of fromAgg) {
+    fromById.set(row.accountId, toNumber(row._sum.amount));
+  }
+
+  const toById = new Map<string, number>();
+  for (const row of toRecords) {
+    const key = row.toAccountId ?? "";
+    if (!key) continue;
+    toById.set(key, (toById.get(key) ?? 0) + Math.abs(toNumber(row.amount)));
+  }
+
+  for (const account of accounts) {
+    const txSum = (fromById.get(account.id) ?? 0) + (toById.get(account.id) ?? 0);
+    const isBill =
+      (account.kind === AccountKind.bank_credit || account.kind === AccountKind.loan) &&
+      !!account.billingDay;
+    result.set(account.id, isBill ? 0 : txSum);
+  }
+
+  return result;
+}
+
 /**
- * 重算账户余额并写回数据库。
- * 同时考虑 accountId 侧（发起方）和 toAccountId 侧（接收方）的记录。
- *
- * 规则：
- * - accountId 侧：amount 直接累加（支出为负、收入为正）
- * - toAccountId 侧：金额绝对值累加（无论来源方金额正负，接收方都是流入）
+ * Recalculate an account's display balance and persist it to Account.balance.
+ * For incoming-side records, the receiver always treats the flow as positive.
  */
 export async function recalcAndSaveAccountBalance(accountId: string) {
-  const fromAgg = await prisma.txRecord.aggregate({
-    where: { accountId, deletedAt: null },
-    _sum: { amount: true },
+  const acc = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { kind: true, billingDay: true },
   });
-  const fromSum = toNumber(fromAgg._sum.amount);
-
-  // toAccountId 侧不能用 SUM+取反，因为 amount 正负方向不统一（dividend_cash 为正）
-  const toRecords = await prisma.txRecord.findMany({
-    where: { toAccountId: accountId, deletedAt: null },
-    select: { amount: true },
-  });
-  const toSum = toRecords.reduce((s, r) => s + Math.abs(toNumber(r.amount)), 0);
-
-  const txSum = fromSum + toSum;
-  const acc = await prisma.account.findUnique({ where: { id: accountId }, select: { kind: true, billingDay: true } });
   if (!acc) return;
-  const isBill = acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan;
-  const newBalance = isBill && acc.billingDay ? "0" : String(txSum);
-  await prisma.account.update({ where: { id: accountId }, data: { balance: newBalance } }).catch(() => {});
+
+  const balanceMap = await computeAccountDisplayBalances([
+    { id: accountId, kind: acc.kind, billingDay: acc.billingDay },
+  ]);
+  const newBalance = String(balanceMap.get(accountId) ?? 0);
+
+  await prisma.account
+    .update({ where: { id: accountId }, data: { balance: newBalance } })
+    .catch(() => {});
 }

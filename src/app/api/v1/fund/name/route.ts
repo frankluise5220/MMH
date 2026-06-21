@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
-import { getLatestFundNav } from "@/lib/fund/navCache";
+import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
 
 /**
  * 获取基金名称（优先从净值缓存库，再从外部API，最后从持仓库）
@@ -136,6 +136,17 @@ export async function GET(req: NextRequest) {
         nav: toNumber(latestNav.nav),
         navDate: latestNav.navDate?.toISOString?.()?.slice(0, 10) ?? null,
         source: "navcache",
+      });
+    }
+
+    const refreshedNav = await refreshLatestFundNav(fundCode);
+    if (refreshedNav?.name || refreshedNav?.nav) {
+      return NextResponse.json({
+        ok: true,
+        name: refreshedNav.name ?? fundCode,
+        nav: toNumber(refreshedNav.nav),
+        navDate: refreshedNav.navDate?.toISOString?.()?.slice(0, 10) ?? null,
+        source: "navapi",
       });
     }
 

@@ -7,6 +7,7 @@ import { SidebarClient } from "@/components/layout/SidebarClient";
 import { formatAccountDisplayName } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 
 async function getSidebarData() {
@@ -30,12 +31,18 @@ async function getSidebarData() {
   });
 
   const investBalByAccountId = await computeInvestBalances(ctx);
+  const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+    accounts
+      .filter((account) => account.kind !== AccountKind.investment)
+      .map((account) => ({ id: account.id, kind: account.kind, billingDay: account.billingDay })),
+    hidFilter,
+  );
 
   const items = accounts.map((account) => {
     const institution = account.Institution?.name?.trim() || "";
     const isInvest = account.kind === AccountKind.investment;
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
-    const balance = isInvest ? (investDetail?.marketValue ?? 0) : Number(account.balance);
+    const balance = isInvest ? (investDetail?.marketValue ?? 0) : (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance));
 
     return {
       id: account.id,
