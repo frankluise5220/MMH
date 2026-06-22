@@ -1,21 +1,21 @@
 # MMH NAS 安装说明
 
-目标：安装和更新都走同一套 Git 流程，不再下载几百兆镜像。
+目标：安装和更新只保留两个来源：GitHub 发布仓库，或 `192.168.5.149` 上的本地 bare 仓库。
 
 适用场景：
 - 你想从 GitHub 首次安装
-- 或者想在 NAS 本机通过本地 bare 仓库安装
+- 或者想从 `192.168.5.149` 上的本地 bare 仓库安装
 
 ## 0. 已验证的 NAS 本地仓库
 
-当前已验证可用的本地 bare 仓库位置：
+当前唯一保留的 NAS 本地仓库位置：
 
 ```bash
 ssh -p 9022 jsbyfubin@192.168.5.149
 REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 ```
 
-如果你已经把仓库同步到这台 NAS，后续安装和更新都优先用这条本地路径。
+以后本地安装源统一指向这条路径，不再使用旧的 Windows 本地路径或旧 NAS 路径。
 
 ## 1. 选择仓库地址
 
@@ -25,9 +25,14 @@ REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 # GitHub 仓库
 REPO_URL="https://github.com/frankluise5220/MMH.git"
 
-# 本地 bare 仓库（已验证）
+# 本地 bare 仓库（192.168.5.149）
 # REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 ```
+
+说明：
+- `E:\fs\mmh` 不再作为安装来源写入文档
+- 旧的 `/vol1/1000/git/MMH.git` 已废弃
+- 当前本地源只认 `192.168.5.149:/vol2/1001/fs/mmh/MMH.git`
 
 ## 2. 首次安装
 

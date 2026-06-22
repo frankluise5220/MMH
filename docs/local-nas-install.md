@@ -1,31 +1,36 @@
 # MMH 本地 NAS 安装说明
 
-目标：安装和更新都走同一套 Git 流程，不再下载几百兆镜像。
+目标：本地安装源只保留一个，就是 `192.168.5.149` 上的 bare 仓库；和它并列的另一个来源是 GitHub 发布仓库。
 
-适用场景：
-- 你已经把仓库同步到 NAS 本地 Git 仓库
-- 或者想先从 GitHub 克隆，再在 NAS 上长期更新
-
-## 1. 选择仓库地址
-
-二选一，保留一行即可：
+## 1. 保留的两个来源
 
 ```bash
-# 本地 bare 仓库
-REPO_URL="/vol1/1000/git/MMH.git"
+# GitHub 发布仓库
+REPO_URL="https://github.com/frankluise5220/MMH.git"
 
-# GitHub 仓库
-# REPO_URL="https://github.com/frankluise5220/MMH.git"
+# NAS 本地 bare 仓库
+REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 ```
 
-## 2. 首次安装
+说明：
+- 旧的 Windows 本地路径 `E:\fs\mmh` 不再作为安装来源说明的一部分
+- 旧的 `/vol1/1000/git/MMH.git` 已废弃，不再使用
+- 当前本地安装源统一指向 `192.168.5.149:9022`
 
-在 NAS 的 SSH 里执行：
+## 2. 登录 NAS
+
+```bash
+ssh -p 9022 jsbyfubin@192.168.5.149
+```
+
+## 3. 首次安装
+
+默认走 NAS 本地 bare 仓库：
 
 ```bash
 sh -c 'set -e
 APP_DIR="$HOME/mmh"
-REPO_URL="/vol1/1000/git/MMH.git"
+REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 
 cd "$HOME"
 rm -rf "$APP_DIR"
@@ -55,9 +60,13 @@ echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-## 3. 在线更新
+如果你要改成 GitHub 发布源，只改这一行：
 
-以后更新时，只需要在 NAS 上进入项目目录：
+```bash
+REPO_URL="https://github.com/frankluise5220/MMH.git"
+```
+
+## 4. 在线更新
 
 ```bash
 cd ~/mmh
@@ -65,5 +74,10 @@ git pull
 sudo docker compose up -d --build
 ```
 
-这会拉取最小 Git 差异，然后重新构建容器，不会重新下载整包镜像。
+## 5. 检查本地仓库
+
+```bash
+git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
+git --git-dir=/vol2/1001/fs/mmh/MMH.git log -1 --oneline
+```
 
