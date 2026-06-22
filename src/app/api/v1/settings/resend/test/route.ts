@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getEnvResendConfig } from "@/lib/mail/resend";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,14 @@ export async function POST(req: NextRequest) {
         if (!apiKey) apiKey = parsed.apiKey ?? "";
         if (!from) from = parsed.from ?? "";
       } catch {}
+    }
+  }
+
+  if (!apiKey || !from) {
+    const envConfig = getEnvResendConfig();
+    if (envConfig) {
+      if (!apiKey) apiKey = envConfig.apiKey;
+      if (!from) from = envConfig.from;
     }
   }
 

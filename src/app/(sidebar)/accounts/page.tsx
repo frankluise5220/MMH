@@ -87,7 +87,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         id: account.id,
         name: formatAccountDisplayName(account.name, institutionName),
         kind: account.kind,
-        groupName: account.AccountGroup?.name?.trim() || "未分组",
+        groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance: toNumber(account.balance),
       };
     });
@@ -103,7 +103,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         id: account.id,
         name: formatAccountDisplayName(account.name, institutionName),
         kind: account.kind,
-        groupName: account.AccountGroup?.name?.trim() || "未分组",
+        groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance,
         creditLimit,
         availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),

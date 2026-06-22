@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getEnvResendConfig } from "@/lib/mail/resend";
 
 export const runtime = "nodejs";
 
@@ -9,14 +10,25 @@ export const runtime = "nodejs";
  */
 export async function GET() {
   const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
+  const envConfig = getEnvResendConfig();
+  const fallback = {
+    apiKey: envConfig?.apiKey ?? "",
+    from: envConfig?.from ?? "",
+    source: envConfig ? "env" : "none",
+  };
+
   if (!setting) {
-    return NextResponse.json({ ok: true, data: { apiKey: "", from: "" } });
+    return NextResponse.json({ ok: true, data: fallback });
   }
+
   try {
     const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
-    return NextResponse.json({ ok: true, data: { apiKey: parsed.apiKey ?? "", from: parsed.from ?? "" } });
+    const apiKey = String(parsed.apiKey ?? "").trim();
+    const from = String(parsed.from ?? "").trim();
+    if (!apiKey) return NextResponse.json({ ok: true, data: fallback });
+    return NextResponse.json({ ok: true, data: { apiKey, from: from || fallback.from, source: "db" } });
   } catch {
-    return NextResponse.json({ ok: true, data: { apiKey: "", from: "" } });
+    return NextResponse.json({ ok: true, data: fallback });
   }
 }
 

@@ -282,9 +282,9 @@ export default function QuickAddAccountsPage() {
               </div>
 
               <div className="space-y-1.5">
-                <div className="text-sm font-medium text-slate-800">账户分组</div>
+                <div className="text-sm font-medium text-slate-800">所有人</div>
                 <select value={groupId} onChange={(event) => setGroupId(event.target.value)} className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-300">
-                  <option value="">自动默认分组</option>
+                  <option value="">自动默认所有人</option>
                   {groups.map((group) => (
                     <option key={group.id} value={group.id}>{group.name}</option>
                   ))}

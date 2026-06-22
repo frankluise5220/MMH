@@ -143,7 +143,7 @@ const ENTITY_CONFIG = {
       { key: "name", label: "账户名称", type: "text", placeholder: "例如：招商卡、微信零钱" },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
-      { key: "groupId", label: "分组", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
+      { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
       { key: "institutionId", label: "机构", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
       { key: "currency", label: "币种", type: "text", defaultValue: "CNY", placeholder: "CNY" },
       { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
@@ -154,16 +154,16 @@ const ENTITY_CONFIG = {
     ] as FieldDef[],
   },
   group: {
-    title: "新增分组",
+    title: "新增所有人",
     namePlaceholder: "所有人",
-    nameLabel: "分组名称",
+    nameLabel: "所有人名称",
     typeLabel: null,
     typeKey: null,
     types: [],
     apiPath: "/api/v1/account-group",
     bodyKey: { name: "name" },
     fullFields: [
-      { key: "name", label: "分组名称", type: "text", placeholder: "所有人" },
+      { key: "name", label: "所有人名称", type: "text", placeholder: "所有人" },
     ] as FieldDef[],
   },
   category: {
@@ -443,12 +443,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (!open) return null;
 
     // Build SmartSelect options for account compact mode
-    const groupList = nestedFieldData.groupId ?? [];
+    const groupList = (nestedFieldData.groupId ?? []).filter((item) => item.id && item.name && !item.type);
     const compactGroupOptions: SmartSelectOption[] = [
       { id: "", label: "所有人" },
       ...groupList.map(g => ({ id: g.id, label: g.name })),
     ];
-    const instList = nestedFieldData.institutionId ?? [];
+    const instList = (nestedFieldData.institutionId ?? []).filter((item) => item.id && item.name);
     const compactInstitutionOptions: SmartSelectOption[] = [
       ...instList.map(it => ({
         id: it.id,
@@ -498,12 +498,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               {/* Account: group & institution SmartSelect in compact mode */}
               {entityType === "account" && !hiddenFields?.includes("groupId") && (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-foreground/60">分组</div>
+                  <div className="text-xs font-medium text-foreground/60">所有人</div>
                   <SmartSelect mode="single" value={form.groupId ?? ""}
                     onChange={id => setForm(prev => ({ ...prev, groupId: id }))}
                     options={compactGroupOptions} placeholder="所有人"
                     onCreateClick={() => { setNestedEntityType("group"); setNestedOpen(true); }}
-                    createLabel="新增分组" />
+                    createLabel="新增所有人" />
                 </div>
               )}
               {entityType === "account" && !hiddenFields?.includes("institutionId") && (
@@ -699,7 +699,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   }
 
                   // Placeholder text for the SmartSelect (no empty option in the list)
-                  const selectPlaceholder = field.key === "groupId" ? "选择分组" : "选择机构";
+                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
 
                   return (
                     <div key={field.key}>
@@ -711,7 +711,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         options={ssOptions}
                         placeholder={selectPlaceholder}
                         onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                        createLabel={`新增${field.nestedCreate === "institution" ? "机构" : "分组"}`}
+                        createLabel={`新增${field.nestedCreate === "institution" ? "机构" : "所有人"}`}
                       />
                     </div>
                   );

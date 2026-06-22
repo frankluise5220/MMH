@@ -189,12 +189,12 @@ export default function SettingsAccountsPage() {
         <div className="flex items-center gap-1">
           <select value={selectedGroup} onChange={e => setSelectedGroup(e.target.value)}
             className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400">
-            <option value="">全部分组</option>
+            <option value="">全部所有人</option>
             {groups.map(g => <option key={g.id} value={g.id}>{g.name} ({groupAccountCounts.get(g.id) || 0})</option>)}
           </select>
-          {/* 分组管理：新建/编辑/删除 */}
+          {/* 所有人管理：新建/编辑/删除 */}
           {!showNewGroup ? (
-            <button onClick={() => setShowNewGroup(true)} title="新建分组"
+            <button onClick={() => setShowNewGroup(true)} title="新建所有人"
               className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:text-blue-600 hover:bg-blue-50">
               <Plus className="w-3.5 h-3.5" />
             </button>
@@ -202,7 +202,7 @@ export default function SettingsAccountsPage() {
             <div className="flex items-center gap-1">
               <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && createGroup()}
-                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" placeholder="分组名称" autoFocus />
+                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" placeholder="所有人名称" autoFocus />
               <button onClick={createGroup} disabled={!newGroupName.trim()}
                 className="h-9 w-9 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
                 <Check className="w-3.5 h-3.5" />
@@ -234,17 +234,17 @@ export default function SettingsAccountsPage() {
           <option value="">全部机构</option>
           {institutions.map(i => <option key={i.id} value={i.id}>{i.name} ({institutionAccountCounts.get(i.id) || 0})</option>)}
         </select>
-        {/* 分组列表（编辑/删除） */}
+        {/* 所有人列表（编辑/删除） */}
         {groups.length > 0 && (
           <div className="flex items-center gap-1 text-xs text-slate-400">
             {groups.map(g => (
               <span key={g.id} className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 hover:border-slate-300">
                 <span className="text-slate-600">{g.name}</span>
-                <button onClick={() => { setEditGroupId(g.id); setEditGroupName(g.name); }} title="编辑分组"
+                <button onClick={() => { setEditGroupId(g.id); setEditGroupName(g.name); }} title="编辑所有人"
                   className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-blue-600">
                   <Pencil className="w-2.5 h-2.5" />
                 </button>
-                <button onClick={() => { if (confirm("删除分组？")) deleteGroup(g.id); }} title="删除分组"
+                <button onClick={() => { if (confirm("删除所有人？")) deleteGroup(g.id); }} title="删除所有人"
                   className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-red-500">
                   <Trash2 className="w-2.5 h-2.5" />
                 </button>
@@ -284,12 +284,12 @@ export default function SettingsAccountsPage() {
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">分组</label>
+                        <label className="block text-xs text-slate-500 mb-1">所有人</label>
                         <SmartSelect mode="single" value={editForm.groupId || ""}
                           onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
                           options={groups.map(g => ({ id: g.id, label: g.name }))}
-                          placeholder="选择分组"
-                          onCreateClick={() => setNestedEntityType("group")} createLabel="新增分组" />
+                          placeholder="选择所有人"
+                          onCreateClick={() => setNestedEntityType("group")} createLabel="新增所有人" />
                       </div>
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">机构</label>

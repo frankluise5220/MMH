@@ -23,10 +23,10 @@ export async function POST(req: Request) {
 
   if (entity === "accountGroup") {
     const group = await prisma.accountGroup.findUnique({ where: { id } });
-    if (!group) return NextResponse.json({ ok: false, error: "分组不存在" }, { status: 404 });
+    if (!group) return NextResponse.json({ ok: false, error: "所有人不存在" }, { status: 404 });
     if (!isAdmin(user) && group.householdId && group.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { groupId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该分组，无法删除" }, { status: 409 });
+    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该所有人，无法删除" }, { status: 409 });
     await prisma.accountGroup.delete({ where: { id } });
     // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
     return NextResponse.json({ ok: true });
@@ -80,4 +80,3 @@ export async function POST(req: Request) {
   // Client-side handles page refresh
   return NextResponse.json({ ok: true });
 }
-

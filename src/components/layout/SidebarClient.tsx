@@ -276,7 +276,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                 <button onClick={toggleHideZero} className={`rounded-md p-1 transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title="隐藏余额为0的账户">
                   <EyeOff size={14} />
                 </button>
-                <button onClick={toggleGroupBy} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-500" title="切换分组方式">
+                <button onClick={toggleGroupBy} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-500" title="切换所有人显示">
                   <ArrowUpDown size={14} />
                 </button>
               </div>

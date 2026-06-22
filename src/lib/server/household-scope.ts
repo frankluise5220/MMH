@@ -25,7 +25,7 @@ export function assertBelongsToHousehold(record: { householdId?: string | null }
  * 从 cookie 读取 householdId，结合当前用户身份验证权限：
  * - admin 用户：cookie 中的 householdId 只要存在即可，否则回退到 DB 第一个 household
  * - 普通用户：只允许访问自己 householdId 对应的账簿
- * 如果 DB 中没有任何 Household，自动创建默认账簿（含默认分组、账户、分类）。
+ * 如果 DB 中没有任何 Household，自动创建默认账簿（含默认所有人、账户、分类）。
  * 返回 HouseholdContext，householdId 始终为 string，hidFilter 始终非空。
  */
 export async function getHouseholdScope(): Promise<HouseholdContext> {
@@ -83,26 +83,14 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
     },
   });
 
-  const defaultGroups = [
-    { name: "银行", sortOrder: 0 },
-    { name: "信用卡", sortOrder: 1 },
-    { name: "第三方支付", sortOrder: 2 },
-    { name: "投资", sortOrder: 3 },
-    { name: "现金", sortOrder: 4 },
-  ];
-  const groupRecords: { id: string; name: string }[] = [];
-  for (const g of defaultGroups) {
-    const created = await prisma.accountGroup.create({
-      data: { ...g, householdId: household.id },
-    });
-    groupRecords.push(created);
-  }
-  const investGroupId = groupRecords.find(g => g.name === "投资")!.id;
+  const defaultOwner = await prisma.accountGroup.create({
+    data: { name: "所有人", householdId: household.id, sortOrder: 0 },
+  });
 
   const defaultAccounts: { name: string; kind: string; groupId: string; investProductType?: string }[] = [
-    { name: "现金钱包", kind: "cash", groupId: groupRecords.find(g => g.name === "现金")!.id },
-    { name: "银行储蓄", kind: "bank_debit", groupId: groupRecords.find(g => g.name === "银行")!.id },
-    { name: "投资账户", kind: "investment", groupId: investGroupId, investProductType: "fund" },
+    { name: "现金钱包", kind: "cash", groupId: defaultOwner.id },
+    { name: "银行储蓄", kind: "bank_debit", groupId: defaultOwner.id },
+    { name: "投资账户", kind: "investment", groupId: defaultOwner.id, investProductType: "fund" },
   ];
   for (const a of defaultAccounts) {
     await prisma.account.create({

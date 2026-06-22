@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
   const name = typeof body?.name === "string" ? body.name.trim() : "";
 
   if (!name) {
-    return NextResponse.json({ ok: false, error: "分组名称不能为空" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "所有人名称不能为空" }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();
@@ -43,7 +43,7 @@ export async function PUT(req: NextRequest) {
   const { householdId, user } = await getHouseholdScope();
 
   const group = await prisma.accountGroup.findUnique({ where: { id } });
-  if (!group) return NextResponse.json({ ok: false, error: "分组不存在" }, { status: 404 });
+  if (!group) return NextResponse.json({ ok: false, error: "所有人不存在" }, { status: 404 });
   if (!isAdmin(user) && group.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
 
   await prisma.accountGroup.update({ where: { id }, data: { name } });

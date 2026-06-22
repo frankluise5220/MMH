@@ -59,9 +59,9 @@ const ENTITY_CONFIG = {
     bodyKey: { name: "name", kind: "kind" },
   },
   group: {
-    title: "新增分组",
+    title: "新增所有人",
     namePlaceholder: "例如：我的银行卡",
-    nameLabel: "分组名称",
+    nameLabel: "所有人名称",
     typeLabel: null,
     typeKey: null,
     types: [],

@@ -14,7 +14,7 @@ export async function GET() {
     const MODEL_CN: Record<string, string> = {
       Household: "家庭",
       User: "用户",
-      AccountGroup: "账户组",
+      AccountGroup: "所有人",
       Account: "账户",
       Category: "分类",
       Institution: "机构",

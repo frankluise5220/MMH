@@ -91,9 +91,9 @@ function planCashAccountLabel(p: RegularInvestPlanView): string {
 }
 
 function groupLabel(p: RegularInvestPlanView, mode: GroupByMode): string {
-  if (mode === "fundGroup") return p.accountGroupName || "基金账户未分组";
+  if (mode === "fundGroup") return p.accountGroupName || "基金账户未设置所有人";
   if (mode === "fundAccount") return p.accountFullLabel || planAccountLabel(p);
-  if (mode === "cashGroup") return p.cashAccountGroupName || "资金账户未分组";
+  if (mode === "cashGroup") return p.cashAccountGroupName || "资金账户未设置所有人";
   if (mode === "cashAccount") return p.cashAccountFullLabel || planCashAccountLabel(p);
   return "";
 }
@@ -505,11 +505,11 @@ export function RegularInvestClient({
                   onChange={(e) => setGroupBy(e.target.value as GroupByMode)}
                   className="ml-4 h-7 rounded border border-slate-200 bg-white px-2 text-xs outline-none"
                 >
-                  <option value="fundGroup">按基金账户组分组</option>
-                  <option value="fundAccount">按基金账户分组</option>
-                  <option value="cashGroup">按资金账户组分组</option>
-                  <option value="cashAccount">按资金账户分组</option>
-                  <option value="none">不分组</option>
+                  <option value="fundGroup">按基金账户所有人</option>
+                  <option value="fundAccount">按基金账户</option>
+                  <option value="cashGroup">按资金账户所有人</option>
+                  <option value="cashAccount">按资金账户</option>
+                  <option value="none">不按所有人</option>
                 </select>
               </div>
               <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">

@@ -190,7 +190,7 @@ const investProductTypeLabel = (type: string | null) => {
     const totalReturnRate = totalBuy > 0 ? totalReturn / totalBuy : 0;
 
     const label = formatAccountDisplayName(a.name, a.Institution?.name);
-    const groupName = a.AccountGroup?.name?.trim() || "未分组";
+    const groupName = a.AccountGroup?.name?.trim() || "未设置所有人";
     const productTypeLabel = investProductTypeLabel(a.investProductType);
 
     return {

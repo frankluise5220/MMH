@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
       ? await prisma.accountGroup.findFirst({ where: { id: requestedGroupId, householdId } })
       : await prisma.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
     const ensuredGroup = group ?? await prisma.accountGroup.create({
-      data: { name: "默认分组", householdId, sortOrder: 0 },
+      data: { name: "所有人", householdId, sortOrder: 0 },
     });
 
     const institution = requestedInstitutionId

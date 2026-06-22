@@ -2,7 +2,7 @@
 
 
 
-import { useState, useMemo, useRef, useEffect, useCallback, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -59,6 +59,7 @@ function isGenericFundName(name: string, code: string) {
 type Props = any;
 
 type FundTableKey = "positions" | "cleared" | "details";
+type FundTableViewportKey = "summary" | "details";
 
 const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
 
@@ -172,6 +173,12 @@ export function FundShell(props: Props) {
   const [regularPlans, setRegularPlans] = useState<any[]>([]);
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
+  const summaryTableViewportRef = useRef<HTMLDivElement>(null);
+  const detailTableViewportRef = useRef<HTMLDivElement>(null);
+  const [tableViewportWidths, setTableViewportWidths] = useState<Record<FundTableViewportKey, number>>({
+    summary: 0,
+    details: 0,
+  });
 
   // Shadow props with reactive local state
   const d = localData;
@@ -226,6 +233,64 @@ export function FundShell(props: Props) {
     const minWidth = minFundColWidth(table, key);
     return Math.max(minWidth, Number.isFinite(width) ? Number(width) : fallback);
   }, [columnWidths]);
+
+  useEffect(() => {
+    const targets: Array<[FundTableViewportKey, RefObject<HTMLDivElement | null>]> = [
+      ["summary", summaryTableViewportRef],
+      ["details", detailTableViewportRef],
+    ];
+
+    const updateWidth = (key: FundTableViewportKey, node: HTMLDivElement | null) => {
+      if (!node) return;
+      const width = Math.floor(node.clientWidth);
+      setTableViewportWidths((prev) => (prev[key] === width ? prev : { ...prev, [key]: width }));
+    };
+
+    targets.forEach(([key, ref]) => updateWidth(key, ref.current));
+
+    if (typeof ResizeObserver === "undefined") {
+      const onResize = () => targets.forEach(([key, ref]) => updateWidth(key, ref.current));
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }
+
+    const observers = targets.map(([key, ref]) => {
+      if (!ref.current) return null;
+      const observer = new ResizeObserver(() => updateWidth(key, ref.current));
+      observer.observe(ref.current);
+      return observer;
+    });
+
+    return () => observers.forEach((observer) => observer?.disconnect());
+  }, []);
+
+  const tableLayout = useCallback((
+    table: FundTableKey,
+    cols: readonly (readonly [string, number])[],
+    minTableWidth: number,
+    viewportWidth: number,
+  ) => {
+    const baseWidths = cols.map(([key, fallback]) => [key, colWidth(table, key, fallback)] as const);
+    const baseTotal = baseWidths.reduce((sum, [, width]) => sum + width, 0);
+    const targetWidth = Math.max(minTableWidth, viewportWidth || 0, baseTotal);
+    const scale = baseTotal > 0 && baseTotal < targetWidth ? targetWidth / baseTotal : 1;
+    const colWidths = Object.fromEntries(baseWidths.map(([key, width]) => [key, width * scale]));
+
+    return { tableWidth: targetWidth, colWidths };
+  }, [colWidth]);
+
+  const positionLayout = useMemo(
+    () => tableLayout("positions", POSITION_COLS, 1220, tableViewportWidths.summary),
+    [tableLayout, tableViewportWidths.summary],
+  );
+  const clearedLayout = useMemo(
+    () => tableLayout("cleared", CLEARED_COLS, 820, tableViewportWidths.summary),
+    [tableLayout, tableViewportWidths.summary],
+  );
+  const detailLayout = useMemo(
+    () => tableLayout("details", DETAIL_COLS, 1100, tableViewportWidths.details),
+    [tableLayout, tableViewportWidths.details],
+  );
 
   const setColWidth = useCallback((table: FundTableKey, key: string, width: number) => {
     setColumnWidths((prev) => {
@@ -1313,17 +1378,17 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div ref={summaryTableViewportRef} className="flex-1 min-h-0 overflow-auto">
 
           {!showCleared ? (
 
             <table
               className="min-w-[1220px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-              style={{ width: Math.max(1220, POSITION_COLS.reduce((sum, [key, fallback]) => sum + colWidth("positions", key, fallback), 0)) }}
+              style={{ width: positionLayout.tableWidth }}
             >
               <colgroup>
                 {POSITION_COLS.map(([key, fallback]) => (
-                  <col key={key} style={{ width: colWidth("positions", key, fallback) }} />
+                  <col key={key} style={{ width: positionLayout.colWidths[key] ?? colWidth("positions", key, fallback) }} />
                 ))}
               </colgroup>
 
@@ -1492,11 +1557,11 @@ export function FundShell(props: Props) {
 
             <table
               className="min-w-[820px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-              style={{ width: Math.max(820, CLEARED_COLS.reduce((sum, [key, fallback]) => sum + colWidth("cleared", key, fallback), 0)) }}
+              style={{ width: clearedLayout.tableWidth }}
             >
               <colgroup>
                 {CLEARED_COLS.map(([key, fallback]) => (
-                  <col key={key} style={{ width: colWidth("cleared", key, fallback) }} />
+                  <col key={key} style={{ width: clearedLayout.colWidths[key] ?? colWidth("cleared", key, fallback) }} />
                 ))}
               </colgroup>
 
@@ -1813,15 +1878,15 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div ref={detailTableViewportRef} className="flex-1 min-h-0 overflow-auto">
 
           <table
             className="min-w-[1100px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-            style={{ width: Math.max(1100, DETAIL_COLS.reduce((sum, [key, fallback]) => sum + colWidth("details", key, fallback), 0)) }}
+            style={{ width: detailLayout.tableWidth }}
           >
             <colgroup>
               {DETAIL_COLS.map(([key, fallback]) => (
-                <col key={key} style={{ width: colWidth("details", key, fallback) }} />
+                <col key={key} style={{ width: detailLayout.colWidths[key] ?? colWidth("details", key, fallback) }} />
               ))}
             </colgroup>
 

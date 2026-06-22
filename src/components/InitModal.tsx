@@ -352,6 +352,14 @@ export function InitModal({
     () => investmentAccountList.filter((account) => activeInvestAccountIds.includes(account.id)),
     [investmentAccountList, activeInvestAccountIds],
   );
+  const accountNestedFieldData = useMemo(() => ({
+    groupId: accountGroups
+      .filter((group) => group.id && group.name)
+      .map((group) => ({ id: group.id, name: group.name })),
+    institutionId: institutions
+      .filter((institution) => institution.id && institution.name)
+      .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type })),
+  }), [accountGroups, institutions]);
 
   async function fillFundRowFromCode(tempId: string, accountId: string, rawCode: string) {
     const fundCode = rawCode.trim();
@@ -690,20 +698,20 @@ export function InitModal({
     )}
 
     {open && investNestedOpen && createPortal(
-      <NestedAddModal mode="compact" entityType="account" open={investNestedOpen}
+      <NestedAddModal key="init-invest-account" mode="compact" entityType="account" open={investNestedOpen}
         onClose={() => { pendingInvestCreateFromAccountId.current = ""; setInvestNestedOpen(false); }}
         onCreated={handleInvestAccountCreated}
-        nestedFieldData={{ groupId: accountGroups, institutionId: institutions }}
+        nestedFieldData={accountNestedFieldData}
         extraFields={{ kind: "investment", investProductType: "fund" }}
         hiddenFields={["kind", "investProductType"]}
       />, document.body
     )}
 
     {open && balanceNestedOpen && createPortal(
-      <NestedAddModal mode="compact" entityType="account" open={balanceNestedOpen}
+      <NestedAddModal key="init-balance-account" mode="compact" entityType="account" open={balanceNestedOpen}
         onClose={() => { pendingBalanceCreateRowId.current = ""; setBalanceNestedOpen(false); }}
         onCreated={handleBalanceAccountCreated}
-        nestedFieldData={{ groupId: accountGroups, institutionId: institutions }}
+        nestedFieldData={accountNestedFieldData}
       />, document.body
     )}
     </>

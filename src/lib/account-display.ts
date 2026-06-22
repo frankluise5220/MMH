@@ -60,7 +60,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
 
   for (const account of accounts) {
     if (account.groupId) {
-      groups.set(account.groupId, { id: account.groupId, name: account.groupName || "未命名分组" });
+      groups.set(account.groupId, { id: account.groupId, name: account.groupName || "未命名所有人" });
       grouped.push(account);
     } else {
       ungrouped.push(account);

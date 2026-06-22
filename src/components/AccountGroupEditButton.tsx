@@ -47,17 +47,17 @@ export function AccountGroupEditButton({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setOpen(false)}>
           <div className="bg-white rounded-xl shadow-xl w-80" onClick={(e) => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between rounded-t-xl">
-              <div className="text-sm font-semibold text-slate-800">编辑分组</div>
+              <div className="text-sm font-semibold text-slate-800">编辑所有人</div>
               <button type="button" onClick={() => setOpen(false)} className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50">关闭</button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">分组名称</div>
+                <div className="text-xs font-medium text-slate-600">所有人名称</div>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder="分组名称"
+                  placeholder="所有人名称"
                   required
                 />
               </div>

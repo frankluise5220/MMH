@@ -49,7 +49,7 @@ export async function POST(_req: NextRequest) {
     }
     // 删除账户
     await tx.account.deleteMany({ where: { householdId } });
-    // 删除账户组
+    // 删除账户所有人
     await tx.accountGroup.deleteMany({ where: { householdId } });
     // 删除分类
     await tx.category.deleteMany({ where: { householdId } });

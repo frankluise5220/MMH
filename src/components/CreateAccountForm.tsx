@@ -135,15 +135,15 @@ export function CreateAccountForm({
         )}
 
         <div className="space-y-1">
-          <div className="text-xs text-slate-500">分组</div>
+          <div className="text-xs text-slate-500">所有人</div>
           <SmartSelect
             mode="single"
             value={groupId}
             onChange={setGroupId}
             options={groupOptions}
-            placeholder="选择分组"
+            placeholder="选择所有人"
             onCreateClick={() => setNestedOpen("group")}
-            createLabel="新增分组"
+            createLabel="新增所有人"
           />
           <input type="hidden" name="groupId" value={groupId} />
         </div>

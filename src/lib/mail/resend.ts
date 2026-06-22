@@ -1,14 +1,21 @@
 import { prisma } from "@/lib/db/prisma";
 
 /** 固定发件地址 */
-const RESEND_FROM = "mmh@floatingice.win";
+export const RESEND_FROM = "mmh@floatingice.win";
 
 type ResendConfig = {
   apiKey: string;
   from: string;
 };
 
-function getResendConfig(): ResendConfig | null {
+function allowEnvResendConfig() {
+  const explicit = (process.env.MMH_ALLOW_ENV_RESEND_CONFIG ?? "").trim().toLowerCase();
+  if (explicit === "1" || explicit === "true" || explicit === "yes") return true;
+  return process.env.NODE_ENV !== "production";
+}
+
+export function getEnvResendConfig(): ResendConfig | null {
+  if (!allowEnvResendConfig()) return null;
   const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
   if (!apiKey) return null;
   // env 可覆盖 from，但默认用固定值
@@ -42,11 +49,11 @@ async function getDbResendConfig(): Promise<ResendConfig | null> {
 async function resolveResendConfig(): Promise<ResendConfig | null> {
   const db = await getDbResendConfig();
   if (db) return db;
-  return getResendConfig();
+  return getEnvResendConfig();
 }
 
 export function hasResendConfig(): boolean {
-  return getResendConfig() !== null;
+  return getEnvResendConfig() !== null;
 }
 
 export async function sendEmailByResend(params: {

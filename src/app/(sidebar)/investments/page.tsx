@@ -14,10 +14,10 @@ export const dynamic = "force-dynamic";
 
 const INVEST_KINDS = [AccountKind.investment];
 const GROUP_MODES = [
-  { key: "group", label: "手动分组" },
+  { key: "group", label: "所有人" },
   { key: "institution", label: "机构" },
   { key: "owner", label: "所有人" },
-  { key: "none", label: "不分组" },
+  { key: "none", label: "不按所有人" },
 ] as const;
 
 type GroupMode = typeof GROUP_MODES[number]["key"];
@@ -74,7 +74,7 @@ export default async function InvestmentsPage({
     const totalCost = detail?.totalCost ?? 0;
     const floatingPnL = detail?.floatingPnL ?? 0;
     const accountLabel = formatAccountDisplayName(account.name, account.Institution?.name);
-    const groupName = account.AccountGroup?.name?.trim() || "未分组";
+    const groupName = account.AccountGroup?.name?.trim() || "未设置所有人";
     const institutionName = account.Institution?.name?.trim() || "未指定机构";
     const ownerName = account.User?.name?.trim() || "未指定";
     const productType = investProductTypeLabel(account.investProductType);
@@ -107,7 +107,7 @@ export default async function InvestmentsPage({
       groupBy === "owner" ? row.ownerName :
       groupBy === "none" ? "全部投资账户" :
       row.groupName;
-    const sort = groupBy === "group" ? row.groupSort : label === "未指定" || label === "未指定机构" || label === "未分组" ? 9999 : 0;
+    const sort = groupBy === "group" ? row.groupSort : label === "未指定" || label === "未指定机构" || label === "未设置所有人" ? 9999 : 0;
     const current = grouped.get(label);
     if (current) current.rows.push(row);
     else grouped.set(label, { label, sort, rows: [row] });
@@ -146,7 +146,7 @@ export default async function InvestmentsPage({
             </Link>
             <div className="min-w-0">
               <h1 className="text-base font-semibold text-slate-900">投资分账户</h1>
-              <p className="mt-0.5 text-xs text-slate-500">共 {rows.length} 个投资账户，{groups.length} 个分组</p>
+              <p className="mt-0.5 text-xs text-slate-500">共 {rows.length} 个投资账户，{groups.length} 个所有人</p>
             </div>
           </div>
           <div className="flex items-center rounded-lg bg-slate-100 p-0.5">

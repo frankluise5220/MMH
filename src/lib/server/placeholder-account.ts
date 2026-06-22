@@ -25,7 +25,7 @@ export async function getOrCreatePlaceholderAccountId(householdId: string): Prom
     return existing.id;
   }
 
-  // 找到当前账簿的默认分组，确保 groupId 存在
+  // 找到当前账簿的默认所有人，确保 groupId 存在
   let groupId: string;
   const defaultGroup = await prisma.accountGroup.findFirst({
     where: { householdId },
@@ -35,7 +35,7 @@ export async function getOrCreatePlaceholderAccountId(householdId: string): Prom
     groupId = defaultGroup.id;
   } else {
     const created = await prisma.accountGroup.create({
-      data: { name: "默认分组", householdId, sortOrder: 0 },
+      data: { name: "所有人", householdId, sortOrder: 0 },
     });
     groupId = created.id;
   }

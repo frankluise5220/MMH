@@ -143,6 +143,7 @@ _*.mjs
 public/test-results.json
 /src/app/test-results/
 release-artifacts/
+mmh-doc-edit/
 
 # temporary plans
 plans/

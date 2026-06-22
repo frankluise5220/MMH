@@ -10,7 +10,7 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
  * GET /api/v1/accounts/internal
  *
  * Query:
- * - balances=false 时只返回账户/分组/机构基础资料，不计算显示余额。
+ * - balances=false 时只返回账户/所有人/机构基础资料，不计算显示余额。
  */
 export async function GET(request: Request) {
   try {

@@ -19,6 +19,8 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     hasEmailService: hasResend || hasSmtp,
+    hasResend,
+    hasSmtp,
   });
 }
 

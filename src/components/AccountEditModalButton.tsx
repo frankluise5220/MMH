@@ -150,15 +150,15 @@ export function AccountEditModalButton({
                 />
 
                 <div>
-                  <div className="text-xs text-slate-500 mb-1">分组</div>
+                  <div className="text-xs text-slate-500 mb-1">所有人</div>
                   <SmartSelect
                     mode="single"
                     value={groupId}
                     onChange={setGroupId}
                     options={groupOptions}
-                    placeholder="选择分组"
+                    placeholder="选择所有人"
                     onCreateClick={() => setNestedEntityType("group")}
-                    createLabel="新增分组"
+                    createLabel="新增所有人"
                   />
                 </div>
 

@@ -37,7 +37,7 @@ export async function GET() {
 
 /**
  * POST /api/v1/households
- * 创建新账簿（含默认账户组、账户、分类、管理员用户）
+ * 创建新账簿（含默认所有人、账户、分类、管理员用户）
  *
  * Body: { name: string, adminName?: string, adminPassword?: string, adminEmail?: string }
  * - adminName: 管理员用户名，默认使用账簿名称
@@ -73,29 +73,16 @@ export async function POST(req: NextRequest) {
     data: { name },
   });
 
-  // 创建默认账户组
-  const defaultGroups = [
-    { name: "银行", sortOrder: 0 },
-    { name: "信用卡", sortOrder: 1 },
-    { name: "第三方支付", sortOrder: 2 },
-    { name: "投资", sortOrder: 3 },
-    { name: "现金", sortOrder: 4 },
-  ];
-  const groupRecords: { id: string; name: string }[] = [];
-  for (const g of defaultGroups) {
-    const created = await prisma.accountGroup.create({
-      data: { ...g, householdId: household.id },
-    });
-    groupRecords.push(created);
-  }
-  const bankGroupId = groupRecords.find(g => g.name === "银行")!.id;
-  const investGroupId = groupRecords.find(g => g.name === "投资")!.id;
+  // 创建默认所有人
+  const defaultOwner = await prisma.accountGroup.create({
+    data: { name: "所有人", householdId: household.id, sortOrder: 0 },
+  });
 
   // 创建默认账户
   const defaultAccounts: { name: string; kind: string; groupId: string; investProductType?: string }[] = [
-    { name: "现金钱包", kind: "cash", groupId: groupRecords.find(g => g.name === "现金")!.id },
-    { name: "银行储蓄", kind: "bank_debit", groupId: bankGroupId },
-    { name: "投资账户", kind: "investment", groupId: investGroupId, investProductType: "fund" },
+    { name: "现金钱包", kind: "cash", groupId: defaultOwner.id },
+    { name: "银行储蓄", kind: "bank_debit", groupId: defaultOwner.id },
+    { name: "投资账户", kind: "investment", groupId: defaultOwner.id, investProductType: "fund" },
   ];
   for (const a of defaultAccounts) {
     await prisma.account.create({
@@ -243,7 +230,7 @@ export async function DELETE(req: NextRequest) {
     }
     // 删除该账簿下的账户
     await tx.account.deleteMany({ where: { householdId: id } });
-    // 删除该账簿下的账户组
+    // 删除该账簿下的账户所有人
     await tx.accountGroup.deleteMany({ where: { householdId: id } });
     // 删除该账簿下的分类
     await tx.category.deleteMany({ where: { householdId: id } });

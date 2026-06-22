@@ -185,7 +185,7 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
       name: formatAccountDisplayName(account.name, institutionName),
       kind: account.kind,
       balance: toNumber(account.balance),
-      groupName: account.AccountGroup?.name?.trim() || "未分组",
+      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
       institutionName,
     };
   });
@@ -214,7 +214,7 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
       name: formatAccountDisplayName(account.name, institutionName),
       kind: account.kind,
       balance,
-      groupName: account.AccountGroup?.name?.trim() || "未分组",
+      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
       institutionName,
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),

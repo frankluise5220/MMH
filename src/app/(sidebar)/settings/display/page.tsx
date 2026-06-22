@@ -306,7 +306,7 @@ export default function DisplaySettingsPage() {
         </div>
         <div className="space-y-4 p-4">
           <div className="space-y-2">
-            <div className="form-label">账户分组方式</div>
+            <div className="form-label">账户所有人显示方式</div>
             <div className="flex gap-2">
               <button
                 type="button"
