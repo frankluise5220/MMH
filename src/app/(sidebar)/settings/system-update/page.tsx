@@ -184,7 +184,10 @@ export default function SystemUpdatePage() {
           <div className="space-y-2 text-sm">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-slate-500">当前版本</span>
-              <span className="font-semibold text-slate-900">{versionInfo.localVersion}</span>
+              <span className="font-semibold text-slate-900">{versionInfo.localCommit}</span>
+              <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                {versionInfo.localVersion}
+              </span>
               <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Git 更新模式</span>
               {isLatest ? <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">最新版本</span> : null}
               {needsUpdate ? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">有新版本</span> : null}
