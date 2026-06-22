@@ -38,7 +38,10 @@ export function BatchEditButton({ accountId, fundCode }: Props) {
         body: JSON.stringify({ prompt, accountId: accountId || undefined, fundCode, apply: true }),
       });
       const data = await res.json();
-      if (data.ok) { setOpen(false); window.location.reload(); }
+      if (data.ok) {
+        setOpen(false);
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
+      }
       else setError(data.error);
     } catch { setError("执行失败"); }
     setApplying(false);

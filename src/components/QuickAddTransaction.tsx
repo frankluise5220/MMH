@@ -2,7 +2,6 @@
 
 import { ChevronDown, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { clearStoredApiKeySession, getStoredApiKey } from "@/lib/client/apiKeySession";
 import { SmartSelect } from "./SmartSelect";
 
@@ -48,7 +47,6 @@ export function QuickAddTransaction({
   defaultAccountName?: string;
   accounts: Array<{ name: string; label: string }>;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -170,7 +168,7 @@ export function QuickAddTransaction({
       setLastType(type);
       setOpen(false);
       await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "记账失败";
       window.alert(msg);
@@ -285,4 +283,3 @@ export function QuickAddTransaction({
     </>
   );
 }
-

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
-import { getFundNav, fetchHistoricalNavList, findNavFallback, preloadNavListToCache, NavListItem } from "@/lib/fund/navCache";
+import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshLatestFundNav, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { logger } from "@/lib/logger";
 
@@ -14,26 +14,6 @@ function utcDate(dateStr: string) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-async function getLatestNav(fundCode: string) {
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    Referer: `http://fundgz.1234567.com.cn/js/${fundCode}.js`,
-  };
-  const url = `http://fundgz.1234567.com.cn/js/${fundCode}.js?rt=${Date.now()}`;
-  const res = await fetch(url, { headers, cache: "no-store" });
-  const text = await res.text();
-  const m = text.match(/\{.+\}/);
-  if (!m) return null;
-  let data: any;
-  try { data = JSON.parse(m[0]); } catch { return null; }
-  if (!data?.dwjz) return null;
-  return {
-    name: data.name as string,
-    nav: parseFloat(data.dwjz),
-    date: data.jzrq as string,
-  };
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -42,6 +22,7 @@ export async function POST(req: NextRequest) {
 
     let entryFilled = 0;
     let entryFailed = 0;
+    let entryNavFilled = 0;
 
     // 直接查询 TxRecord 中未确认的基金交易（包括 fundSubtype 为 null 的记录）
     const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
@@ -100,14 +81,13 @@ export async function POST(req: NextRequest) {
         let navData: { nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null = null;
 
         if (navList && navList.length > 0) {
-          const found = findNavFallback(navList, confirmDate);
+          const found = navList.find((item) => item.date === confirmDate);
           if (found) {
-            const dateMatch = found.date === confirmDate;
             navData = {
               nav: found.nav,
               cumNav: found.cumNav,
               name: null,
-              dateMatch,
+              dateMatch: true,
               actualDate: found.date,
             };
           }
@@ -118,12 +98,9 @@ export async function POST(req: NextRequest) {
           navData = await getFundNav(entry.fundCode, utcDate(confirmDate));
         }
 
-        if (!navData) { entryFailed++; continue; }
+        const hasExactNav = !!navData && navData.dateMatch;
 
-        // 如果净值日期与确认日期不一致，使用实际净值日期作为确认日期
-        const actualConfirmDate = navData.dateMatch
-          ? utcDate(confirmDate)
-          : utcDate(navData.actualDate ?? confirmDate);
+        const actualConfirmDate = utcDate(confirmDate);
 
         // Determine fee type based on fundSubtype (buy vs redeem/switch_out)
         const feeType = (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out")
@@ -137,7 +114,7 @@ export async function POST(req: NextRequest) {
         const fee = amount * feeRate;
 
         let units: number | null = null;
-        if (navData.nav > 0) {
+        if (hasExactNav && navData && navData.nav > 0) {
           if (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out") {
             // 赎回: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
             const divisor = navData.nav * (1 - feeRate);
@@ -154,25 +131,27 @@ export async function POST(req: NextRequest) {
 
         // 更新 TxRecord：写入净值、确认日期、手续费、份额、交易类型
         const updateData: {
-          fundNav: number;
+          fundNav?: number;
           fundConfirmDate: Date;
           fundFee: number;
           fundUnits?: number;
           fundSubtype?: string;
           fundName?: string;
         } = {
-          fundNav: navData.nav,
           fundConfirmDate: actualConfirmDate,
           fundFee: fee,
         };
+        if (hasExactNav && navData) {
+          updateData.fundNav = navData.nav;
+          if (navData.name) {
+            updateData.fundName = navData.name;
+          }
+        }
         if (units != null && Number.isFinite(units) && units > 0) {
           updateData.fundUnits = units;
         }
         if (entry.fundSubtype == null) {
           updateData.fundSubtype = inferredSubtype;
-        }
-        if (navData.name) {
-          updateData.fundName = navData.name;
         }
 
         await prisma.txRecord.update({
@@ -180,6 +159,7 @@ export async function POST(req: NextRequest) {
           data: updateData as any,
         });
         entryFilled++;
+        if (hasExactNav) entryNavFilled++;
       } catch {
         entryFailed++;
       }
@@ -200,7 +180,7 @@ export async function POST(req: NextRequest) {
       if (!h.fundCode) continue;
       try {
         // 获取最新净值（同时带回基金名称）
-        const latestNav = await getLatestNav(h.fundCode);
+        const latestNav = await refreshLatestFundNav(h.fundCode);
         if (!latestNav?.name) continue;
 
         // 直接更新基金名称（如果名称不同）
@@ -221,6 +201,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       entryFilled,
+      entryNavFilled,
       entryFailed,
       nameFixed,
       message: `补填确认净值 ${entryFilled} 笔${entryFailed > 0 ? `，${entryFailed} 笔失败` : ""}${nameFixed > 0 ? `，修正名称 ${nameFixed} 个` : ""}`,

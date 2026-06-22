@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { CheckCircle2, Loader2 } from "lucide-react";
 
 type AccountKindValue = "bank_debit" | "bank_credit";
@@ -72,7 +71,6 @@ function accountName(kind: AccountKindValue, last4: string) {
 }
 
 export default function QuickAddAccountsPage() {
-  const router = useRouter();
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -88,7 +86,7 @@ export default function QuickAddAccountsPage() {
   async function loadAll() {
     setLoading(true);
     setError("");
-    const res = await fetch("/api/v1/accounts/internal").catch(() => null);
+    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
     if (!res) {
       setError("网络请求失败，无法加载账户基础数据。");
       setLoading(false);
@@ -213,7 +211,7 @@ export default function QuickAddAccountsPage() {
 
       setAccounts((prev) => [...prev, ...createdAccounts]);
       setMessage(`已生成 ${createdCount} 个账户${skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在账户` : ""}。`);
-      router.refresh();
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "批量生成失败");
     } finally {

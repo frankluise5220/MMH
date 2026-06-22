@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import {
+  getFundUnitsDecimalsPreference,
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
+  setFundUnitsDecimalsPreference,
   setSessionDaysPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
@@ -21,6 +23,8 @@ const SESSION_DAY_OPTIONS = [
   { value: 365, label: "365 天" },
 ];
 
+const FUND_UNITS_DECIMAL_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
+
 function getCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
@@ -30,10 +34,12 @@ function getCookie(name: string): string | null {
 export default function DisplaySettingsPage() {
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [sessionDays, setSessionDays] = useState(30);
+  const [fundUnitsDecimals, setFundUnitsDecimals] = useState(2);
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingSession, setSavingSession] = useState(false);
+  const [savingFundUnitsDecimals, setSavingFundUnitsDecimals] = useState(false);
   const [currentUserName, setCurrentUserName] = useState("加载中…");
   const [activeHousehold, setActiveHousehold] = useState<{ id: string; name: string } | null>(null);
   const [allHouseholds, setAllHouseholds] = useState<Array<{ id: string; name: string }>>([]);
@@ -61,6 +67,11 @@ export default function DisplaySettingsPage() {
           setSessionDays(next);
           setSessionDaysPreference(next);
         }
+        if (d.ok && Number.isFinite(Number(d.fundUnitsDecimals))) {
+          const next = Number(d.fundUnitsDecimals);
+          setFundUnitsDecimals(next);
+          setFundUnitsDecimalsPreference(next);
+        }
       })
       .catch(() => {});
 
@@ -77,6 +88,7 @@ export default function DisplaySettingsPage() {
 
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
+    setFundUnitsDecimals(getFundUnitsDecimalsPreference());
   }, []);
 
   async function saveScheme(next: ColorScheme) {
@@ -119,6 +131,30 @@ export default function DisplaySettingsPage() {
       setSessionDaysPreference(prev);
     } finally {
       setSavingSession(false);
+    }
+  }
+
+  async function saveFundUnitsDecimals(next: number) {
+    const prev = fundUnitsDecimals;
+    setFundUnitsDecimals(next);
+    setFundUnitsDecimalsPreference(next);
+    setSavingFundUnitsDecimals(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fundUnitsDecimals: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setFundUnitsDecimals(prev);
+        setFundUnitsDecimalsPreference(prev);
+      }
+    } catch {
+      setFundUnitsDecimals(prev);
+      setFundUnitsDecimalsPreference(prev);
+    } finally {
+      setSavingFundUnitsDecimals(false);
     }
   }
 
@@ -342,6 +378,33 @@ export default function DisplaySettingsPage() {
               </div>
             </label>
           ))}
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">基金显示</div>
+            <div className="mt-1 text-xs text-slate-500">控制基金持仓和交易明细里份额数字的显示精度。</div>
+          </div>
+        </div>
+        <div className="space-y-4 p-4">
+          <div className="grid gap-2 sm:max-w-xs">
+            <label className="form-label">基金份额小数位</label>
+            <select
+              value={fundUnitsDecimals}
+              onChange={(e) => saveFundUnitsDecimals(Number(e.target.value))}
+              disabled={savingFundUnitsDecimals}
+              className="form-input"
+            >
+              {FUND_UNITS_DECIMAL_OPTIONS.map((value) => (
+                <option key={value} value={value}>{value} 位</option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500">
+              只影响页面显示；数据库仍保留原始精度，计算不会因为这里减少小数位而丢失。
+            </p>
+          </div>
         </div>
       </section>
     </div>

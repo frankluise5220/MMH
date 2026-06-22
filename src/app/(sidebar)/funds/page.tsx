@@ -16,6 +16,9 @@ export default async function FundsPage({
   const params = await searchParams;
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
+  const fundUnitsDecimalsRaw = Number(cookieStore.get("mmh_fund_units_decimals")?.value ?? 2);
+  const fundUnitsDecimals = Number.isFinite(fundUnitsDecimalsRaw) ? Math.min(Math.max(Math.round(fundUnitsDecimalsRaw), 0), 6) : 2;
+  const formatFundUnits = (value: number) => value.toFixed(fundUnitsDecimals);
   const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
@@ -128,7 +131,7 @@ export default async function FundsPage({
                   {positions.map((p) => (
                     <tr key={p.fundCode} className="hover:bg-slate-50">
                       <td className="px-4 py-2 border-b border-slate-100 text-xs text-slate-800">{p.name}</td>
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{p.units.toFixed(2)}</td>
+                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{formatFundUnits(p.units)}</td>
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.nav != null ? p.nav.toFixed(4) : "—"}{p.navDate ? <span className="ml-0.5 text-slate-400">({p.navDate})</span> : null}</td>
                       <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{formatMoney(p.cost)}</td>
                       <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnlCls(p.marketValue)}`}>
@@ -141,7 +144,7 @@ export default async function FundsPage({
                 <tfoot className="sticky bottom-0 bg-white">
                   <tr>
                     <td className="px-4 py-2 border-t border-slate-200 text-xs font-semibold text-slate-700">合计</td>
-                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-600">{positions.reduce((s, p) => s + p.units, 0).toFixed(2)}</td>
+                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-600">{formatFundUnits(positions.reduce((s, p) => s + p.units, 0))}</td>
                     <td className="px-3 py-2 border-t border-slate-200"></td>
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold text-slate-800">{formatMoney(totalCost)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlCls(totalMarketValue)}`}>{formatMoney(totalMarketValue)}</td>

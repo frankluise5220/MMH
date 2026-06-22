@@ -57,7 +57,7 @@ export function TableColumnFilter({
           event.stopPropagation();
           onToggleOpen();
         }}
-        className={`h-5 w-5 rounded border text-[10px] leading-none ${filtered ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
+        className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
         title={`${label}筛选`}
       >
         ▼

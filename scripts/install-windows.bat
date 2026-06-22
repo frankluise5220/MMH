@@ -18,6 +18,15 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
+:: 检查 Git 是否安装
+where git >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo [错误] 未检测到 Git，请先安装 Git for Windows
+    echo 下载地址: https://git-scm.com/download/win
+    pause
+    exit /b 1
+)
+
 echo [1/4] 创建项目目录...
 set "APP_DIR=%USERPROFILE%\mmh"
 if exist "%APP_DIR%" (
@@ -25,17 +34,17 @@ if exist "%APP_DIR%" (
     rmdir /s /q "%APP_DIR%"
 )
 mkdir "%APP_DIR%"
-cd /d "%APP_DIR%"
+cd /d "%USERPROFILE%"
 
-echo [2/4] 下载配置文件...
-echo 正在从 GitHub 下载 docker-compose.yml 和 .env.example...
-curl -fsSL -o docker-compose.yml "https://raw.githubusercontent.com/frankluise5220/MMH/main/docker-compose.yml"
-curl -fsSL -o .env.example "https://raw.githubusercontent.com/frankluise5220/MMH/main/.env.example"
+echo [2/4] 拉取源码...
+echo 正在从 GitHub 克隆仓库...
+git clone "https://github.com/frankluise5220/MMH.git" "%APP_DIR%"
 if %ERRORLEVEL% neq 0 (
-    echo [错误] 下载失败，请检查网络连接
+    echo [错误] 拉取失败，请检查网络连接
     pause
     exit /b 1
 )
+cd /d "%APP_DIR%"
 
 echo [3/4] 生成随机密码...
 set "POSTGRES_DB=mmh"
@@ -56,13 +65,14 @@ echo POSTGRES_DB="%POSTGRES_DB%"
 echo POSTGRES_USER="%POSTGRES_USER%"
 echo POSTGRES_PASSWORD="%POSTGRES_PASSWORD%"
 echo STATEMENT_API_KEY="%STATEMENT_API_KEY%"
+echo MMH_GIT_REMOTE="origin"
+echo MMH_GIT_BRANCH="main"
 echo PRISMA_CLIENT_ENGINE_TYPE="binary"
 ) > .env
 
 echo.
-echo 正在拉取镜像并启动...
-docker compose pull
-docker compose up -d
+echo 正在构建并启动...
+docker compose up -d --build
 
 echo.
 echo ============================================

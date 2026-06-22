@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
+import { useState } from "react";
+import { Plus, TrendingUp } from "lucide-react";
 
 type HoldingItem = {
   fundCode: string;
@@ -11,11 +10,21 @@ type HoldingItem = {
   nav?: number;
 };
 
-export function AddNavButton({ accountId, positions = [] }: { accountId: string; positions?: Array<{ fundCode: string; name: string; navDate?: string; nav?: number }> }) {
-  const router = useRouter();
+export function AddNavButton({
+  accountId,
+  positions = [],
+  defaultFundCode,
+  trigger = "text",
+}: {
+  accountId: string;
+  positions?: HoldingItem[];
+  defaultFundCode?: string;
+  trigger?: "text" | "icon";
+}) {
+  const defaultHolding = positions.find((p) => p.fundCode === defaultFundCode) ?? (positions.length === 1 ? positions[0] : null);
   const [open, setOpen] = useState(false);
-  const [fundCode, setFundCode] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [fundCode, setFundCode] = useState(defaultHolding?.fundCode ?? "");
+  const [date, setDate] = useState(defaultHolding?.navDate ?? new Date().toISOString().slice(0, 10));
   const [nav, setNav] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -36,6 +45,14 @@ export function AddNavButton({ accountId, positions = [] }: { accountId: string;
     if (h?.navDate) setDate(h.navDate);
   }
 
+  function openDialog() {
+    if (defaultHolding) {
+      setFundCode(defaultHolding.fundCode);
+      setDate(defaultHolding.navDate ?? new Date().toISOString().slice(0, 10));
+    }
+    setOpen(true);
+  }
+
   async function onSubmit() {
     if (!fundCode.trim() || !nav.trim()) return;
     setLoading(true);
@@ -50,7 +67,7 @@ export function AddNavButton({ accountId, positions = [] }: { accountId: string;
         setOpen(false);
         setFundCode("");
         setNav("");
-        router.refresh();
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
       } else {
         window.alert(data.error ?? "添加失败");
       }
@@ -59,6 +76,22 @@ export function AddNavButton({ accountId, positions = [] }: { accountId: string;
   }
 
   if (!open) {
+    if (trigger === "icon") {
+      return (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            openDialog();
+          }}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+          title="手动添加基金净值"
+        >
+          <TrendingUp className="w-3.5 h-3.5" />
+        </button>
+      );
+    }
+
     return (
       <button onClick={() => setOpen(true)}
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"

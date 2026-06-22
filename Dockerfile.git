@@ -1,0 +1,23 @@
+FROM node:20-bookworm
+
+WORKDIR /app
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV PORT=7777
+ENV MMH_UPDATE_MODE=git
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    git \
+    postgresql-client \
+    openssl \
+    ca-certificates \
+    python3 \
+    make \
+    g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 7777
+
+CMD ["sh", "-c", "set -e; git config --global --add safe.directory /app || true; if [ ! -f package.json ]; then echo '[mmh] /app is empty or not a MMH checkout'; exit 1; fi; PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo '[mmh] waiting for postgres...'; sleep 1; done; if [ ! -x node_modules/.bin/next ]; then echo '[mmh] installing dependencies...'; npm install --include=dev; fi; echo '[mmh] generating prisma client...'; npx prisma generate; echo '[mmh] syncing database...'; npx prisma db push --accept-data-loss; if [ ! -d .next ]; then echo '[mmh] building app...'; npm run build; fi; echo '[mmh] starting app...'; npm run start"]

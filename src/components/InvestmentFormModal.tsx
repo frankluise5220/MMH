@@ -1072,14 +1072,14 @@ export function InvestmentFormModal({
   // 触发按钮
   const triggerButton = mode === "edit" ? (
     entry ? (
-      <div className="flex h-7 items-center gap-1">
+      <div className="flex h-7 shrink-0 items-center gap-1">
         <button type="button" onClick={() => setOpen(true)}
-          className="secondary-button h-7 w-7 px-0 text-slate-500 hover:text-blue-600">
-          <Pencil className="w-3.5 h-3.5" />
+          className="secondary-button h-7 w-7 shrink-0 px-0 text-slate-500 hover:text-blue-600">
+          <Pencil className="h-3.5 w-3.5 shrink-0" />
         </button>
         <button type="button" onClick={onDelete} disabled={deleting}
-          className="secondary-button h-7 w-7 px-0 text-slate-500 hover:text-red-600 disabled:opacity-50">
-          <Trash2 className="w-3.5 h-3.5" />
+          className="secondary-button h-7 w-7 shrink-0 px-0 text-slate-500 hover:text-red-600 disabled:opacity-50">
+          <Trash2 className="h-3.5 w-3.5 shrink-0" />
         </button>
       </div>
     ) : null

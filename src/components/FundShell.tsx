@@ -2,7 +2,7 @@
 
 
 
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback, type MouseEvent as ReactMouseEvent } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -14,7 +14,7 @@ import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
 
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, Download, Upload, Trash2 } from "lucide-react";
+import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload, Trash2 } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 
@@ -48,9 +48,73 @@ function fl(subtype: string | null | undefined, source: string | null | undefine
 
 function fmtDate(v: any) { if (!v) return ""; const s = typeof v === "string" ? v : v?.toISOString?.(); return s ? s.slice(0, 10) : ""; }
 
+function isGenericFundName(name: string, code: string) {
+  const value = name.trim();
+  if (!value || value === code) return true;
+  return ["红利转投", "红利再投", "红利再投资", "现金红利", "分红", "买入", "申购", "赎回", "定投"].includes(value);
+}
+
 
 
 type Props = any;
+
+type FundTableKey = "positions" | "cleared" | "details";
+
+const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
+
+const POSITION_COLS = [
+  ["fund", 260],
+  ["units", 92],
+  ["avgCost", 84],
+  ["nav", 136],
+  ["cost", 112],
+  ["marketValue", 112],
+  ["pending", 78],
+  ["floatingPnL", 104],
+  ["floatingRate", 84],
+  ["historical", 108],
+  ["actions", 112],
+] as const;
+
+const CLEARED_COLS = [
+  ["fund", 220],
+  ["firstBuy", 108],
+  ["clearedDate", 108],
+  ["buyAmount", 112],
+  ["redeemAmount", 112],
+  ["historical", 112],
+  ["returnRate", 80],
+] as const;
+
+const DETAIL_COLS = [
+  ["select", 44],
+  ["date", 92],
+  ["arrivalDate", 92],
+  ["cashAccount", 132],
+  ["fund", 156],
+  ["nav", 86],
+  ["units", 84],
+  ["subtype", 88],
+  ["amount", 76],
+  ["profit", 76],
+  ["status", 72],
+  ["actions", 112],
+] as const;
+
+const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
+  positions: {
+    avgCost: 76,
+    nav: 118,
+  },
+  cleared: {},
+  details: {
+    nav: 76,
+  },
+};
+
+function minFundColWidth(table: FundTableKey, key: string) {
+  return FUND_COL_MIN_WIDTHS[table]?.[key] ?? 44;
+}
 
 
 
@@ -68,11 +132,16 @@ export function FundShell(props: Props) {
 
     accountId, selectedAccount, selectedAccountLabel, accountOptions,
 
-    cashAccounts, investmentAccounts, createAction, editAction,
+    cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, nestedFieldData, createAction, editAction,
 
     fillNavAction, regularInvestFormAction, lastUsedCashAccount, isRedUp,
+    fundUnitsDecimals: fundUnitsDecimalsProp,
 
   } = props;
+
+  const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
+
+  const formatFundUnits = (value: number) => value.toFixed(fundUnitsDecimals);
 
 
 
@@ -98,11 +167,11 @@ export function FundShell(props: Props) {
 
   const [adjustedNavByCode, setAdjustedNavByCode] = useState<Record<string, { nav: number; date: string }>>({});
 
-  const [navLoading, setNavLoading] = useState<Record<string, boolean>>({});
-
-  const [navDateOffset, setNavDateOffset] = useState<Record<string, number>>({});
-
   const [localData, setLocalData] = useState({ positions, clearedPositions, allEntries, totalMarketValue, totalCost, totalHistoricalProfit, confirmDaysMap, feeRateMap });
+  const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
+  const [regularPlans, setRegularPlans] = useState<any[]>([]);
+  const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
+  const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
 
   // Shadow props with reactive local state
   const d = localData;
@@ -144,6 +213,88 @@ export function FundShell(props: Props) {
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
 
   const pnl = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FUND_TABLE_WIDTHS_KEY);
+      if (raw) setColumnWidths(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  const colWidth = useCallback((table: FundTableKey, key: string, fallback: number) => {
+    const width = columnWidths[table]?.[key];
+    const minWidth = minFundColWidth(table, key);
+    return Math.max(minWidth, Number.isFinite(width) ? Number(width) : fallback);
+  }, [columnWidths]);
+
+  const setColWidth = useCallback((table: FundTableKey, key: string, width: number) => {
+    setColumnWidths((prev) => {
+      const next = {
+        ...prev,
+        [table]: {
+          ...(prev[table] ?? {}),
+          [key]: Math.max(minFundColWidth(table, key), Math.round(width)),
+        },
+      };
+      try {
+        window.localStorage.setItem(FUND_TABLE_WIDTHS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const beginColumnResize = useCallback((event: ReactMouseEvent, table: FundTableKey, key: string, currentWidth: number, minWidth = 48) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = currentWidth;
+
+    const onMove = (moveEvent: MouseEvent) => {
+      setColWidth(table, key, Math.max(minWidth, startWidth + moveEvent.clientX - startX));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [setColWidth]);
+
+  const ResizeGrip = ({ table, colKey, width, minWidth = 48 }: { table: FundTableKey; colKey: string; width: number; minWidth?: number }) => (
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      onMouseDown={(event) => beginColumnResize(event, table, colKey, width, minWidth)}
+      className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
+      title="拖动调整列宽"
+    />
+  );
+
+  const fundNameByCode = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of [...(d.positions || []), ...(d.clearedPositions || [])] as any[]) {
+      const code = String(p?.fundCode ?? "").trim();
+      const name = String(p?.name ?? "").trim();
+      if (code && name && name !== code) map.set(code, name);
+    }
+    return map;
+  }, [d.positions, d.clearedPositions]);
+
+  const displayFundName = useCallback((entry: any) => {
+    const code = String(entry?.fundCode ?? "").trim();
+    const fetched = code ? fetchedFundNames[code] : "";
+    if (fetched && !isGenericFundName(fetched, code)) return fetched;
+    const mapped = code ? fundNameByCode.get(code) : "";
+    if (mapped && !isGenericFundName(mapped, code)) return mapped;
+    const stored = String(entry?.fundName ?? "").trim();
+    if (stored && !isGenericFundName(stored, code)) return stored;
+    return code || "-";
+  }, [fetchedFundNames, fundNameByCode]);
 
 
 
@@ -217,7 +368,7 @@ export function FundShell(props: Props) {
 
         e.fundCode || "",
 
-        e.fundName || "",
+        displayFundName(e),
 
         String(nav),
 
@@ -339,7 +490,25 @@ export function FundShell(props: Props) {
 
 
 
-  function SortHead({ sk, label, cls, sortType }: { sk: string; label: string; cls: string; sortType?: "position" | "cleared" }) {
+  function SortHead({
+    sk,
+    label,
+    cls,
+    sortType,
+    table,
+    colKey,
+    width,
+    minWidth,
+  }: {
+    sk: string;
+    label: string;
+    cls: string;
+    sortType?: "position" | "cleared";
+    table?: FundTableKey;
+    colKey?: string;
+    width?: number;
+    minWidth?: number;
+  }) {
 
     const isCleared = sortType === "cleared";
 
@@ -351,13 +520,15 @@ export function FundShell(props: Props) {
 
     return (
 
-      <th className={cls} onClick={() => toggle(sk)} style={{ cursor: "pointer" }}>
+      <th className={`${cls} relative select-none`} onClick={() => toggle(sk)} style={{ cursor: "pointer" }}>
 
         <span className={`inline-flex items-center gap-0.5 hover:text-blue-700 ${active ? "text-blue-700" : ""}`}>
 
           {label} {active ? <span className="text-[10px]">{dir === "asc" ? "↑" : "↓"}</span> : <span className="text-[10px] text-slate-300">↕</span>}
 
         </span>
+
+        {table && colKey && width ? <ResizeGrip table={table} colKey={colKey} width={width} minWidth={minWidth} /> : null}
 
       </th>
 
@@ -395,7 +566,9 @@ export function FundShell(props: Props) {
 
     window.history.replaceState(null, "", `/?${q.toString()}`);
 
-    setFundCode(on && d.clearedPositions.length > 0 ? d.clearedPositions[0].fundCode : d.positions.length > 0 ? d.positions[0].fundCode : "");
+    const nextCode = on && d.clearedPositions.length > 0 ? d.clearedPositions[0].fundCode : d.positions.length > 0 ? d.positions[0].fundCode : "";
+
+    setFundCode(nextCode);
 
     setFundPage(1);
 
@@ -406,6 +579,7 @@ export function FundShell(props: Props) {
   // Listen for fund data refresh event from modals (stable handler with debounce)
   const refreshBusy = useRef(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const shellDataRequestSeq = useRef(0);
   const fundCodeRef = useRef(fundCode);
   const showClearedRef = useRef(showCleared);
   const accountIdRef = useRef(accountId);
@@ -416,6 +590,68 @@ export function FundShell(props: Props) {
     accountIdRef.current = accountId;
   }, [fundCode, showCleared, accountId]);
 
+  const loadFundShellData = useCallback(async (code: string, cleared: boolean) => {
+    const seq = ++shellDataRequestSeq.current;
+    try {
+      const sc = cleared ? "1" : "0";
+      const res = await fetch(`/api/v1/fund/shell-data?accountId=${encodeURIComponent(accountId)}&fundCode=${encodeURIComponent(code)}&showCleared=${sc}&entryScope=account`);
+      const json = await res.json();
+      if (json.ok && seq === shellDataRequestSeq.current) {
+        startTransition(() => {
+          setLocalData((prev) => {
+            const refreshedEntries = Array.isArray(json.allEntries) ? json.allEntries : [];
+            const refreshedIds = new Set(refreshedEntries.map((entry: any) => entry.id));
+            const nextAllEntries = json.entryScope === "account"
+              ? refreshedEntries
+              : code
+              ? [
+                  ...prev.allEntries.filter((entry: any) => entry.fundCode !== code && !refreshedIds.has(entry.id)),
+                  ...refreshedEntries,
+                ]
+              : refreshedEntries;
+
+            return {
+              positions: json.positions,
+              clearedPositions: json.clearedPositions,
+              allEntries: nextAllEntries,
+              totalMarketValue: json.totalMarketValue,
+              totalCost: json.totalCost,
+              totalHistoricalProfit: json.totalHistoricalProfit,
+              confirmDaysMap: json.confirmDaysMap,
+              feeRateMap: json.feeRateMap,
+            };
+          });
+        });
+      }
+    } catch {}
+  }, [accountId]);
+
+  function handleEntryNavFilled(entry: any, data: { nav: number; confirmDate: string; units: number; arrivalDate?: string }) {
+    const code = entry.fundCode || fundCodeRef.current;
+
+    if (code) {
+      setAdjustedNavByCode((prev) => {
+        if (!(code in prev)) return prev;
+        const next = { ...prev };
+        delete next[code];
+        return next;
+      });
+    }
+
+    setLocalData(prev => ({
+      ...prev,
+      allEntries: prev.allEntries.map((en: any) => en.id === entry.id ? {
+        ...en,
+        fundNav: data.nav,
+        fundConfirmDate: data.confirmDate ? new Date(data.confirmDate) : en.fundConfirmDate,
+        fundUnits: data.units,
+        fundArrivalDate: data.arrivalDate ? new Date(data.arrivalDate) : en.fundArrivalDate,
+      } : en),
+    }));
+
+    if (code) void loadFundShellData(code, showClearedRef.current);
+  }
+
   const shellRefreshHandler = useCallback(async () => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
     refreshTimer.current = setTimeout(async () => {
@@ -423,13 +659,37 @@ export function FundShell(props: Props) {
       refreshBusy.current = true;
       try {
         const fc = fundCodeRef.current;
+        if (!fc) return;
         const sc = showClearedRef.current ? "1" : "0";
         const aid = accountIdRef.current;
-        const res = await fetch(`/api/v1/fund/shell-data?accountId=${encodeURIComponent(aid)}&fundCode=${encodeURIComponent(fc)}&showCleared=${sc}`);
+        const seq = ++shellDataRequestSeq.current;
+        const res = await fetch(`/api/v1/fund/shell-data?accountId=${encodeURIComponent(aid)}&fundCode=${encodeURIComponent(fc)}&showCleared=${sc}&entryScope=account`);
         const json = await res.json();
-        if (json.ok) {
+        if (json.ok && seq === shellDataRequestSeq.current) {
           startTransition(() => {
-            setLocalData({ positions: json.positions, clearedPositions: json.clearedPositions, allEntries: json.allEntries, totalMarketValue: json.totalMarketValue, totalCost: json.totalCost, totalHistoricalProfit: json.totalHistoricalProfit, confirmDaysMap: json.confirmDaysMap, feeRateMap: json.feeRateMap });
+            setLocalData((prev) => {
+              const refreshedEntries = Array.isArray(json.allEntries) ? json.allEntries : [];
+              const refreshedIds = new Set(refreshedEntries.map((entry: any) => entry.id));
+              const nextAllEntries = json.entryScope === "account"
+                ? refreshedEntries
+                : fc
+                ? [
+                    ...prev.allEntries.filter((entry: any) => entry.fundCode !== fc && !refreshedIds.has(entry.id)),
+                    ...refreshedEntries,
+                  ]
+                : refreshedEntries;
+
+              return {
+                positions: json.positions,
+                clearedPositions: json.clearedPositions,
+                allEntries: nextAllEntries,
+                totalMarketValue: json.totalMarketValue,
+                totalCost: json.totalCost,
+                totalHistoricalProfit: json.totalHistoricalProfit,
+                confirmDaysMap: json.confirmDaysMap,
+                feeRateMap: json.feeRateMap,
+              };
+            });
           });
         }
       } catch {} finally {
@@ -453,6 +713,64 @@ export function FundShell(props: Props) {
 
 
   const filtered = useMemo(() => fundCode ? d.allEntries.filter((e: any) => e.fundCode === fundCode) : d.allEntries, [d.allEntries, fundCode]);
+  const selectedPosition = useMemo(
+    () => (d.positions || []).find((p: any) => p.fundCode === fundCode) ?? null,
+    [d.positions, fundCode],
+  );
+  const selectedFundCodeCls = selectedPosition ? pnl(toNumber(selectedPosition.historicalProfit ?? selectedPosition.floatingPnL ?? 0)) : "text-slate-500";
+  const loadRegularPlans = useCallback(async () => {
+    if (!accountId) {
+      setRegularPlans([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/v1/regular-invest?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (!data?.ok || !Array.isArray(data.plans)) return;
+      setRegularPlans(data.plans.filter((plan: any) => plan.status !== "stopped" && plan.status !== "completed"));
+    } catch {}
+  }, [accountId]);
+
+  useEffect(() => {
+    void loadRegularPlans();
+  }, [loadRegularPlans]);
+
+  useEffect(() => {
+    window.addEventListener("mmh:fund:refresh", loadRegularPlans);
+    return () => window.removeEventListener("mmh:fund:refresh", loadRegularPlans);
+  }, [loadRegularPlans]);
+
+  const regularPlanByFundCode = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const plan of regularPlans) {
+      const code = String(plan?.fundCode ?? "").trim();
+      if (!code || map.has(code)) continue;
+      map.set(code, plan);
+    }
+    return map;
+  }, [regularPlans]);
+
+  useEffect(() => {
+    const candidates = new Map<string, string>();
+    for (const e of filtered as any[]) {
+      const code = String(e?.fundCode ?? "").trim();
+      if (!code || code.length !== 6 || fetchedFundNames[code]) continue;
+      const mapped = fundNameByCode.get(code) ?? "";
+      const stored = String(e?.fundName ?? "").trim();
+      if (!isGenericFundName(mapped || stored, code)) continue;
+      candidates.set(code, code);
+    }
+    for (const code of Array.from(candidates.keys()).slice(0, 5)) {
+      fetch(`/api/v1/fund/name?code=${encodeURIComponent(code)}`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((json) => {
+          const name = String(json?.name ?? "").trim();
+          if (!name || isGenericFundName(name, code)) return;
+          setFetchedFundNames((prev) => prev[code] ? prev : { ...prev, [code]: name });
+        })
+        .catch(() => {});
+    }
+  }, [filtered, fetchedFundNames, fundNameByCode]);
 
 
 
@@ -697,6 +1015,8 @@ export function FundShell(props: Props) {
 
   const safePage = Math.min(fundPage, totalPages);
 
+  const allFundPageSize = Math.max(1, filteredByColumns.length);
+
 
 
   useEffect(() => {
@@ -762,44 +1082,6 @@ export function FundShell(props: Props) {
     return () => document.removeEventListener("mousedown", onOutside);
 
   }, [showExportMenu]);
-
-
-
-  async function adjustNavDate(code: string, delta: number) {
-
-    if (navLoading[code]) return;
-
-    setNavLoading(prev => ({ ...prev, [code]: true }));
-
-    const offset = (navDateOffset[code] ?? 0) + delta;
-
-    setNavDateOffset(prev => ({ ...prev, [code]: offset }));
-
-    try {
-
-      const d = new Date();
-      const targetDate = new Date(d.getTime() + offset * 86400000);
-      const dateStr = targetDate.toISOString().slice(0, 10);
-
-      const res = await fetch(`/api/v1/fund/nav?code=${encodeURIComponent(code)}&date=${encodeURIComponent(dateStr)}`);
-
-      const data = await res.json();
-
-      if (data.ok && data.nav) {
-
-        // Show nav date as MM.DD only
-
-        const dd = (data.date || dateStr).slice(5);
-
-        setAdjustedNavByCode(prev => ({ ...prev, [code]: { nav: data.nav, date: dd } }));
-
-      }
-
-    } catch { /* ignore */ }
-
-    finally { setNavLoading(prev => ({ ...prev, [code]: false })); }
-
-  }
 
 
 
@@ -1021,11 +1303,9 @@ export function FundShell(props: Props) {
 
             {!showCleared ? (<>
 
-              <RegularInvestForm accountId={accountId} accountLabel={selectedAccountLabel} cashAccounts={cashAccounts} action={regularInvestFormAction} lastUsedCashAccountId={lastUsedCashAccount?.accountId} showTriggerButton={true} prefilledFundCode={fundCode} prefilledFundName={d.positions?.find((p: any) => p.fundCode === fundCode)?.name ?? null} />
+              <RegularInvestForm accountId={accountId} accountLabel={selectedAccountLabel} cashAccounts={cashAccounts} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} action={regularInvestFormAction} lastUsedCashAccountId={lastUsedCashAccount?.accountId} showTriggerButton={true} />
 
               {d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
-
-              <AddNavButton accountId={accountId} />
 
             </>) : null}
 
@@ -1037,31 +1317,56 @@ export function FundShell(props: Props) {
 
           {!showCleared ? (
 
-            <table className="min-w-[800px] w-full border-separate border-spacing-0">
+            <table
+              className="min-w-[1220px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+              style={{ width: Math.max(1220, POSITION_COLS.reduce((sum, [key, fallback]) => sum + colWidth("positions", key, fallback), 0)) }}
+            >
+              <colgroup>
+                {POSITION_COLS.map(([key, fallback]) => (
+                  <col key={key} style={{ width: colWidth("positions", key, fallback) }} />
+                ))}
+              </colgroup>
 
               <thead className="sticky top-0 z-10 bg-white">
 
                 <tr>
 
-                  <SortHead sk="fundCode" label="基金" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" />
+                  <SortHead sk="fundCode" label="基金" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">份额</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                    份额
+                    <ResizeGrip table="positions" colKey="units" width={colWidth("positions", "units", 92)} minWidth={64} />
+                  </th>
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">均价</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                    均价
+                    <ResizeGrip table="positions" colKey="avgCost" width={colWidth("positions", "avgCost", 84)} minWidth={76} />
+                  </th>
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">净值</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                    净值
+                    <ResizeGrip table="positions" colKey="nav" width={colWidth("positions", "nav", 136)} minWidth={118} />
+                  </th>
 
-                  <SortHead sk="cost" label="持仓成本" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" />
+                  <SortHead sk="cost" label="持仓成本" cls="text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200" table="positions" colKey="cost" width={colWidth("positions", "cost", 112)} minWidth={78} />
 
-                  <SortHead sk="marketValue" label="市值" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" />
+                  <SortHead sk="marketValue" label="市值" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="marketValue" width={colWidth("positions", "marketValue", 112)} minWidth={78} />
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">未确认金额</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                    未确认
+                    <ResizeGrip table="positions" colKey="pending" width={colWidth("positions", "pending", 78)} minWidth={58} />
+                  </th>
 
-                  <SortHead sk="floatingPnL" label="浮盈" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" />
+                  <SortHead sk="floatingPnL" label="浮盈" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="floatingPnL" width={colWidth("positions", "floatingPnL", 104)} minWidth={76} />
 
-                  <SortHead sk="floatingPnLRate" label="浮盈率" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" />
+                  <SortHead sk="floatingPnLRate" label="浮盈率" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="floatingRate" width={colWidth("positions", "floatingRate", 84)} minWidth={64} />
 
-                  <SortHead sk="historicalProfit" label="历史收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" />
+                  <SortHead sk="historicalProfit" label="历史收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="historical" width={colWidth("positions", "historical", 108)} minWidth={78} />
+
+                  <th className="relative select-none text-center text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                    操作
+                    <ResizeGrip table="positions" colKey="actions" width={colWidth("positions", "actions", 112)} minWidth={88} />
+                  </th>
 
                 </tr>
 
@@ -1071,7 +1376,7 @@ export function FundShell(props: Props) {
 
                 {sortedPositions.length === 0 ? (
 
-                  <tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={10}>暂无持仓数据</td></tr>
+                  <tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={11}>暂无持仓数据</td></tr>
 
                 ) : sortedPositions.map((p: any) => {
 
@@ -1089,8 +1394,6 @@ export function FundShell(props: Props) {
 
                   const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
 
-                  const loading = navLoading[p.fundCode];
-
                   return (
 
                     <tr
@@ -1103,41 +1406,49 @@ export function FundShell(props: Props) {
 
                     >
 
-                      <td className="px-4 py-2 border-b border-slate-100"><span className={`text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`}>{p.name}{p.fundCode !== p.name && <span className="ml-1 text-slate-400">{p.fundCode}</span>}</span></td>
+                      <td className="px-4 py-2 border-b border-slate-100"><span className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`} title={`${p.name} ${p.fundCode}`}>{p.name}{p.fundCode !== p.name && <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span>}</span></td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.units.toFixed(2)}</td>
+                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatFundUnits(p.units)}</td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.avgCost.toFixed(4)}</td>
+                      <td className="px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.avgCost.toFixed(4)}</td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
+                      <td className="overflow-hidden px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
 
-                        <div className="flex items-center justify-end gap-0.5">
+                        <div className="flex min-w-0 items-center justify-end gap-0.5">
 
-                          <span>{displayNav != null ? displayNav.toFixed(4) : "-"}{displayNavDate ? <span className="ml-0.5 text-slate-400">({displayNavDate})</span> : null}{loading && <span className="ml-0.5 text-amber-500 animate-pulse">…</span>}</span>
-
-                          <div className="flex flex-col ml-1" onClick={e => e.stopPropagation()}>
-
-                            <button className="h-3 w-4 flex items-center justify-center text-slate-300 hover:text-blue-600" onClick={() => adjustNavDate(p.fundCode, 1)}><ChevronUp className="w-3 h-3" /></button>
-
-                            <button className="h-3 w-4 flex items-center justify-center text-slate-300 hover:text-blue-600" onClick={() => adjustNavDate(p.fundCode, -1)}><ChevronDown className="w-3 h-3" /></button>
-
-                          </div>
+                          <span className="min-w-0 truncate">{displayNav != null ? displayNav.toFixed(4) : "-"}{displayNavDate ? <span className="ml-0.5 text-slate-400">({displayNavDate})</span> : null}</span>
 
                         </div>
 
                       </td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
+                      <td className="px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
 
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
+                      <td className={`px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
+                      <td className="px-2 py-2 border-b border-slate-100 text-right text-[11px] tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
 
                       <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnL)}`}>{formatMoney(displayPnL)}</td>
 
                       <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</td>
 
                       <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(p.historicalProfit)}`}>{formatMoney(p.historicalProfit)}</td>
+
+                      <td className="px-2 py-2 border-b border-slate-100" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          {regularPlanByFundCode.get(p.fundCode) ? (
+                            <button
+                              type="button"
+                              onClick={() => setEditingRegularPlan(regularPlanByFundCode.get(p.fundCode))}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
+                              title="编辑定投计划"
+                            >
+                              <CalendarSync className="h-3.5 w-3.5" />
+                            </button>
+                          ) : null}
+                          <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
+                        </div>
+                      </td>
 
                     </tr>
 
@@ -1167,6 +1478,8 @@ export function FundShell(props: Props) {
 
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</td>
 
+                    <td className="px-2 py-2 border-t border-slate-200"></td>
+
                   </tr>
 
                 </tfoot>
@@ -1177,25 +1490,45 @@ export function FundShell(props: Props) {
 
           ) : (
 
-            <table className="min-w-[600px] w-full border-separate border-spacing-0">
+            <table
+              className="min-w-[820px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+              style={{ width: Math.max(820, CLEARED_COLS.reduce((sum, [key, fallback]) => sum + colWidth("cleared", key, fallback), 0)) }}
+            >
+              <colgroup>
+                {CLEARED_COLS.map(([key, fallback]) => (
+                  <col key={key} style={{ width: colWidth("cleared", key, fallback) }} />
+                ))}
+              </colgroup>
 
               <thead className="sticky top-0 z-10 bg-white">
 
                 <tr>
 
-                  <SortHead sk="fundCode" label="基金名称" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" />
+                  <SortHead sk="fundCode" label="基金名称" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="fund" width={colWidth("cleared", "fund", 220)} minWidth={150} />
 
-                  <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">初次购买</th>
+                  <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                    初次购买
+                    <ResizeGrip table="cleared" colKey="firstBuy" width={colWidth("cleared", "firstBuy", 108)} minWidth={78} />
+                  </th>
 
-                  <SortHead sk="clearedDate" label="清仓时间" cls="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" />
+                  <SortHead sk="clearedDate" label="清仓时间" cls="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="clearedDate" width={colWidth("cleared", "clearedDate", 108)} minWidth={78} />
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">申购金额</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                    申购金额
+                    <ResizeGrip table="cleared" colKey="buyAmount" width={colWidth("cleared", "buyAmount", 112)} minWidth={82} />
+                  </th>
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">回收金额</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                    回收金额
+                    <ResizeGrip table="cleared" colKey="redeemAmount" width={colWidth("cleared", "redeemAmount", 112)} minWidth={82} />
+                  </th>
 
-                  <SortHead sk="historicalProfit" label="清仓收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" />
+                  <SortHead sk="historicalProfit" label="清仓收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="historical" width={colWidth("cleared", "historical", 112)} minWidth={82} />
 
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">收益率</th>
+                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                    收益率
+                    <ResizeGrip table="cleared" colKey="returnRate" width={colWidth("cleared", "returnRate", 80)} minWidth={62} />
+                  </th>
 
                 </tr>
 
@@ -1223,7 +1556,7 @@ export function FundShell(props: Props) {
 
                     >
 
-                      <td className="px-4 py-2 border-b border-slate-100"><span className={`text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`}>{c.name}<span className="ml-1 text-slate-400">{c.fundCode}</span></span></td>
+                      <td className="px-4 py-2 border-b border-slate-100"><span className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`} title={`${c.name} ${c.fundCode}`}>{c.name}<span className="ml-1 text-slate-400">{c.fundCode}</span></span></td>
 
                       <td className="px-3 py-2 border-b border-slate-100 text-xs tabular-nums text-slate-600">{c.firstBuyDate || "-"}</td>
 
@@ -1285,6 +1618,45 @@ export function FundShell(props: Props) {
 
       </div>
 
+      {editingRegularPlan ? (
+        <RegularInvestForm
+          mode="edit"
+          editData={{
+            id: editingRegularPlan.id,
+            accountId: editingRegularPlan.accountId,
+            fundCode: editingRegularPlan.fundCode,
+            fundName: editingRegularPlan.fundName,
+            amount: Number(editingRegularPlan.amount ?? 0),
+            intervalUnit: editingRegularPlan.intervalUnit,
+            intervalValue: Number(editingRegularPlan.intervalValue ?? 1),
+            executionDay: editingRegularPlan.executionDay ?? null,
+            startDate: String(editingRegularPlan.startDate ?? "").slice(0, 10),
+            endDate: editingRegularPlan.endDate ? String(editingRegularPlan.endDate).slice(0, 10) : null,
+            totalRuns: editingRegularPlan.totalRuns ?? null,
+            cashAccountId: editingRegularPlan.cashAccountId ?? null,
+            feeRate: editingRegularPlan.feeRate ?? null,
+            confirmDays: editingRegularPlan.confirmDays ?? null,
+            arrivalDays: editingRegularPlan.arrivalDays ?? null,
+            skipPendingPreceding: editingRegularPlan.skipPendingPreceding ?? true,
+          }}
+          accountId={editingRegularPlan.accountId}
+          accountLabel={editingRegularPlan.accountName ?? ""}
+          editAccountLabel={editingRegularPlan.accountName ?? ""}
+          cashAccounts={cashAccounts}
+          cashAccountSSOptions={cashAccountSSOptions}
+          investmentAccountSSOptions={investmentAccountSSOptions}
+          nestedFieldData={nestedFieldData}
+          showTriggerButton={false}
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) setEditingRegularPlan(null);
+          }}
+          action={regularInvestFormAction}
+          submitMethod="serverAction"
+          onSuccess={() => setEditingRegularPlan(null)}
+        />
+      ) : null}
+
 
 
       {/* 交易明细 */}
@@ -1295,7 +1667,7 @@ export function FundShell(props: Props) {
 
           <div className="text-sm font-semibold text-slate-800">
 
-            交易明细{fundCode && <span className="ml-2 text-xs text-slate-500 font-normal">{fundCode}</span>}
+            交易明细{fundCode && <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>{fundCode}</span>}
 
             <span className="ml-2 text-xs text-slate-400 font-normal">{filteredByColumns.length}/{filtered.length}</span>
 
@@ -1403,25 +1775,37 @@ export function FundShell(props: Props) {
 
             ))}
 
-            <button onClick={() => { setFundPageSize(filteredByColumns.length); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === filteredByColumns.length ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>所有</button>
+            <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>所有</button>
 
             <span className="text-slate-300">|</span>
 
-            {safePage > 1 && (<>
+            {safePage > 1 ? (<>
 
               <button onClick={() => setFundPage(1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsLeft className="h-3 w-3"/></button>
 
               <button onClick={() => setFundPage(safePage - 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="h-3 w-3"/></button>
 
+            </>) : (<>
+
+              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3"/></span>
+
+              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3"/></span>
+
             </>)}
 
             <span className="text-slate-500 px-0.5">{safePage}/{totalPages}</span>
 
-            {safePage < totalPages && (<>
+            {safePage < totalPages ? (<>
 
               <button onClick={() => setFundPage(safePage + 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="h-3 w-3"/></button>
 
               <button onClick={() => setFundPage(totalPages)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsRight className="h-3 w-3"/></button>
+
+            </>) : (<>
+
+              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3"/></span>
+
+              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3"/></span>
 
             </>)}
 
@@ -1431,13 +1815,21 @@ export function FundShell(props: Props) {
 
         <div className="flex-1 min-h-0 overflow-auto">
 
-          <table className="min-w-[780px] w-full border-separate border-spacing-0">
+          <table
+            className="min-w-[1100px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+            style={{ width: Math.max(1100, DETAIL_COLS.reduce((sum, [key, fallback]) => sum + colWidth("details", key, fallback), 0)) }}
+          >
+            <colgroup>
+              {DETAIL_COLS.map(([key, fallback]) => (
+                <col key={key} style={{ width: colWidth("details", key, fallback) }} />
+              ))}
+            </colgroup>
 
             <thead className="sticky top-0 z-10 bg-white">
 
               <tr>
 
-                <th className="w-10 align-middle text-left text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
+                <th className="relative select-none align-middle text-left text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
 
                   <div className="flex h-7 items-center justify-center">
 
@@ -1493,9 +1885,11 @@ export function FundShell(props: Props) {
 
                   </div>
 
+                  <ResizeGrip table="details" colKey="select" width={colWidth("details", "select", 44)} minWidth={36} />
+
                 </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">
 
                   <div className="relative inline-flex items-center gap-1" ref={dateFilterRef}>
 
@@ -1507,7 +1901,7 @@ export function FundShell(props: Props) {
 
                       onClick={(e) => { e.stopPropagation(); setDateFilterOpen((v) => !v); }}
 
-                      className={`h-5 w-5 rounded border text-[10px] leading-none ${(dateFrom || dateTo) ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
+                      className={`h-5 w-4 text-[10px] leading-none ${(dateFrom || dateTo) ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
 
                       title="按日期范围筛选"
 
@@ -1631,31 +2025,58 @@ export function FundShell(props: Props) {
 
                   </div>
 
+                  <ResizeGrip table="details" colKey="date" width={colWidth("details", "date", 92)} minWidth={76} />
+
                 </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">确认日期</th>
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  到账日期
+                  <ResizeGrip table="details" colKey="arrivalDate" width={colWidth("details", "arrivalDate", 92)} minWidth={76} />
+                </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">到账日期</th>
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  {renderColumnFilter("cashAccount", "资金账户")}
+                  <ResizeGrip table="details" colKey="cashAccount" width={colWidth("details", "cashAccount", 132)} minWidth={92} />
+                </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{renderColumnFilter("cashAccount", "资金账户")}</th>
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  基金
+                  <ResizeGrip table="details" colKey="fund" width={colWidth("details", "fund", 156)} minWidth={110} />
+                </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">基金</th>
+                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  净值
+                  <ResizeGrip table="details" colKey="nav" width={colWidth("details", "nav", 86)} minWidth={76} />
+                </th>
 
-                <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">净值</th>
+                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  份额
+                  <ResizeGrip table="details" colKey="units" width={colWidth("details", "units", 84)} minWidth={64} />
+                </th>
 
-                <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">份额</th>
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  {renderColumnFilter("subtype", "交易类型")}
+                  <ResizeGrip table="details" colKey="subtype" width={colWidth("details", "subtype", 88)} minWidth={72} />
+                </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{renderColumnFilter("subtype", "交易类型")}</th>
+                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                  金额
+                  <ResizeGrip table="details" colKey="amount" width={colWidth("details", "amount", 76)} minWidth={58} />
+                </th>
 
-                <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">金额</th>
+                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                  收益
+                  <ResizeGrip table="details" colKey="profit" width={colWidth("details", "profit", 76)} minWidth={58} />
+                </th>
 
-                <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">收益</th>
+                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
+                  {renderColumnFilter("status", "状态")}
+                  <ResizeGrip table="details" colKey="status" width={colWidth("details", "status", 72)} minWidth={58} />
+                </th>
 
-                <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{renderColumnFilter("status", "状态")}</th>
+                <th className="relative select-none align-middle text-right text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
 
-                <th className="w-[96px] align-middle text-right text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
-
-                  <div className="flex h-7 items-center justify-end gap-1">
+                  <div className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1">
 
                     <BatchReplacePopoverButton
 
@@ -1692,6 +2113,8 @@ export function FundShell(props: Props) {
                     </button>
 
                   </div>
+
+                  <ResizeGrip table="details" colKey="actions" width={colWidth("details", "actions", 112)} minWidth={92} />
 
                 </th>
 
@@ -1773,18 +2196,6 @@ export function FundShell(props: Props) {
 
                     <td className="px-3 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-500">
 
-                      {e.fundSubtype === "dividend_cash" ? (fmtDate(e.fundArrivalDate) || "-")
-
-                        : e.fundSubtype === "buy_failed" ? (fmtDate(e.fundConfirmDate) || "-")
-
-                        : units != null && units > 0 ? (fmtDate(e.fundConfirmDate) || "-")
-
-                        : <span className="text-amber-500">待确认</span>}
-
-                    </td>
-
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-500">
-
                       {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
 
                     </td>
@@ -1801,7 +2212,7 @@ export function FundShell(props: Props) {
 
                           <div className="min-w-0">
 
-                            <div className="truncate text-slate-600">{info.label}</div>
+                            <div className="truncate text-slate-600" title={info.label}>{info.label}</div>
 
                           </div>
 
@@ -1811,15 +2222,19 @@ export function FundShell(props: Props) {
 
                     </td>
 
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-700">{e.fundName || e.fundCode || "-"}{e.fundCode && e.fundName && e.fundName !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}</td>
+                    <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-700">
+                      <div className="truncate" title={`${displayFundName(e)} ${e.fundCode || ""}`}>
+                        {displayFundName(e)}{e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
+                      </div>
+                    </td>
 
-                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{nav != null ? nav.toFixed(4) : <span className="text-slate-400">-</span>}</td>
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{nav != null ? nav.toFixed(4) : <span className="text-slate-400">-</span>}</td>
 
-                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{units != null ? units.toFixed(2) : <span className="text-slate-400">-</span>}</td>
+                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{units != null ? formatFundUnits(units) : <span className="text-slate-400">-</span>}</td>
 
                     <td className="px-3 py-1 border-b border-slate-100 text-xs"><span className={`px-1 py-0.5 rounded text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>{info.label}</span></td>
 
-                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums text-slate-700">
+                    <td className="px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums text-slate-700">
 
                       {(() => {
 
@@ -1833,7 +2248,7 @@ export function FundShell(props: Props) {
 
                     </td>
 
-                    <td className={`px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(toNumber(e.realizedProfit))}`}>
+                    <td className={`px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(toNumber(e.realizedProfit))}`}>
 
                       {e.realizedProfit != null && e.fundSubtype === "redeem" ? formatMoney(toNumber(e.realizedProfit)) : <span className="text-slate-300">-</span>}
 
@@ -1855,11 +2270,11 @@ export function FundShell(props: Props) {
 
                     </td>
 
-                    <td className="w-[96px] align-middle px-2 py-1 border-b border-slate-100">
+                    <td className="w-[112px] align-middle px-2 py-1 border-b border-slate-100">
 
-                      <div className="flex h-7 items-center justify-end gap-1" onClick={(ev) => ev.stopPropagation()}>
+                      <div className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1" onClick={(ev) => ev.stopPropagation()}>
 
-                        {e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => { setLocalData(prev => ({ ...prev, allEntries: prev.allEntries.map((en: any) => en.id === e.id ? { ...en, fundNav: data.nav, fundConfirmDate: new Date(data.confirmDate), fundUnits: data.units, fundArrivalDate: data.arrivalDate ? new Date(data.arrivalDate) : null } : en) })); }} /> : null}
+                        {e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
 
                         {e.fundProductType === "wealth" ? (
 
@@ -1877,7 +2292,7 @@ export function FundShell(props: Props) {
 
                               amount: toNumber(e.amount), note: e.note ?? null,
 
-                              fundName: e.fundName ?? null,
+                              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
 
                               fundProductType: e.fundProductType ?? null,
 
@@ -1917,7 +2332,7 @@ export function FundShell(props: Props) {
 
                               amount: toNumber(e.amount), note: e.note ?? null,
 
-                              fundName: e.fundName ?? null,
+                              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
 
                               fundProductType: e.fundProductType ?? null,
 
@@ -1957,7 +2372,7 @@ export function FundShell(props: Props) {
 
                               amount: toNumber(e.amount), note: e.note ?? null, memo: e.note ?? null,
 
-                              fundCode: e.fundCode ?? null, fundName: e.fundName ?? e.fundCode ?? null,
+                              fundCode: e.fundCode ?? null, fundName: displayFundName(e) === "-" ? (e.fundCode ?? null) : displayFundName(e),
 
                               fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
 
@@ -2011,7 +2426,7 @@ export function FundShell(props: Props) {
 
                 );
 
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={13}>暂无交易记录</td></tr>)}
+              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={12}>暂无交易记录</td></tr>)}
 
             </tbody>
 

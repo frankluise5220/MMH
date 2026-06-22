@@ -135,12 +135,14 @@ export function RegularInvestClient({
   cashAccounts,
   investmentAccountSSOptions,
   cashAccountSSOptions,
+  nestedFieldData,
 }: {
   initialPlans: RegularInvestPlanView[];
   investmentAccounts: AccountDisplayOption[];
   cashAccounts: AccountDisplayOption[];
   investmentAccountSSOptions: SmartSelectOption[];
   cashAccountSSOptions: SmartSelectOption[];
+  nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
 }) {
   const router = useRouter();
   const [plans, setPlans] = useState(initialPlans);
@@ -479,6 +481,7 @@ export function RegularInvestClient({
                 cashAccounts={cashAccounts}
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
+                nestedFieldData={nestedFieldData}
                 showTriggerButton={false}
                 open={showCreateForm}
                 onOpenChange={setShowCreateForm}
@@ -639,6 +642,7 @@ export function RegularInvestClient({
         cashAccounts={cashAccounts}
         investmentAccountSSOptions={investmentAccountSSOptions}
         cashAccountSSOptions={cashAccountSSOptions}
+        nestedFieldData={nestedFieldData}
         showTriggerButton={false}
         open={editOpen}
         onOpenChange={(open) => { setEditOpen(open); if (!open) setEditPlan(null); }}

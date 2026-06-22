@@ -21,7 +21,7 @@ export async function computeAccountDisplayBalances(
     ...(hidFilter ?? {}),
   };
 
-  const [fromAgg, toRecords] = await Promise.all([
+  const [fromAgg, toAgg] = await Promise.all([
     prisma.txRecord.groupBy({
       by: ["accountId"],
       where: {
@@ -30,12 +30,13 @@ export async function computeAccountDisplayBalances(
       },
       _sum: { amount: true },
     }),
-    prisma.txRecord.findMany({
+    prisma.txRecord.groupBy({
+      by: ["toAccountId"],
       where: {
         ...txWhere,
         toAccountId: { in: accountIds },
       },
-      select: { toAccountId: true, amount: true },
+      _sum: { amount: true },
     }),
   ]);
 
@@ -45,10 +46,10 @@ export async function computeAccountDisplayBalances(
   }
 
   const toById = new Map<string, number>();
-  for (const row of toRecords) {
+  for (const row of toAgg) {
     const key = row.toAccountId ?? "";
     if (!key) continue;
-    toById.set(key, (toById.get(key) ?? 0) + Math.abs(toNumber(row.amount)));
+    toById.set(key, Math.abs(toNumber(row._sum.amount)));
   }
 
   for (const account of accounts) {

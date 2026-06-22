@@ -103,8 +103,11 @@ export async function POST(req: NextRequest) {
       // 计算 T+N 确认日期
       const runDateStr = formatDateUtc(runDate);
       const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
-      const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
-      if (confirmDateStr < runDateStr) logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");
+      let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) {
+        logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");
+        confirmDateStr = runDateStr;
+      }
       const confirmDate = new Date(Date.UTC(
         parseInt(confirmDateStr.slice(0, 4)),
         parseInt(confirmDateStr.slice(5, 7)) - 1,

@@ -34,14 +34,14 @@ export function DailyTaskCheck() {
         });
 
         // 2. 获取所有投资账户的基金净值
-        const accRes = await fetch("/api/v1/accounts/internal");
+        const accRes = await fetch("/api/v1/accounts/internal?balances=false");
         const accData = await accRes.json();
         if (accData.ok && accData.accounts) {
           const investAccounts = accData.accounts.filter((a: any) => a.kind === "investment");
           await Promise.allSettled(
             investAccounts.map(async (acc: any) => {
               const shellRes = await fetch(
-                `/api/v1/fund/shell-data?accountId=${encodeURIComponent(acc.id)}&showCleared=false`
+                `/api/v1/fund/shell-data?accountId=${encodeURIComponent(acc.id)}&showCleared=false&entryScope=account`
               );
               const shellData = await shellRes.json();
               if (!shellData.ok) return;

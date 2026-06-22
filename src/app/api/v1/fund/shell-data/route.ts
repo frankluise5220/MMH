@@ -10,6 +10,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const accountId = url.searchParams.get("accountId");
     const fundCodeParam = url.searchParams.get("fundCode") || undefined;
+    const entryScope = url.searchParams.get("entryScope") === "account" ? "account" : "fund";
     const showCleared = url.searchParams.get("showCleared") === "1";
 
     if (!accountId) {
@@ -33,15 +34,17 @@ export async function GET(req: Request) {
         ? [...positionDisplay.clearedPositions].sort((a, b) => b.clearedDate.localeCompare(a.clearedDate))[0]?.fundCode
         : ""));
 
-    // Get entries for selected fund only, to avoid returning full account history on each view switch
+    // Do not limit here: the client paginates details locally.
+    // entryScope=account is used when the client needs a complete local cache for fast fund switching.
     const fundEntries = await prisma.txRecord.findMany({
       where: {
         deletedAt: null,
-        fundCode: selectedFundCode || undefined,
+        ...(entryScope === "account"
+          ? { fundCode: { not: null } }
+          : { fundCode: selectedFundCode || undefined }),
         OR: [{ toAccountId: accountId }, { accountId: accountId }],
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-      take: 16,
     });
 
     // Fee rates
@@ -85,6 +88,7 @@ export async function GET(req: Request) {
       positions: sortedPositions,
       clearedPositions: sortedCleared,
       allEntries: fundEntries,
+      entryScope,
       selectedFundCode,
       totalMarketValue,
       totalCost,

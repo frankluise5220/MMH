@@ -64,7 +64,7 @@ export default function SettingsAccountsPage() {
   useEffect(() => { loadAll(); }, []);
 
   async function loadAll() {
-    const res = await fetch("/api/v1/accounts/internal").catch(() => null);
+    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
     if (!res) return;
     const data = await res.json();
     if (data.ok) {

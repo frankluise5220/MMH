@@ -63,11 +63,11 @@ export function FillNavButton({
       type="button"
       onClick={fill}
       disabled={pending}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
       title="获取净值"
       aria-label={'获取基金 ' + fundCode + ' 净值'}
     >
-      <DatabaseZap className={"h-3.5 w-3.5" + (pending ? " animate-pulse" : "")} />
+      <DatabaseZap className={"h-3.5 w-3.5 shrink-0" + (pending ? " animate-pulse" : "")} />
     </button>
   );
 }

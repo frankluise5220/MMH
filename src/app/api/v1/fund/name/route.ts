@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
-import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
+import { getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 
 /**
  * 获取基金名称（优先从净值缓存库，再从外部API，最后从持仓库）
@@ -11,6 +11,11 @@ import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
  * 2. 如果找不到，从外部API获取
  * 3. 最后从持仓库兜底（仅在navCache和外部API都没有时）
  */
+
+function utcDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
 
 async function fetchFromEastmoney(fundCode: string, headers: Record<string, string>): Promise<string | null> {
   try {
@@ -25,6 +30,15 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
     if (m1) {
       try {
         const data: any = JSON.parse(m1[0]);
+        if (data?.dwjz && data?.jzrq) {
+          const nav = parseFloat(data.dwjz);
+          const cumNav = data?.ljjz ? parseFloat(data.ljjz) : nav;
+          if (Number.isFinite(nav) && nav > 0) {
+            await setFundNav(fundCode, utcDate(data.jzrq), nav, Number.isFinite(cumNav) ? cumNav : nav, data?.name ?? null).catch((error) => {
+              console.warn("Failed to cache fund NAV from name fallback", { fundCode, error });
+            });
+          }
+        }
         if (data?.name) return data.name as string;
       } catch {}
     }

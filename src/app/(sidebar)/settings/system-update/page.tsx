@@ -1,14 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import {
-  RefreshCw, CheckCircle2, XCircle, Loader2, Circle,
-  AlertTriangle, Download, Terminal,
-} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Circle, Download, Loader2, RefreshCw, XCircle } from "lucide-react";
 
 type VersionInfo = {
   ok: boolean;
   isDocker?: boolean;
+  updateMode?: "git";
   localVersion: string;
   localCommit: string;
   localCommitMsg: string;
@@ -17,6 +15,7 @@ type VersionInfo = {
   remoteCommitMsg: string;
   needsUpdate: boolean;
   canCheckUpdate?: boolean;
+  error?: string;
 };
 
 type StepStatus = "pending" | "running" | "completed" | "failed";
@@ -27,32 +26,14 @@ type StepState = {
   output: string;
 };
 
-const UPDATE_STEPS: string[] = [
-  "拉取代码",
-  "安装依赖",
-  "生成 Prisma Client",
-  "同步数据库",
-  "构建项目",
-];
-
-const REBUILD_STEPS: string[] = [
-  "安装依赖",
-  "生成 Prisma Client",
-  "同步数据库",
-  "构建项目",
-];
-
-const DOCKER_UPDATE_STEPS: string[] = [
-  "触发 Watchtower 更新",
-];
+const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
+const REBUILD_STEPS = ["安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
 
 export default function SystemUpdatePage() {
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loadingVersion, setLoadingVersion] = useState(true);
-
-  // 更新流程状态
   const [updating, setUpdating] = useState(false);
-  const [confirming, setConfirming] = useState(false); // 显示确认对话框
+  const [confirming, setConfirming] = useState(false);
   const [rebuildConfirming, setRebuildConfirming] = useState(false);
   const [steps, setSteps] = useState<StepState[]>([]);
   const [updateDone, setUpdateDone] = useState(false);
@@ -89,33 +70,20 @@ export default function SystemUpdatePage() {
     setUpdateDone(false);
     setUpdateOk(false);
     setUpdateError("");
-
-    const stepLabels = versionInfo?.isDocker ? DOCKER_UPDATE_STEPS : updateMode === "update" ? UPDATE_STEPS : REBUILD_STEPS;
-    setSteps(initSteps(stepLabels));
+    setSteps(initSteps(updateMode === "update" ? UPDATE_STEPS : REBUILD_STEPS));
 
     try {
       const res = await fetch(`/api/v1/settings/system-update?mode=${updateMode}`, { method: "POST" });
-      // Docker 环境下 POST 返回 JSON 结果，非 SSE
-      if (versionInfo?.isDocker) {
-        const data = await res.json();
-        setSteps([{ label: "触发 Watchtower 更新", status: res.ok && data.ok ? "completed" : "failed", output: data.message || data.error || "" }]);
-        setUpdateDone(true);
-        setUpdateOk(res.ok && data.ok);
-        setUpdateError(res.ok && data.ok ? "" : data.error || "更新不可用");
-        setUpdating(false);
-        return;
-      }
-
-      if (!res.ok) {
-        const errData = await res.json();
+      if (!res.ok || !res.body) {
+        const errData = await res.json().catch(() => null);
         setUpdateDone(true);
         setUpdateOk(false);
-        setUpdateError(errData.error || "更新不可用");
+        setUpdateError(errData?.error || "更新不可用");
         setUpdating(false);
         return;
       }
 
-      const reader = res.body!.getReader();
+      const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
@@ -124,10 +92,7 @@ export default function SystemUpdatePage() {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-
-        // 解析 SSE 事件：每个事件格式为 data: {JSON}\n\n
         const lines = buffer.split("\n\n");
-        // 保留最后一个可能不完整的部分
         buffer = lines.pop() || "";
 
         for (const line of lines) {
@@ -136,40 +101,27 @@ export default function SystemUpdatePage() {
           const jsonStr = dataLine.slice(6);
           try {
             const event = JSON.parse(jsonStr);
-
             if (event.type === "done") {
               setUpdateDone(true);
-              setUpdateOk(event.ok);
+              setUpdateOk(Boolean(event.ok));
               setUpdateError(event.error || "");
               setUpdating(false);
-              if (event.ok) {
-                // 更新成功后刷新版本信息
-                loadVersionInfo();
-              }
+              if (event.ok) loadVersionInfo();
             } else if (event.step) {
               setSteps((prev) =>
                 prev.map((s) =>
                   s.label === event.step
                     ? { ...s, status: event.status as StepStatus, output: event.output || s.output }
-                    : s
-                )
+                    : s,
+                ),
               );
             }
           } catch {
-            // 忽略无法解析的行
+            // Ignore malformed stream chunks.
           }
         }
       }
     } catch (e) {
-      if (versionInfo?.isDocker) {
-        setSteps([{ label: "触发 Watchtower 更新", status: "completed", output: "已触发 Watchtower 更新，容器可能正在重启，请稍后刷新页面。" }]);
-        setUpdateDone(true);
-        setUpdateOk(true);
-        setUpdateError("");
-        setUpdating(false);
-        return;
-      }
-
       setUpdateDone(true);
       setUpdateOk(false);
       setUpdateError(e instanceof Error ? e.message : "网络错误");
@@ -177,7 +129,6 @@ export default function SystemUpdatePage() {
     }
   }
 
-  // 步骤图标
   function StepIcon({ status }: { status: StepStatus }) {
     switch (status) {
       case "completed":
@@ -193,20 +144,18 @@ export default function SystemUpdatePage() {
 
   const isLatest = versionInfo?.ok && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && versionInfo.needsUpdate;
-  const isDocker = versionInfo?.ok && versionInfo.isDocker;
   const canCheckUpdate = versionInfo?.ok && versionInfo.canCheckUpdate !== false;
 
   return (
     <div className="space-y-4">
       <h2 className="text-sm font-semibold text-slate-800">系统更新</h2>
 
-      {/* 版本信息 */}
       <div className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-medium text-slate-800">版本信息</div>
           <button
             onClick={loadVersionInfo}
-            disabled={loadingVersion}
+            disabled={loadingVersion || updating}
             className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 flex items-center gap-1.5 disabled:opacity-50"
           >
             <RefreshCw className={`w-3 h-3 ${loadingVersion ? "animate-spin" : ""}`} />
@@ -224,85 +173,35 @@ export default function SystemUpdatePage() {
             <div className="flex items-center gap-3">
               <div className="text-sm text-slate-700">当前版本</div>
               <span className="text-sm font-medium text-slate-900">{versionInfo.localVersion}</span>
-              {isDocker ? (
-                <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">
-                  Docker 容器部署
-                </span>
-              ) : (
-                <span className={`text-xs px-2 py-0.5 rounded ${
-                  isLatest
-                    ? "bg-emerald-50 text-emerald-700"
-                    : needsUpdate
-                      ? "bg-amber-50 text-amber-700"
-                      : "bg-slate-100 text-slate-500"
-                }`}>
-                  {isLatest ? "最新版本" : needsUpdate ? "有新版本" : "检测中"}
-                </span>
-              )}
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+                Git 更新模式
+              </span>
+              <span className={`text-xs px-2 py-0.5 rounded ${
+                isLatest
+                  ? "bg-emerald-50 text-emerald-700"
+                  : needsUpdate
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-slate-100 text-slate-500"
+              }`}>
+                {isLatest ? "最新版本" : needsUpdate ? "有新版本" : "检测中"}
+              </span>
             </div>
             <div className="text-xs text-slate-500">
-              {isDocker
-                ? "Docker 容器部署模式，版本信息来自构建时的镜像"
-                : <>
-                    本地提交 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
-                    {" "}{versionInfo.localCommitMsg}
-                    {" "}&middot; {versionInfo.localCommitDate}
-                  </>
-              }
+              本地提交 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
+              {" "}{versionInfo.localCommitMsg}
+              {" "}&middot; {versionInfo.localCommitDate}
             </div>
-            {!isDocker && (
-              <div className="text-xs text-slate-500">
-                远程提交 <span className="font-medium text-slate-700">{versionInfo.remoteCommit}</span>
-                {versionInfo.remoteCommitMsg && ` ${versionInfo.remoteCommitMsg}`}
-              </div>
-            )}
+            <div className="text-xs text-slate-500">
+              远端提交 <span className="font-medium text-slate-700">{versionInfo.remoteCommit}</span>
+              {versionInfo.remoteCommitMsg && ` ${versionInfo.remoteCommitMsg}`}
+            </div>
           </div>
         ) : (
           <div className="text-xs text-red-600">获取版本信息失败</div>
         )}
       </div>
 
-      {/* Docker 环境下的更新提示 */}
-      {isDocker && !updating && !updateDone && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Terminal className="w-4 h-4 text-blue-500 shrink-0" />
-            <div className="text-sm font-medium text-blue-800">Docker 环境下的更新方式</div>
-          </div>
-          <div className="text-xs text-blue-700 mb-3">
-            当前系统运行在 Docker 容器内，系统会先比对构建提交与 GitHub main 分支最新提交，再决定是否触发 Watchtower 更新。
-          </div>
-          <div className="text-xs text-blue-600 mt-3">
-            说明：
-          </div>
-          <ul className="text-xs text-blue-600 mt-1 space-y-1 list-disc list-inside">
-            <li>只有检测到有新版本时，才会显示更新按钮</li>
-            <li>更新完成后刷新浏览器页面即可看到新版本</li>
-            <li>数据库数据不受影响，无需担心数据丢失</li>
-          </ul>
-          {canCheckUpdate ? (
-            needsUpdate ? (
-              <button
-                onClick={() => startUpdate("update")}
-                className="mt-3 h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
-              >
-                确认更新
-              </button>
-            ) : (
-              <div className="mt-3 text-xs text-emerald-700 rounded-md bg-emerald-50 px-3 py-2">
-                当前已是最新版本，无需更新。
-              </div>
-            )
-          ) : (
-            <div className="mt-3 text-xs text-amber-700 rounded-md bg-amber-50 px-3 py-2">
-              当前无法确认远程版本，请先刷新版本信息，或等新镜像包含构建提交信息后再试。
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 非 Docker 环境下的更新操作 */}
-      {!isDocker && !updating && !updateDone && (
+      {!updating && !updateDone && (
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           {needsUpdate && (
             <>
@@ -311,9 +210,9 @@ export default function SystemUpdatePage() {
                 <div className="text-sm font-medium text-amber-700">有新版本可用</div>
               </div>
               <div className="text-xs text-amber-600 mb-3">
-                远程最新提交 {versionInfo!.remoteCommit}
+                远端最新提交 {versionInfo!.remoteCommit}
                 {versionInfo!.remoteCommitMsg && ` "${versionInfo!.remoteCommitMsg}"`}
-                ，点击更新将拉取最新代码并重新构建系统。
+                ，点击更新会拉取 Git 差异并重新构建系统。
               </div>
               <button
                 onClick={() => setConfirming(true)}
@@ -331,7 +230,7 @@ export default function SystemUpdatePage() {
                 <div className="text-sm font-medium text-emerald-700">当前已是最新版本</div>
               </div>
               <div className="text-xs text-slate-500 mb-3">
-                无需更新。如需重新构建，可使用强制重新构建功能。
+                无需更新。如需重新安装依赖、同步数据库并构建，可使用强制重新构建。
               </div>
               <button
                 onClick={() => setRebuildConfirming(true)}
@@ -342,7 +241,24 @@ export default function SystemUpdatePage() {
             </>
           )}
 
-          {/* 更新确认对话框 */}
+          {versionInfo?.ok && !canCheckUpdate && (
+            <>
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                <div className="text-sm font-medium text-amber-700">无法确认远端版本</div>
+              </div>
+              <div className="text-xs text-slate-500 mb-3">
+                请检查仓库地址或网络。仍可执行强制重新构建。
+              </div>
+              <button
+                onClick={() => setRebuildConfirming(true)}
+                className="h-9 px-4 rounded-md border border-blue-200 bg-white text-sm text-blue-600 hover:bg-blue-50"
+              >
+                强制重新构建
+              </button>
+            </>
+          )}
+
           {confirming && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -350,7 +266,7 @@ export default function SystemUpdatePage() {
                 <div className="text-sm font-medium text-amber-800">确认更新</div>
               </div>
               <div className="text-xs text-amber-700 mb-3">
-                更新期间系统将暂时不可用（约5分钟），请确保没有其他用户正在使用。更新完成后需要刷新页面。
+                更新期间系统会短暂不可用。更新完成后容器会自动重启，请刷新页面。
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -369,7 +285,6 @@ export default function SystemUpdatePage() {
             </div>
           )}
 
-          {/* 重新构建确认对话框 */}
           {rebuildConfirming && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -377,7 +292,7 @@ export default function SystemUpdatePage() {
                 <div className="text-sm font-medium text-amber-800">确认重新构建</div>
               </div>
               <div className="text-xs text-amber-700 mb-3">
-                将重新安装依赖、生成 Prisma Client、同步数据库并构建项目，不拉取新代码。构建期间系统暂时不可用。
+                重新构建不拉取新代码，只重新安装依赖、生成 Prisma、同步数据库并构建项目。
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -398,7 +313,6 @@ export default function SystemUpdatePage() {
         </div>
       )}
 
-      {/* 更新进度 */}
       {(updating || updateDone) && steps.length > 0 && (
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="text-sm font-medium text-slate-800 mb-3">
@@ -421,9 +335,7 @@ export default function SystemUpdatePage() {
                   </div>
                   {s.output && s.status !== "pending" && (
                     <div className={`text-xs mt-0.5 whitespace-pre-wrap break-all ${
-                      s.status === "failed" ? "text-red-600"
-                      : s.status === "completed" ? "text-slate-500"
-                      : "text-slate-500"
+                      s.status === "failed" ? "text-red-600" : "text-slate-500"
                     }`}>
                       {s.output.length > 300 ? s.output.slice(0, 300) + "..." : s.output}
                     </div>
@@ -433,14 +345,13 @@ export default function SystemUpdatePage() {
             ))}
           </div>
 
-          {/* 完成后的结果提示 */}
           {updateDone && (
             <div className="mt-4">
               {updateOk ? (
                 <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
                   <div className="text-sm text-emerald-800 font-medium">
-                    {mode === "update" ? "更新完成！请刷新页面以加载新版本" : "构建完成！请刷新页面以加载新版本"}
+                    {mode === "update" ? "更新完成，请刷新页面加载新版本" : "构建完成，请刷新页面加载新版本"}
                   </div>
                   <button
                     onClick={() => window.location.reload()}

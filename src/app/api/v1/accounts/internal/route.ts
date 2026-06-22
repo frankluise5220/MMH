@@ -8,9 +8,13 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 /**
  * 获取账户设置页面所需全部数据（按当前账簿筛选）
  * GET /api/v1/accounts/internal
+ *
+ * Query:
+ * - balances=false 时只返回账户/分组/机构基础资料，不计算显示余额。
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const includeBalances = request.url ? new URL(request.url).searchParams.get("balances") !== "false" : true;
     const { hidFilter } = await getHouseholdScope();
 
     const [accounts, groups, institutions] = await Promise.all([
@@ -25,6 +29,10 @@ export async function GET() {
       }),
       prisma.institution.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
     ]);
+
+    if (!includeBalances) {
+      return NextResponse.json({ ok: true, accounts, groups, institutions });
+    }
 
     // For investment accounts, use market value instead of raw balance
     const investBalByAccountId = await computeInvestBalances({ hidFilter, householdId: hidFilter.householdId ?? "", user: null });

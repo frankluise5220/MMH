@@ -387,7 +387,7 @@ export default function BatchImportPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/v1/accounts/internal")
+    fetch("/api/v1/accounts/internal?balances=false")
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok || !Array.isArray(data.accounts)) return;
@@ -701,7 +701,6 @@ export default function BatchImportPage() {
     if (selectedItems.length > 0) {
       setTimeout(() => {
         sessionStorage.removeItem("batchImportItems");
-        router.refresh();
         router.push("/?view=detail");
       }, 1500);
     }

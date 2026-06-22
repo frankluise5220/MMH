@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { addWorkdaysUtc } from "@/lib/date-utils";
-import { getFundNav, getLatestFundNav, setFundNav } from "@/lib/fund/navCache";
+import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { logger } from "@/lib/logger";
@@ -18,24 +18,28 @@ async function getNav(fundCode: string, dateStr: string) {
   const navDate = utcDate(dateStr);
   const cached = await getFundNav(fundCode, navDate);
   if (cached) {
-    return { date: navDate.toISOString().slice(0, 10), nav: cached.nav, name: cached.name ?? undefined };
+    return {
+      date: cached.actualDate ?? dateStr,
+      nav: cached.nav,
+      cumNav: cached.cumNav ?? undefined,
+      name: cached.name ?? undefined,
+    };
   }
-  const data = await fetchNavFromEastmoney(fundCode, dateStr);
-  if (data) {
-    const navDateObj = utcDate(data.date);
-    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(logger.catchLog("操作失败", "route.ts"));
-    return data;
-  }
-
   // 指定日期如果是未来日期/非交易日，东方财富历史净值可能没有数据。
   // 回退到缓存或最新净值，避免赎回界面误以为函数调用失败；返回 date 用于提示实际净值日期。
   const latest = await getLatestFundNav(fundCode);
   if (latest) {
-    return { date: latest.navDate.toISOString().slice(0, 10), nav: latest.nav, name: latest.name ?? undefined };
+    return {
+      date: latest.navDate.toISOString().slice(0, 10),
+      nav: latest.nav,
+      cumNav: latest.cumNav ?? undefined,
+      name: latest.name ?? undefined,
+    };
   }
-  return fetchNavFromEastmoney(fundCode);
+  return null;
 }
 
+/*
 async function fetchNavFromEastmoney(fundCode: string, date?: string) {
   const headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -47,7 +51,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
     const exactUrl = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=1&pageSize=5&startDate=${date}&endDate=${date}`;
     const exactRes = await fetch(exactUrl, { headers, cache: "no-store" });
     let json: any = null;
-    try { json = await exactRes.json(); } catch { /* ignore */ }
+    try { json = await exactRes.json(); } catch { ignore }
     const list: { FSRQ: string; DWJZ: string; LJJZ: string }[] =
       json?.Data?.LSJZList ?? [];
     if (list.length > 0) {
@@ -99,6 +103,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
   };
 }
 
+*/
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fundCode = searchParams.get("code")?.trim();
@@ -119,14 +124,18 @@ export async function GET(req: NextRequest) {
     }
 
     // 无日期时：查询实时估值
-    const data = await fetchNavFromEastmoney(fundCode);
-    if (!data) {
+    const latest = await refreshLatestFundNav(fundCode);
+    if (!latest) {
       return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
     }
-    const navDateStr = data.date ?? new Date().toISOString().slice(0, 10);
-    const navDateObj = utcDate(navDateStr);
-    await setFundNav(fundCode, navDateObj, data.nav, data.cumNav ?? undefined, data.name ?? undefined).catch(logger.catchLog("操作失败", "route.ts"));
-    return NextResponse.json({ ok: true, ...data });
+    const navDateStr = latest.navDate.toISOString().slice(0, 10);
+    return NextResponse.json({
+      ok: true,
+      date: navDateStr,
+      nav: latest.nav,
+      cumNav: latest.cumNav ?? undefined,
+      name: latest.name ?? undefined,
+    });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "查询失败" },
@@ -187,6 +196,12 @@ export async function POST(req: NextRequest) {
     const navData = await getNav(fundCode, confirmDate);
     if (!navData) {
       return NextResponse.json({ ok: false, error: `未找到 ${confirmDate} 的净值，可能是非交易日` }, { status: 404 });
+    }
+    if (navData.date && navData.date !== confirmDate) {
+      return NextResponse.json(
+        { ok: false, error: `${confirmDate} 没有精确净值，最新可用净值日期是 ${navData.date}，未写入份额` },
+        { status: 404 }
+      );
     }
 
     const nav = navData.nav;

@@ -29,7 +29,7 @@ export function SettingsInstitutionsClient({
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
 
   const refreshList = useCallback(async () => {
-    const res = await fetch("/api/v1/accounts/internal").catch(() => null);
+    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
     if (!res) return;
     const data = await res.json();
     if (data.ok && data.institutions) {

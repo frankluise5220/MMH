@@ -1,12 +1,12 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
 import { RegularInvestClient } from "./RegularInvestClient";
 
 export default async function RegularInvestPage() {
   const { hidFilter } = await getHouseholdScope();
 
-  const [plans, accounts] = await Promise.all([
+  const [plans, accounts, groups, institutions] = await Promise.all([
     prisma.regularInvestPlan.findMany({
       where: hidFilter,
       orderBy: { nextRunDate: "asc" },
@@ -15,6 +15,14 @@ export default async function RegularInvestPage() {
       where: { isPlaceholder: { not: true }, ...hidFilter },
       include: { Institution: true, AccountGroup: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
+    }),
+    prisma.accountGroup.findMany({
+      where: hidFilter,
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    }),
+    prisma.institution.findMany({
+      where: hidFilter,
+      orderBy: { name: "asc" },
     }),
   ]);
 
@@ -89,8 +97,12 @@ export default async function RegularInvestPage() {
       initialPlans={plansData}
       investmentAccounts={investmentAccounts}
       cashAccounts={cashAccounts}
-      investmentAccountSSOptions={buildGroupedAccountOptions(investmentAccounts)}
+      investmentAccountSSOptions={buildFlatAccountOptions(investmentAccounts)}
       cashAccountSSOptions={buildGroupedAccountOptions(cashAccounts)}
+      nestedFieldData={{
+        groupId: groups.map((group) => ({ id: group.id, name: group.name })),
+        institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? undefined })),
+      }}
     />
   );
 }

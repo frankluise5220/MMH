@@ -92,7 +92,7 @@ export function InitModal({
   async function fetchAccounts() {
     setLoadingAccounts(true);
     try {
-      const res = await fetch("/api/v1/accounts/internal");
+      const res = await fetch("/api/v1/accounts/internal?balances=false");
       const data = await res.json();
       if (data.ok && data.accounts) {
         const accounts: AccountOption[] = data.accounts.map((a: any) => ({ id: a.id, label: (a.Institution?.name?.trim() || "") + (a.Institution?.name?.trim() ? "·" : "") + a.name, kind: a.kind }));

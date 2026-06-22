@@ -139,11 +139,9 @@ html {
   }
 
   .sidebar-item-active {
-    @apply bg-surface-white text-foreground shadow-soft;
-    border: 1px solid rgba(22, 119, 255, 0.14);
-    box-shadow:
-      inset 3px 0 0 var(--accent-blue),
-      0 10px 24px rgba(22, 119, 255, 0.08);
+    @apply bg-blue-50/60 text-blue-700;
+    border: 1px solid rgba(22, 119, 255, 0.08);
+    box-shadow: inset 3px 0 0 var(--accent-blue);
   }
 
   .panel-surface {

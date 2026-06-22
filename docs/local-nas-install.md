@@ -1,21 +1,21 @@
-# MMH NAS 安装说明
+# MMH 本地 NAS 安装说明
 
 目标：安装和更新都走同一套 Git 流程，不再下载几百兆镜像。
 
 适用场景：
-- 你想从 GitHub 首次安装
-- 或者想把这份说明转成本地 Git 安装
+- 你已经把仓库同步到 NAS 本地 Git 仓库
+- 或者想先从 GitHub 克隆，再在 NAS 上长期更新
 
 ## 1. 选择仓库地址
 
 二选一，保留一行即可：
 
 ```bash
-# GitHub 仓库
-REPO_URL="https://github.com/frankluise5220/MMH.git"
-
 # 本地 bare 仓库
-# REPO_URL="/vol1/1000/git/MMH.git"
+REPO_URL="/vol1/1000/git/MMH.git"
+
+# GitHub 仓库
+# REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```
 
 ## 2. 首次安装
@@ -25,7 +25,7 @@ REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```bash
 sh -c 'set -e
 APP_DIR="$HOME/mmh"
-REPO_URL="https://github.com/frankluise5220/MMH.git"
+REPO_URL="/vol1/1000/git/MMH.git"
 
 cd "$HOME"
 rm -rf "$APP_DIR"

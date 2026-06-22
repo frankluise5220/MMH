@@ -1,11 +1,9 @@
 ﻿"use client";
 
-import { useRouter } from "next/navigation";
-import { startTransition, useState } from "react";
+import { useState } from "react";
 
 export function DeleteEntryButton({ entryId, entryName }: { entryId: string; entryName?: string }) {
   const [busy, setBusy] = useState(false);
-  const router = useRouter();
 
   const handleDelete = async () => {
     const ok = confirm(`确认删除"${entryName || entryId}"吗？`);
@@ -19,7 +17,7 @@ export function DeleteEntryButton({ entryId, entryName }: { entryId: string; ent
       });
       const data = await res.json();
       if (data.ok) {
-        startTransition(() => router.refresh());
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
 
       } else {
         alert(data.error ?? "删除失败");

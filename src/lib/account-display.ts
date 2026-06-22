@@ -90,3 +90,11 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
 
   return [...headers, ...groupedItems, ...ungroupedItems];
 }
+
+export function buildFlatAccountOptions(accounts: Array<Pick<AccountDisplayOption, "id" | "label" | "subLabel">>): SmartSelectOption[] {
+  return accounts.map((account) => ({
+    id: account.id,
+    label: account.label,
+    subLabel: account.subLabel,
+  }));
+}

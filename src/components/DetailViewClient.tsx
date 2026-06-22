@@ -85,7 +85,7 @@ function formatType(type: string) {
 
 export function DetailViewClient({
   accountId,
-  isInvestAccount,
+  isInvestAccount: _isInvestAccount,
   initialEntries,
   accountOptions,
   investmentProductTypeByAccountId,
@@ -133,7 +133,7 @@ export function DetailViewClient({
         <tr>
           <td
             className="px-4 py-6 text-xs text-slate-500"
-            colSpan={isInvestAccount ? 9 : 10}
+            colSpan={10}
           >
             暂无记录
           </td>
@@ -246,11 +246,9 @@ export function DetailViewClient({
                 <span className="text-xs text-slate-700">{actLabel}</span>
               )}
             </td>
-            {!isInvestAccount && (
-              <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">
-                {relatedAccountLabel ?? <span className="text-slate-300">-</span>}
-              </td>
-            )}
+            <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500 truncate" title={relatedAccountLabel ?? ""}>
+              {relatedAccountLabel ?? <span className="text-slate-300">-</span>}
+            </td>
             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">
               <span className="text-xs">{bal !== null ? formatMoney(bal) : ""}</span>
             </td>

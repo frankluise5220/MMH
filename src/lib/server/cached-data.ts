@@ -11,7 +11,7 @@ import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
-import { computePositionDisplay } from "@/lib/invest-balance";
+import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 // ── 类型 ──
@@ -99,6 +99,24 @@ export const loadEntriesForAccount = unstable_cache(
   _loadEntriesForAccount,
   ["entries"],
   { revalidate: false, tags: ["entries"] },
+);
+
+async function _loadInvestBalances(_hidFilterStr: string) {
+  const hidFilter = JSON.parse(_hidFilterStr) as { householdId: string };
+  const ctx: HouseholdContext = {
+    householdId: hidFilter.householdId,
+    hidFilter,
+    user: null,
+  };
+
+  const balances = await computeInvestBalances(ctx);
+  return Object.fromEntries(balances);
+}
+
+export const loadInvestBalances = unstable_cache(
+  _loadInvestBalances,
+  ["invest-balances"],
+  { revalidate: false, tags: ["invest-balances", "fund-holding"] },
 );
 
 // ── 投资账户持仓数据（跨请求缓存） ──
@@ -221,9 +239,9 @@ async function _loadInvestAccountData(
     totalPages,
     safePage,
     selectedFundCode,
-    pendingByCode,
-    feeRateMap,
-    confirmDaysMap,
+    pendingByCode: Object.fromEntries(pendingByCode),
+    feeRateMap: Object.fromEntries(feeRateMap),
+    confirmDaysMap: Object.fromEntries(confirmDaysMap),
     account,
   };
 }

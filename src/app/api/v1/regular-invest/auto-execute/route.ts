@@ -9,11 +9,7 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-
-const NAV_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-  Referer: "http://fundf10.eastmoney.com/",
-};
+import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 
 function skipWeekend(date: Date): Date {
   if (isWeekend(date)) return nextMonday(date);
@@ -28,48 +24,6 @@ function calcNextRunDate(fromDate: Date, unit: IntervalUnit, value: number): Dat
     case "month": return addMonths(fromDate, value);
     default: return addMonths(fromDate, value);
   }
-}
-
-/** Fetch NAV for a single confirm date (1-2 pages max). Returns flat list with all received entries. */
-async function fetchNavForDate(fundCode: string, confirmDate: string): Promise<Array<{ date: string; nav: number; sgzt: string }>> {
-  const results: Array<{ date: string; nav: number; sgzt: string }> = [];
-  // Narrow window: ~15 trading days before confirm date ~ 3 weeks calendar
-  const start = new Date(confirmDate);
-  start.setDate(start.getDate() - 21);
-  const startStr = start.toISOString().slice(0, 10);
-  const endStr = new Date(confirmDate).toISOString().slice(0, 10);
-
-  for (let pageIndex = 1; pageIndex <= 2; pageIndex++) {
-    const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=${pageIndex}&pageSize=20&startDate=${startStr}&endDate=${endStr}`;
-    try {
-      const res = await fetch(url, { headers: NAV_HEADERS, cache: "no-store" });
-      if (!res.ok) break;
-      const text = await res.text();
-      let data: any;
-      try { data = JSON.parse(text); } catch { break; }
-      const list: Array<{ FSRQ: string; DWJZ: string; SGZT: string }> = data?.Data?.LSJZList ?? [];
-      if (list.length === 0) break;
-      for (const item of list) {
-        results.push({ date: item.FSRQ, nav: parseFloat(item.DWJZ), sgzt: item.SGZT ?? "" });
-      }
-      if (list.length < 20) break;
-    } catch { break; }
-  }
-  return results;
-}
-
-/** Upsert multiple NAV entries into cache in one batch */
-async function batchUpsertNavCache(entries: Array<{ fundCode: string; navDate: string; nav: number; sgzt: string }>) {
-  if (entries.length === 0) return;
-  // Use individual upserts — Prisma doesn't have bulk upsert
-  const promises = entries.map(e =>
-    prisma.fundNavCache.upsert({
-      where: { fundCode_navDate: { fundCode: e.fundCode, navDate: new Date(e.navDate + "T00:00:00Z") } },
-      create: { fundCode: e.fundCode, navDate: new Date(e.navDate + "T00:00:00Z"), nav: e.nav, sgzt: e.sgzt },
-      update: { nav: e.nav, sgzt: e.sgzt },
-    }).catch(() => {})
-  );
-  await Promise.all(promises);
 }
 
 export async function POST(req: NextRequest) {
@@ -168,8 +122,11 @@ export async function POST(req: NextRequest) {
       const runDate = skipWeekend(new Date(plan.nextRunDate));
       const runDateStr = formatDateUtc(runDate);
       const confirmDays = normalizeNonNegativeDays(plan.confirmDays, 0);
-      const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
-      if (confirmDateStr < runDateStr) logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "auto-execute");
+      let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) {
+        logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "auto-execute");
+        confirmDateStr = runDateStr;
+      }
       const confirmDate = new Date(Date.UTC(parseInt(confirmDateStr.slice(0, 4)), parseInt(confirmDateStr.slice(5, 7)) - 1, parseInt(confirmDateStr.slice(8, 10))));
       const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays, 2);
       const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
@@ -209,8 +166,12 @@ export async function POST(req: NextRequest) {
       const cDays = confirmDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.confirmDays, 0);
       const aDays = arrivalDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.arrivalDays, 2);
       // Always recompute confirmDate/arrivalDate from final confirmDays+arrivalDays
-      const cdStr = addWorkdaysUtc(formatDateUtc(e.runDate), cDays);
-      if (cdStr < formatDateUtc(e.runDate)) logger.warn(`confirmDate ${cdStr} < runDate ${formatDateUtc(e.runDate)}, cDays=${cDays}`, "auto-execute");
+      const runDateStr = formatDateUtc(e.runDate);
+      let cdStr = addWorkdaysUtc(runDateStr, cDays);
+      if (cdStr < runDateStr) {
+        logger.warn(`confirmDate ${cdStr} < runDate ${runDateStr}, cDays=${cDays}`, "auto-execute");
+        cdStr = runDateStr;
+      }
       e.confirmDate = new Date(Date.UTC(parseInt(cdStr.slice(0, 4)), parseInt(cdStr.slice(5, 7)) - 1, parseInt(cdStr.slice(8, 10))));
       e.confirmDateStr = cdStr;
       const adStr = aDays > 0 ? addWorkdaysUtc(cdStr, aDays) : cdStr;
@@ -336,9 +297,9 @@ export async function POST(req: NextRequest) {
           // Use the latest needed confirm date as the query target
           const dates = [...neededPairs.get(code)!.values()].sort();
           const latestDate = dates[dates.length - 1];
-          const navList = await fetchNavForDate(code, latestDate);
+          const navList = await fetchHistoricalNavList(code, dates[0]!, latestDate);
           if (navList.length > 0) {
-            await batchUpsertNavCache(navList.map(n => ({ fundCode: code, navDate: n.date, nav: n.nav, sgzt: n.sgzt })));
+            await preloadNavListToCache(code, navList);
           }
         });
         await Promise.all(fetchPromises);

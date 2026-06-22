@@ -238,8 +238,11 @@ export async function POST(req: NextRequest) {
     const navResultMap = new Map<string, { hasNav: boolean; sgzt: string; confirmDateStr: string }>();
     for (const d of datesToProcess) {
       const ds = formatDateUtc(d);
-      const confirmDateStr = addWorkdaysUtc(ds, confirmDays);
-      if (confirmDateStr < ds) logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${ds}, confirmDays=${confirmDays}`, "batch-execute");
+      let confirmDateStr = addWorkdaysUtc(ds, confirmDays);
+      if (confirmDateStr < ds) {
+        logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${ds}, confirmDays=${confirmDays}`, "batch-execute");
+        confirmDateStr = ds;
+      }
       const foundNav = await getFundNavFromCacheOnly(plan.fundCode, utcDate(confirmDateStr));
       navResultMap.set(ds, {
         hasNav: foundNav != null && foundNav.nav != null && foundNav.nav > 0,
@@ -295,8 +298,11 @@ export async function POST(req: NextRequest) {
         // 计算 T+N 确认日期（使用工作日计算）
         const runDateStr = formatDateUtc(runDate);
         const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
-        const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
-        if (confirmDateStr < runDateStr) logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+        let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+        if (confirmDateStr < runDateStr) {
+          logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+          confirmDateStr = runDateStr;
+        }
         const confirmDate = utcDate(confirmDateStr);
         const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
         const arrivalDate = utcDate(arrivalDateStr);

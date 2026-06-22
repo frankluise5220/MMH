@@ -11,6 +11,7 @@ import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { getLatestFundNavMap } from "@/lib/fund/navCache";
 
 export type InvestBalanceDetail = {
   marketValue: number;
@@ -65,26 +66,31 @@ export const computeInvestBalances = cache(
     where: { accountId: { in: investIds } },
   });
 
+  const holdingsByAccountId = new Map<string, typeof allHoldings>();
+  for (const holding of allHoldings) {
+    const holdings = holdingsByAccountId.get(holding.accountId);
+    if (holdings) {
+      holdings.push(holding);
+    } else {
+      holdingsByAccountId.set(holding.accountId, [holding]);
+    }
+  }
+
   const fundCodes = [...new Set(allHoldings.map(h => h.fundCode))];
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
-    const caches = await prisma.fundNavCache.findMany({
-      where: { fundCode: { in: fundCodes } },
-      orderBy: { navDate: "desc" },
-    });
-    for (const c of caches) {
-      if (!latestNavByCode.has(c.fundCode)) {
-        const d = c.navDate;
-        const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
-        latestNavByCode.set(c.fundCode, { nav: toNumber(c.nav), date: dateStr });
-      }
+    const caches = await getLatestFundNavMap(fundCodes);
+    for (const [fundCode, c] of caches) {
+      const d = c.navDate;
+      const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
+      latestNavByCode.set(fundCode, { nav: c.nav, date: dateStr });
     }
   }
 
   const result = new Map<string, InvestBalanceDetail>();
 
   for (const acctId of investIds) {
-    const holdings = allHoldings.filter(h => h.accountId === acctId);
+    const holdings = holdingsByAccountId.get(acctId) ?? [];
     let marketValue = 0;
     let totalCost = 0;
 
@@ -142,18 +148,13 @@ export const computePositionDisplay = cache(
   const isMoney = account?.investProductType === "money";
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
-  const latestNavByCode = new Map<string, { nav: number; date: string }>();
+  const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
   if (fundCodes.length > 0 && !isMoney) {
-    const caches = await prisma.fundNavCache.findMany({
-      where: { fundCode: { in: fundCodes } },
-      orderBy: { navDate: "desc" },
-    });
-    for (const c of caches) {
-      if (!latestNavByCode.has(c.fundCode)) {
-        const d = c.navDate;
-        const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
-        latestNavByCode.set(c.fundCode, { nav: toNumber(c.nav), date: dateStr });
-      }
+    const caches = await getLatestFundNavMap(fundCodes);
+    for (const [fundCode, c] of caches) {
+      const d = c.navDate;
+      const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
+      latestNavByCode.set(fundCode, { nav: c.nav, date: dateStr, name: c.name });
     }
   }
 
@@ -165,9 +166,10 @@ export const computePositionDisplay = cache(
     const cost = toNumber(h.cost);
     const pending = toNumber(h.pendingCost);
     const avgCost = toNumber(h.avgCost);
-    const navInfo = isMoney ? { nav: 1, date: "" } : latestNavByCode.get(h.fundCode);
+    const navInfo = isMoney ? { nav: 1, date: "", name: null } : latestNavByCode.get(h.fundCode);
     const latestNav = navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0);
     const navDateStr = navInfo?.date ?? "";
+    const displayName = navInfo?.name ?? h.fundName ?? h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
 
     const confirmedCost = cost - pending;
@@ -179,7 +181,7 @@ export const computePositionDisplay = cache(
     if (units > 0.0001 || pending > 0.01) {
       positions.push({
         fundCode: h.fundCode,
-        name: h.fundName ?? h.fundCode,
+        name: displayName,
         units,
         avgCost,
         cost,
@@ -194,7 +196,7 @@ export const computePositionDisplay = cache(
     } else {
       clearedPositions.push({
         fundCode: h.fundCode,
-        name: h.fundName ?? h.fundCode,
+        name: displayName,
         historicalProfit,
         totalInvested: 0,
         returnRate: 0,

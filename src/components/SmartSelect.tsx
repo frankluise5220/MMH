@@ -225,7 +225,10 @@ export function SmartSelect(props: SmartSelectProps) {
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const estimatedHeight = searchable ? 36 : 0
+    const minDropdownWidth = onCreateClick ? 300 : 0;
+    const width = Math.min(Math.max(rect.width, minDropdownWidth), window.innerWidth - 16);
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    const estimatedHeight = (searchable ? 36 : 0)
       + (onCreateClick || mode === "multi" ? 36 : 0)
       + Math.min(visible.length, 7) * 36
       + 16;
@@ -234,8 +237,8 @@ export function SmartSelect(props: SmartSelectProps) {
     const shouldFlip = spaceBelow < estimatedHeight && spaceAbove > estimatedHeight;
     setDropdownPos({
       top: shouldFlip ? rect.top - 4 : rect.bottom + 4,
-      left: rect.left,
-      width: rect.width,
+      left,
+      width,
     });
   }, [searchable, onCreateClick, mode, visible.length]);
 

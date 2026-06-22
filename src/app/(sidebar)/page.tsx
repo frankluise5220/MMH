@@ -26,15 +26,15 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
-import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { getFundNav } from "@/lib/fund/navCache";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
-import { loadCommonData, loadSelectedAccount, loadEntriesForAccount } from "@/lib/server/cached-data";
+import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { buildFlatAccountOptions } from "@/lib/account-display";
 
 export const dynamic = "force-dynamic";
 
@@ -511,8 +511,9 @@ async function createTransaction(formData: FormData) {
 
         const entryFundCode = fundCode || null;
         // fundCode 字段只存真正的基金代码（6位数字），不存账户名
-        // fundName 用于显示名称：有备注用备注，有真实基金代码用基金名称（由UI查询），否则留null
-        const entryFundName = note || fundCode || null;
+        // fundName 只存基金名称，不用备注兜底，避免“红利转投”等备注污染基金名称显示
+        const fundNameInput = String(formData.get("fundName") ?? "").trim();
+        const entryFundName = fundNameInput || fundCode || null;
 
 
         // 创建 TxRecord，直接包含所有基金字段
@@ -1607,6 +1608,8 @@ export default async function Home({
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const isRedUp = colorScheme === "red_up_green_down";
+  const fundUnitsDecimalsRaw = Number(cookieStore.get("mmh_fund_units_decimals")?.value ?? 2);
+  const fundUnitsDecimals = Number.isFinite(fundUnitsDecimalsRaw) ? Math.min(Math.max(Math.round(fundUnitsDecimalsRaw), 0), 6) : 2;
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
   // 颜色辅助函数
@@ -1620,6 +1623,13 @@ export default async function Home({
   const { categories, accounts, tags, groups, institutions } = common;
   // selectedAccount: per-account，请求级缓存去重
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
+  const isBillAccount =
+    (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
+    !!selectedAccount?.billingDay;
+  const isInvestAccount = selectedAccount?.kind === AccountKind.investment;
+  const isOverview = !viewParam && !accountId && !accountName;
+  const view = viewParam ? viewParam : isBillAccount ? "bill" : isInvestAccount ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund") : isOverview ? "overview" : "detail";
+  const needsDetailEntries = view === "detail";
 
   const legacyNames = (() => {
     if (!selectedAccount) return [];
@@ -1641,14 +1651,16 @@ export default async function Home({
       ? { accountName: accountName, deletedAt: null, ...hid }
       : { deletedAt: null, account: { kind: { not: AccountKind.investment }, ...hidFilter } };
 
-  const rawEntries = accountId
-    ? await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
-    : await prisma.txRecord.findMany({
-        where,
-        include: { EntryTag: { include: { Tag: true } } },
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        take: 5000,
-      });
+  const rawEntries = needsDetailEntries
+    ? accountId
+      ? await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
+      : await prisma.txRecord.findMany({
+          where,
+          include: { EntryTag: { include: { Tag: true } } },
+          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+          take: 5000,
+        })
+    : [];
   const toDateValue = (value: unknown) => {
     return toValidDate(value) ?? new Date(0);
   };
@@ -1758,13 +1770,6 @@ export default async function Home({
   const normalExportHref = buildCsvDataUri(normalExportRows);
   const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.csv`;
 
-  const isBillAccount =
-    (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
-    !!selectedAccount?.billingDay;
-  const isInvestAccount = selectedAccount?.kind === AccountKind.investment;
-  const isOverview = !viewParam && !accountId && !accountName;
-  const view = viewParam ? viewParam : isBillAccount ? "bill" : isInvestAccount ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund") : isOverview ? "overview" : "detail";
-
   const categoryLabels = buildCategoryPathLabels(categories);
   const expenseCategories = categories
     .filter((c) => c.type === "expense")
@@ -1781,6 +1786,7 @@ export default async function Home({
       .map((account) => ({ id: account.id, kind: account.kind, billingDay: account.billingDay })),
     hidFilter,
   );
+  const investBalByAccountId = new Map(Object.entries(await loadInvestBalances(JSON.stringify(hidFilter))));
 
   const total = filteredEntries.reduce(
     (acc, e) => {
@@ -1802,7 +1808,7 @@ export default async function Home({
 
   const totalNetWorthValue = accounts.reduce((sum, account) => {
     if (account.kind === AccountKind.investment) {
-      return sum + toNumber(account.balance);
+      return sum + (investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance));
     }
     return sum + (cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
   }, 0);
@@ -1823,8 +1829,9 @@ export default async function Home({
   const selectedAccountLabel = (() => {
     if (selectedAccount) {
       const inst = (selectedAccount.Institution?.name ?? "").trim();
-      const group = (selectedAccount.AccountGroup?.name ?? "").trim();
       const accountLabel = inst ? `${inst}·${selectedAccount.name}` : selectedAccount.name;
+      if (selectedAccount.kind === AccountKind.investment) return accountLabel;
+      const group = (selectedAccount.AccountGroup?.name ?? "").trim();
       return [group, accountLabel].filter(Boolean).join(" / ");
     }
     return accountName || "";
@@ -1899,7 +1906,7 @@ export default async function Home({
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
   const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment");
-  const investmentAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment");
+  const investmentAccountSSOptions = buildFlatAccountOptions(accountOptions.filter(a => a.kind === "investment"));
   // Flat lists for components that don't use SS hierarchy (backward compat)
   const cashAccountList = accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
   const investmentAccountList = accountOptions.filter(a => a.kind === "investment").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
@@ -2376,7 +2383,6 @@ export default async function Home({
     return cum?.cumulativeRemain ?? creditCardBill?.remain ?? 0;
   })();
 
-  const investBalByAccountId = await computeInvestBalances(ctx);
   const selectedAccountBalanceValue = selectedAccount
     ? selectedAccount.kind === AccountKind.investment
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
@@ -2413,186 +2419,19 @@ export default async function Home({
         })()
       : null;
 
-  const investmoneyAccount = viewParam === "investmoney" && accountId
-    ? await prisma.account.findUnique({ where: { id: accountId } })
+  const investDataParams = JSON.stringify({
+    fundSortParam,
+    fundSortDirParam,
+    fundPageSize,
+    fundPage,
+    fundCodeParam,
+  });
+  const investDataHidFilter = JSON.stringify(hidFilter);
+  const investmoneyData = view === "investmoney" && accountId
+    ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
-
-  const investmoneyData = viewParam === "investmoney" && investmoneyAccount
-    ? await (async () => {
-        // ── 显示层：持仓数据统一从 fundHolding 表读取 ──
-        const positionDisplay = await computePositionDisplay(ctx, investmoneyAccount.id);
-        const sortedPositions = [...positionDisplay.positions].sort((a, b) => {
-          const dir = fundSortDirParam === "asc" ? 1 : -1;
-          let value = 0;
-          switch (fundSortParam) {
-            case "fundCode": value = a.fundCode.localeCompare(b.fundCode); break;
-            case "cost": value = a.cost - b.cost; break;
-            case "floatingPnL": value = a.floatingPnL - b.floatingPnL; break;
-            case "floatingPnLRate": value = a.floatingPnLRate - b.floatingPnLRate; break;
-            case "historicalProfit": value = a.historicalProfit - b.historicalProfit; break;
-            case "marketValue":
-            default: value = a.marketValue - b.marketValue; break;
-          }
-          return value * dir;
-        });
-        positionDisplay.positions = sortedPositions;
-        // 清仓基金排序
-        const sortedCleared = [...positionDisplay.clearedPositions].sort((a, b) => {
-          const dir = fundSortDirParam === "asc" ? 1 : -1;
-          let value = 0;
-          switch (fundSortParam) {
-            case "fundCode": value = a.fundCode.localeCompare(b.fundCode); break;
-            case "firstBuyDate": value = a.firstBuyDate.localeCompare(b.firstBuyDate); break;
-            case "clearedDate": value = a.clearedDate.localeCompare(b.clearedDate); break;
-            case "returnRate": value = a.returnRate - b.returnRate; break;
-            case "historicalProfit": value = a.historicalProfit - b.historicalProfit; break;
-            case "clearedDate":
-            default: value = a.clearedDate.localeCompare(b.clearedDate); break;
-          }
-          return value * dir;
-        });
-        positionDisplay.clearedPositions = sortedCleared;
-        const selectedFundCode = fundCodeParam || (positionDisplay.positions.length > 0 ? positionDisplay.positions[0]!.fundCode : (positionDisplay.clearedPositions.length > 0 ? positionDisplay.clearedPositions[0]!.fundCode : ""));
-        // ── 显示层：交易流水从 TxRecord 查询（不按 fundCode 过滤，全量加载后前端切换） ──
-        // 买入记录 toAccountId=投资账户，赎回记录 accountId=投资账户 → 需同时查两个字段
-        const fundEntries = await prisma.txRecord.findMany({
-          where: {
-            deletedAt: null,
-            fundCode: { not: null },
-            OR: [
-              { toAccountId: investmoneyAccount.id },
-              { accountId: investmoneyAccount.id },
-            ],
-          },
-          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        });
-        // 批量查询费率（按 fundCode + feeType 取最新一条）
-        const feeRateRecords = await prisma.fundFeeRate.findMany({
-          where: { accountId: investmoneyAccount.id },
-          orderBy: { effectiveDate: "desc" },
-        });
-        const feeRateMap = new Map<string, string>();
-        for (const fr of feeRateRecords) {
-          const key = `${fr.fundCode}:${fr.feeType}`;
-          if (!feeRateMap.has(key)) {
-            feeRateMap.set(key, String(fr.rate));
-          }
-        }
-        // 批量查询确认天数（按 fundCode）
-        const confirmDaysRecords = await prisma.fundConfirmDays.findMany({
-          where: { accountId: investmoneyAccount.id },
-        });
-        const confirmDaysMap = new Map<string, number>();
-        for (const cd of confirmDaysRecords) {
-          confirmDaysMap.set(cd.fundCode, cd.days ?? 0);
-        }
-        // pendingByCode 直接从持仓数据获取
-        const pendingByCode = new Map<string, number>();
-        for (const p of positionDisplay.positions) {
-          if (p.pendingCost > 0) {
-            pendingByCode.set(p.fundCode, p.pendingCost);
-          }
-        }
-        // 前端过滤：只显示选中基金的明细
-        const filteredFundEntries = selectedFundCode ? fundEntries.filter(e => e.fundCode === selectedFundCode) : fundEntries;
-        // 分页
-        const totalEntries = filteredFundEntries.length;
-        const totalPages = Math.max(1, Math.ceil(totalEntries / fundPageSize));
-        const safePage = Math.min(fundPage, totalPages);
-        const pagedFundEntries = filteredFundEntries.slice((safePage - 1) * fundPageSize, safePage * fundPageSize);
-        return { ...positionDisplay, filteredEntries: pagedFundEntries, allEntries: fundEntries, totalEntries, totalPages, safePage, selectedFundCode, pendingByCode, feeRateMap, confirmDaysMap };
-      })()
-    : null;
-
-  const investfundAccount = viewParam === "investfund" && accountId
-    ? await prisma.account.findUnique({ where: { id: accountId } })
-    : null;
-
-  const investfundData = viewParam === "investfund" && investfundAccount
-    ? await (async () => {
-        // ── 显示层：持仓数据统一从 fundHolding 表读取 ──
-        const positionDisplay = await computePositionDisplay(ctx, investfundAccount.id);
-        const sortedPositions = [...positionDisplay.positions].sort((a, b) => {
-          const dir = fundSortDirParam === "asc" ? 1 : -1;
-          let value = 0;
-          switch (fundSortParam) {
-            case "fundCode": value = a.fundCode.localeCompare(b.fundCode); break;
-            case "cost": value = a.cost - b.cost; break;
-            case "floatingPnL": value = a.floatingPnL - b.floatingPnL; break;
-            case "floatingPnLRate": value = a.floatingPnLRate - b.floatingPnLRate; break;
-            case "historicalProfit": value = a.historicalProfit - b.historicalProfit; break;
-            case "marketValue":
-            default: value = a.marketValue - b.marketValue; break;
-          }
-          return value * dir;
-        });
-        positionDisplay.positions = sortedPositions;
-        // 清仓基金排序
-        const sortedCleared = [...positionDisplay.clearedPositions].sort((a, b) => {
-          const dir = fundSortDirParam === "asc" ? 1 : -1;
-          let value = 0;
-          switch (fundSortParam) {
-            case "fundCode": value = a.fundCode.localeCompare(b.fundCode); break;
-            case "firstBuyDate": value = a.firstBuyDate.localeCompare(b.firstBuyDate); break;
-            case "clearedDate": value = a.clearedDate.localeCompare(b.clearedDate); break;
-            case "returnRate": value = a.returnRate - b.returnRate; break;
-            case "historicalProfit": value = a.historicalProfit - b.historicalProfit; break;
-            case "clearedDate":
-            default: value = a.clearedDate.localeCompare(b.clearedDate); break;
-          }
-          return value * dir;
-        });
-        positionDisplay.clearedPositions = sortedCleared;
-        const selectedFundCode = fundCodeParam || (positionDisplay.positions.length > 0 ? positionDisplay.positions[0]!.fundCode : (positionDisplay.clearedPositions.length > 0 ? positionDisplay.clearedPositions[0]!.fundCode : ""));
-        // ── 显示层：交易流水从 TxRecord 查询（不按 fundCode 过滤，全量加载后前端切换） ──
-        // 买入记录 toAccountId=投资账户，赎回记录 accountId=投资账户 → 需同时查两个字段
-        const fundEntries = await prisma.txRecord.findMany({
-          where: {
-            deletedAt: null,
-            fundCode: { not: null },
-            OR: [
-              { toAccountId: investfundAccount.id },
-              { accountId: investfundAccount.id },
-            ],
-          },
-          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        });
-        // 批量查询费率（按 fundCode + feeType 取最新一条）
-        const feeRateRecords2 = await prisma.fundFeeRate.findMany({
-          where: { accountId: investfundAccount.id },
-          orderBy: { effectiveDate: "desc" },
-        });
-        const feeRateMap2 = new Map<string, string>();
-        for (const fr of feeRateRecords2) {
-          const key = `${fr.fundCode}:${fr.feeType}`;
-          if (!feeRateMap2.has(key)) {
-            feeRateMap2.set(key, String(fr.rate));
-          }
-        }
-        // 批量查询确认天数（按 fundCode）
-        const confirmDaysRecords2 = await prisma.fundConfirmDays.findMany({
-          where: { accountId: investfundAccount.id },
-        });
-        const confirmDaysMap2 = new Map<string, number>();
-        for (const cd of confirmDaysRecords2) {
-          confirmDaysMap2.set(cd.fundCode, cd.days ?? 0);
-        }
-        // pendingByCode 直接从持仓数据获取
-        const pendingByCode = new Map<string, number>();
-        for (const p of positionDisplay.positions) {
-          if (p.pendingCost > 0) {
-            pendingByCode.set(p.fundCode, p.pendingCost);
-          }
-        }
-        // 前端过滤：只显示选中基金的明细
-        const filteredFundEntries2 = selectedFundCode ? fundEntries.filter(e => e.fundCode === selectedFundCode) : fundEntries;
-        // 分页
-        const totalEntries2 = filteredFundEntries2.length;
-        const totalPages2 = Math.max(1, Math.ceil(totalEntries2 / fundPageSize));
-        const safePage2 = Math.min(fundPage, totalPages2);
-        const pagedFundEntries2 = filteredFundEntries2.slice((safePage2 - 1) * fundPageSize, safePage2 * fundPageSize);
-        return { ...positionDisplay, filteredEntries: pagedFundEntries2, allEntries: fundEntries, totalEntries: totalEntries2, totalPages: totalPages2, safePage: safePage2, selectedFundCode, pendingByCode, feeRateMap: feeRateMap2, confirmDaysMap: confirmDaysMap2 };
-      })()
+  const investfundData = view === "investfund" && accountId
+    ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
 
   // 定投计划数据加载
@@ -2779,9 +2618,9 @@ export default async function Home({
               {!selectedAccount ? (
                 <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
               ) : view === "investmoney" && investmoneyData ? (
-                <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investmoneyData.totalMarketValue)}</span>
+                <span className={`tabular-nums font-semibold ${pnlCls(investmoneyData.totalMarketValue)}`}>{formatMoney(investmoneyData.totalMarketValue)}</span>
               ) : view === "investfund" && investfundData ? (
-                <span className="tabular-nums font-semibold text-emerald-700">{formatMoney(investfundData.totalMarketValue)}</span>
+                <span className={`tabular-nums font-semibold ${pnlCls(investfundData.totalMarketValue)}`}>{formatMoney(investfundData.totalMarketValue)}</span>
               ) : (
                 <LiveAccountBalance mode="account" accountId={selectedAccount.id} initialValue={selectedAccountBalanceValue} isRedUp={isRedUp} />
               )}
@@ -2818,7 +2657,7 @@ export default async function Home({
                 createAction={createTransaction}
               />
             ) : view === "regularinvest" && selectedAccount ? (
-              <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={cashAccountList} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} action={regularInvestFormAction} showTriggerButton={false} />
+              <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={cashAccountList} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} action={regularInvestFormAction} showTriggerButton={false} />
             ) : (
               <>
               <TransactionFormModal
@@ -3176,8 +3015,8 @@ export default async function Home({
               totalMarketValue={investmoneyData.totalMarketValue}
               totalCost={investmoneyData.totalCost}
               totalHistoricalProfit={investmoneyData.totalHistoricalProfit}
-              confirmDaysMap={Object.fromEntries(investmoneyData.confirmDaysMap)}
-              feeRateMap={Object.fromEntries(investmoneyData.feeRateMap)}
+              confirmDaysMap={investmoneyData.confirmDaysMap}
+              feeRateMap={investmoneyData.feeRateMap}
               initialShowCleared={showCleared}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
@@ -3186,12 +3025,16 @@ export default async function Home({
               accountOptions={accountOptions}
               cashAccounts={cashAccountList}
               investmentAccounts={investmentAccountList}
+              cashAccountSSOptions={cashAccountSSOptions}
+              investmentAccountSSOptions={investmentAccountSSOptions}
+              nestedFieldData={nestedFieldData}
               createAction={createTransaction}
               editAction={editInvestment}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
               lastUsedCashAccount={lastUsedCashAccount}
               isRedUp={isRedUp}
+              fundUnitsDecimals={fundUnitsDecimals}
             />
           ) : view === "investfund" && investfundData ? (
             <FundShell
@@ -3204,8 +3047,8 @@ export default async function Home({
               totalMarketValue={investfundData.totalMarketValue}
               totalCost={investfundData.totalCost}
               totalHistoricalProfit={investfundData.totalHistoricalProfit}
-              confirmDaysMap={Object.fromEntries(investfundData.confirmDaysMap)}
-              feeRateMap={Object.fromEntries(investfundData.feeRateMap)}
+              confirmDaysMap={investfundData.confirmDaysMap}
+              feeRateMap={investfundData.feeRateMap}
               initialShowCleared={showCleared}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
@@ -3214,12 +3057,16 @@ export default async function Home({
               accountOptions={accountOptions}
               cashAccounts={cashAccountList}
               investmentAccounts={investmentAccountList}
+              cashAccountSSOptions={cashAccountSSOptions}
+              investmentAccountSSOptions={investmentAccountSSOptions}
+              nestedFieldData={nestedFieldData}
               createAction={createTransaction}
               editAction={editInvestment}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
               lastUsedCashAccount={lastUsedCashAccount}
               isRedUp={isRedUp}
+              fundUnitsDecimals={fundUnitsDecimals}
             />
           ) : (
             <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
@@ -3247,36 +3094,44 @@ export default async function Home({
                     })}
                     <a href={hrefAllDetails} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${detailAll ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`} title="当前账户全部记录不分页显示">全部</a>
                     <span className="text-xs text-slate-600">条</span>
-                    {!detailAll && detailTotalPages > 1 && (
-                      <>
-                        <span className="text-slate-400">|</span>
-                        {safeDetailPage > 1 ? (
-                          <a href={withDetailParams((q) => { q.set("detailPage", "1"); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="第一页"><ChevronsLeft className="h-3.5 w-3.5"/></a>
-                        ) : (
-                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是第一页"><ChevronsLeft className="h-3.5 w-3.5"/></span>
-                        )}
-                        {safeDetailPage > 1 ? (
-                          <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage - 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="上一页"><ChevronLeft className="h-3.5 w-3.5"/></a>
-                        ) : (
-                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是第一页"><ChevronLeft className="h-3.5 w-3.5"/></span>
-                        )}
-                        <span className="min-w-10 text-center text-xs text-slate-500">{safeDetailPage}/{detailTotalPages}</span>
-                        {safeDetailPage < detailTotalPages ? (
-                          <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage + 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="下一页"><ChevronRight className="h-3.5 w-3.5"/></a>
-                        ) : (
-                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是最后一页"><ChevronRight className="h-3.5 w-3.5"/></span>
-                        )}
-                        {safeDetailPage < detailTotalPages ? (
-                          <a href={withDetailParams((q) => { q.set("detailPage", String(detailTotalPages)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="最后一页"><ChevronsRight className="h-3.5 w-3.5"/></a>
-                        ) : (
-                          <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title="已是最后一页"><ChevronsRight className="h-3.5 w-3.5"/></span>
-                        )}
-                      </>
+                    <span className="text-slate-400">|</span>
+                    {!detailAll && safeDetailPage > 1 ? (
+                      <a href={withDetailParams((q) => { q.set("detailPage", "1"); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="第一页"><ChevronsLeft className="h-3.5 w-3.5"/></a>
+                    ) : (
+                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是第一页"}><ChevronsLeft className="h-3.5 w-3.5"/></span>
+                    )}
+                    {!detailAll && safeDetailPage > 1 ? (
+                      <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage - 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="上一页"><ChevronLeft className="h-3.5 w-3.5"/></a>
+                    ) : (
+                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是第一页"}><ChevronLeft className="h-3.5 w-3.5"/></span>
+                    )}
+                    <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? "全部" : `${safeDetailPage}/${detailTotalPages}`}</span>
+                    {!detailAll && safeDetailPage < detailTotalPages ? (
+                      <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage + 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="下一页"><ChevronRight className="h-3.5 w-3.5"/></a>
+                    ) : (
+                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是最后一页"}><ChevronRight className="h-3.5 w-3.5"/></span>
+                    )}
+                    {!detailAll && safeDetailPage < detailTotalPages ? (
+                      <a href={withDetailParams((q) => { q.set("detailPage", String(detailTotalPages)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="最后一页"><ChevronsRight className="h-3.5 w-3.5"/></a>
+                    ) : (
+                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是最后一页"}><ChevronsRight className="h-3.5 w-3.5"/></span>
                     )}
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-auto">
-                  <table className="min-w-[1040px] w-full border-separate border-spacing-0">
+                  <table className="min-w-[1240px] w-full table-fixed border-separate border-spacing-0">
+                    <colgroup>
+                      <col className="w-[44px]" />
+                      <col className="w-[112px]" />
+                      <col className="w-[112px]" />
+                      <col className="w-[112px]" />
+                      <col className="w-[104px]" />
+                      <col className="w-[180px]" />
+                      <col className="w-[124px]" />
+                      <col className="w-[280px]" />
+                      <col className="w-[72px]" />
+                      <col className="w-[100px]" />
+                    </colgroup>
                     <thead className="sticky top-0 z-10 bg-white">
                       <tr>
                         <th className="w-9 px-3 py-2 border-b border-slate-200 text-left">
@@ -3342,7 +3197,7 @@ export default async function Home({
                           })()}
                         </th>
                         {renderDetailFilterHeader("type", "活动类型", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
-                        {!isInvestAccount && renderDetailFilterHeader("related", "关联账户", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
+                        {renderDetailFilterHeader("related", "关联账户", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">余额</th>
                         {renderDetailFilterHeader("remark", "备注", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">附件</th>

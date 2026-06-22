@@ -166,34 +166,21 @@ export async function getFundNav(
   if (!apiData) return null;
 
   // 3. 校验净值日期是否与请求日期一致
-  const dateMatch = !apiData.date || apiData.date === dateStr;
+  const actualNavDate = apiData.date ? utcDate(apiData.date) : navDate;
+  const actualDateStr = actualNavDate.toISOString().slice(0, 10);
+  const dateMatch = actualDateStr === dateStr;
 
-  // 4. 只有日期一致时才写入缓存
-  if (dateMatch) {
-    try {
-      await prisma.fundNavCache.upsert({
-        where: {
-          fundCode_navDate: {
-            fundCode,
-            navDate,
-          },
-        },
-        create: {
-          fundCode,
-          navDate,
-          nav: apiData.nav,
-          cumNav: apiData.cumNav,
-          name: apiData.name,
-        },
-        update: {
-          nav: apiData.nav,
-          cumNav: apiData.cumNav,
-          name: apiData.name,
-        },
-      });
-    } catch {
-      // 写入失败不影响返回结果
-    }
+  // 4. 只要外部 API 返回了净值，就按实际净值日写入缓存，避免“获取了但没入库”。
+  try {
+    await setFundNav(
+      fundCode,
+      actualNavDate,
+      apiData.nav,
+      apiData.cumNav ?? undefined,
+      apiData.name ?? undefined,
+    );
+  } catch (error) {
+    console.warn("Failed to cache fund NAV", { fundCode, navDate: actualDateStr, error });
   }
 
   // 5. 返回结果（包含日期匹配信息和实际净值日期）
@@ -202,7 +189,7 @@ export async function getFundNav(
     cumNav: apiData.cumNav ?? null,
     name: apiData.name ?? null,
     dateMatch,
-    actualDate: apiData.date,
+    actualDate: actualDateStr,
   };
 }
 
@@ -357,6 +344,60 @@ export async function getLatestFundNav(
     navDate: record.navDate,
     name: record.name,
   };
+}
+
+/**
+ * 批量查询多个基金代码的最新净值。
+ *
+ * 只返回每个 fundCode 的最新一条缓存记录，避免调用方把历史净值全量拉到 JS 再筛选。
+ */
+export async function getLatestFundNavMap(
+  fundCodes: string[],
+): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+  const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
+  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+  if (codes.length === 0) return result;
+
+  const latestDates = await prisma.fundNavCache.groupBy({
+    by: ["fundCode"],
+    where: { fundCode: { in: codes } },
+    _max: { navDate: true },
+  });
+
+  const latestPairs = latestDates
+    .map((row) => (row._max.navDate ? { fundCode: row.fundCode, navDate: row._max.navDate } : null))
+    .filter((row): row is { fundCode: string; navDate: Date } => row != null);
+
+  if (latestPairs.length === 0) return result;
+
+  const rows = await prisma.fundNavCache.findMany({
+    where: {
+      OR: latestPairs.map((pair) => ({
+        fundCode: pair.fundCode,
+        navDate: pair.navDate,
+      })),
+    },
+    select: {
+      id: true,
+      fundCode: true,
+      nav: true,
+      cumNav: true,
+      navDate: true,
+      name: true,
+    },
+  });
+
+  for (const row of rows) {
+    result.set(row.fundCode, {
+      id: row.id,
+      nav: Number(row.nav),
+      cumNav: row.cumNav ? Number(row.cumNav) : null,
+      navDate: row.navDate,
+      name: row.name,
+    });
+  }
+
+  return result;
 }
 
 /**

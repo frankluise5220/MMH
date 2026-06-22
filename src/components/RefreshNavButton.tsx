@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 
 export function RefreshNavButton({
@@ -11,7 +10,6 @@ export function RefreshNavButton({
   accountId: string;
   symbols: string[];
 }) {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
@@ -28,11 +26,11 @@ export function RefreshNavButton({
       const data = await res.json();
       if (data.ok) {
         setResult(data.message);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
       } else {
         setResult(data.error ?? "刷新失败");
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
     } catch (e) {
       setResult(e instanceof Error ? e.message : "刷新失败");
     } finally {

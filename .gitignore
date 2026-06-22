@@ -130,6 +130,7 @@ syno-mmh-sync.bat
 
 # local scratch
 AI_CONTEXT.md
+.github-token.txt
 page-backup.tsx
 patch*.txt
 _*.cjs
@@ -141,6 +142,7 @@ _*.mjs
 # local test artifacts
 public/test-results.json
 /src/app/test-results/
+release-artifacts/
 
 # temporary plans
 plans/

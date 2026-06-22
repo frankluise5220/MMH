@@ -10,6 +10,7 @@ export function revalidateAfterTxChange() {
 
 export function revalidateAfterInvestChange() {
   revalidateAfterTxChange();
+  revalidateTag("invest-balances", "max");
   revalidateTag("invest-account-data", "max");
   revalidateTag("fund-holding", "max");
   revalidatePath("/invest");
@@ -19,6 +20,7 @@ export function revalidateAfterInvestChange() {
 
 export function revalidateAfterSettingsChange() {
   revalidateTag("common-data", "max");
+  revalidateTag("invest-balances", "max");
   revalidatePath("/");
   revalidatePath("/accounts");
   revalidatePath("/settings/accounts");

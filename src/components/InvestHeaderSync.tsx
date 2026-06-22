@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 
 export function InvestHeaderSync() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -24,7 +22,7 @@ export function InvestHeaderSync() {
 
       if (data.ok) {
         setMessage(data.message ?? `已同步 ${data.synced} 支基金`);
-        setTimeout(() => router.refresh(), 500);
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
       } else {
         setMessage(`同步失败：${data.error}`);
       }
