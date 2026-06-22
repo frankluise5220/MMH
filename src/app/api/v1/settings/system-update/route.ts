@@ -20,10 +20,14 @@ type VersionInfo = {
   localCommit: string;
   localCommitMsg: string;
   localCommitDate: string;
+  remoteName: string;
+  remoteBranch: string;
+  remoteUrl: string;
   remoteCommit: string;
   remoteCommitMsg: string;
   needsUpdate: boolean;
   canCheckUpdate: boolean;
+  fetchError?: string;
 };
 
 let updateRunning = false;
@@ -63,31 +67,55 @@ function getLocalGitInfo(projectRoot: string) {
   }
 }
 
+function readCommand(projectRoot: string, cmd: string) {
+  return execSync(cmd, { cwd: projectRoot, encoding: "utf-8" }).trim();
+}
+
+function commandErrorMessage(error: unknown) {
+  const e = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  const stderr = typeof e.stderr === "string" ? e.stderr : e.stderr?.toString();
+  const stdout = typeof e.stdout === "string" ? e.stdout : e.stdout?.toString();
+  return (stderr || stdout || e.message || "未知错误").trim();
+}
+
 function getGitVersionInfo(projectRoot: string): VersionInfo {
   const { remote, branch, ref } = getGitTarget();
   const local = getLocalGitInfo(projectRoot);
+  let remoteUrl = "";
+  try {
+    remoteUrl = readCommand(projectRoot, `git remote get-url ${remote}`);
+  } catch {
+    remoteUrl = "";
+  }
 
   try {
     execSync(`git fetch ${remote} ${branch}`, { cwd: projectRoot, encoding: "utf-8", timeout: 15000 });
-    const remoteCommit = execSync(`git rev-parse --short ${ref}`, { cwd: projectRoot, encoding: "utf-8" }).trim();
-    const remoteCommitMsg = execSync(`git log -1 --format=%s ${ref}`, { cwd: projectRoot, encoding: "utf-8" }).trim();
-    const localFull = execSync("git rev-parse HEAD", { cwd: projectRoot, encoding: "utf-8" }).trim();
-    const remoteFull = execSync(`git rev-parse ${ref}`, { cwd: projectRoot, encoding: "utf-8" }).trim();
+    const remoteCommit = readCommand(projectRoot, `git rev-parse --short ${ref}`);
+    const remoteCommitMsg = readCommand(projectRoot, `git log -1 --format=%s ${ref}`);
+    const localFull = readCommand(projectRoot, "git rev-parse HEAD");
+    const remoteFull = readCommand(projectRoot, `git rev-parse ${ref}`);
 
     return {
       ...local,
+      remoteName: remote,
+      remoteBranch: branch,
+      remoteUrl,
       remoteCommit,
       remoteCommitMsg,
       needsUpdate: localFull !== remoteFull,
       canCheckUpdate: true,
     };
-  } catch {
+  } catch (error) {
     return {
       ...local,
+      remoteName: remote,
+      remoteBranch: branch,
+      remoteUrl,
       remoteCommit: "unknown",
       remoteCommitMsg: "",
       needsUpdate: false,
       canCheckUpdate: false,
+      fetchError: commandErrorMessage(error),
     };
   }
 }

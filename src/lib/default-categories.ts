@@ -6,26 +6,47 @@ export type DefaultCategoryType = "expense" | "income";
 export type DefaultCategoryTemplate = {
   type: DefaultCategoryType;
   name: string;
-  children?: string[];
+  children?: Array<string | DefaultCategoryTemplateChild>;
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
 
+type DefaultCategoryTemplateChild = {
+  name: string;
+  children?: string[];
+};
+
+const rootCategoryRenames = [
+  { type: "expense", from: "餐饮饮食", to: "餐饮费" },
+  { type: "expense", from: "生活日用", to: "生活费" },
+  { type: "expense", from: "交通出行", to: "交通费" },
+  { type: "expense", from: "购物消费", to: "服饰装饰" },
+  { type: "expense", from: "人情社交", to: "人情往来" },
+] as const;
+
+const sameNameChildFallback: Record<string, string> = {
+  餐饮费: "其他餐饮",
+  生活费: "其他生活",
+  交通费: "其他交通",
+  服饰装饰: "其他服饰",
+  人情往来: "其他人情",
+};
+
 export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
-    name: "餐饮饮食",
+    name: "餐饮费",
     children: ["早餐", "午餐", "晚餐", "外卖", "零食饮料", "买菜食材", "水果", "烟酒茶", "聚餐请客"],
   },
   {
     type: "expense",
-    name: "生活日用",
-    children: ["生活费", "日用品", "清洁用品", "家居用品", "维修维护", "快递物流", "物业杂费"],
+    name: "生活费",
+    children: ["日用品", "清洁用品", "家居用品", "维修维护", "快递物流", "物业杂费"],
   },
   {
     type: "expense",
-    name: "交通出行",
-    children: ["交通费", "公交地铁", "打车", "火车高铁", "机票", "长途客运", "停车费", "过路费", "加油", "充电", "保养维修", "车险车税"],
+    name: "交通费",
+    children: ["公交地铁", "打车", "火车高铁", "机票", "长途客运", "停车费", "过路费", "加油", "充电", "保养维修", "车险车税"],
   },
   {
     type: "expense",
@@ -34,8 +55,13 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   },
   {
     type: "expense",
-    name: "购物消费",
-    children: ["服饰鞋包", "数码电器", "美妆护肤", "母婴用品", "运动户外", "书籍文具", "礼品", "网购"],
+    name: "服饰装饰",
+    children: ["服饰鞋包", "美妆护肤", "饰品配件", "洗护美发", "家居装饰"],
+  },
+  {
+    type: "expense",
+    name: "数码家电",
+    children: ["手机电脑", "数码配件", "家用电器", "维修配件"],
   },
   {
     type: "expense",
@@ -54,7 +80,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   },
   {
     type: "expense",
-    name: "人情社交",
+    name: "人情往来",
     children: ["人情开支", "红包", "礼金", "请客", "节日礼物", "婚丧嫁娶", "探望慰问"],
   },
   {
@@ -131,15 +157,161 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
       select: { id: true },
     });
 
-    for (const childName of category.children ?? []) {
-      await writer.category.create({
+    for (const child of category.children ?? []) {
+      const childName = typeof child === "string" ? child : child.name;
+      const createdChild = await writer.category.create({
         data: {
           type: category.type,
           name: childName,
           parentId: parent.id,
           householdId,
         },
+        select: { id: true },
+      });
+
+      if (typeof child !== "string") {
+        for (const grandChildName of child.children ?? []) {
+          await writer.category.create({
+            data: {
+              type: category.type,
+              name: grandChildName,
+              parentId: createdChild.id,
+              householdId,
+            },
+          });
+        }
+      }
+    }
+  }
+}
+
+export async function normalizeDefaultCategoryHierarchyForHousehold(writer: CategoryWriter, householdId: string) {
+  for (const item of rootCategoryRenames) {
+    await renameRootCategory(writer, householdId, item.type, item.from, item.to);
+  }
+
+  await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
+
+  for (const category of defaultCategoryTemplates) {
+    await normalizeSameNameChild(writer, householdId, category.type, category.name);
+  }
+}
+
+async function renameRootCategory(
+  writer: CategoryWriter,
+  householdId: string,
+  type: DefaultCategoryType,
+  from: string,
+  to: string,
+) {
+  const legacy = await writer.category.findFirst({
+    where: { householdId, type, parentId: null, name: from },
+    select: { id: true },
+  });
+  if (!legacy) return;
+
+  const target = await writer.category.findFirst({
+    where: { householdId, type, parentId: null, name: to },
+    select: { id: true },
+  });
+
+  if (!target) {
+    await writer.category.update({ where: { id: legacy.id }, data: { name: to } });
+    await writer.txRecord.updateMany({ where: { householdId, categoryId: legacy.id }, data: { categoryName: to } });
+    return;
+  }
+
+  if (target.id === legacy.id) return;
+
+  await writer.category.updateMany({
+    where: { householdId, parentId: legacy.id },
+    data: { parentId: target.id },
+  });
+  await writer.txRecord.updateMany({
+    where: { householdId, categoryId: legacy.id },
+    data: { categoryId: target.id, categoryName: to },
+  });
+  await writer.category.delete({ where: { id: legacy.id } });
+}
+
+async function ensureDefaultCategoryTemplatesForHousehold(writer: CategoryWriter, householdId: string) {
+  for (const category of defaultCategoryTemplates) {
+    let root = await writer.category.findFirst({
+      where: { householdId, type: category.type, parentId: null, name: category.name },
+      select: { id: true },
+    });
+    if (!root) {
+      root = await writer.category.create({
+        data: { type: category.type, name: category.name, parentId: null, householdId },
+        select: { id: true },
       });
     }
+
+    for (const child of category.children ?? []) {
+      const childName = typeof child === "string" ? child : child.name;
+      let childRecord = await writer.category.findFirst({
+        where: { householdId, type: category.type, parentId: root.id, name: childName },
+        select: { id: true },
+      });
+      if (!childRecord) {
+        childRecord = await writer.category.create({
+          data: { type: category.type, name: childName, parentId: root.id, householdId },
+          select: { id: true },
+        });
+      }
+
+      if (typeof child !== "string") {
+        for (const grandChildName of child.children ?? []) {
+          const exists = await writer.category.findFirst({
+            where: { householdId, type: category.type, parentId: childRecord.id, name: grandChildName },
+            select: { id: true },
+          });
+          if (!exists) {
+            await writer.category.create({
+              data: { type: category.type, name: grandChildName, parentId: childRecord.id, householdId },
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
+async function normalizeSameNameChild(
+  writer: CategoryWriter,
+  householdId: string,
+  type: DefaultCategoryType,
+  rootName: string,
+) {
+  const root = await writer.category.findFirst({
+    where: { householdId, type, parentId: null, name: rootName },
+    select: { id: true },
+  });
+  if (!root) return;
+
+  const duplicate = await writer.category.findFirst({
+    where: { householdId, type, parentId: root.id, name: rootName },
+    select: { id: true },
+  });
+  if (!duplicate) return;
+
+  const [usedCount, childCount] = await Promise.all([
+    writer.txRecord.count({ where: { householdId, categoryId: duplicate.id } }),
+    writer.category.count({ where: { householdId, parentId: duplicate.id } }),
+  ]);
+
+  if (usedCount === 0 && childCount === 0) {
+    await writer.category.delete({ where: { id: duplicate.id } });
+    return;
+  }
+
+  const fallbackName = sameNameChildFallback[rootName] ?? `其他${rootName}`;
+  const existingFallback = await writer.category.findFirst({
+    where: { householdId, type, parentId: root.id, name: fallbackName },
+    select: { id: true },
+  });
+  if (!existingFallback) {
+    await writer.category.update({ where: { id: duplicate.id }, data: { name: fallbackName } });
+    await writer.txRecord.updateMany({ where: { householdId, categoryId: duplicate.id }, data: { categoryName: fallbackName } });
   }
 }
