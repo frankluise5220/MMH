@@ -1,8 +1,10 @@
 # MMH 本地 NAS 安装说明
 
-目标：本地安装源只保留一个，就是 `192.168.5.149` 上的 bare 仓库；和它并列的另一个来源是 GitHub 发布仓库。
+目标：把 Docker 基础镜像准备，和 MMH 项目安装/更新彻底分开。
 
-## 1. 保留的两个来源
+## 1. 安装源
+
+本地安装源只保留两个：
 
 ```bash
 # GitHub 发布仓库
@@ -13,18 +15,47 @@ REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 ```
 
 说明：
-- 旧的 Windows 本地路径 `E:\fs\mmh` 不再作为安装来源说明的一部分
-- 旧的 `/vol1/1000/git/MMH.git` 已废弃，不再使用
-- 当前本地安装源统一指向 `192.168.5.149:9022`
-- 如果 NAS 默认镜像代理异常，可通过 `.env` 覆盖基础镜像
+- `149` 本机安装，优先用 `/vol2/1001/fs/mmh/MMH.git`
+- 旧的 `E:\fs\mmh` 不再作为安装来源
+- 旧的 `/vol1/1000/git/MMH.git` 已废弃
 
-## 2. 登录 NAS
+## 2. Docker 基础镜像准备
+
+这一步属于 Docker 环境，不属于 MMH 项目安装。
+
+先在飞牛 Docker 图形界面里确认下面两个镜像已经存在：
+
+- `node:20-bookworm`
+- `postgres:15-alpine`
+
+如果图形界面里没有，也可以用命令行准备：
+
+```bash
+sudo docker pull node:20-bookworm
+```
+
+如果 `postgres:15-alpine` 直连 Docker Hub 太慢，可以先拉备用镜像，再打回本地标准名：
+
+```bash
+sudo docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine
+sudo docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine postgres:15-alpine
+```
+
+确认镜像：
+
+```bash
+sudo docker images | grep -E "node|postgres"
+```
+
+## 3. MMH 首次安装
+
+确认基础镜像已经准备好后，再执行这一段。
+
+先登录 NAS：
 
 ```bash
 ssh -p 9022 jsbyfubin@192.168.5.149
 ```
-
-## 3. 首次安装
 
 默认走 NAS 本地 bare 仓库：
 
@@ -34,7 +65,10 @@ APP_DIR="$HOME/mmh"
 REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 
 cd "$HOME"
-rm -rf "$APP_DIR"
+if [ -d "$APP_DIR" ]; then
+  echo "发现旧安装目录，先删除: $APP_DIR"
+  sudo rm -rf "$APP_DIR"
+fi
 git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
@@ -51,68 +85,65 @@ MMH_GIT_REMOTE="origin"
 MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
-NODE_IMAGE="node:20-bookworm"
+NODE_BUILD_IMAGE="node:20-bookworm"
+NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
+echo "也可以安装https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk，在安卓设备上访问http://NAS_IP:7777/"
 echo "数据库密码: $POSTGRES_PASSWORD"
 echo "请立即保存上面的数据库密码"
 echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-如果你要改成 GitHub 发布源，只改这一行：
+如果要改成 GitHub 发布源，只改这一行：
 
 ```bash
 REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```
 
-## 4. 在线更新
+## 4. MMH 在线更新
 
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d app
 ```
 
-## 5. 检查本地仓库
+这会先拉取最小 Git 差异，再用本地 Docker 缓存重建 `app`。基础镜像不变时，不会重新下载整包镜像。
+
+## 5. 常见问题
+
+如果重装时看到：
+
+```text
+rm: cannot remove '/home/jsbyfubin/mmh/node_modules/...': Permission denied
+```
+
+说明旧版本把 `node_modules` 写成了 `root` 权限，先执行：
 
 ```bash
-git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
-git --git-dir=/vol2/1001/fs/mmh/MMH.git log -1 --oneline
+sudo rm -rf ~/mmh
 ```
 
-## 6. 如果拉基础镜像时报 401
-
-如果你看到类似下面的错误：
+如果以前的 Docker 镜像代理报过类似错误：
 
 ```text
 docker.fnnas.com ... 401 Unauthorized
 ```
 
-说明是 NAS 默认镜像代理有问题，不是 MMH 代码本身有问题。
+说明是 NAS 默认 Docker 镜像代理有问题，不是 MMH 项目代码有问题。
 
-处理方式：
-
-```bash
-cd ~/mmh
-sed -n '1,120p' .env
-```
-
-确认或补上：
+## 6. 检查本地仓库
 
 ```bash
-NODE_IMAGE="node:20-bookworm"
-POSTGRES_IMAGE="postgres:15-alpine"
+git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
+git --git-dir=/vol2/1001/fs/mmh/MMH.git log -1 --oneline
 ```
-
-然后重新执行：
-
-```bash
-sudo docker compose up -d --build
-```
-

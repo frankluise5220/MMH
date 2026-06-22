@@ -1,43 +1,67 @@
 # MMH NAS 安装说明
 
-目标：安装和更新只保留两个来源：GitHub 发布仓库，或 `192.168.5.149` 上的本地 bare 仓库。
+目标：把 Docker 基础镜像准备，和 MMH 项目安装/更新彻底分开。
 
 适用场景：
-- 你想从 GitHub 首次安装
-- 或者想从 `192.168.5.149` 上的本地 bare 仓库安装
+- 从 `192.168.5.149` 上的本地 bare 仓库安装
+- 或从 GitHub 发布仓库安装
 
-## 0. 已验证的 NAS 本地仓库
+## 1. 仓库来源
 
-当前唯一保留的 NAS 本地仓库位置：
+当前保留的两个来源：
 
 ```bash
-ssh -p 9022 jsbyfubin@192.168.5.149
+# 本地 bare 仓库
 REPO_URL="/vol2/1001/fs/mmh/MMH.git"
-```
 
-以后本地安装源统一指向这条路径，不再使用旧的 Windows 本地路径或旧 NAS 路径。
-
-## 1. 选择仓库地址
-
-二选一，保留一行即可：
-
-```bash
 # GitHub 仓库
 REPO_URL="https://github.com/frankluise5220/MMH.git"
-
-# 本地 bare 仓库（192.168.5.149）
-# REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 ```
 
 说明：
-- `E:\fs\mmh` 不再作为安装来源写入文档
+- `149` 本机安装，优先用 `/vol2/1001/fs/mmh/MMH.git`
+- 旧的 `E:\fs\mmh` 不再作为安装来源
 - 旧的 `/vol1/1000/git/MMH.git` 已废弃
-- 当前本地源只认 `192.168.5.149:/vol2/1001/fs/mmh/MMH.git`
-- 如果 NAS 默认镜像代理拉取 `node:20-bookworm` / `postgres:15-alpine` 失败，可在 `.env` 里覆盖 `NODE_IMAGE` / `POSTGRES_IMAGE`
 
-## 2. 首次安装
+## 2. Docker 基础镜像准备
 
-在 NAS 的 SSH 里执行：
+这一步属于 Docker 环境，不属于 MMH 项目安装。
+
+先在飞牛 Docker 图形界面里确认下面两个镜像已经存在：
+
+- `node:20-bookworm`
+- `postgres:15-alpine`
+
+如果图形界面里没有，也可以用命令行准备：
+
+```bash
+sudo docker pull node:20-bookworm
+```
+
+如果 `postgres:15-alpine` 直连 Docker Hub 太慢，可以先拉备用镜像，再打回本地标准名：
+
+```bash
+sudo docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine
+sudo docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine postgres:15-alpine
+```
+
+确认镜像：
+
+```bash
+sudo docker images | grep -E "node|postgres"
+```
+
+## 3. MMH 首次安装
+
+确认基础镜像已经准备好后，再执行这一段。
+
+先登录 NAS：
+
+```bash
+ssh -p 9022 jsbyfubin@192.168.5.149
+```
+
+默认走 NAS 本地 bare 仓库：
 
 ```bash
 sh -c 'set -e
@@ -45,7 +69,10 @@ APP_DIR="$HOME/mmh"
 REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 
 cd "$HOME"
-rm -rf "$APP_DIR"
+if [ -d "$APP_DIR" ]; then
+  echo "发现旧安装目录，先删除: $APP_DIR"
+  sudo rm -rf "$APP_DIR"
+fi
 git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
@@ -62,87 +89,65 @@ MMH_GIT_REMOTE="origin"
 MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
-NODE_IMAGE="node:20-bookworm"
+NODE_BUILD_IMAGE="node:20-bookworm"
+NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
+echo "也可以安装https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk，在安卓设备上访问http://NAS_IP:7777/"
 echo "数据库密码: $POSTGRES_PASSWORD"
 echo "请立即保存上面的数据库密码"
 echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-如果你想直接从 GitHub 安装，只需要把上面的：
-
-```bash
-REPO_URL="/vol2/1001/fs/mmh/MMH.git"
-```
-
-改成：
+如果要改成 GitHub 发布源，只改这一行：
 
 ```bash
 REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```
 
-## 3. 在线更新
-
-以后更新时，只需要在 NAS 上进入项目目录：
+## 4. MMH 在线更新
 
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d app
 ```
 
-这会拉取最小 Git 差异，然后重新构建容器，不会重新下载整包镜像。
+这会先拉取最小 Git 差异，再用本地 Docker 缓存重建 `app`。基础镜像不变时，不会重新下载整包镜像。
 
-## 4. 常用命令
+## 5. 常见问题
 
-先登录 NAS：
+如果重装时看到：
+
+```text
+rm: cannot remove '/home/jsbyfubin/mmh/node_modules/...': Permission denied
+```
+
+说明旧版本把 `node_modules` 写成了 `root` 权限，先执行：
 
 ```bash
-ssh -p 9022 jsbyfubin@192.168.5.149
+sudo rm -rf ~/mmh
 ```
 
-查看本地 bare 仓库：
+如果以前的 Docker 镜像代理报过类似错误：
+
+```text
+docker.fnnas.com ... 401 Unauthorized
+```
+
+说明是 NAS 默认 Docker 镜像代理有问题，不是 MMH 项目代码有问题。
+
+## 6. 常用检查命令
 
 ```bash
 git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
+git --git-dir=/vol2/1001/fs/mmh/MMH.git log -1 --oneline
 ```
-
-首次检出到工作目录：
-
-```bash
-git clone /vol2/1001/fs/mmh/MMH.git ~/mmh
-```
-
-## 5. 如果构建时报 401 Unauthorized
-
-典型报错：
-
-```text
-failed to resolve source metadata for docker.io/library/node:20-bookworm
-... docker.fnnas.com ... 401 Unauthorized
-```
-
-这通常不是项目代码问题，而是 NAS 默认 Docker 镜像代理无权限或不可用。
-
-处理方式：
-
-1. 编辑 `~/mmh/.env`
-2. 显式指定可访问的基础镜像
-3. 重新执行 `sudo docker compose up -d --build`
-
-可用配置项：
-
-```bash
-NODE_IMAGE="node:20-bookworm"
-POSTGRES_IMAGE="postgres:15-alpine"
-```
-
-如果你所在环境必须使用特定镜像站，就把上面两个值改成该镜像站对应地址。
-
