@@ -15,7 +15,7 @@ REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```
 
 首次安装时需要一个 `REPO_URL` 用来 `git clone`。
-安装完成后，系统更新默认跟随当前仓库的 `origin/main`，如果是从本地 Git 安装，通常不需要再单独配置“更新 URL”。
+安装完成后，系统更新默认跟随当前仓库的 `origin/main`，通常不需要单独再填“更新 URL”。
 
 Android 客户端下载地址：
 
@@ -25,17 +25,18 @@ https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-andro
 
 ## 2. Docker 基础镜像准备
 
-这一步属于 Docker 环境，不属于 MMH 项目安装。
+这一步属于 Docker 环境准备，不属于 MMH 项目安装。
 
 先在 Docker 图形界面里确认下面两个镜像已经存在：
 
 - `node:20-bookworm`
 - `postgres:15-alpine`
 
-如果图形界面里没有，也可以用命令行准备：
+如果界面里没有，也可以用命令行准备：
 
 ```bash
 sudo docker pull node:20-bookworm
+sudo docker pull postgres:15-alpine
 ```
 
 如果 `postgres:15-alpine` 直连 Docker Hub 太慢，可以先拉备用镜像，再打回本地标准名：
@@ -53,7 +54,7 @@ sudo docker images | grep -E "node|postgres"
 
 ## 3. MMH 首次安装
 
-确认基础镜像已经准备好后，再执行这一段。
+确认基础镜像已经准备好后，再执行这一段：
 
 ```bash
 sh -c 'set -e
@@ -79,13 +80,13 @@ POSTGRES_USER="$POSTGRES_USER"
 POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
-MMH_APP_IMAGE="frankluise5220/mmh:latest"
+MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 NODE_BUILD_IMAGE="node:20-bookworm"
 NODE_RUNTIME_IMAGE="node:20-bookworm"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-sudo docker compose build --pull=false app
+sudo docker compose pull app
 sudo docker compose up -d
 
 echo "MMH 安装完成"
@@ -102,13 +103,20 @@ echo "数据库密码已写入 $APP_DIR/.env"
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose build --pull=false app
+sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-这会先拉取最小 Git 差异，再用本地 Docker 缓存重建 `app`。基础镜像不变时，不会重新下载整包镜像。
-如果是从本地 Git 安装，页面里的系统更新会直接跟随当前仓库的 `origin/main`，不需要额外再填更新地址。
-`app` 服务构建后的镜像默认会命名为 `frankluise5220/mmh:latest`，容器名仍然是 `mmh-app`。
+这会先拉取最小 Git 差异，再拉取新的 `app` 镜像层并重启容器，不再在 NAS 本机执行 `npm ci` 和 `next build`。
+如果是从本地 Git 安装，页面里的系统更新会直接跟随当前仓库的 `origin/main`。
+`app` 服务默认使用的镜像是 `ghcr.io/frankluise5220/mmh:latest`，容器名仍然是 `mmh-app`。
+
+如果确实需要在 NAS 本机构建调试版本，再手动运行：
+
+```bash
+sudo docker compose -f docker-compose.yml -f docker-compose.build.yml build --pull=false app
+sudo docker compose up -d app
+```
 
 ## 5. 常见问题
 

@@ -7,6 +7,7 @@ type VersionInfo = {
   ok: boolean;
   isDocker?: boolean;
   updateMode?: "git";
+  versionSource?: "git" | "env";
   localVersion: string;
   localCommit: string;
   localCommitMsg: string;
@@ -157,6 +158,7 @@ export default function SystemUpdatePage() {
     Boolean(versionInfo?.remoteUrl) &&
     Boolean(versionInfo?.githubUrl) &&
     versionInfo?.remoteUrl === versionInfo?.githubUrl;
+  const dockerManaged = Boolean(versionInfo?.isDocker);
 
   return (
     <div className="space-y-4">
@@ -188,7 +190,9 @@ export default function SystemUpdatePage() {
               <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
                 {versionInfo.localVersion}
               </span>
-              <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Git 更新模式</span>
+              <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+                {versionInfo.versionSource === "env" ? "镜像版本" : "Git 更新模式"}
+              </span>
               {isLatest ? <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">最新版本</span> : null}
               {needsUpdate ? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">有新版本</span> : null}
             </div>
@@ -239,7 +243,19 @@ export default function SystemUpdatePage() {
 
       {!updating && !updateDone && versionInfo?.ok ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">
-          {needsUpdate ? (
+          {dockerManaged ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              当前为 Docker 部署。网页内“更新/重建”不会在运行中的容器里执行构建，请在宿主机项目目录运行
+              <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
+                git pull
+                <br />
+                sudo docker compose pull app
+                <br />
+                sudo docker compose up -d app
+              </div>
+              <div className="mt-2 text-xs text-amber-700">也可以直接在容器管理界面拉取镜像并重启 app 容器。</div>
+            </div>
+          ) : needsUpdate ? (
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium text-amber-700">

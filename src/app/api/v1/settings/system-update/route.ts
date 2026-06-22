@@ -33,6 +33,7 @@ type VersionInfo = {
   githubCanCheck: boolean;
   githubFetchError?: string;
   fetchError?: string;
+  versionSource: "git" | "env";
 };
 
 let updateRunning = false;
@@ -62,14 +63,26 @@ function getGitTarget() {
 }
 
 function getLocalGitInfo(projectRoot: string) {
+  const envCommit = String(process.env.APP_COMMIT ?? "").trim();
+  const envCommitMsg = String(process.env.APP_COMMIT_MESSAGE ?? "").trim();
+  const envCommitDate = String(process.env.APP_COMMIT_DATE ?? "").trim();
+  if (envCommit) {
+    return {
+      localCommit: envCommit.slice(0, 7),
+      localCommitMsg: envCommitMsg,
+      localCommitDate: envCommitDate,
+      versionSource: "env" as const,
+    };
+  }
   try {
     return {
       localCommit: execSync("git rev-parse --short HEAD", { cwd: projectRoot, encoding: "utf-8" }).trim(),
       localCommitMsg: execSync("git log -1 --format=%s", { cwd: projectRoot, encoding: "utf-8" }).trim(),
       localCommitDate: execSync("git log -1 --format=%ci", { cwd: projectRoot, encoding: "utf-8" }).trim(),
+      versionSource: "git" as const,
     };
   } catch {
-    return { localCommit: "unknown", localCommitMsg: "", localCommitDate: "" };
+    return { localCommit: "unknown", localCommitMsg: "", localCommitDate: "", versionSource: "git" as const };
   }
 }
 
@@ -109,11 +122,13 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
   const { remote, branch, ref } = getGitTarget();
   const local = getLocalGitInfo(projectRoot);
   const github = getGitHubVersionInfo(projectRoot);
-  let remoteUrl = "";
+  let remoteUrl = String(process.env.MMH_UPDATE_SOURCE_URL ?? "").trim();
   try {
-    remoteUrl = readCommand(projectRoot, `git remote get-url ${remote}`);
+    if (!remoteUrl) {
+      remoteUrl = readCommand(projectRoot, `git remote get-url ${remote}`);
+    }
   } catch {
-    remoteUrl = "";
+    remoteUrl = remoteUrl || "";
   }
 
   try {
@@ -190,6 +205,16 @@ export async function POST(req: NextRequest) {
   const mode = searchParams.get("mode") === "rebuild" ? "rebuild" : "update";
   const projectRoot = process.cwd();
   const dockerMode = isDockerEnvironment();
+  if (dockerMode) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Docker 部署下不支持在运行中的应用容器内执行网页更新或重建。请在宿主机项目目录运行 git pull && sudo docker compose pull app && sudo docker compose up -d app，或使用容器管理界面拉取并重启 app 容器。",
+      },
+      { status: 400 },
+    );
+  }
   const { remote, branch, ref } = getGitTarget();
 
   const allSteps: { step: string; cmd: string; timeout: number }[] = [

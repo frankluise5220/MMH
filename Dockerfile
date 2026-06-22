@@ -50,7 +50,7 @@ ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates \
+  && apt-get install -y --no-install-recommends git postgresql-client openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 # 只安装生产依赖，大幅减小镜像体积
