@@ -14,6 +14,9 @@
 REPO_URL="https://github.com/frankluise5220/MMH.git"
 ```
 
+首次安装时需要一个 `REPO_URL` 用来 `git clone`。
+安装完成后，系统更新默认跟随当前仓库的 `origin/main`，如果是从本地 Git 安装，通常不需要再单独配置“更新 URL”。
+
 Android 客户端下载地址：
 
 ```text
@@ -74,8 +77,6 @@ DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/$
 POSTGRES_DB="$POSTGRES_DB"
 POSTGRES_USER="$POSTGRES_USER"
 POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
-MMH_GIT_REMOTE="origin"
-MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
 NODE_BUILD_IMAGE="node:20-bookworm"
@@ -105,6 +106,7 @@ sudo docker compose up -d app
 ```
 
 这会先拉取最小 Git 差异，再用本地 Docker 缓存重建 `app`。基础镜像不变时，不会重新下载整包镜像。
+如果是从本地 Git 安装，页面里的系统更新会直接跟随当前仓库的 `origin/main`，不需要额外再填更新地址。
 
 ## 5. 常见问题
 

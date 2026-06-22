@@ -186,7 +186,7 @@ export default function SystemUpdatePage() {
                   {versionInfo.remoteCommitMsg ? ` ${versionInfo.remoteCommitMsg}` : ""}
                 </>
               ) : (
-                <span className="text-amber-600">未获取，请检查网络或仓库地址后刷新</span>
+                <span className="text-amber-600">未获取，请检查网络或当前 Git 远端后刷新</span>
               )}
             </div>
             <div className="text-xs text-slate-500">
@@ -194,7 +194,11 @@ export default function SystemUpdatePage() {
               <span className="font-medium text-slate-700">
                 {versionInfo.remoteName ?? "origin"}/{versionInfo.remoteBranch ?? "main"}
               </span>
-              {versionInfo.remoteUrl ? <span className="ml-1 break-all text-slate-400">{versionInfo.remoteUrl}</span> : null}
+              {versionInfo.remoteUrl ? (
+                <span className="ml-1 break-all text-slate-400">{versionInfo.remoteUrl}</span>
+              ) : (
+                <span className="ml-1 text-slate-400">未单独配置时默认使用当前仓库的 Git origin</span>
+              )}
             </div>
             {!canCheckUpdate && versionInfo.fetchError ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
