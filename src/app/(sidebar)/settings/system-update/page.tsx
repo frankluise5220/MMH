@@ -138,7 +138,11 @@ export default function SystemUpdatePage() {
     }
   }
 
-  const canCheckUpdate = versionInfo?.ok && versionInfo.canCheckUpdate !== false;
+  const hasResolvedRemoteCommit = Boolean(
+    versionInfo?.remoteCommit && versionInfo.remoteCommit !== "unknown",
+  );
+  const canCheckUpdate =
+    versionInfo?.ok && versionInfo.canCheckUpdate !== false && hasResolvedRemoteCommit;
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
 
