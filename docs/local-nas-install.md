@@ -59,6 +59,8 @@ sudo docker compose up -d --build
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
+echo "数据库密码: $POSTGRES_PASSWORD"
+echo "请立即保存上面的数据库密码"
 echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
