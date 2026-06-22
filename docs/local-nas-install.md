@@ -16,6 +16,7 @@ REPO_URL="/vol2/1001/fs/mmh/MMH.git"
 - 旧的 Windows 本地路径 `E:\fs\mmh` 不再作为安装来源说明的一部分
 - 旧的 `/vol1/1000/git/MMH.git` 已废弃，不再使用
 - 当前本地安装源统一指向 `192.168.5.149:9022`
+- 如果 NAS 默认镜像代理异常，可通过 `.env` 覆盖基础镜像
 
 ## 2. 登录 NAS
 
@@ -50,6 +51,8 @@ MMH_GIT_REMOTE="origin"
 MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
+NODE_IMAGE="node:20-bookworm"
+POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
 sudo docker compose up -d --build
@@ -79,5 +82,35 @@ sudo docker compose up -d --build
 ```bash
 git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
 git --git-dir=/vol2/1001/fs/mmh/MMH.git log -1 --oneline
+```
+
+## 6. 如果拉基础镜像时报 401
+
+如果你看到类似下面的错误：
+
+```text
+docker.fnnas.com ... 401 Unauthorized
+```
+
+说明是 NAS 默认镜像代理有问题，不是 MMH 代码本身有问题。
+
+处理方式：
+
+```bash
+cd ~/mmh
+sed -n '1,120p' .env
+```
+
+确认或补上：
+
+```bash
+NODE_IMAGE="node:20-bookworm"
+POSTGRES_IMAGE="postgres:15-alpine"
+```
+
+然后重新执行：
+
+```bash
+sudo docker compose up -d --build
 ```
 

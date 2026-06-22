@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: ${POSTGRES_IMAGE:-postgres:15-alpine}
     container_name: mmh-db
     restart: unless-stopped
     ports:
@@ -22,6 +22,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.git
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm}
     container_name: mmh-app
     restart: unless-stopped
     working_dir: /app

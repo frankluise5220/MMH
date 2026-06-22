@@ -33,6 +33,7 @@ REPO_URL="https://github.com/frankluise5220/MMH.git"
 - `E:\fs\mmh` 不再作为安装来源写入文档
 - 旧的 `/vol1/1000/git/MMH.git` 已废弃
 - 当前本地源只认 `192.168.5.149:/vol2/1001/fs/mmh/MMH.git`
+- 如果 NAS 默认镜像代理拉取 `node:20-bookworm` / `postgres:15-alpine` 失败，可在 `.env` 里覆盖 `NODE_IMAGE` / `POSTGRES_IMAGE`
 
 ## 2. 首次安装
 
@@ -61,6 +62,8 @@ MMH_GIT_REMOTE="origin"
 MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
+NODE_IMAGE="node:20-bookworm"
+POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
 sudo docker compose up -d --build
@@ -114,4 +117,30 @@ git --git-dir=/vol2/1001/fs/mmh/MMH.git branch
 ```bash
 git clone /vol2/1001/fs/mmh/MMH.git ~/mmh
 ```
+
+## 5. 如果构建时报 401 Unauthorized
+
+典型报错：
+
+```text
+failed to resolve source metadata for docker.io/library/node:20-bookworm
+... docker.fnnas.com ... 401 Unauthorized
+```
+
+这通常不是项目代码问题，而是 NAS 默认 Docker 镜像代理无权限或不可用。
+
+处理方式：
+
+1. 编辑 `~/mmh/.env`
+2. 显式指定可访问的基础镜像
+3. 重新执行 `sudo docker compose up -d --build`
+
+可用配置项：
+
+```bash
+NODE_IMAGE="node:20-bookworm"
+POSTGRES_IMAGE="postgres:15-alpine"
+```
+
+如果你所在环境必须使用特定镜像站，就把上面两个值改成该镜像站对应地址。
 

@@ -1,4 +1,5 @@
-FROM node:20-bookworm AS build
+ARG NODE_BUILD_IMAGE=node:20-bookworm
+FROM ${NODE_BUILD_IMAGE} AS build
 
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
@@ -35,7 +36,8 @@ RUN npx prisma generate \
 COPY . .
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runtime
+ARG NODE_RUNTIME_IMAGE=node:20-bookworm-slim
+FROM ${NODE_RUNTIME_IMAGE} AS runtime
 
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
