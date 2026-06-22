@@ -1,5 +1,7 @@
 ARG NODE_BUILD_IMAGE=node:20-bookworm
-ARG NODE_RUNTIME_IMAGE=node:20-bookworm
+ARG NODE_RUNTIME_IMAGE=node:20-bookworm-slim
+ARG PRISMA_CLI_VERSION=7.8.0
+ARG DOTENV_VERSION=17.4.2
 FROM ${NODE_BUILD_IMAGE} AS build
 
 ARG APP_COMMIT=unknown
@@ -37,6 +39,28 @@ RUN npx prisma generate \
 COPY . .
 RUN npm run build
 
+FROM ${NODE_RUNTIME_IMAGE} AS prisma-deps
+
+ARG PRISMA_CLI_VERSION
+ARG DOTENV_VERSION
+
+WORKDIR /opt/prisma-runtime
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN printf "{\n  \"name\": \"prisma-runtime\",\n  \"private\": true\n}\n" > package.json \
+  && npm config set fetch-retries 5 \
+  && npm config set fetch-retry-factor 2 \
+  && npm config set fetch-retry-mintimeout 20000 \
+  && npm config set fetch-retry-maxtimeout 120000 \
+  && npm config set fetch-timeout 1200000 \
+  && npm config set audit false \
+  && npm config set fund false \
+  && npm install --omit=dev --ignore-scripts --no-package-lock "prisma@${PRISMA_CLI_VERSION}" "dotenv@${DOTENV_VERSION}"
+
 FROM ${NODE_RUNTIME_IMAGE} AS runtime
 
 ARG APP_COMMIT=unknown
@@ -48,31 +72,21 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git postgresql-client openssl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-# 只安装生产依赖，大幅减小镜像体积
-COPY --from=build /app/package.json /app/package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
-
-# 复用构建阶段已经生成的 Prisma Client 和下载好的 Linux schema-engine，避免容器启动时访问 binaries.prisma.sh
-COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
-COPY --from=build /app/node_modules/@prisma/engines ./node_modules/@prisma/engines
-
-COPY --from=build /app/next.config.ts ./next.config.ts
-COPY --from=build /app/prisma.config.ts ./prisma.config.ts
-COPY --from=build /app/public ./public
-COPY --from=build /app/prisma ./prisma
-COPY --from=build /app/.next ./.next
-
 ENV NODE_ENV=production
 ENV PORT=7777
-ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
-ENV PRISMA_MIGRATION_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
+ENV HOSTNAME=0.0.0.0
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/prisma.config.ts ./prisma.config.ts
+COPY --from=prisma-deps /opt/prisma-runtime/node_modules ./node_modules
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; npx prisma db push --accept-data-loss && echo '[mmh] prisma setup complete, starting app...' && npm run start"]
+CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; ./node_modules/.bin/prisma db push --accept-data-loss && echo '[mmh] prisma setup complete, starting app...' && node server.js"]

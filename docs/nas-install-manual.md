@@ -82,7 +82,7 @@ STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
 MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 NODE_BUILD_IMAGE="node:20-bookworm"
-NODE_RUNTIME_IMAGE="node:20-bookworm"
+NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
@@ -108,6 +108,7 @@ sudo docker compose up -d app
 ```
 
 这会先拉取最小 Git 差异，再拉取新的 `app` 镜像层并重启容器，不再在 NAS 本机执行 `npm ci` 和 `next build`。
+第一次切到新镜像源时，可能会拉取较大的基础层；后续普通更新主要只会拉变动层。
 如果是从本地 Git 安装，页面里的系统更新会直接跟随当前仓库的 `origin/main`。
 `app` 服务默认使用的镜像是 `ghcr.io/frankluise5220/mmh:latest`，容器名仍然是 `mmh-app`。
 
