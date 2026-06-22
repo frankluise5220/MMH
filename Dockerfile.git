@@ -1,4 +1,5 @@
-FROM node:20-bookworm
+ARG NODE_IMAGE=node:20-bookworm
+FROM ${NODE_IMAGE}
 
 WORKDIR /app
 

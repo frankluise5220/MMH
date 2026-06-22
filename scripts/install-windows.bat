@@ -81,7 +81,8 @@ echo.
 echo  访问地址: http://localhost:7777
 echo  首次打开将引导设置管理员密码
 echo.
-echo  数据库密码已保存在 .env 文件中
+echo  数据库密码: %POSTGRES_PASSWORD%
+echo  请立即保存上面的数据库密码
 echo  数据库密码已保存在 .env 文件中（同时用于"系统初始化"验证）
 echo ============================================
 echo.

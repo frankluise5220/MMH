@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: ${POSTGRES_IMAGE:-postgres:15-alpine}
     container_name: mmh-preview-db
     restart: unless-stopped
     ports:
@@ -22,6 +22,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.preview
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm}
     container_name: mmh-preview-app
     restart: unless-stopped
     depends_on:

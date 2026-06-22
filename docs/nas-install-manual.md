@@ -1,26 +1,56 @@
 # MMH NAS 安装说明
 
-目标：安装和更新都走同一套 Git 流程，不再下载几百兆镜像。
+目标：把 Docker 基础镜像准备，和 MMH 项目安装/更新彻底分开。
 
 适用场景：
-- 你想从 GitHub 首次安装
-- 或者想把这份说明转成本地 Git 安装
+- 从 GitHub 发布仓库安装
+- 在普通 NAS 或 Linux 主机上运行 MMH
 
-## 1. 选择仓库地址
+## 1. 项目来源
 
-二选一，保留一行即可：
+发布安装统一使用 GitHub 仓库：
 
 ```bash
-# GitHub 仓库
 REPO_URL="https://github.com/frankluise5220/MMH.git"
-
-# 本地 bare 仓库
-# REPO_URL="/vol1/1000/git/MMH.git"
 ```
 
-## 2. 首次安装
+Android 客户端下载地址：
 
-在 NAS 的 SSH 里执行：
+```text
+https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk
+```
+
+## 2. Docker 基础镜像准备
+
+这一步属于 Docker 环境，不属于 MMH 项目安装。
+
+先在 Docker 图形界面里确认下面两个镜像已经存在：
+
+- `node:20-bookworm`
+- `postgres:15-alpine`
+
+如果图形界面里没有，也可以用命令行准备：
+
+```bash
+sudo docker pull node:20-bookworm
+```
+
+如果 `postgres:15-alpine` 直连 Docker Hub 太慢，可以先拉备用镜像，再打回本地标准名：
+
+```bash
+sudo docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine
+sudo docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine postgres:15-alpine
+```
+
+确认镜像：
+
+```bash
+sudo docker images | grep -E "node|postgres"
+```
+
+## 3. MMH 首次安装
+
+确认基础镜像已经准备好后，再执行这一段。
 
 ```bash
 sh -c 'set -e
@@ -28,7 +58,10 @@ APP_DIR="$HOME/mmh"
 REPO_URL="https://github.com/frankluise5220/MMH.git"
 
 cd "$HOME"
-rm -rf "$APP_DIR"
+if [ -d "$APP_DIR" ]; then
+  echo "发现旧安装目录，先删除: $APP_DIR"
+  sudo rm -rf "$APP_DIR"
+fi
 git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
@@ -45,25 +78,52 @@ MMH_GIT_REMOTE="origin"
 MMH_GIT_BRANCH="main"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
+NODE_BUILD_IMAGE="node:20-bookworm"
+NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
+POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
+echo "也可以安装 https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk"
+echo "数据库密码: $POSTGRES_PASSWORD"
+echo "请立即保存上面的数据库密码"
 echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-## 3. 在线更新
-
-以后更新时，只需要在 NAS 上进入项目目录：
+## 4. MMH 在线更新
 
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose up -d --build
+sudo docker compose build --pull=false app
+sudo docker compose up -d app
 ```
 
-这会拉取最小 Git 差异，然后重新构建容器，不会重新下载整包镜像。
+这会先拉取最小 Git 差异，再用本地 Docker 缓存重建 `app`。基础镜像不变时，不会重新下载整包镜像。
 
+## 5. 常见问题
+
+如果重装时看到：
+
+```text
+rm: cannot remove '/home/.../mmh/node_modules/...': Permission denied
+```
+
+说明旧版本把 `node_modules` 写成了 `root` 权限，先执行：
+
+```bash
+sudo rm -rf ~/mmh
+```
+
+如果以前的 Docker 镜像代理报过类似错误：
+
+```text
+docker.fnnas.com ... 401 Unauthorized
+```
+
+说明是 Docker 默认镜像代理有问题，不是 MMH 项目代码有问题。

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: ${POSTGRES_IMAGE:-postgres:15-alpine}
     container_name: mmh-db
     restart: unless-stopped
     ports:
@@ -21,10 +21,12 @@ services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile.git
+      dockerfile: Dockerfile
+      args:
+        NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:20-bookworm}
+        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:20-bookworm-slim}
     container_name: mmh-app
     restart: unless-stopped
-    working_dir: /app
     ports:
       - "7777:7777"
     env_file:
@@ -40,8 +42,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
       DATABASE_URL: postgresql://${POSTGRES_USER:-mmh-fs}:${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}@postgres:5432/${POSTGRES_DB:-mmh}?schema=public
       PGPASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
-    volumes:
-      - .:/app
     depends_on:
       - postgres
 
