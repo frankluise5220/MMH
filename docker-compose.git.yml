@@ -19,6 +19,7 @@ services:
       retries: 5
 
   app:
+    image: ${MMH_APP_IMAGE:-frankluise5220/mmh:latest}
     build:
       context: .
       dockerfile: Dockerfile

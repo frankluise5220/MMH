@@ -19,6 +19,7 @@ services:
       retries: 20
 
   app:
+    image: ${MMH_PREVIEW_APP_IMAGE:-frankluise5220/mmh-preview:latest}
     build:
       context: .
       dockerfile: Dockerfile.preview
