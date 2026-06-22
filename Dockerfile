@@ -1,5 +1,5 @@
 ARG NODE_BUILD_IMAGE=node:20-bookworm
-ARG NODE_RUNTIME_IMAGE=node:20-bookworm-slim
+ARG NODE_RUNTIME_IMAGE=node:20-bookworm
 FROM ${NODE_BUILD_IMAGE} AS build
 
 ARG APP_COMMIT=unknown

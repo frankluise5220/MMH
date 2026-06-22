@@ -27,10 +27,16 @@ type VersionInfo = {
   remoteCommitMsg: string;
   needsUpdate: boolean;
   canCheckUpdate: boolean;
+  githubUrl: string;
+  githubCommit: string;
+  githubCommitMsg: string;
+  githubCanCheck: boolean;
+  githubFetchError?: string;
   fetchError?: string;
 };
 
 let updateRunning = false;
+const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 
 function isDockerEnvironment(): boolean {
   if (existsSync("/.dockerenv")) return true;
@@ -78,9 +84,31 @@ function commandErrorMessage(error: unknown) {
   return (stderr || stdout || e.message || "未知错误").trim();
 }
 
+function getGitHubVersionInfo(projectRoot: string) {
+  try {
+    const line = readCommand(projectRoot, `git ls-remote ${DEFAULT_GITHUB_REPO_URL} refs/heads/main`);
+    const commit = line.split(/\s+/)[0]?.trim() || "unknown";
+    return {
+      githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubCommit: commit === "unknown" ? "unknown" : commit.slice(0, 7),
+      githubCommitMsg: "",
+      githubCanCheck: commit !== "unknown",
+    };
+  } catch (error) {
+    return {
+      githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubCommit: "unknown",
+      githubCommitMsg: "",
+      githubCanCheck: false,
+      githubFetchError: commandErrorMessage(error),
+    };
+  }
+}
+
 function getGitVersionInfo(projectRoot: string): VersionInfo {
   const { remote, branch, ref } = getGitTarget();
   const local = getLocalGitInfo(projectRoot);
+  const github = getGitHubVersionInfo(projectRoot);
   let remoteUrl = "";
   try {
     remoteUrl = readCommand(projectRoot, `git remote get-url ${remote}`);
@@ -97,6 +125,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
 
     return {
       ...local,
+      ...github,
       remoteName: remote,
       remoteBranch: branch,
       remoteUrl,
@@ -108,6 +137,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
   } catch (error) {
     return {
       ...local,
+      ...github,
       remoteName: remote,
       remoteBranch: branch,
       remoteUrl,

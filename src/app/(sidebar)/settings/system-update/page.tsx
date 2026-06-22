@@ -11,6 +11,11 @@ type VersionInfo = {
   localCommit: string;
   localCommitMsg: string;
   localCommitDate: string;
+  githubUrl?: string;
+  githubCommit?: string;
+  githubCommitMsg?: string;
+  githubCanCheck?: boolean;
+  githubFetchError?: string;
   remoteName?: string;
   remoteBranch?: string;
   remoteUrl?: string;
@@ -141,10 +146,17 @@ export default function SystemUpdatePage() {
   const hasResolvedRemoteCommit = Boolean(
     versionInfo?.remoteCommit && versionInfo.remoteCommit !== "unknown",
   );
+  const hasResolvedGitHubCommit = Boolean(
+    versionInfo?.githubCommit && versionInfo.githubCommit !== "unknown",
+  );
   const canCheckUpdate =
     versionInfo?.ok && versionInfo.canCheckUpdate !== false && hasResolvedRemoteCommit;
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
+  const usesGitHubAsUpdateSource =
+    Boolean(versionInfo?.remoteUrl) &&
+    Boolean(versionInfo?.githubUrl) &&
+    versionInfo?.remoteUrl === versionInfo?.githubUrl;
 
   return (
     <div className="space-y-4">
@@ -178,35 +190,42 @@ export default function SystemUpdatePage() {
               {needsUpdate ? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">有新版本</span> : null}
             </div>
             <div className="text-xs text-slate-500">
-              本地提交 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
+              本地仓库 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
               {versionInfo.localCommitMsg ? ` ${versionInfo.localCommitMsg}` : ""}
               {versionInfo.localCommitDate ? ` · ${versionInfo.localCommitDate}` : ""}
             </div>
             <div className="text-xs text-slate-500">
-              远端提交{" "}
-              {canCheckUpdate ? (
+              GitHub{" "}
+              {hasResolvedGitHubCommit ? (
                 <>
-                  <span className="font-medium text-slate-700">{versionInfo.remoteCommit}</span>
-                  {versionInfo.remoteCommitMsg ? ` ${versionInfo.remoteCommitMsg}` : ""}
+                  <span className="font-medium text-slate-700">{versionInfo.githubCommit}</span>
+                  {versionInfo.githubCommitMsg ? ` ${versionInfo.githubCommitMsg}` : ""}
                 </>
               ) : (
-                <span className="text-amber-600">未获取，请检查网络或当前 Git 远端后刷新</span>
+                <span className="text-amber-600">未获取，请检查网络后刷新</span>
               )}
             </div>
-            <div className="text-xs text-slate-500">
-              远端仓库{" "}
-              <span className="font-medium text-slate-700">
-                {versionInfo.remoteName ?? "origin"}/{versionInfo.remoteBranch ?? "main"}
-              </span>
-              {versionInfo.remoteUrl ? (
-                <span className="ml-1 break-all text-slate-400">{versionInfo.remoteUrl}</span>
-              ) : (
-                <span className="ml-1 text-slate-400">未单独配置时默认使用当前仓库的 Git origin</span>
-              )}
-            </div>
+            {!usesGitHubAsUpdateSource ? (
+              <div className="text-xs text-slate-500">
+                更新源仓库{" "}
+                <span className="font-medium text-slate-700">
+                  {versionInfo.remoteName ?? "origin"}/{versionInfo.remoteBranch ?? "main"}
+                </span>
+                {versionInfo.remoteUrl ? (
+                  <span className="ml-1 break-all text-slate-400">{versionInfo.remoteUrl}</span>
+                ) : (
+                  <span className="ml-1 text-slate-400">未单独配置时默认使用当前仓库的 Git origin</span>
+                )}
+              </div>
+            ) : null}
             {!canCheckUpdate && versionInfo.fetchError ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                获取远端版本失败：{versionInfo.fetchError}
+                获取更新源版本失败：{versionInfo.fetchError}
+              </div>
+            ) : null}
+            {!hasResolvedGitHubCommit && versionInfo.githubFetchError ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                获取 GitHub 版本失败：{versionInfo.githubFetchError}
               </div>
             ) : null}
           </div>
@@ -225,7 +244,7 @@ export default function SystemUpdatePage() {
                   发现新版本
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
-                  将更新到远端提交 {versionInfo.remoteCommit}
+                  将更新到更新源版本 {versionInfo.remoteCommit}
                   {versionInfo.remoteCommitMsg ? `：${versionInfo.remoteCommitMsg}` : ""}
                 </div>
               </div>

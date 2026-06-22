@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile
       args:
         NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:20-bookworm}
-        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:20-bookworm-slim}
+        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:20-bookworm}
     container_name: mmh-app
     restart: unless-stopped
     ports:

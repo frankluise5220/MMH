@@ -81,7 +81,7 @@ STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
 MMH_APP_IMAGE="frankluise5220/mmh:latest"
 NODE_BUILD_IMAGE="node:20-bookworm"
-NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
+NODE_RUNTIME_IMAGE="node:20-bookworm"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
