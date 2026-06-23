@@ -66,6 +66,14 @@ type ImageSpeedResult = {
   image?: string;
   ok: boolean;
   ms?: number;
+  version?: {
+    digest?: string;
+    digestShort?: string;
+    revision?: string;
+    commit?: string;
+    created?: string;
+    message?: string;
+  };
   error?: string;
 };
 
@@ -94,6 +102,18 @@ function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode
   };
   if (timeZoneMode === "specified") options.timeZone = timeZone;
   return new Intl.DateTimeFormat("zh-CN", options).format(date).replace(/\//g, "-");
+}
+
+function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
+  if (!result) return "";
+  if (!result.ok) return result.error || "失败";
+  const commit = result.version?.commit || "";
+  const digest = result.version?.digestShort || "";
+  const date = formatVersionDate(result.version?.created, timeZoneMode, timeZone);
+  if (commit && date) return `${commit} · ${date}`;
+  if (commit) return commit;
+  if (digest) return `digest ${digest}`;
+  return "未读到版本";
 }
 
 export default function SystemUpdatePage() {
@@ -477,7 +497,7 @@ export default function SystemUpdatePage() {
                           setImageSourceDraft((draft) => ({ ...draft, source: option.value }));
                           setImageSourceMessage("");
                         }}
-                        className={`grid cursor-pointer grid-cols-[28px_92px_1fr_88px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
+                        className={`grid cursor-pointer grid-cols-[28px_92px_minmax(0,1fr)_180px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
                           selected ? "bg-blue-50/60" : ""
                         }`}
                       >
@@ -491,11 +511,21 @@ export default function SystemUpdatePage() {
                         <span className="font-medium text-slate-800">{option.label}</span>
                         <span className="min-w-0 truncate font-mono text-slate-500">{appImage || "自动检测可用镜像源"}</span>
                         <span
-                          className={`text-right ${
+                          className={`min-w-0 text-right ${
                             speed?.ok ? "text-emerald-600" : speed ? "text-red-600" : "text-slate-400"
                           }`}
+                          title={speed ? formatImageVersion(speed, timeZoneMode, timeZone) : ""}
                         >
-                          {speed ? (speed.ok ? `${speed.ms}ms` : "失败") : option.value === "auto" ? "自动" : "未测"}
+                          {speed ? (
+                            speed.ok ? (
+                              <span className="flex min-w-0 flex-col items-end leading-tight">
+                                <span>{speed.ms}ms</span>
+                                <span className="max-w-full truncate text-[10px] text-slate-500">
+                                  {formatImageVersion(speed, timeZoneMode, timeZone)}
+                                </span>
+                              </span>
+                            ) : "失败"
+                          ) : option.value === "auto" ? "自动" : "未测"}
                         </span>
                       </label>
                     );

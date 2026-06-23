@@ -197,6 +197,42 @@ function getImageForSpeedTest(source, env, customAppImage) {
   return imageSources[source]?.app || "";
 }
 
+function shortDigest(digest) {
+  return String(digest || "").replace(/^sha256:/, "").slice(0, 12);
+}
+
+function extractImageVersion(manifestText) {
+  try {
+    const data = JSON.parse(manifestText);
+    const descriptor = Array.isArray(data) ? data[0] : data;
+    const labels = descriptor?.Descriptor?.annotations
+      ?? descriptor?.OCIManifest?.annotations
+      ?? descriptor?.OCIv1Manifest?.annotations
+      ?? descriptor?.SchemaV2Manifest?.config?.Labels
+      ?? descriptor?.Config?.Labels
+      ?? {};
+    const digest = descriptor?.Descriptor?.digest
+      ?? descriptor?.Descriptor?.Digest
+      ?? descriptor?.OCIManifest?.config?.digest
+      ?? descriptor?.OCIv1Manifest?.config?.digest
+      ?? descriptor?.SchemaV2Manifest?.config?.digest
+      ?? descriptor?.Ref;
+    const revision = labels["org.opencontainers.image.revision"] || "";
+    const created = labels["org.opencontainers.image.created"] || "";
+    const message = labels["org.opencontainers.image.description"] || "";
+    return {
+      digest: String(digest || ""),
+      digestShort: shortDigest(digest),
+      revision: String(revision || ""),
+      commit: String(revision || "").slice(0, 7),
+      created: String(created || ""),
+      message: String(message || "").split("\n")[0] || "",
+    };
+  } catch {
+    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "" };
+  }
+}
+
 function testImageManifest(source, image) {
   return new Promise((resolve) => {
     if (!image) {
@@ -205,13 +241,17 @@ function testImageManifest(source, image) {
     }
 
     const startedAt = Date.now();
+    let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn("docker", ["manifest", "inspect", image], { cwd: workdir });
+    const child = spawn("docker", ["manifest", "inspect", "--verbose", image], { cwd: workdir });
     const timer = setTimeout(() => {
       if (!settled) child.kill("SIGTERM");
     }, 12000);
 
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
@@ -224,6 +264,7 @@ function testImageManifest(source, image) {
         image,
         ok: code === 0,
         ms,
+        version: code === 0 ? extractImageVersion(stdout) : undefined,
         error: code === 0 ? "" : (stderr.trim().split(/\r?\n/).slice(-1)[0] || `退出码 ${code}`),
       });
     });

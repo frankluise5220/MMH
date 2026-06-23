@@ -46,5 +46,9 @@ jobs:
           file: ./Dockerfile.updater
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/mmh-updater:latest
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+            APP_COMMIT_MESSAGE=${{ github.event.head_commit.message }}
+            APP_COMMIT_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

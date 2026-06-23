@@ -1,5 +1,15 @@
 FROM docker:28-cli
 
+ARG APP_COMMIT=unknown
+ARG APP_COMMIT_MESSAGE=""
+ARG APP_COMMIT_DATE=""
+
+LABEL org.opencontainers.image.title="MMH Updater"
+LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"
+LABEL org.opencontainers.image.revision=${APP_COMMIT}
+LABEL org.opencontainers.image.created=${APP_COMMIT_DATE}
+LABEL org.opencontainers.image.description=${APP_COMMIT_MESSAGE}
+
 RUN apk add --no-cache git nodejs
 
 WORKDIR /updater

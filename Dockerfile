@@ -67,6 +67,12 @@ ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
 
+LABEL org.opencontainers.image.title="MMH"
+LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"
+LABEL org.opencontainers.image.revision=${APP_COMMIT}
+LABEL org.opencontainers.image.created=${APP_COMMIT_DATE}
+LABEL org.opencontainers.image.description=${APP_COMMIT_MESSAGE}
+
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV APP_COMMIT=${APP_COMMIT}
