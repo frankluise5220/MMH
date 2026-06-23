@@ -7,6 +7,7 @@ import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
 import { kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
+import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -62,17 +63,22 @@ export default function SettingsAccountsPage() {
   const [editGroupId, setEditGroupId] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState("");
 
-  useEffect(() => { loadAll(); }, []);
-
-  async function loadAll() {
-    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
-    if (!res) return;
-    const data = await res.json();
-    if (data.ok) {
-      setGroups(data.groups || []);
-      setAccounts(data.accounts || []);
-      setInstitutions(data.institutions || []);
+  useEffect(() => {
+    const cached = getCachedSettingsAccountData();
+    if (cached) {
+      setGroups(cached.groups as Group[]);
+      setAccounts(cached.accounts as Account[]);
+      setInstitutions(cached.institutions as Institution[]);
     }
+    loadAll();
+  }, []);
+
+  async function loadAll(options?: { force?: boolean }) {
+    const data = await fetchSettingsAccountData(options).catch(() => null);
+    if (!data) return;
+    setGroups(data.groups as Group[]);
+    setAccounts(data.accounts as Account[]);
+    setInstitutions(data.institutions as Institution[]);
   }
 
   // ---- Group handlers ----
@@ -85,7 +91,8 @@ export default function SettingsAccountsPage() {
     });
     setNewGroupName("");
     setShowNewGroup(false);
-    loadAll();
+    invalidateSettingsAccountData();
+    loadAll({ force: true });
   }
 
   async function updateGroup() {
@@ -96,7 +103,8 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ id: editGroupId, name: editGroupName.trim() }),
     });
     setEditGroupId(null);
-    loadAll();
+    invalidateSettingsAccountData();
+    loadAll({ force: true });
   }
 
   async function deleteGroup(id: string) {
@@ -106,7 +114,7 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ entity: "accountGroup", id }),
     });
     const data = await res.json();
-    if (data.ok) { setSelectedGroup(""); loadAll(); }
+    if (data.ok) { setSelectedGroup(""); invalidateSettingsAccountData(); loadAll({ force: true }); }
     else window.alert(data.error);
   }
 
@@ -135,7 +143,8 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ id: editingId, ...editForm }),
     });
     setEditingId(null);
-    loadAll();
+    invalidateSettingsAccountData();
+    loadAll({ force: true });
   }
 
   async function toggleActive(id: string) {
@@ -144,7 +153,8 @@ export default function SettingsAccountsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
-    loadAll();
+    invalidateSettingsAccountData();
+    loadAll({ force: true });
   }
 
   const accountDisplayName = (account: Account) => account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
@@ -410,7 +420,7 @@ export default function SettingsAccountsPage() {
                         if (!confirm(`删除账户"${a.name}"？`)) return;
                         const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
                         const data = await res.json();
-                        if (data.ok) { loadAll(); return; }
+                        if (data.ok) { invalidateSettingsAccountData(); loadAll({ force: true }); return; }
                         if (data.needPassword) {
                           setDeleteTarget(a);
                           setDeletePassword("");
@@ -449,7 +459,8 @@ export default function SettingsAccountsPage() {
         fieldData={{ groupId: groups, institutionId: institutions }}
         onCreated={() => {
           setShowCreateAccount(false);
-          loadAll();
+          invalidateSettingsAccountData();
+          loadAll({ force: true });
         }}
         existingNames={accounts.map(a => a.name)}
       />
@@ -496,7 +507,7 @@ export default function SettingsAccountsPage() {
                     body: JSON.stringify({ password: deletePassword }),
                   });
                   const data = await res.json();
-                  if (data.ok) { setDeleteTarget(null); loadAll(); }
+                  if (data.ok) { setDeleteTarget(null); invalidateSettingsAccountData(); loadAll({ force: true }); }
                   else setDeleteError(data.error);
                 }
               }}
@@ -515,7 +526,7 @@ export default function SettingsAccountsPage() {
                   body: JSON.stringify({ password: deletePassword }),
                 });
                 const data = await res.json();
-                if (data.ok) { setDeleteTarget(null); loadAll(); }
+                if (data.ok) { setDeleteTarget(null); invalidateSettingsAccountData(); loadAll({ force: true }); }
                 else setDeleteError(data.error);
               }}
                 className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">确认删除</button>

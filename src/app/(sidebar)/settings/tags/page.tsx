@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { fetchSettingsTags, getCachedSettingsTags, setSettingsTags } from "@/lib/client/settingsCache";
 
 type Tag = {
   id: string;
@@ -22,13 +23,15 @@ export default function TagsPage() {
   const [adding, setAdding] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { fetchTags(); }, []);
+  useEffect(() => {
+    const cached = getCachedSettingsTags();
+    if (cached) setTags(cached);
+    fetchTags();
+  }, []);
 
   async function fetchTags() {
-    const res = await fetch("/api/v1/tags").catch(() => null);
-    if (!res) return;
-    const data = await res.json();
-    if (data.ok) setTags(data.tags);
+    const next = await fetchSettingsTags().catch(() => null);
+    if (next) setTags(next);
   }
 
   async function handleAdd() {
@@ -41,7 +44,11 @@ export default function TagsPage() {
     });
     const data = await res.json();
     if (data.ok) {
-      setTags(prev => [...prev, data.tag]);
+      setTags(prev => {
+        const next = [...prev, data.tag];
+        setSettingsTags(next);
+        return next;
+      });
       setNewName("");
       inputRef.current?.focus();
     } else {
@@ -53,7 +60,11 @@ export default function TagsPage() {
   async function handleDelete(id: string) {
     const res = await fetch(`/api/v1/tags?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     const data = await res.json();
-    if (data.ok) setTags(prev => prev.filter(t => t.id !== id));
+    if (data.ok) setTags(prev => {
+      const next = prev.filter(t => t.id !== id);
+      setSettingsTags(next);
+      return next;
+    });
     else window.alert(data.error || "删除失败");
   }
 

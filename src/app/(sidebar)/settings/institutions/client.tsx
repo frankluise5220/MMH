@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
+import { fetchSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
 
 type Institution = {
   id: string;
@@ -29,16 +30,13 @@ export function SettingsInstitutionsClient({
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
 
   const refreshList = useCallback(async () => {
-    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
-    if (!res) return;
-    const data = await res.json();
-    if (data.ok && data.institutions) {
-      setInstitutions(data.institutions);
-    }
+    const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+    if (data?.institutions) setInstitutions(data.institutions as Institution[]);
   }, []);
 
   function handleCreated(id: string, name: string) {
     // Refresh the list to include the new institution with its proper type
+    invalidateSettingsAccountData();
     refreshList();
   }
 
