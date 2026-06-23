@@ -56,6 +56,32 @@ git clone "$REPO_URL" mmh
 cd mmh
 ```
 
+## 3. 基础镜像检查
+
+安装前可以先看本机是否已有基础镜像：
+
+```bash
+docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E 'node:20-bookworm|postgres:15-alpine'
+```
+
+如果能看到：
+
+```text
+node:20-bookworm
+postgres:15-alpine
+```
+
+说明基础镜像已经存在，可以跳过手动准备基础镜像。
+
+如果缺少镜像，可以先拉取：
+
+```bash
+docker pull node:20-bookworm
+docker pull postgres:15-alpine
+```
+
+如果网络慢，也可以不提前拉。后面的 `docker compose pull app` 和 `docker compose up -d` 会按需要拉取缺少的镜像。
+
 创建 `.env`：
 
 ```bash
@@ -84,7 +110,7 @@ docker compose up -d
 http://localhost:7777/
 ```
 
-## 3. 更新
+## 4. 更新
 
 在项目目录执行：
 
@@ -95,7 +121,7 @@ docker compose pull app
 docker compose up -d app
 ```
 
-## 4. 镜像策略
+## 5. 镜像策略
 
 本地安装和 NAS 安装使用同一套模式：
 
@@ -115,7 +141,7 @@ docker compose build app
 
 这些命令只用于开发者调试 Dockerfile 或本地预览当前工作区代码。
 
-## 5. 停止和重启
+## 6. 停止和重启
 
 停止：
 
@@ -135,7 +161,7 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-## 6. 本地开发预览
+## 7. 本地开发预览
 
 如果要预览当前工作区代码，而不是使用发布镜像，使用：
 

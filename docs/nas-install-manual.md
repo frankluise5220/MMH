@@ -61,7 +61,33 @@ sudo docker compose build --pull=false app
 
 这条命令会在 NAS 本机执行依赖安装和应用构建，容易拖慢飞牛，只能作为临时调试手段。
 
-## 3. 镜像策略
+## 3. 基础镜像检查
+
+安装前可以先看 NAS 里是否已有基础镜像：
+
+```bash
+sudo docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E 'node:20-bookworm|postgres:15-alpine'
+```
+
+如果能看到：
+
+```text
+node:20-bookworm
+postgres:15-alpine
+```
+
+说明基础镜像已经存在，可以跳过手动准备基础镜像，直接执行安装命令。
+
+如果缺少镜像，可以先拉取：
+
+```bash
+sudo docker pull node:20-bookworm
+sudo docker pull postgres:15-alpine
+```
+
+如果网络慢，也可以不提前拉。后面的 `docker compose pull app` 和 `docker compose up -d` 会按需要拉取缺少的镜像。
+
+## 4. 镜像策略
 
 第一次安装或第一次切换到新的镜像源时，可能需要下载较大的基础层，这是可以接受的。
 
@@ -78,7 +104,7 @@ sudo docker compose build --pull=false app
 - NAS 只拉镜像并重启容器，不在本机编译应用。
 - 普通业务代码更新时，理想状态是只下载应用变化层，而不是重新下载 Node/PostgreSQL 基础层。
 
-## 4. 测试与正式发布
+## 5. 测试与正式发布
 
 测试链路和正式链路应保持同构。
 
@@ -96,7 +122,7 @@ sudo docker compose build --pull=false app
 
 最终产品不依赖本地仓库。本地仓库只用于测试阶段提高迭代速度。
 
-## 5. 首次安装模板
+## 6. 首次安装模板
 
 安装时先确定来源：
 
@@ -158,7 +184,7 @@ echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-## 6. 本机构建只作兜底
+## 7. 本机构建只作兜底
 
 只有在需要临时验证 Dockerfile 或镜像结构时，才在 NAS 上执行本机构建：
 
