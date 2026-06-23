@@ -70,7 +70,7 @@ type ImageSpeedResult = {
 };
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
-const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取软件镜像", "重启服务"];
+const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取应用镜像", "重启服务"];
 
 function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
   if (!value) return "";
@@ -534,7 +534,7 @@ export default function SystemUpdatePage() {
                   发现新版本
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
-                  {dockerManaged ? "将同步部署文件、拉取新镜像并重启服务。" : `将更新到 ${versionInfo.remoteCommit}`}
+                  {dockerManaged ? "将同步部署文件、拉取应用镜像并重启服务。" : `将更新到 ${versionInfo.remoteCommit}`}
                 </div>
               </div>
               <button
@@ -555,7 +555,7 @@ export default function SystemUpdatePage() {
               <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
                 git pull
                 <br />
-                sudo docker compose pull app updater
+                sudo docker compose pull app
                 <br />
                 sudo docker compose up -d
               </div>

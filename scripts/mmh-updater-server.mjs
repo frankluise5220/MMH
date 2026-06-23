@@ -6,6 +6,7 @@ const port = Number(process.env.MMH_UPDATER_PORT || 7788);
 const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
 const workdir = process.env.MMH_WORKDIR || "/workspace";
 const composeProject = process.env.MMH_COMPOSE_PROJECT || "mmh";
+const composeFile = process.env.MMH_COMPOSE_FILE || `${workdir}/docker-compose.yml`;
 const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
 const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
 const dockerproxyImage = "ghcr.dockerproxy.net/frankluise5220/mmh:latest";
@@ -75,6 +76,10 @@ function run(command, step) {
     });
     child.on("error", reject);
   });
+}
+
+function composeCommand(args) {
+  return `docker compose -p ${composeProject} -f "${composeFile}" ${args}`;
 }
 
 async function updateEnvImageSource(appImage, updaterImage) {
@@ -284,14 +289,14 @@ async function startUpdate() {
     try {
       await run('if [ -d .git ]; then git config --global --add safe.directory "$PWD" && git pull --ff-only || echo "代码仓库同步失败，继续拉取镜像"; else echo "未发现 .git，跳过代码仓库更新"; fi', "同步部署文件");
       await chooseImageSource();
-      await run(`docker compose -p ${composeProject} pull app updater`, "拉取软件镜像");
+      await run(composeCommand("pull app"), "拉取应用镜像");
       task.status = "restarting";
       task.currentStep = "重启服务";
       pushLog("即将重启服务");
       setTimeout(() => {
         void (async () => {
           try {
-            await run(`docker compose -p ${composeProject} up -d --no-deps --force-recreate app`, "重启服务");
+            await run(composeCommand("up -d --no-deps --force-recreate app"), "重启服务");
             task.status = "completed";
             task.running = false;
             task.currentStep = "完成";

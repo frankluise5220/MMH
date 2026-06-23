@@ -8,4 +8,4 @@ COPY scripts/mmh-updater-server.mjs /updater/mmh-updater-server.mjs
 EXPOSE 7788
 
 ENTRYPOINT []
-CMD ["node", "/updater/mmh-updater-server.mjs"]
+CMD ["sh", "-lc", "if [ -f /workspace/scripts/mmh-updater-server.mjs ]; then exec node /workspace/scripts/mmh-updater-server.mjs; fi; exec node /updater/mmh-updater-server.mjs"]

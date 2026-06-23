@@ -88,14 +88,14 @@ sudo -i
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose pull app updater
+sudo docker compose pull app
 sudo docker compose up -d
 ```
 
 含义：
 
 - `git pull`：从当前 `REPO_URL` 对应的代码源更新代码。
-- `docker compose pull app updater`：从当前镜像源拉取应用镜像和更新执行器镜像。
+- `docker compose pull app`：从当前镜像源拉取应用镜像。
 - `docker compose up -d`：用新镜像重启相关容器。
 
 日常更新不应该在 NAS 上运行：
@@ -143,7 +143,7 @@ sudo docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E 'nod
 
 - 代码从本地/NAS 测试仓库取。
 - 镜像从测试镜像源取。
-- 命令仍然是 `git pull`、`docker compose pull app updater`、`docker compose up -d`。
+- 命令仍然是 `git pull`、`docker compose pull app`、`docker compose up -d`。
 
 正式发布时：
 
@@ -234,7 +234,7 @@ if [ -d "$APP_DIR" ] || docker ps -a --format "{{.Names}}" | grep -Eq "^(mmh-app
   echo "安装脚本已停止，避免生成新数据库密码后连接旧数据库失败。"
   echo ""
   echo "如果是更新，请执行:"
-  echo "cd $APP_DIR && git pull && docker compose pull app updater && docker compose up -d"
+  echo "cd $APP_DIR && git pull && docker compose pull app && docker compose up -d"
   echo ""
   echo "如果要清空重装，会删除 MMH 数据库数据，请先执行:"
   echo "if [ -d $APP_DIR ]; then cd $APP_DIR && docker compose down -v; fi"
