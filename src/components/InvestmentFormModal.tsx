@@ -1095,18 +1095,19 @@ export function InvestmentFormModal({
       {triggerButton}
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
-          <div className="modal-surface w-full max-w-md">
-            <div className="modal-header">
-              <div className="text-sm font-semibold text-slate-800">
-                {title}
-                <span className="ml-2 text-xs font-normal text-slate-500">{PRODUCT_LABELS[productType]}</span>
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
+          <div className="flex min-h-full items-start justify-center px-3 pb-6 pt-[8vh] sm:px-4 sm:pb-8 sm:pt-[10vh]">
+            <div className="modal-surface flex max-h-[calc(100dvh-8vh-1.5rem)] w-full max-w-md flex-col overflow-hidden sm:max-h-[calc(100dvh-10vh-2rem)]">
+              <div className="modal-header shrink-0">
+                <div className="text-sm font-semibold text-slate-800">
+                  {title}
+                  <span className="ml-2 text-xs font-normal text-slate-500">{PRODUCT_LABELS[productType]}</span>
+                </div>
+                <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
+                  className="secondary-button h-8 px-2">关闭</button>
               </div>
-              <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
-                className="secondary-button h-8 px-2">关闭</button>
-            </div>
 
-            <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
+              <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
               <div className="space-y-1">
                 <div className="form-label">交易类型</div>
                 <div className="space-y-1.5">
@@ -1233,7 +1234,7 @@ export function InvestmentFormModal({
                   </div>
 
                   {/* 保存按钮 */}
-                  <div className="flex justify-end gap-2 pt-1">
+                  <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
                     {mode === "create" && (
                       <button type="button" disabled={submitting} onClick={(e) => { e.preventDefault(); onSubmit(e as any, true); }}
                         className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50">
@@ -1612,7 +1613,7 @@ export function InvestmentFormModal({
                     className="form-input" />
               </div>
 
-              <div className="flex justify-end gap-2 pt-1">
+              <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
                 {mode === "create" && (
                   <button type="button" disabled={submitting} onClick={(e) => { e.preventDefault(); onSubmit(e as any, true); }}
                     className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50">
@@ -1626,7 +1627,8 @@ export function InvestmentFormModal({
               </div>
               </>
               )}
-            </form>
+              </form>
+            </div>
           </div>
         </div>
       )}
