@@ -4,7 +4,7 @@
 
 ## 1. 生成发布签名
 
-在 `E:\fs\wiseme\android` 下执行一次：
+在项目的 `android` 目录下执行一次：
 
 ```powershell
 New-Item -ItemType Directory -Force .\release

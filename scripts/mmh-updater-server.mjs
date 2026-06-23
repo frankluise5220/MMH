@@ -15,6 +15,7 @@ const ghcrUpdaterImage = "ghcr.io/frankluise5220/mmh-updater:latest";
 const daocloudUpdaterImage = "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest";
 const dockerproxyUpdaterImage = "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest";
 const njuUpdaterImage = "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest";
+const quotedWorkdir = JSON.stringify(workdir);
 
 const imageSources = {
   ghcr: { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
@@ -63,7 +64,7 @@ function run(command, step) {
   return new Promise((resolve, reject) => {
     task.currentStep = step;
     pushLog(`开始：${step}`);
-    const child = spawn("sh", ["-lc", command], { cwd: workdir });
+    const child = spawn("sh", ["-lc", `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true; ${command}`], { cwd: workdir });
     child.stdout.on("data", (chunk) => pushLog(chunk.toString().trim()));
     child.stderr.on("data", (chunk) => pushLog(chunk.toString().trim()));
     child.on("close", (code) => {
@@ -287,7 +288,7 @@ async function startUpdate() {
 
   void (async () => {
     try {
-      await run('if [ -d .git ]; then git config --global --add safe.directory "$PWD" && git pull --ff-only || echo "代码仓库同步失败，继续拉取镜像"; else echo "未发现 .git，跳过代码仓库更新"; fi', "同步部署文件");
+      await run(`if [ -d .git ]; then git config --global --add safe.directory ${quotedWorkdir} && git -C ${quotedWorkdir} pull --ff-only || echo "代码仓库同步失败，继续拉取镜像"; else echo "未发现 .git，跳过代码仓库更新"; fi`, "同步部署文件");
       await chooseImageSource();
       await run(composeCommand("pull app"), "拉取应用镜像");
       task.status = "restarting";
