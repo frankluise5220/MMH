@@ -206,7 +206,8 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                     <EntityCreateForm
                       mode="full" layout="inline" entityType="category"
                       defaultType={type}
-                      parentCategories={parentCategoryOptions}
+                      extraFields={{ type }}
+                      hiddenFields={["type", "parentId"]}
                       onCreated={handleCategoryCreated}
                       existingNames={categories.filter(c => c.parentId === null && c.type === type).map(c => c.name)}
                     />

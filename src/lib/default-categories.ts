@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 
 export type DefaultCategoryType = "expense" | "income";
+type CategoryMainType = DefaultCategoryType | "investment";
 
 export type DefaultCategoryTemplate = {
   type: DefaultCategoryType;
@@ -30,6 +31,18 @@ const sameNameChildFallback: Record<string, string> = {
   交通费: "其他交通",
   服饰装饰: "其他服饰",
   人情往来: "其他人情",
+};
+
+const categoryTypeLabels: Record<CategoryMainType, string> = {
+  expense: "支出",
+  income: "收入",
+  investment: "投资",
+};
+
+const categoryTypeFallbackNames: Record<CategoryMainType, string> = {
+  expense: "其他支出",
+  income: "其他收入",
+  investment: "其他投资",
 };
 
 export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
@@ -186,6 +199,8 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
 }
 
 export async function normalizeDefaultCategoryHierarchyForHousehold(writer: CategoryWriter, householdId: string) {
+  await normalizeCategoryTypeLabelNodes(writer, householdId);
+
   for (const item of rootCategoryRenames) {
     await renameRootCategory(writer, householdId, item.type, item.from, item.to);
   }
@@ -195,6 +210,105 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
   for (const category of defaultCategoryTemplates) {
     await normalizeSameNameChild(writer, householdId, category.type, category.name);
   }
+}
+
+async function normalizeCategoryTypeLabelNodes(writer: CategoryWriter, householdId: string) {
+  for (const type of Object.keys(categoryTypeLabels) as CategoryMainType[]) {
+    await normalizeCategoryTypeLabelNode(writer, householdId, type);
+  }
+}
+
+async function normalizeCategoryTypeLabelNode(
+  writer: CategoryWriter,
+  householdId: string,
+  type: CategoryMainType,
+) {
+  const label = categoryTypeLabels[type];
+  const nodes = await writer.category.findMany({
+    where: { householdId, type, name: label },
+    select: { id: true, parentId: true },
+  });
+
+  for (const node of nodes) {
+    await removeCategoryTypeLabelNode(writer, householdId, type, node.id, node.parentId);
+  }
+}
+
+async function removeCategoryTypeLabelNode(
+  writer: CategoryWriter,
+  householdId: string,
+  type: CategoryMainType,
+  categoryId: string,
+  parentId: string | null,
+) {
+  const children = await writer.category.findMany({
+    where: { householdId, parentId: categoryId },
+    select: { id: true, name: true },
+  });
+
+  for (const child of children) {
+    const target = await writer.category.findFirst({
+      where: { householdId, type, parentId, name: child.name, NOT: { id: child.id } },
+      select: { id: true },
+    });
+
+    if (target) {
+      await mergeCategoryInto(writer, householdId, child.id, target.id, child.name);
+    } else {
+      await writer.category.update({ where: { id: child.id }, data: { parentId } });
+    }
+  }
+
+  const fallbackId = parentId ?? await ensureFallbackCategory(writer, householdId, type);
+  const fallbackName = parentId
+    ? (await writer.category.findUnique({ where: { id: parentId }, select: { name: true } }))?.name ?? categoryTypeFallbackNames[type]
+    : categoryTypeFallbackNames[type];
+
+  await writer.txRecord.updateMany({
+    where: { householdId, categoryId },
+    data: { categoryId: fallbackId, categoryName: fallbackName },
+  });
+
+  await writer.category.deleteMany({ where: { id: categoryId } });
+}
+
+async function ensureFallbackCategory(
+  writer: CategoryWriter,
+  householdId: string,
+  type: CategoryMainType,
+) {
+  const fallbackName = categoryTypeFallbackNames[type];
+  let fallback = await writer.category.findFirst({
+    where: { householdId, type, parentId: null, name: fallbackName },
+    select: { id: true },
+  });
+
+  if (!fallback) {
+    fallback = await writer.category.create({
+      data: { householdId, type, parentId: null, name: fallbackName },
+      select: { id: true },
+    });
+  }
+
+  return fallback.id;
+}
+
+async function mergeCategoryInto(
+  writer: CategoryWriter,
+  householdId: string,
+  sourceId: string,
+  targetId: string,
+  targetName: string,
+) {
+  await writer.category.updateMany({
+    where: { householdId, parentId: sourceId },
+    data: { parentId: targetId },
+  });
+  await writer.txRecord.updateMany({
+    where: { householdId, categoryId: sourceId },
+    data: { categoryId: targetId, categoryName: targetName },
+  });
+  await writer.category.deleteMany({ where: { id: sourceId } });
 }
 
 async function renameRootCategory(
