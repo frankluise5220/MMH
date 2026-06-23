@@ -169,6 +169,18 @@ if [ -d "$APP_DIR" ] || docker ps -a --format "{{.Names}}" | grep -Eq "^(mmh-app
   exit 1
 fi
 
+if docker image inspect node:20-bookworm >/dev/null 2>&1; then
+  echo "已存在 node:20-bookworm，跳过拉取"
+else
+  docker pull node:20-bookworm
+fi
+
+if docker image inspect postgres:15-alpine >/dev/null 2>&1; then
+  echo "已存在 postgres:15-alpine，跳过拉取"
+else
+  docker pull postgres:15-alpine
+fi
+
 git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
