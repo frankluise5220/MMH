@@ -46,6 +46,7 @@ export default function SettingsAccountsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
+  const [showCreateAccount, setShowCreateAccount] = useState(false);
 
   // Delete account with password verification
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
@@ -176,12 +177,13 @@ export default function SettingsAccountsPage() {
           <h2 className="text-sm font-semibold text-slate-800">账户管理</h2>
           <p className="text-xs text-slate-500 mt-0.5">共 {filteredAccounts.length} 个账户</p>
         </div>
-        <EntityCreateForm
-          mode="full" layout="card" entityType="account"
-          fieldData={{ groupId: groups, institutionId: institutions }}
-          onCreated={() => loadAll()}
-          existingNames={accounts.map(a => a.name)}
-        />
+        <button
+          type="button"
+          onClick={() => setShowCreateAccount(true)}
+          className="primary-button h-9 gap-1.5 shrink-0"
+        >
+          <Plus className="w-3.5 h-3.5" />新增账户
+        </button>
       </div>
 
       {/* ===== 顶部筛选条 ===== */}
@@ -434,9 +436,23 @@ export default function SettingsAccountsPage() {
 
       {filteredAccounts.length === 0 && (
         <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
-          暂无账户。点击右上角"新增账户"按钮添加。
+          暂无账户。点击"新增账户"按钮添加。
         </div>
       )}
+
+      <EntityCreateForm
+        mode="full"
+        layout="modal"
+        entityType="account"
+        open={showCreateAccount}
+        onClose={() => setShowCreateAccount(false)}
+        fieldData={{ groupId: groups, institutionId: institutions }}
+        onCreated={() => {
+          setShowCreateAccount(false);
+          loadAll();
+        }}
+        existingNames={accounts.map(a => a.name)}
+      />
 
       {/* Nested creation modals from SmartSelect in inline edit */}
       {nestedEntityType && (

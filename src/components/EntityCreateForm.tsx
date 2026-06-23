@@ -56,7 +56,9 @@ type FullModeProps = {
   mode: "full";
   entityType: NestedEntityType;
   /** Layout variant for full mode */
-  layout?: "card" | "inline";
+  layout?: "card" | "inline" | "modal";
+  open?: boolean;
+  onClose?: () => void;
   onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string }) => void;
   /** Dynamic data for select fields that need runtime-populated options */
   fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -404,8 +406,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         if (mode === "compact") {
           onClose?.();
         } else {
-          // Full mode: collapse card and re-init form
-          setExpanded(false);
+          // Full mode: close the surrounding surface and re-init form.
+          if (layout === "modal") props.onClose?.();
+          else setExpanded(false);
           initForm();
         }
       } else {
@@ -626,6 +629,125 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         {error && <div className="text-xs text-red-500 mt-1">{error}</div>}
 
         {/* Nested creation modals */}
+        {nestedEntityType && (
+          <EntityCreateForm
+            mode="compact"
+            entityType={nestedEntityType}
+            open={nestedOpen}
+            onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
+            onCreated={handleNestedCreated}
+          />
+        )}
+      </>
+    );
+  }
+
+  if (layout === "modal") {
+    if (mode !== "full" || !props.open) return null;
+
+    return (
+      <>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4">
+          <div className="modal-surface flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden">
+            <div className="modal-header shrink-0">
+              <div className="text-sm font-semibold text-slate-800">{config.title}</div>
+              <button
+                type="button"
+                onClick={() => { props.onClose?.(); setError(""); initForm(); }}
+                className="secondary-button h-8 px-2"
+              >
+                关闭
+              </button>
+            </div>
+            <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
+              {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {visibleFields.map(field => {
+                  if (field.type === "text") {
+                    return (
+                      <div key={field.key}>
+                        <label className="form-label mb-1 block">{field.label}</label>
+                        <input
+                          value={form[field.key] ?? ""}
+                          onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                          placeholder={field.placeholder ?? ""}
+                          className="form-input"
+                          inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
+                          required={field.key === "name"}
+                        />
+                      </div>
+                    );
+                  }
+
+                  const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+                  if (opts.length === 0 && !field.optionsFromData) return null;
+
+                  if (field.optionsFromData && field.nestedCreate) {
+                    const dataKey = field.optionsFromData;
+                    const dataList = nestedFieldData[dataKey] ?? [];
+                    const ssOptions: SmartSelectOption[] = field.key === "institutionId"
+                      ? dataList.map(d => ({
+                          id: d.id,
+                          label: d.name,
+                          subLabel: institutionTypeLabel((d as { type?: string }).type ?? null),
+                        }))
+                      : dataList.map(d => ({
+                          id: d.id,
+                          label: d.name,
+                        }));
+                    const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+
+                    return (
+                      <div key={field.key}>
+                        <label className="form-label mb-1 block">{field.label}</label>
+                        <SmartSelect
+                          mode="single"
+                          value={form[field.key] ?? ""}
+                          onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
+                          options={ssOptions}
+                          placeholder={selectPlaceholder}
+                          onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
+                          createLabel={`新增${field.nestedCreate === "institution" ? "机构" : "所有人"}`}
+                        />
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={field.key}>
+                      <label className="form-label mb-1 block">{field.label}</label>
+                      <select
+                        value={form[field.key] ?? ""}
+                        onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                        className="form-input"
+                      >
+                        {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => { props.onClose?.(); setError(""); initForm(); }}
+                  className="secondary-button h-9 px-4"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || !(form.name?.trim())}
+                  className="primary-button h-9"
+                >
+                  {saving ? "保存中…" : "创建"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+
         {nestedEntityType && (
           <EntityCreateForm
             mode="compact"
