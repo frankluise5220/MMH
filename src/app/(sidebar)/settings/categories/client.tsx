@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Trash2, ChevronRight, ChevronDown, Plus, Save } from "lucide-react";
+import { Trash2, ChevronRight, ChevronDown, Plus, Save, Pencil, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 
 type Category = {
@@ -27,7 +27,10 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   const [addingUnder, setAddingUnder] = useState<string | null>(null);
   const [addingType, setAddingType] = useState<string>("expense");
   const [editingName, setEditingName] = useState("");
+  const [inlineEditingId, setInlineEditingId] = useState<string | null>(null);
+  const [inlineEditingName, setInlineEditingName] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -101,34 +104,63 @@ export default function SettingsCategoriesClient({ categories: initialCategories
     } catch { window.alert("删除失败"); }
   }
 
-  async function handleRename() {
-    if (!selectedCategory) return;
-    const nextName = editingName.trim();
+  async function renameCategory(id: string, name: string) {
+    const nextName = name.trim();
+    const target = categories.find(c => c.id === id);
+    if (!target) return false;
     if (!nextName) {
       setEditError("请填写分类名称");
-      return;
+      return false;
     }
-    if (nextName === selectedCategory.name) return;
+    if (nextName === target.name) return true;
 
-    setSavingEdit(true);
     setEditError("");
     try {
       const res = await fetch("/api/v1/category", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: selectedCategory.id, name: nextName }),
+        body: JSON.stringify({ id, name: nextName }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
         setEditError(data.error ?? "修改失败");
-        return;
+        return false;
       }
-      setCategories(prev => prev.map(c => c.id === selectedCategory.id ? { ...c, name: data.category.name } : c));
-      setEditingName(data.category.name);
+      setCategories(prev => prev.map(c => c.id === id ? { ...c, name: data.category.name } : c));
+      if (selectedId === id) setEditingName(data.category.name);
+      return true;
     } catch {
       setEditError("修改失败");
+      return false;
+    }
+  }
+
+  async function handleRename() {
+    if (!selectedCategory) return;
+    setSavingEdit(true);
+    try {
+      await renameCategory(selectedCategory.id, editingName);
     } finally {
       setSavingEdit(false);
+    }
+  }
+
+  function startInlineEdit(category: Category) {
+    setInlineEditingId(category.id);
+    setInlineEditingName(category.name);
+    setEditError("");
+  }
+
+  async function saveInlineEdit(id: string) {
+    setInlineSavingId(id);
+    try {
+      const ok = await renameCategory(id, inlineEditingName);
+      if (ok) {
+        setInlineEditingId(null);
+        setInlineEditingName("");
+      }
+    } finally {
+      setInlineSavingId(null);
     }
   }
 
@@ -168,9 +200,45 @@ export default function SettingsCategoriesClient({ categories: initialCategories
             className="w-4 h-4 flex items-center justify-center shrink-0 text-slate-400 hover:text-slate-600">
             {hasChildren ? (isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />) : <span className="w-3" />}
           </button>
-          <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.name}</span>
+          {inlineEditingId === cat.id ? (
+            <input
+              value={inlineEditingName}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setInlineEditingName(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") void saveInlineEdit(cat.id);
+                if (e.key === "Escape") {
+                  setInlineEditingId(null);
+                  setInlineEditingName("");
+                }
+              }}
+              autoFocus
+              className="h-7 min-w-0 flex-1 rounded-md border border-blue-200 bg-white px-2 text-sm outline-none focus:border-blue-400"
+            />
+          ) : (
+            <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.name}</span>
+          )}
           {cat.isSystem && <span className="text-[10px] text-slate-400 shrink-0">系统</span>}
           {hasChildren && !isExpanded && <span className="text-[10px] text-slate-400 shrink-0">{children.length}</span>}
+          {inlineEditingId === cat.id ? (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); void saveInlineEdit(cat.id); }}
+                disabled={inlineSavingId === cat.id}
+                className="h-5 w-5 flex items-center justify-center rounded hover:bg-blue-100 text-blue-600 disabled:opacity-50 shrink-0" title="保存">
+                <Save className="w-3 h-3" />
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
+                className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title="取消">
+                <X className="w-3 h-3" />
+              </button>
+            </>
+          ) : (
+            <button onClick={(e) => { e.stopPropagation(); startInlineEdit(cat); }}
+              className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title="修改名称">
+              <Pencil className="w-3 h-3" />
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); openAdd(cat.id); }}
             className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-blue-100 text-slate-400 hover:text-blue-600 shrink-0" title="添加子分类">
             <Plus className="w-3 h-3" />
@@ -350,10 +418,49 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                   <div className="space-y-0.5">
                     {selectedChildren.map(child => (
                       <div key={child.id} onClick={() => select(child.id)}
-                        className={`flex items-center justify-between py-1.5 px-2 rounded cursor-pointer ${selectedId === child.id ? "bg-blue-50" : "hover:bg-slate-50"}`}>
-                        <span className="text-sm text-slate-700">{child.name}</span>
+                        className={`flex items-center justify-between gap-2 py-1.5 px-2 rounded cursor-pointer ${selectedId === child.id ? "bg-blue-50" : "hover:bg-slate-50"}`}>
+                        {inlineEditingId === child.id ? (
+                          <input
+                            value={inlineEditingName}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setInlineEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Enter") void saveInlineEdit(child.id);
+                              if (e.key === "Escape") {
+                                setInlineEditingId(null);
+                                setInlineEditingName("");
+                              }
+                            }}
+                            autoFocus
+                            className="form-input h-8 min-w-0 flex-1"
+                          />
+                        ) : (
+                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{child.name}</span>
+                        )}
                         <div className="flex items-center gap-1">
                           {child.isSystem && <span className="text-[10px] text-slate-400">系统</span>}
+                          {inlineEditingId === child.id ? (
+                            <>
+                              <button onClick={(e) => { e.stopPropagation(); void saveInlineEdit(child.id); }}
+                                disabled={inlineSavingId === child.id}
+                                className="h-6 w-6 flex items-center justify-center rounded hover:bg-blue-50 text-blue-600 disabled:opacity-50"
+                                title="保存">
+                                <Save className="w-3 h-3" />
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
+                                className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
+                                title="取消">
+                                <X className="w-3 h-3" />
+                              </button>
+                            </>
+                          ) : (
+                            <button onClick={(e) => { e.stopPropagation(); startInlineEdit(child); }}
+                              className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
+                              title="修改名称">
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
                           {!child.isSystem && (
                             <button onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }}
                               className="h-6 w-6 flex items-center justify-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500">
