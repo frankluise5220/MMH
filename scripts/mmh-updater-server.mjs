@@ -7,8 +7,12 @@ const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
 const workdir = process.env.MMH_WORKDIR || "/workspace";
 const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
 const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
+const dockerproxyImage = "ghcr.dockerproxy.net/frankluise5220/mmh:latest";
+const njuImage = "ghcr.nju.edu.cn/frankluise5220/mmh:latest";
 const ghcrUpdaterImage = "ghcr.io/frankluise5220/mmh-updater:latest";
 const daocloudUpdaterImage = "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest";
+const dockerproxyUpdaterImage = "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest";
+const njuUpdaterImage = "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest";
 
 let task = {
   running: false,
@@ -84,19 +88,28 @@ async function updateEnvImageSource(appImage, updaterImage) {
 }
 
 async function chooseImageSource() {
-  pushLog("检测 GHCR 镜像源速度");
-  const result = await new Promise((resolve) => {
-    const child = spawn("sh", ["-lc", `timeout 8 docker manifest inspect ${ghcrImage} >/dev/null 2>&1`], { cwd: workdir });
-    child.on("close", (code) => resolve(code === 0));
-    child.on("error", () => resolve(false));
-  });
-  if (result) {
-    pushLog("使用 GHCR 镜像源");
-    await updateEnvImageSource(ghcrImage, ghcrUpdaterImage);
-  } else {
-    pushLog("GHCR 较慢或不可用，切换到 DaoCloud 代理源");
-    await updateEnvImageSource(daocloudImage, daocloudUpdaterImage);
+  const candidates = [
+    { name: "dockerproxy", app: dockerproxyImage, updater: dockerproxyUpdaterImage },
+    { name: "NJU", app: njuImage, updater: njuUpdaterImage },
+    { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
+    { name: "DaoCloud", app: daocloudImage, updater: daocloudUpdaterImage },
+  ];
+
+  pushLog("检测镜像源");
+  for (const source of candidates) {
+    const ok = await new Promise((resolve) => {
+      const child = spawn("sh", ["-lc", `timeout 8 docker manifest inspect ${source.app} >/dev/null 2>&1`], { cwd: workdir });
+      child.on("close", (code) => resolve(code === 0));
+      child.on("error", () => resolve(false));
+    });
+    if (ok) {
+      pushLog(`使用 ${source.name} 镜像源`);
+      await updateEnvImageSource(source.app, source.updater);
+      return;
+    }
   }
+
+  pushLog("镜像源检测失败，保留当前 .env 配置");
 }
 
 async function startUpdate() {
@@ -113,16 +126,16 @@ async function startUpdate() {
 
   void (async () => {
     try {
-      await run('if [ -d .git ]; then git pull --ff-only; else echo "未发现 .git，跳过代码仓库更新"; fi', "更新代码");
+      await run('if [ -d .git ]; then git pull --ff-only; else echo "未发现 .git，跳过代码仓库更新"; fi', "同步部署文件");
       await chooseImageSource();
-      await run("docker compose pull app", "拉取镜像");
+      await run("docker compose pull app updater", "拉取软件镜像");
       task.status = "restarting";
-      task.currentStep = "重启容器";
-      pushLog("即将重启 app 容器");
+      task.currentStep = "重启服务";
+      pushLog("即将重启服务");
       setTimeout(() => {
         void (async () => {
           try {
-            await run("docker compose up -d app", "重启容器");
+            await run("docker compose up -d app", "重启服务");
             task.status = "completed";
             task.running = false;
             task.currentStep = "完成";

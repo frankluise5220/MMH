@@ -30,13 +30,14 @@ MMH_IMAGE_SOURCE="auto"
 
 可选值：
 
-- `auto`：自动检测 GHCR；如果 GHCR 慢或不可用，自动使用 DaoCloud 代理源。
+- `auto`：自动检测可用镜像源，优先使用 `ghcr.dockerproxy.net`，然后是 NJU、GHCR、DaoCloud。
 - `ghcr`：正式镜像源，`ghcr.io/frankluise5220/mmh:latest`。
+- `dockerproxy`：GHCR 代理源，`ghcr.dockerproxy.net/frankluise5220/mmh:latest`。
 - `daocloud`：GHCR 代理源，`ghcr.m.daocloud.io/frankluise5220/mmh:latest`。
 - `nju`：GHCR 代理源，`ghcr.nju.edu.cn/frankluise5220/mmh:latest`。
 - `custom`：自定义镜像源，填写 `CUSTOM_MMH_APP_IMAGE`。
 
-国内网络拉 GHCR 很慢时，保持 `auto` 即可；脚本会先试 GHCR，慢或失败就切 DaoCloud。代理源是第三方服务，可能有波动；正式源仍以 GHCR 为准。
+国内网络拉 GHCR 很慢时，保持 `auto` 即可。代理源是第三方服务，可能有波动；正式源仍以 GHCR 为准。
 
 来源展开：
 
@@ -50,9 +51,11 @@ if [ "$MMH_SOURCE" = "local" ]; then
 fi
 
 if [ "$MMH_IMAGE_SOURCE" = "auto" ]; then
-  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest 或 ghcr.m.daocloud.io/frankluise5220/mmh:latest"
+  MMH_APP_IMAGE="自动选择 ghcr.dockerproxy.net / ghcr.nju.edu.cn / ghcr.io / ghcr.m.daocloud.io"
 elif [ "$MMH_IMAGE_SOURCE" = "ghcr" ]; then
   MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "dockerproxy" ]; then
+  MMH_APP_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh:latest"
 elif [ "$MMH_IMAGE_SOURCE" = "daocloud" ]; then
   MMH_APP_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh:latest"
 elif [ "$MMH_IMAGE_SOURCE" = "nju" ]; then
@@ -83,15 +86,15 @@ sudo -i
 ```bash
 cd ~/mmh
 git pull
-sudo docker compose pull app
-sudo docker compose up -d app
+sudo docker compose pull app updater
+sudo docker compose up -d
 ```
 
 含义：
 
 - `git pull`：从当前 `REPO_URL` 对应的代码源更新代码。
-- `docker compose pull app`：从当前 `MMH_APP_IMAGE` 对应的镜像源拉取应用镜像。
-- `docker compose up -d app`：用新镜像重启 `app` 容器。
+- `docker compose pull app updater`：从当前镜像源拉取应用镜像和更新执行器镜像。
+- `docker compose up -d`：用新镜像重启相关容器。
 
 日常更新不应该在 NAS 上运行：
 
@@ -138,7 +141,7 @@ sudo docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E 'nod
 
 - 代码从本地/NAS 测试仓库取。
 - 镜像从测试镜像源取。
-- 命令仍然是 `git pull`、`docker compose pull app`、`docker compose up -d app`。
+- 命令仍然是 `git pull`、`docker compose pull app updater`、`docker compose up -d`。
 
 正式发布时：
 
@@ -160,7 +163,7 @@ APP_DIR="$INSTALL_HOME/mmh"
 
 # 只需要改这里：github 使用正式源，local 使用局域网测试源。
 MMH_SOURCE="github"
-# 默认 auto：先试 GHCR，慢或失败就自动切 DaoCloud。
+# 默认 auto：优先 dockerproxy，然后 NJU、GHCR、DaoCloud。
 MMH_IMAGE_SOURCE="auto"
 CUSTOM_MMH_APP_IMAGE=""
 
@@ -174,18 +177,31 @@ else
 fi
 
 if [ "$MMH_IMAGE_SOURCE" = "auto" ]; then
-  if timeout 8 docker manifest inspect ghcr.io/frankluise5220/mmh:latest >/dev/null 2>&1; then
-    echo "使用 GHCR 镜像源"
-    MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
-    MMH_UPDATER_IMAGE="ghcr.io/frankluise5220/mmh-updater:latest"
-  else
-    echo "GHCR 较慢或不可用，使用 DaoCloud 代理源"
-    MMH_APP_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh:latest"
-    MMH_UPDATER_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest"
+  for source in \
+    "ghcr.dockerproxy.net/frankluise5220/mmh:latest|ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest|dockerproxy" \
+    "ghcr.nju.edu.cn/frankluise5220/mmh:latest|ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest|NJU" \
+    "ghcr.io/frankluise5220/mmh:latest|ghcr.io/frankluise5220/mmh-updater:latest|GHCR" \
+    "ghcr.m.daocloud.io/frankluise5220/mmh:latest|ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest|DaoCloud"; do
+    APP_CANDIDATE="$(echo "$source" | cut -d "|" -f 1)"
+    UPDATER_CANDIDATE="$(echo "$source" | cut -d "|" -f 2)"
+    SOURCE_NAME="$(echo "$source" | cut -d "|" -f 3)"
+    if timeout 8 docker manifest inspect "$APP_CANDIDATE" >/dev/null 2>&1; then
+      echo "使用 $SOURCE_NAME 镜像源"
+      MMH_APP_IMAGE="$APP_CANDIDATE"
+      MMH_UPDATER_IMAGE="$UPDATER_CANDIDATE"
+      break
+    fi
+  done
+  if [ -z "${MMH_APP_IMAGE:-}" ]; then
+    echo "未找到可用镜像源"
+    exit 1
   fi
 elif [ "$MMH_IMAGE_SOURCE" = "ghcr" ]; then
   MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
   MMH_UPDATER_IMAGE="ghcr.io/frankluise5220/mmh-updater:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "dockerproxy" ]; then
+  MMH_APP_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh:latest"
+  MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
 elif [ "$MMH_IMAGE_SOURCE" = "daocloud" ]; then
   MMH_APP_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh:latest"
   MMH_UPDATER_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest"
@@ -215,7 +231,7 @@ if [ -d "$APP_DIR" ] || docker ps -a --format "{{.Names}}" | grep -Eq "^(mmh-app
   echo "安装脚本已停止，避免生成新数据库密码后连接旧数据库失败。"
   echo ""
   echo "如果是更新，请执行:"
-  echo "cd $APP_DIR && git pull && docker compose pull app && docker compose up -d app"
+  echo "cd $APP_DIR && git pull && docker compose pull app updater && docker compose up -d"
   echo ""
   echo "如果要清空重装，会删除 MMH 数据库数据，请先执行:"
   echo "if [ -d $APP_DIR ]; then cd $APP_DIR && docker compose down -v; fi"
@@ -263,7 +279,7 @@ NODE_RUNTIME_IMAGE="node:20-bookworm"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-docker compose pull app
+docker compose pull app updater
 docker compose up -d
 
 echo "MMH 安装完成"
@@ -280,7 +296,7 @@ echo "在线更新令牌已写入 $APP_DIR/.env"
 
 ```bash
 sudo docker compose -f docker-compose.yml -f docker-compose.build.yml build --pull=false app
-sudo docker compose up -d app
+sudo docker compose up -d
 ```
 
 这不是日常更新路径。

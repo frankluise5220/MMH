@@ -26,11 +26,13 @@ type VersionInfo = {
   remoteUrl: string;
   remoteCommit: string;
   remoteCommitMsg: string;
+  remoteCommitDate: string;
   needsUpdate: boolean;
   canCheckUpdate: boolean;
   githubUrl: string;
   githubCommit: string;
   githubCommitMsg: string;
+  githubCommitDate: string;
   githubCanCheck: boolean;
   githubFetchError?: string;
   fetchError?: string;
@@ -126,14 +128,37 @@ function commandErrorMessage(error: unknown) {
   return (stderr || stdout || e.message || "未知错误").trim();
 }
 
-function getGitHubVersionInfo(projectRoot: string) {
+async function getGitHubVersionInfo(projectRoot: string) {
   try {
     const line = readCommand(projectRoot, `git ls-remote ${DEFAULT_GITHUB_REPO_URL} refs/heads/main`);
     const commit = line.split(/\s+/)[0]?.trim() || "unknown";
+    let commitDate = "";
+    let commitMsg = "";
+    if (commit !== "unknown") {
+      try {
+        const res = await fetch("https://api.github.com/repos/frankluise5220/MMH/commits/main", {
+          headers: { Accept: "application/vnd.github+json" },
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json() as {
+            sha?: string;
+            commit?: { message?: string; committer?: { date?: string } };
+          };
+          if (data.sha?.startsWith(commit.slice(0, 12))) {
+            commitMsg = String(data.commit?.message ?? "").split("\n")[0] ?? "";
+            commitDate = String(data.commit?.committer?.date ?? "");
+          }
+        }
+      } catch {
+        // The commit hash is enough for update comparison; date/message are display-only.
+      }
+    }
     return {
       githubUrl: DEFAULT_GITHUB_REPO_URL,
       githubCommit: commit === "unknown" ? "unknown" : commit.slice(0, 7),
-      githubCommitMsg: "",
+      githubCommitMsg: commitMsg,
+      githubCommitDate: commitDate,
       githubCanCheck: commit !== "unknown",
     };
   } catch (error) {
@@ -141,16 +166,17 @@ function getGitHubVersionInfo(projectRoot: string) {
       githubUrl: DEFAULT_GITHUB_REPO_URL,
       githubCommit: "unknown",
       githubCommitMsg: "",
+      githubCommitDate: "",
       githubCanCheck: false,
       githubFetchError: commandErrorMessage(error),
     };
   }
 }
 
-function getGitVersionInfo(projectRoot: string): VersionInfo {
+async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
   const { remote, branch, ref } = getGitTarget();
   const local = getLocalGitInfo(projectRoot);
-  const github = getGitHubVersionInfo(projectRoot);
+  const github = await getGitHubVersionInfo(projectRoot);
   let remoteUrl = String(process.env.MMH_UPDATE_SOURCE_URL ?? "").trim();
 
   if (isDockerEnvironment() || local.versionSource === "env") {
@@ -167,6 +193,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
       remoteUrl,
       remoteCommit: githubCommit,
       remoteCommitMsg: github.githubCommitMsg,
+      remoteCommitDate: github.githubCommitDate,
       needsUpdate: canCheck ? localComparable !== githubCommit : false,
       canCheckUpdate: canCheck,
       fetchError: undefined,
@@ -185,6 +212,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
     execSync(`git fetch ${remote} ${branch}`, { cwd: projectRoot, encoding: "utf-8", timeout: 15000 });
     const remoteCommit = readCommand(projectRoot, `git rev-parse --short ${ref}`);
     const remoteCommitMsg = readCommand(projectRoot, `git log -1 --format=%s ${ref}`);
+    const remoteCommitDate = readCommand(projectRoot, `git log -1 --format=%ci ${ref}`);
     const localFull = readCommand(projectRoot, "git rev-parse HEAD");
     const remoteFull = readCommand(projectRoot, `git rev-parse ${ref}`);
 
@@ -196,6 +224,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
       remoteUrl,
       remoteCommit,
       remoteCommitMsg,
+      remoteCommitDate,
       needsUpdate: localFull !== remoteFull,
       canCheckUpdate: true,
     };
@@ -208,6 +237,7 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
       remoteUrl,
       remoteCommit: "unknown",
       remoteCommitMsg: "",
+      remoteCommitDate: "",
       needsUpdate: false,
       canCheckUpdate: false,
       fetchError: commandErrorMessage(error),
@@ -227,7 +257,7 @@ export async function GET() {
       updateMode: "git",
       updaterEnabled: getUpdaterConfig().enabled,
       localVersion,
-      ...getGitVersionInfo(projectRoot),
+      ...await getGitVersionInfo(projectRoot),
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
