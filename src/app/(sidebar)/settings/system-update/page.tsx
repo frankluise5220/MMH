@@ -71,6 +71,13 @@ type ImageSpeedResult = {
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
 const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取应用镜像", "重启服务"];
+const FIXED_IMAGE_SOURCE_OPTIONS = [
+  { value: "auto", label: "自动选择", appImage: "", updaterImage: "" },
+  { value: "ghcr", label: "GHCR", appImage: "ghcr.io/frankluise5220/mmh:latest", updaterImage: "ghcr.io/frankluise5220/mmh-updater:latest" },
+  { value: "dockerproxy", label: "dockerproxy", appImage: "ghcr.dockerproxy.net/frankluise5220/mmh:latest", updaterImage: "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest" },
+  { value: "nju", label: "NJU", appImage: "ghcr.nju.edu.cn/frankluise5220/mmh:latest", updaterImage: "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest" },
+  { value: "daocloud", label: "DaoCloud", appImage: "ghcr.m.daocloud.io/frankluise5220/mmh:latest", updaterImage: "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest" },
+];
 
 function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
   if (!value) return "";
@@ -453,13 +460,16 @@ export default function SystemUpdatePage() {
                 </div>
 
                 <div className="overflow-hidden rounded-md border border-slate-200">
-                  {versionInfo.imageSourceConfig.options.map((option) => {
+                  {[
+                    ...FIXED_IMAGE_SOURCE_OPTIONS,
+                    ...(versionInfo.imageSourceConfig.options ?? []).filter((option) => option.value === "custom"),
+                  ].map((option) => {
                     const selected = imageSourceDraft.source === option.value;
                     const speed = imageSpeedResults[option.value];
                     const appImage =
                       option.value === "custom"
                         ? imageSourceDraft.customAppImage || option.appImage || "未填写"
-                        : option.appImage || versionInfo.imageSourceConfig?.appImage || "";
+                        : option.appImage || "";
                     return (
                       <label
                         key={option.value}

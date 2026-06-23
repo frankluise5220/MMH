@@ -141,7 +141,7 @@ async function getImageSourceConfig() {
     customAppImage,
     customUpdaterImage,
     options: [
-      { value: "auto", label: "自动选择", appImage: env.MMH_APP_IMAGE || "", updaterImage: env.MMH_UPDATER_IMAGE || "" },
+      { value: "auto", label: "自动选择", appImage: "", updaterImage: "" },
       ...Object.entries(imageSources).map(([value, sourceConfig]) => ({
         value,
         label: sourceConfig.name,
