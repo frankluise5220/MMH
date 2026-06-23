@@ -205,8 +205,6 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
     await renameRootCategory(writer, householdId, item.type, item.from, item.to);
   }
 
-  await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
-
   for (const category of defaultCategoryTemplates) {
     await normalizeSameNameChild(writer, householdId, category.type, category.name);
   }
