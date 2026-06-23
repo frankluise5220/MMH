@@ -5,22 +5,25 @@ import {
   getFundUnitsDecimalsPreference,
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
+  getTimeZoneModePreference,
+  getTimeZonePreference,
   setFundUnitsDecimalsPreference,
-  setSessionDaysPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
+  setTimeZonePreference,
   type SidebarGroupMode,
+  type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
-const SESSION_DAY_OPTIONS = [
-  { value: 1, label: "1 天" },
-  { value: 7, label: "7 天" },
-  { value: 30, label: "30 天" },
-  { value: 90, label: "90 天" },
-  { value: 180, label: "180 天" },
-  { value: 365, label: "365 天" },
+const TIME_ZONE_OPTIONS = [
+  { value: "Asia/Shanghai", label: "北京时间 (Asia/Shanghai)" },
+  { value: "Asia/Hong_Kong", label: "香港 (Asia/Hong_Kong)" },
+  { value: "Asia/Tokyo", label: "东京 (Asia/Tokyo)" },
+  { value: "Europe/London", label: "伦敦 (Europe/London)" },
+  { value: "America/New_York", label: "纽约 (America/New_York)" },
+  { value: "America/Los_Angeles", label: "洛杉矶 (America/Los_Angeles)" },
 ];
 
 const FUND_UNITS_DECIMAL_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
@@ -33,12 +36,13 @@ function getCookie(name: string): string | null {
 
 export default function DisplaySettingsPage() {
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
-  const [sessionDays, setSessionDays] = useState(30);
   const [fundUnitsDecimals, setFundUnitsDecimals] = useState(2);
+  const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
+  const [timeZone, setTimeZone] = useState("Asia/Shanghai");
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [savingScheme, setSavingScheme] = useState(false);
-  const [savingSession, setSavingSession] = useState(false);
+  const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingFundUnitsDecimals, setSavingFundUnitsDecimals] = useState(false);
   const [currentUserName, setCurrentUserName] = useState("加载中…");
   const [activeHousehold, setActiveHousehold] = useState<{ id: string; name: string } | null>(null);
@@ -62,15 +66,16 @@ export default function DisplaySettingsPage() {
     fetch("/api/v1/settings/app-preferences")
       .then(r => r.json())
       .then(d => {
-        if (d.ok && Number.isFinite(Number(d.sessionDays))) {
-          const next = Number(d.sessionDays);
-          setSessionDays(next);
-          setSessionDaysPreference(next);
-        }
         if (d.ok && Number.isFinite(Number(d.fundUnitsDecimals))) {
           const next = Number(d.fundUnitsDecimals);
           setFundUnitsDecimals(next);
           setFundUnitsDecimalsPreference(next);
+        }
+        if (d.ok && (d.timeZoneMode === "system" || d.timeZoneMode === "specified")) {
+          setTimeZoneMode(d.timeZoneMode);
+        }
+        if (d.ok && typeof d.timeZone === "string") {
+          setTimeZone(d.timeZone);
         }
       })
       .catch(() => {});
@@ -89,6 +94,8 @@ export default function DisplaySettingsPage() {
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
     setFundUnitsDecimals(getFundUnitsDecimalsPreference());
+    setTimeZoneMode(getTimeZoneModePreference());
+    setTimeZone(getTimeZonePreference());
   }, []);
 
   async function saveScheme(next: ColorScheme) {
@@ -107,30 +114,6 @@ export default function DisplaySettingsPage() {
       setScheme(prev);
     } finally {
       setSavingScheme(false);
-    }
-  }
-
-  async function saveSessionDays(next: number) {
-    const prev = sessionDays;
-    setSessionDays(next);
-    setSessionDaysPreference(next);
-    setSavingSession(true);
-    try {
-      const res = await fetch("/api/v1/settings/app-preferences", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionDays: next }),
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        setSessionDays(prev);
-        setSessionDaysPreference(prev);
-      }
-    } catch {
-      setSessionDays(prev);
-      setSessionDaysPreference(prev);
-    } finally {
-      setSavingSession(false);
     }
   }
 
@@ -155,6 +138,34 @@ export default function DisplaySettingsPage() {
       setFundUnitsDecimalsPreference(prev);
     } finally {
       setSavingFundUnitsDecimals(false);
+    }
+  }
+
+  async function saveTimeZone(nextMode: TimeZoneMode, nextTimeZone: string) {
+    const prevMode = timeZoneMode;
+    const prevTimeZone = timeZone;
+    setTimeZoneMode(nextMode);
+    setTimeZone(nextTimeZone);
+    setTimeZonePreference(nextMode, nextTimeZone);
+    setSavingTimeZone(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timeZoneMode: nextMode, timeZone: nextTimeZone }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setTimeZoneMode(prevMode);
+        setTimeZone(prevTimeZone);
+        setTimeZonePreference(prevMode, prevTimeZone);
+      }
+    } catch {
+      setTimeZoneMode(prevMode);
+      setTimeZone(prevTimeZone);
+      setTimeZonePreference(prevMode, prevTimeZone);
+    } finally {
+      setSavingTimeZone(false);
     }
   }
 
@@ -208,7 +219,7 @@ export default function DisplaySettingsPage() {
     <div className="space-y-5">
       <div>
         <h2 className="text-sm font-semibold text-slate-800">显示与应用设置</h2>
-        <p className="mt-1 text-xs text-slate-500">把登录保留、账簿切换和侧边栏行为集中放这里管理。</p>
+        <p className="mt-1 text-xs text-slate-500">管理显示密度、颜色、时区和侧边栏行为。</p>
       </div>
 
       {/* --- 账簿与账户 --- */}
@@ -251,48 +262,6 @@ export default function DisplaySettingsPage() {
               </div>
             </div>
           )}
-          <div className="flex items-center gap-2">
-            <a
-              href="/login"
-              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
-            >
-              重新登录
-            </a>
-            <a
-              href="/login?reset=1"
-              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-500 hover:text-blue-700 hover:border-blue-200 flex items-center gap-1.5"
-            >
-              找回密码
-            </a>
-          </div>
-        </div>
-      </section>
-
-      {/* --- 登录与会话 --- */}
-      <section className="panel-surface overflow-hidden">
-        <div className="panel-header">
-          <div>
-            <div className="text-sm font-medium text-slate-800">登录与会话</div>
-            <div className="mt-1 text-xs text-slate-500">控制桌面端重新打开后是否还需要重新登录。</div>
-          </div>
-        </div>
-        <div className="space-y-4 p-4">
-          <div className="grid gap-2 sm:max-w-xs">
-            <label className="form-label">登录保留时长</label>
-            <select
-              value={sessionDays}
-              onChange={(e) => saveSessionDays(Number(e.target.value))}
-              disabled={savingSession}
-              className="form-input"
-            >
-              {SESSION_DAY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            <p className="text-xs text-slate-500">
-              当前设备会尽量在这段时间内保持登录。退出登录后不会自动恢复。
-            </p>
-          </div>
         </div>
       </section>
 
@@ -405,6 +374,51 @@ export default function DisplaySettingsPage() {
               只影响页面显示；数据库仍保留原始精度，计算不会因为这里减少小数位而丢失。
             </p>
           </div>
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">时区</div>
+            <div className="mt-1 text-xs text-slate-500">控制页面上时间和版本信息的显示时区。</div>
+          </div>
+        </div>
+        <div className="space-y-4 p-4">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => saveTimeZone("system", timeZone)}
+              disabled={savingTimeZone}
+              className={`segment-button h-9 px-4 ${timeZoneMode === "system" ? "segment-button-active font-medium" : ""}`}
+            >
+              跟随系统
+            </button>
+            <button
+              type="button"
+              onClick={() => saveTimeZone("specified", timeZone)}
+              disabled={savingTimeZone}
+              className={`segment-button h-9 px-4 ${timeZoneMode === "specified" ? "segment-button-active font-medium" : ""}`}
+            >
+              指定时区
+            </button>
+          </div>
+
+          {timeZoneMode === "specified" ? (
+            <div className="grid gap-2 sm:max-w-sm">
+              <label className="form-label">时区</label>
+              <select
+                value={timeZone}
+                onChange={(e) => saveTimeZone("specified", e.target.value)}
+                disabled={savingTimeZone}
+                className="form-input"
+              >
+                {TIME_ZONE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
       </section>
     </div>

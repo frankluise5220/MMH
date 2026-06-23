@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Download, Loader2, RefreshCw, XCircle } from "lucide-react";
+import {
+  APP_PREFS_EVENT,
+  getTimeZoneModePreference,
+  getTimeZonePreference,
+  type TimeZoneMode,
+} from "@/lib/client/appPreferences";
 
 type VersionInfo = {
   ok: boolean;
@@ -66,12 +72,11 @@ type ImageSpeedResult = {
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
 const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取软件镜像", "重启服务"];
 
-function formatVersionDate(value?: string) {
+function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
+  const options: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -79,7 +84,9 @@ function formatVersionDate(value?: string) {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
-  }).format(date).replace(/\//g, "-");
+  };
+  if (timeZoneMode === "specified") options.timeZone = timeZone;
+  return new Intl.DateTimeFormat("zh-CN", options).format(date).replace(/\//g, "-");
 }
 
 export default function SystemUpdatePage() {
@@ -99,6 +106,8 @@ export default function SystemUpdatePage() {
   const [imageSourceMessage, setImageSourceMessage] = useState("");
   const [testingImageSource, setTestingImageSource] = useState(false);
   const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
+  const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
+  const [timeZone, setTimeZone] = useState("Asia/Shanghai");
 
   const loadVersionInfo = useCallback(async () => {
     setLoadingVersion(true);
@@ -123,6 +132,16 @@ export default function SystemUpdatePage() {
   useEffect(() => {
     loadVersionInfo();
   }, [loadVersionInfo]);
+
+  useEffect(() => {
+    function syncTimeZonePreference() {
+      setTimeZoneMode(getTimeZoneModePreference());
+      setTimeZone(getTimeZonePreference());
+    }
+    syncTimeZonePreference();
+    window.addEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
+  }, []);
 
   function initSteps() {
     return UPDATE_STEPS.map((label) => ({ label, status: "pending" as StepStatus, output: "" }));
@@ -311,10 +330,10 @@ export default function SystemUpdatePage() {
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
-  const currentVersionText = [versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate)]
+  const currentVersionText = [versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate, timeZoneMode, timeZone)]
     .filter(Boolean)
     .join(" · ");
-  const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate)]
+  const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate, timeZoneMode, timeZone)]
     .filter(Boolean)
     .join(" · ");
   const updateStatusText = needsUpdate

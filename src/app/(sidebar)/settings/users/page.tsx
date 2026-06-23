@@ -1,6 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import {
+  getAiPanelEnabledPreference,
+  setAiPanelEnabledPreference,
+  setSessionDaysPreference,
+} from "@/lib/client/appPreferences";
 
 type ManagedUser = {
   id: string;
@@ -11,6 +16,15 @@ type ManagedUser = {
   hasPassword?: boolean;
   createdAt?: string;
 };
+
+const SESSION_DAY_OPTIONS = [
+  { value: 1, label: "1 天" },
+  { value: 7, label: "7 天" },
+  { value: 30, label: "30 天" },
+  { value: 90, label: "90 天" },
+  { value: 180, label: "180 天" },
+  { value: 365, label: "365 天" },
+];
 
 function UserModal({
   initial,
@@ -138,8 +152,32 @@ export default function UsersPage() {
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+  const [sessionDays, setSessionDays] = useState(30);
+  const [aiPanelEnabled, setAiPanelEnabled] = useState(true);
+  const [savingSession, setSavingSession] = useState(false);
+  const [savingAiPanel, setSavingAiPanel] = useState(false);
 
-  useEffect(() => { fetchUsers(); }, []);
+  useEffect(() => {
+    fetchUsers();
+    fetch("/api/v1/settings/app-preferences")
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok && Number.isFinite(Number(d.sessionDays))) {
+          const next = Number(d.sessionDays);
+          setSessionDays(next);
+          setSessionDaysPreference(next);
+        }
+        if (d.ok && typeof d.aiPanelEnabled === "boolean") {
+          setAiPanelEnabled(d.aiPanelEnabled);
+          setAiPanelEnabledPreference(d.aiPanelEnabled);
+        } else {
+          setAiPanelEnabled(getAiPanelEnabledPreference());
+        }
+      })
+      .catch(() => {
+        setAiPanelEnabled(getAiPanelEnabledPreference());
+      });
+  }, []);
 
   async function fetchUsers() {
     try {
@@ -159,7 +197,7 @@ export default function UsersPage() {
         const hint = "ok" in data ? (data.error || `请求失败（${res.status}）`) : `请求失败（${res.status}）`;
         setLoadError(hint);
       }
-    } catch (error) {
+    } catch {
       setUsers([]);
       setLoadError("请求失败（网络或服务异常）");
     }
@@ -194,6 +232,54 @@ export default function UsersPage() {
       if (result.ok) await fetchUsers();
       else window.alert(result.error || "删除失败");
     } catch { window.alert("删除失败"); }
+  }
+
+  async function saveSessionDays(next: number) {
+    const prev = sessionDays;
+    setSessionDays(next);
+    setSessionDaysPreference(next);
+    setSavingSession(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionDays: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSessionDays(prev);
+        setSessionDaysPreference(prev);
+      }
+    } catch {
+      setSessionDays(prev);
+      setSessionDaysPreference(prev);
+    } finally {
+      setSavingSession(false);
+    }
+  }
+
+  async function saveAiPanelEnabled(next: boolean) {
+    const prev = aiPanelEnabled;
+    setAiPanelEnabled(next);
+    setAiPanelEnabledPreference(next);
+    setSavingAiPanel(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiPanelEnabled: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setAiPanelEnabled(prev);
+        setAiPanelEnabledPreference(prev);
+      }
+    } catch {
+      setAiPanelEnabled(prev);
+      setAiPanelEnabledPreference(prev);
+    } finally {
+      setSavingAiPanel(false);
+    }
   }
 
   return (
@@ -239,6 +325,68 @@ export default function UsersPage() {
           <span>暂无用户</span>
         </div>
       )}
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">登录</div>
+            <div className="mt-1 text-xs text-slate-500">控制当前设备重新打开后是否需要重新登录。</div>
+          </div>
+        </div>
+        <div className="space-y-4 p-4">
+          <div className="grid gap-2 sm:max-w-xs">
+            <label className="form-label">登录保留时长</label>
+            <select
+              value={sessionDays}
+              onChange={(e) => saveSessionDays(Number(e.target.value))}
+              disabled={savingSession}
+              className="form-input"
+            >
+              {SESSION_DAY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href="/login"
+              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+            >
+              重新登录
+            </a>
+            <a
+              href="/login?reset=1"
+              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-500 hover:text-blue-700 hover:border-blue-200 flex items-center gap-1.5"
+            >
+              找回密码
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">对话</div>
+            <div className="mt-1 text-xs text-slate-500">控制右侧记账助手是否显示。</div>
+          </div>
+        </div>
+        <div className="p-4">
+          <label className="flex items-center justify-between rounded-[10px] border border-slate-200 bg-white px-3 py-3">
+            <div>
+              <div className="text-sm font-medium text-slate-800">启用记账助手</div>
+              <div className="mt-1 text-xs text-slate-500">关闭后不显示右侧 AI 对话面板。</div>
+            </div>
+            <input
+              type="checkbox"
+              checked={aiPanelEnabled}
+              disabled={savingAiPanel}
+              onChange={(e) => saveAiPanelEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            />
+          </label>
+        </div>
+      </section>
 
       {showModal && (
         <UserModal

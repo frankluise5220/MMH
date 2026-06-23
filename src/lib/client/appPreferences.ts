@@ -2,21 +2,29 @@
 
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
+export const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
+export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
+export const TIME_ZONE_COOKIE = "mmh_time_zone";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 
 export type SidebarGroupMode = "kind" | "institution";
+export type TimeZoneMode = "system" | "specified";
 
 export type AppPreferencesSnapshot = {
   sessionDays: number;
   fundUnitsDecimals: number;
+  aiPanelEnabled: boolean;
+  timeZoneMode: TimeZoneMode;
+  timeZone: string;
   sidebarGroupBy: SidebarGroupMode;
   sidebarHideZero: boolean;
 };
 
 const DEFAULT_SESSION_DAYS = 30;
 const DEFAULT_FUND_UNITS_DECIMALS = 2;
+const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
@@ -57,6 +65,34 @@ export function setFundUnitsDecimalsPreference(decimals: number) {
   emitPreferencesChanged();
 }
 
+export function getAiPanelEnabledPreference(): boolean {
+  const raw = parseCookieValue(AI_PANEL_ENABLED_COOKIE);
+  return raw === null ? true : raw === "true" || raw === "1";
+}
+
+export function setAiPanelEnabledPreference(enabled: boolean) {
+  if (typeof document === "undefined") return;
+  document.cookie = `${AI_PANEL_ENABLED_COOKIE}=${encodeURIComponent(String(enabled))}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  emitPreferencesChanged();
+}
+
+export function getTimeZoneModePreference(): TimeZoneMode {
+  return parseCookieValue(TIME_ZONE_MODE_COOKIE) === "specified" ? "specified" : "system";
+}
+
+export function getTimeZonePreference(): string {
+  return parseCookieValue(TIME_ZONE_COOKIE) || DEFAULT_TIME_ZONE;
+}
+
+export function setTimeZonePreference(mode: TimeZoneMode, timeZone: string) {
+  if (typeof document === "undefined") return;
+  const normalizedMode = mode === "specified" ? "specified" : "system";
+  const normalizedTimeZone = timeZone.trim() || DEFAULT_TIME_ZONE;
+  document.cookie = `${TIME_ZONE_MODE_COOKIE}=${encodeURIComponent(normalizedMode)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  document.cookie = `${TIME_ZONE_COOKIE}=${encodeURIComponent(normalizedTimeZone)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  emitPreferencesChanged();
+}
+
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
     return localStorage.getItem(SIDEBAR_GROUP_BY_KEY) === "institution" ? "institution" : "kind";
@@ -91,6 +127,9 @@ export function getAppPreferences(): AppPreferencesSnapshot {
   return {
     sessionDays: getSessionDaysPreference(),
     fundUnitsDecimals: getFundUnitsDecimalsPreference(),
+    aiPanelEnabled: getAiPanelEnabledPreference(),
+    timeZoneMode: getTimeZoneModePreference(),
+    timeZone: getTimeZonePreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),
   };
