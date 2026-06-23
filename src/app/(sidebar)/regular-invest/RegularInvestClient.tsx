@@ -79,7 +79,18 @@ function formatInterval(p: RegularInvestPlanView): string {
 }
 
 function formatDate(value?: string | null): string {
-  return value ? new Date(value).toLocaleDateString() : "-";
+  const date = value ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString() : "-";
+}
+
+function toDateInput(value?: string | Date | null): string {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : "";
+}
+
+function todayInput(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function planAccountLabel(p: RegularInvestPlanView): string {
@@ -228,9 +239,9 @@ export function RegularInvestClient({
       const plan = plans.find((item) => item.id === planId);
       if (plan?.fundCode) {
         const startDate = plan.lastRunDate
-          ? new Date(plan.lastRunDate).toISOString().slice(0, 10)
-          : new Date(plan.startDate || new Date()).toISOString().slice(0, 10);
-        const endDate = new Date().toISOString().slice(0, 10);
+          ? toDateInput(plan.lastRunDate)
+          : toDateInput(plan.startDate) || todayInput();
+        const endDate = todayInput();
         try {
           await fetch("/api/v1/fund/preload-nav", {
             method: "POST",
@@ -282,12 +293,12 @@ export function RegularInvestClient({
     }
     if (!window.confirm(`确认批量执行所有 ${activePlans.length} 个执行中的定投计划吗？`)) return;
     try {
-      const endDate = new Date().toISOString().slice(0, 10);
+      const endDate = todayInput();
       for (const plan of activePlans) {
         if (!plan.fundCode) continue;
         const preloadStart = plan.lastRunDate
-          ? new Date(plan.lastRunDate).toISOString().slice(0, 10)
-          : new Date(plan.startDate || new Date()).toISOString().slice(0, 10);
+          ? toDateInput(plan.lastRunDate)
+          : toDateInput(plan.startDate) || todayInput();
         try {
           await fetch("/api/v1/fund/preload-nav", {
             method: "POST",
@@ -373,11 +384,11 @@ export function RegularInvestClient({
   function openEditRecord(record: any) {
     setEditingRecord({
       id: record.id,
-      date: record.date ? new Date(record.date).toISOString().slice(0, 10) : "",
-      fundConfirmDate: record.fundConfirmDate ? new Date(record.fundConfirmDate).toISOString().slice(0, 10) : "",
+      date: toDateInput(record.date),
+      fundConfirmDate: toDateInput(record.fundConfirmDate),
       confirmDays: selectedPlan?.confirmDays ?? 0,
-      _originalDate: record.date ? new Date(record.date).toISOString().slice(0, 10) : "",
-      _originalConfirmDate: record.fundConfirmDate ? new Date(record.fundConfirmDate).toISOString().slice(0, 10) : "",
+      _originalDate: toDateInput(record.date),
+      _originalConfirmDate: toDateInput(record.fundConfirmDate),
     });
   }
 
@@ -628,8 +639,8 @@ export function RegularInvestClient({
           intervalUnit: editPlan.intervalUnit || "month",
           intervalValue: editPlan.intervalValue || 1,
           executionDay: editPlan.executionDay ?? null,
-          startDate: editPlan.startDate ? new Date(editPlan.startDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-          endDate: editPlan.endDate ? new Date(editPlan.endDate).toISOString().slice(0, 10) : null,
+          startDate: toDateInput(editPlan.startDate) || todayInput(),
+          endDate: toDateInput(editPlan.endDate) || null,
           totalRuns: editPlan.totalRuns ?? null,
           cashAccountId: editPlan.cashAccountId ?? null,
           feeRate: editPlan.feeRate ?? null,

@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     // Batch-check already-run-today
     const fundCodeSet = new Set(plansToRun.map(p => p.fundCode));
     const alreadyRunToday = await prisma.txRecord.findMany({
-      where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", deletedAt: null, date: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") } },
+      where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", date: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") } },
       select: { fundCode: true, toAccountId: true },
     });
     const runTodaySet = new Set(alreadyRunToday.map(r => `${r.fundCode}|${r.toAccountId}`));
@@ -206,10 +206,7 @@ export async function POST(req: NextRequest) {
         const e = execs[i];
         const navCheck = navChecks[i];
         const sgzt = navCheck?.sgzt ?? "";
-        const purchaseLimit = navCheck?.purchaseLimit ?? null;
-        const actualBuy = purchaseLimit ? Math.min(e.amountNum, purchaseLimit) : e.amountNum;
-        const excess = purchaseLimit ? e.amountNum - actualBuy : 0;
-        const feeAmount = e.feeRate > 0 ? actualBuy * e.feeRate : null;
+        const feeAmount = e.feeRate > 0 ? e.amountNum * e.feeRate : null;
 
         // 跳过暂停申购 + 无净值间隙
         if (e.plan.skipPendingPreceding !== false) {
@@ -235,14 +232,11 @@ export async function POST(req: NextRequest) {
 
         if (sgzt === "暂停申购") {
           // skipPendingPreceding=false 的旧行为：生成两条对冲 buy_failed 记录
-          await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -actualBuy, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购 ${e.plan.fundCode}` } });
+          await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购 ${e.plan.fundCode}` } });
           await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
         } else {
           const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金定期定额申购 ${e.plan.fundCode}` } });
-          generatedRecords.push({ id: rec.id, fundCode: e.plan.fundCode, confirmDate: e.confirmDateStr, principal: e.principal - excess });
-          if (excess > 0) {
-            await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -excess, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_limit_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金申购超限，退回 ${excess} 元 ${e.plan.fundCode}` } });
-          }
+          generatedRecords.push({ id: rec.id, fundCode: e.plan.fundCode, confirmDate: e.confirmDateStr, principal: e.principal });
         }
 
         await tx.regularInvestPlan.update({ where: { id: e.plan.id }, data: { lastRunDate: e.runDate, nextRunDate: skipWeekend(e.nextRun), executedRuns: e.newExecutedRuns, status: e.willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active } });
@@ -314,7 +308,7 @@ export async function POST(req: NextRequest) {
       const cacheQueries = generatedRecords.map(r =>
         prisma.fundNavCache.findUnique({
           where: { fundCode_navDate: { fundCode: r.fundCode, navDate: new Date(r.confirmDate + "T00:00:00Z") } },
-          select: { nav: true },
+          select: { nav: true, name: true },
         })
       );
       const cacheResults = await Promise.all(cacheQueries);
@@ -325,7 +319,15 @@ export async function POST(req: NextRequest) {
         if (n && Number(n.nav) > 0) {
           const nav = Number(n.nav);
           const units = r.principal / nav;
-          await prisma.txRecord.update({ where: { id: r.id }, data: { fundNav: nav, fundUnits: units } });
+          const name = (n.name ?? "").trim();
+          await prisma.txRecord.update({
+            where: { id: r.id },
+            data: {
+              fundNav: nav,
+              fundUnits: units,
+              ...(name && name !== r.fundCode ? { fundName: name } : {}),
+            },
+          });
           return true;
         }
         return false;

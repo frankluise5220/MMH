@@ -13,6 +13,7 @@ type Lot = { units: number; costPerUnit: number };
 type EntryLike = {
   id: string;
   fundCode: string | null;
+  fundName: string | null;
   amount: number;
   fee: number;
   arrivalAmount: number | null;
@@ -200,7 +201,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
       deletedAt: null,
     },
     select: {
-      id: true, fundCode: true, toAccountName: true,
+      id: true, fundCode: true, fundName: true, toAccountName: true,
       amount: true, fundFee: true, fundArrivalAmount: true,
       fundUnits: true, fundSubtype: true, fundConfirmDate: true, fundArrivalDate: true,
       source: true, date: true, createdAt: true,
@@ -213,6 +214,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     .map(e => ({
       id: e.id,
       fundCode: e.fundCode,
+      fundName: e.fundName ?? null,
       amount: toNum(e.amount),
       fee: toNum(e.fundFee ?? 0),
       arrivalAmount: e.fundArrivalAmount != null ? toNum(e.fundArrivalAmount) : null,
@@ -249,8 +251,18 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     orderBy: { navDate: "desc" },
   });
   const navCacheMap = new Map<string, number>();
+  const navNameMap = new Map<string, string>();
   for (const c of navCaches) {
     if (!navCacheMap.has(c.fundCode)) navCacheMap.set(c.fundCode, toNum(c.nav));
+    const name = (c.name ?? "").trim();
+    if (name && name !== c.fundCode && !navNameMap.has(c.fundCode)) navNameMap.set(c.fundCode, name);
+  }
+
+  const entryNameMap = new Map<string, string>();
+  for (const e of [...rawEntries].reverse()) {
+    const code = (e.fundCode ?? "").trim();
+    const name = (e.fundName ?? "").trim();
+    if (code && name && name !== code && !entryNameMap.has(code)) entryNameMap.set(code, name);
   }
 
   for (const code of codesToCalc) {
@@ -270,8 +282,11 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     const existing = await prisma.fundHolding.findUnique({
       where: { accountId_fundCode: { accountId, fundCode: code } },
     });
+    const existingName = (existing?.fundName ?? "").trim();
+    const fundName = navNameMap.get(code) ?? (existingName && existingName !== code ? existingName : undefined) ?? entryNameMap.get(code) ?? null;
 
     const holdingData = {
+      fundName,
       units: rec.units,
       avgCost,
       cost: rec.cost + rec.pendingCost,

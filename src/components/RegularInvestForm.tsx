@@ -19,6 +19,16 @@ type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; er
 type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string }>;
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 
+function toDateInput(value?: string | Date | null): string {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : "";
+}
+
+function todayInput(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function stripDefaultGroupLabel(label?: string) {
   return (label ?? "").trim().replace(new RegExp(`^${"\u6240\u6709\u4eba"}\\s*[/\uFF0F]\\s*`), "");
 }
@@ -162,8 +172,8 @@ export function RegularInvestForm({
         amount: String(editData.amount || ""),
         intervalUnit: editData.intervalUnit || "day",
         intervalValue: String(editData.intervalValue || 1),
-        startDate: editData.startDate ? new Date(editData.startDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-        endDate: editData.endDate ? new Date(editData.endDate).toISOString().slice(0, 10) : "",
+        startDate: toDateInput(editData.startDate) || todayInput(),
+        endDate: toDateInput(editData.endDate),
         totalRuns: editData.totalRuns != null ? String(editData.totalRuns) : "",
         executionDay: editData.executionDay != null ? String(editData.executionDay) : "",
         cashAccountId: editData.cashAccountId || "",
@@ -180,7 +190,7 @@ export function RegularInvestForm({
       amount: "",
       intervalUnit: "day",
       intervalValue: "1",
-      startDate: new Date().toISOString().slice(0, 10),
+      startDate: todayInput(),
       endDate: "",
       totalRuns: "",
       executionDay: "",
@@ -437,9 +447,15 @@ export function RegularInvestForm({
           };
 
           const res = await apiAction(payload);
+          if (!res.ok) {
+            window.alert(res.error || res.message || "保存失败");
+            return;
+          }
           setActualOpen(false);
           resetForm();
           router.refresh();
+        } else {
+          window.alert("保存入口未配置");
         }
       }
     } catch (err) {
@@ -752,7 +768,7 @@ export function RegularInvestForm({
           </div>
         </div>
       )}
-      {nestedEntityType && createPortal(
+      {nestedEntityType && typeof document !== "undefined" ? createPortal(
         <NestedAddModal
           mode="compact"
           entityType="account"
@@ -767,7 +783,7 @@ export function RegularInvestForm({
           nestedFieldData={nestedFieldData}
         />,
         document.body,
-      )}
+      ) : null}
     </>
   );
 }

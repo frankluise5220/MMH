@@ -176,7 +176,6 @@ export async function POST(req: NextRequest) {
       where: {
         regularInvestPlanId: planId,
         source: "regular_invest",
-        deletedAt: null,
       },
       select: {
         id: true,
@@ -375,12 +374,8 @@ export async function POST(req: NextRequest) {
           feeRateRaw = await getFundFeeRate(plan.accountId, plan.fundCode, "buy");
         }
         const feeRate = feeRateRaw / 100;
-        const purchaseLimit = foundNav?.purchaseLimit ?? null;
-        const actualBuy = purchaseLimit ? Math.min(amountNum, purchaseLimit) : amountNum;
-        const excess = purchaseLimit ? amountNum - actualBuy : 0;
-
-        const feeAmount = feeRate > 0 ? actualBuy * feeRate : null;
-        const principal = feeAmount != null ? actualBuy - feeAmount : actualBuy;
+        const feeAmount = feeRate > 0 ? amountNum * feeRate : null;
+        const principal = feeAmount != null ? amountNum - feeAmount : amountNum;
 
         // 从净值缓存库查找对应确认日期的净值
         let fundNav: number | null = null;

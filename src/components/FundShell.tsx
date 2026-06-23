@@ -14,7 +14,7 @@ import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
 
-import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload, Trash2 } from "lucide-react";
+import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, Square, Trash2, Upload } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 
@@ -172,6 +172,8 @@ export function FundShell(props: Props) {
   const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
   const [regularPlans, setRegularPlans] = useState<any[]>([]);
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
+  const [regularPlanMenu, setRegularPlanMenu] = useState<any | null>(null);
+  const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
@@ -820,6 +822,47 @@ export function FundShell(props: Props) {
     return () => window.removeEventListener("mmh:fund:refresh", loadRegularPlans);
   }, [loadRegularPlans]);
 
+  const createRegularPlanViaApi = useCallback(async (payload: any) => {
+    const res = await fetch("/api/v1/regular-invest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) {
+      return { ok: false, error: data?.error || `保存失败(${res.status})` };
+    }
+    await loadRegularPlans();
+    window.dispatchEvent(new Event("mmh:fund:refresh"));
+    return { ok: true };
+  }, [loadRegularPlans]);
+
+  const updateRegularPlanStatus = useCallback(async (plan: any, action: "pause" | "resume" | "stop") => {
+    if (!plan?.id || regularPlanActionBusy) return;
+    const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "恢复" : "停止";
+    if (action === "stop" && !window.confirm(`确认停止 ${plan.fundCode} 的定投计划吗？`)) return;
+    setRegularPlanActionBusy(true);
+    try {
+      const res = await fetch("/api/v1/regular-invest", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: plan.id, action }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        window.alert(data?.error || `${actionLabel}失败`);
+        return;
+      }
+      setRegularPlanMenu(null);
+      await loadRegularPlans();
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : `${actionLabel}失败`);
+    } finally {
+      setRegularPlanActionBusy(false);
+    }
+  }, [loadRegularPlans, regularPlanActionBusy]);
+
   const regularPlanByFundCode = useMemo(() => {
     const map = new Map<string, any>();
     for (const plan of regularPlans) {
@@ -1396,7 +1439,7 @@ export function FundShell(props: Props) {
 
             {!showCleared ? (<>
 
-              <RegularInvestForm accountId={accountId} accountLabel={selectedAccountLabel} cashAccounts={cashAccounts} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} action={regularInvestFormAction} lastUsedCashAccountId={lastUsedCashAccount?.accountId} showTriggerButton={true} />
+              <RegularInvestForm accountId={accountId} accountLabel={selectedAccountLabel} cashAccounts={cashAccounts} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} apiAction={createRegularPlanViaApi} lastUsedCashAccountId={lastUsedCashAccount?.accountId} showTriggerButton={true} />
 
               {d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
 
@@ -1533,9 +1576,9 @@ export function FundShell(props: Props) {
                           {regularPlanByFundCode.get(p.fundCode) ? (
                             <button
                               type="button"
-                              onClick={() => setEditingRegularPlan(regularPlanByFundCode.get(p.fundCode))}
+                              onClick={() => setRegularPlanMenu(regularPlanByFundCode.get(p.fundCode))}
                               className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
-                              title="编辑定投计划"
+                              title="定投计划"
                             >
                               <CalendarSync className="h-3.5 w-3.5" />
                             </button>
@@ -1745,10 +1788,78 @@ export function FundShell(props: Props) {
           onOpenChange={(open) => {
             if (!open) setEditingRegularPlan(null);
           }}
-          action={regularInvestFormAction}
-          submitMethod="serverAction"
-          onSuccess={() => setEditingRegularPlan(null)}
+          submitMethod="api"
+          onSuccess={() => {
+            setEditingRegularPlan(null);
+            void loadRegularPlans();
+            window.dispatchEvent(new Event("mmh:fund:refresh"));
+          }}
         />
+      ) : null}
+
+      {regularPlanMenu ? (
+        <div className="fixed inset-0 z-[900] flex items-center justify-center bg-slate-950/30 p-4 backdrop-blur-[2px]" onClick={() => setRegularPlanMenu(null)}>
+          <div className="w-full max-w-sm overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-slate-800">{regularPlanMenu.fundCode} {regularPlanMenu.fundName || ""}</div>
+                <div className="mt-0.5 text-xs text-slate-500">定投计划</div>
+              </div>
+              <button type="button" onClick={() => setRegularPlanMenu(null)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-600 hover:bg-slate-50">
+                关闭
+              </button>
+            </div>
+            <div className="space-y-2 p-4">
+              <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
+                <div>状态：<span className="text-slate-700">{regularPlanMenu.status === "active" ? "执行中" : regularPlanMenu.status === "paused" ? "已暂停" : regularPlanMenu.status}</span></div>
+                <div>金额：<span className="text-slate-700">{formatMoney(Number(regularPlanMenu.amount ?? 0))}</span></div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 pt-2">
+                {regularPlanMenu.status === "active" ? (
+                  <button
+                    type="button"
+                    disabled={regularPlanActionBusy}
+                    onClick={() => updateRegularPlanStatus(regularPlanMenu, "pause")}
+                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 text-sm text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    <Pause className="h-4 w-4" />暂停
+                  </button>
+                ) : regularPlanMenu.status === "paused" ? (
+                  <button
+                    type="button"
+                    disabled={regularPlanActionBusy}
+                    onClick={() => updateRegularPlanStatus(regularPlanMenu, "resume")}
+                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    <Play className="h-4 w-4" />恢复
+                  </button>
+                ) : (
+                  <button type="button" disabled className="inline-flex h-9 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-sm text-slate-400">
+                    不可操作
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={regularPlanActionBusy || regularPlanMenu.status === "stopped" || regularPlanMenu.status === "completed"}
+                  onClick={() => updateRegularPlanStatus(regularPlanMenu, "stop")}
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
+                >
+                  <Square className="h-4 w-4" />停止
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingRegularPlan(regularPlanMenu);
+                  setRegularPlanMenu(null);
+                }}
+                className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 text-sm text-blue-700 hover:bg-blue-100"
+              >
+                <CalendarSync className="h-4 w-4" />编辑计划
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
 
