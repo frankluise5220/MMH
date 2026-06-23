@@ -58,6 +58,22 @@ type ImageSourceDraft = {
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
 const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取软件镜像", "重启服务"];
 
+function formatVersionDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date).replace(/\//g, "-");
+}
+
 export default function SystemUpdatePage() {
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loadingVersion, setLoadingVersion] = useState(true);
@@ -256,10 +272,10 @@ export default function SystemUpdatePage() {
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
-  const currentVersionText = [versionInfo?.localCommit, versionInfo?.localCommitDate]
+  const currentVersionText = [versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate)]
     .filter(Boolean)
     .join(" · ");
-  const availableVersionText = [versionInfo?.remoteCommit, versionInfo?.remoteCommitDate]
+  const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate)]
     .filter(Boolean)
     .join(" · ");
   const updateStatusText = needsUpdate
