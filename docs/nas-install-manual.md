@@ -1,71 +1,133 @@
-# MMH NAS 安装说明
+# MMH NAS Docker 安装与更新方向
 
-目标：把 Docker 基础镜像准备，和 MMH 项目安装/更新彻底分开。
+这份文档记录当前确定的 NAS 部署方向。MMH 在 NAS 上就是 Docker 部署；测试环境和正式环境使用同一套安装、更新步骤，只替换来源地址。
 
-适用场景：
-- 从 GitHub 发布仓库安装
-- 在普通 NAS 或 Linux 主机上运行 MMH
+## 1. 核心原则
 
-## 1. 项目来源
+NAS 上运行的是 Docker 容器，不是直接运行源码。因此 Docker 部署必须同时管理两个来源：
 
-发布安装统一使用 GitHub 仓库：
+- `REPO_URL`：代码仓库来源
+- `MMH_APP_IMAGE`：应用镜像来源
 
-```bash
-REPO_URL="https://github.com/frankluise5220/MMH.git"
-```
+测试环境和正式环境的步骤必须保持一致，区别只应该是这两个地址不同。
 
-首次安装时需要一个 `REPO_URL` 用来 `git clone`。
-安装完成后，系统更新默认跟随当前仓库的 `origin/main`，通常不需要单独再填“更新 URL”。
-
-Android 客户端下载地址：
-
-```text
-https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk
-```
-
-## 2. Docker 基础镜像准备
-
-这一步属于 Docker 环境准备，不属于 MMH 项目安装。
-
-先在 Docker 图形界面里确认下面两个镜像已经存在：
-
-- `node:20-bookworm`
-- `postgres:15-alpine`
-
-如果界面里没有，也可以用命令行准备：
+安装来源只改这一行：
 
 ```bash
-sudo docker pull node:20-bookworm
-sudo docker pull postgres:15-alpine
+MMH_SOURCE="github"
 ```
 
-如果 `postgres:15-alpine` 直连 Docker Hub 太慢，可以先拉备用镜像，再打回本地标准名：
+可选值：
+
+- `github`：正式发布源。
+- `local`：本地测试源。
+
+来源展开：
 
 ```bash
-sudo docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine
-sudo docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine postgres:15-alpine
+if [ "$MMH_SOURCE" = "github" ]; then
+  REPO_URL="https://github.com/frankluise5220/MMH.git"
+  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+fi
+
+if [ "$MMH_SOURCE" = "local" ]; then
+  REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
+  MMH_APP_IMAGE="LOCAL_IMAGE_SOURCE/mmh:latest"
+fi
 ```
 
-确认镜像：
+## 2. 更新流程
+
+无论测试环境还是正式环境，更新步骤都相同：
 
 ```bash
-sudo docker images | grep -E "node|postgres"
+cd ~/mmh
+git pull
+sudo docker compose pull app
+sudo docker compose up -d app
 ```
 
-## 3. MMH 首次安装
+含义：
 
-确认基础镜像已经准备好后，再执行这一段：
+- `git pull`：从当前 `REPO_URL` 对应的代码源更新代码。
+- `docker compose pull app`：从当前 `MMH_APP_IMAGE` 对应的镜像源拉取应用镜像。
+- `docker compose up -d app`：用新镜像重启 `app` 容器。
+
+日常更新不应该在 NAS 上运行：
+
+```bash
+sudo docker compose build --pull=false app
+```
+
+这条命令会在 NAS 本机执行依赖安装和应用构建，容易拖慢飞牛，只能作为临时调试手段。
+
+## 3. 镜像策略
+
+第一次安装或第一次切换到新的镜像源时，可能需要下载较大的基础层，这是可以接受的。
+
+后续普通更新的目标是只拉取变化的镜像层，不能每次都接近全量下载。
+
+当前策略不是优先追求首次安装最小，而是优先保证后续更新稳定、简单、下载量小。用户首次安装时对较大下载量有心理预期；日常更新时则应尽量复用已经存在的 Node、PostgreSQL、Prisma/npm 依赖等基础层。
+
+当前镜像优化方向：
+
+- 使用 Next.js `standalone` 输出，减少运行镜像里的文件和依赖。
+- 构建和运行默认都使用 `node:20-bookworm`，减少基础镜像种类。首次安装可能更大，但后续普通业务更新不会因为这个基础层已经存在而重复下载。
+- Prisma 启动依赖单独分层，避免把完整构建环境放进运行镜像。
+- 将不常变化的系统依赖、Prisma/npm 运行依赖放在更稳定的层，将经常变化的应用构建产物放在靠后的层。
+- NAS 只拉镜像并重启容器，不在本机编译应用。
+- 普通业务代码更新时，理想状态是只下载应用变化层，而不是重新下载 Node/PostgreSQL 基础层。
+
+## 4. 测试与正式发布
+
+测试链路和正式链路应保持同构。
+
+测试时：
+
+- 代码从本地/NAS 测试仓库取。
+- 镜像从测试镜像源取。
+- 命令仍然是 `git pull`、`docker compose pull app`、`docker compose up -d app`。
+
+正式发布时：
+
+- 代码从 GitHub 取。
+- 镜像从 GHCR 取。
+- 命令仍然是同一组。
+
+最终产品不依赖本地仓库。本地仓库只用于测试阶段提高迭代速度。
+
+## 5. 首次安装模板
+
+安装时先确定来源：
+
+```bash
+MMH_SOURCE="github"
+```
+
+然后执行：
 
 ```bash
 sh -c 'set -e
 APP_DIR="$HOME/mmh"
-REPO_URL="https://github.com/frankluise5220/MMH.git"
+MMH_SOURCE="github"
+
+if [ "$MMH_SOURCE" = "github" ]; then
+  REPO_URL="https://github.com/frankluise5220/MMH.git"
+  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+elif [ "$MMH_SOURCE" = "local" ]; then
+  REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
+  MMH_APP_IMAGE="LOCAL_IMAGE_SOURCE/mmh:latest"
+else
+  echo "未知 MMH_SOURCE: $MMH_SOURCE"
+  exit 1
+fi
 
 cd "$HOME"
 if [ -d "$APP_DIR" ]; then
   echo "发现旧安装目录，先删除: $APP_DIR"
   sudo rm -rf "$APP_DIR"
 fi
+
 git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
@@ -80,9 +142,9 @@ POSTGRES_USER="$POSTGRES_USER"
 POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 STATEMENT_API_KEY=""
 PRISMA_CLIENT_ENGINE_TYPE="binary"
-MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+MMH_APP_IMAGE="$MMH_APP_IMAGE"
 NODE_BUILD_IMAGE="node:20-bookworm"
-NODE_RUNTIME_IMAGE="node:20-bookworm-slim"
+NODE_RUNTIME_IMAGE="node:20-bookworm"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
@@ -91,52 +153,18 @@ sudo docker compose up -d
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
-echo "也可以安装 https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk"
 echo "数据库密码: $POSTGRES_PASSWORD"
-echo "请立即保存上面的数据库密码"
 echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-## 4. MMH 在线更新
+## 6. 本机构建只作兜底
 
-```bash
-cd ~/mmh
-git pull
-sudo docker compose pull app
-sudo docker compose up -d app
-```
-
-这会先拉取最小 Git 差异，再拉取新的 `app` 镜像层并重启容器，不再在 NAS 本机执行 `npm ci` 和 `next build`。
-第一次切到新镜像源时，可能会拉取较大的基础层；后续普通更新主要只会拉变动层。
-如果是从本地 Git 安装，页面里的系统更新会直接跟随当前仓库的 `origin/main`。
-`app` 服务默认使用的镜像是 `ghcr.io/frankluise5220/mmh:latest`，容器名仍然是 `mmh-app`。
-
-如果确实需要在 NAS 本机构建调试版本，再手动运行：
+只有在需要临时验证 Dockerfile 或镜像结构时，才在 NAS 上执行本机构建：
 
 ```bash
 sudo docker compose -f docker-compose.yml -f docker-compose.build.yml build --pull=false app
 sudo docker compose up -d app
 ```
 
-## 5. 常见问题
-
-如果重装时看到：
-
-```text
-rm: cannot remove '/home/.../mmh/node_modules/...': Permission denied
-```
-
-说明旧版本把 `node_modules` 写成了 `root` 权限，先执行：
-
-```bash
-sudo rm -rf ~/mmh
-```
-
-如果以前的 Docker 镜像代理报过类似错误：
-
-```text
-docker.fnnas.com ... 401 Unauthorized
-```
-
-说明是 Docker 默认镜像代理有问题，不是 MMH 项目代码有问题。
+这不是日常更新路径。

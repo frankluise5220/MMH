@@ -68,11 +68,21 @@ echo STATEMENT_API_KEY="%STATEMENT_API_KEY%"
 echo MMH_GIT_REMOTE="origin"
 echo MMH_GIT_BRANCH="main"
 echo PRISMA_CLIENT_ENGINE_TYPE="binary"
+echo MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+echo NODE_BUILD_IMAGE="node:20-bookworm"
+echo NODE_RUNTIME_IMAGE="node:20-bookworm"
+echo POSTGRES_IMAGE="postgres:15-alpine"
 ) > .env
 
 echo.
-echo 正在构建并启动...
-docker compose up -d --build
+echo 正在拉取镜像并启动...
+docker compose pull app
+if %ERRORLEVEL% neq 0 (
+    echo [错误] 拉取应用镜像失败，请检查网络连接
+    pause
+    exit /b 1
+)
+docker compose up -d
 
 echo.
 echo ============================================
