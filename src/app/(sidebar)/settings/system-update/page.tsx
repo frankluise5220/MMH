@@ -46,13 +46,21 @@ type ImageSourceConfig = {
   updaterImage: string;
   customAppImage: string;
   customUpdaterImage: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; appImage?: string; updaterImage?: string }>;
 };
 
 type ImageSourceDraft = {
   source: string;
   customAppImage: string;
   customUpdaterImage: string;
+};
+
+type ImageSpeedResult = {
+  source: string;
+  image?: string;
+  ok: boolean;
+  ms?: number;
+  error?: string;
 };
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
@@ -89,6 +97,8 @@ export default function SystemUpdatePage() {
   });
   const [savingImageSource, setSavingImageSource] = useState(false);
   const [imageSourceMessage, setImageSourceMessage] = useState("");
+  const [testingImageSource, setTestingImageSource] = useState(false);
+  const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
 
   const loadVersionInfo = useCallback(async () => {
     setLoadingVersion(true);
@@ -137,6 +147,35 @@ export default function SystemUpdatePage() {
       setImageSourceMessage(e instanceof Error ? e.message : "保存失败");
     } finally {
       setSavingImageSource(false);
+    }
+  }
+
+  async function testImageSourceSpeed(source?: string) {
+    setTestingImageSource(true);
+    setImageSourceMessage("");
+    try {
+      const res = await fetch("/api/v1/settings/system-update?speed=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source,
+          customAppImage: imageSourceDraft.customAppImage,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "测速失败");
+      }
+      const next = { ...imageSpeedResults };
+      for (const result of data.results as ImageSpeedResult[]) {
+        next[result.source] = result;
+      }
+      setImageSpeedResults(next);
+      setImageSourceMessage("测速完成");
+    } catch (e) {
+      setImageSourceMessage(e instanceof Error ? e.message : "测速失败");
+    } finally {
+      setTestingImageSource(false);
     }
   }
 
@@ -357,33 +396,64 @@ export default function SystemUpdatePage() {
 
             {dockerManaged && versionInfo.imageSourceConfig ? (
               <div className="border-t border-slate-100 pt-3">
-                <div className="grid gap-2 md:grid-cols-[104px_1fr_auto] md:items-center">
-                  <label className="text-slate-500" htmlFor="image-source">
-                    镜像源
-                  </label>
-                  <select
-                    id="image-source"
-                    value={imageSourceDraft.source}
-                    onChange={(event) => {
-                      setImageSourceDraft((draft) => ({ ...draft, source: event.target.value }));
-                      setImageSourceMessage("");
-                    }}
-                    disabled={savingImageSource || updating}
-                    className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
-                  >
-                    {versionInfo.imageSourceConfig.options.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={saveImageSource}
-                    disabled={savingImageSource || updating}
-                    className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
-                  >
-                    {savingImageSource ? "保存中" : "保存"}
-                  </button>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-slate-500">镜像源</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => testImageSourceSpeed()}
+                      disabled={testingImageSource || savingImageSource || updating}
+                      className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {testingImageSource ? "测速中" : "测试速度"}
+                    </button>
+                    <button
+                      onClick={saveImageSource}
+                      disabled={savingImageSource || updating}
+                      className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      {savingImageSource ? "保存中" : "保存"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-md border border-slate-200">
+                  {versionInfo.imageSourceConfig.options.map((option) => {
+                    const selected = imageSourceDraft.source === option.value;
+                    const speed = imageSpeedResults[option.value];
+                    const appImage =
+                      option.value === "custom"
+                        ? imageSourceDraft.customAppImage || option.appImage || "未填写"
+                        : option.appImage || versionInfo.imageSourceConfig?.appImage || "";
+                    return (
+                      <label
+                        key={option.value}
+                        onClick={() => {
+                          setImageSourceDraft((draft) => ({ ...draft, source: option.value }));
+                          setImageSourceMessage("");
+                        }}
+                        className={`grid cursor-pointer grid-cols-[28px_92px_1fr_88px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
+                          selected ? "bg-blue-50/60" : ""
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          readOnly
+                          disabled={savingImageSource || updating}
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                        />
+                        <span className="font-medium text-slate-800">{option.label}</span>
+                        <span className="min-w-0 truncate font-mono text-slate-500">{appImage || "自动检测可用镜像源"}</span>
+                        <span
+                          className={`text-right ${
+                            speed?.ok ? "text-emerald-600" : speed ? "text-red-600" : "text-slate-400"
+                          }`}
+                        >
+                          {speed ? (speed.ok ? `${speed.ms}ms` : "失败") : option.value === "auto" ? "自动" : "未测"}
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
 
                 {imageSourceDraft.source === "custom" ? (
@@ -408,7 +478,7 @@ export default function SystemUpdatePage() {
                 ) : null}
 
                 <div className="mt-1 min-h-4 text-xs text-slate-500">
-                  {imageSourceMessage || versionInfo.imageSourceConfig.appImage}
+                  {imageSourceMessage || "测速只检查镜像清单响应，不下载镜像层。"}
                 </div>
               </div>
             ) : null}

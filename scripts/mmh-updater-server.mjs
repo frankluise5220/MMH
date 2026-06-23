@@ -126,19 +126,23 @@ async function updateEnvValues(values) {
 async function getImageSourceConfig() {
   const env = await readEnvValues();
   const source = env.MMH_IMAGE_SOURCE || "auto";
+  const customAppImage = env.CUSTOM_MMH_APP_IMAGE || "";
+  const customUpdaterImage = env.CUSTOM_MMH_UPDATER_IMAGE || "";
   return {
     source,
     appImage: env.MMH_APP_IMAGE || "",
     updaterImage: env.MMH_UPDATER_IMAGE || "",
-    customAppImage: env.CUSTOM_MMH_APP_IMAGE || "",
-    customUpdaterImage: env.CUSTOM_MMH_UPDATER_IMAGE || "",
+    customAppImage,
+    customUpdaterImage,
     options: [
-      { value: "auto", label: "自动选择" },
-      { value: "ghcr", label: "GHCR" },
-      { value: "dockerproxy", label: "dockerproxy" },
-      { value: "nju", label: "NJU" },
-      { value: "daocloud", label: "DaoCloud" },
-      { value: "custom", label: "自定义" },
+      { value: "auto", label: "自动选择", appImage: env.MMH_APP_IMAGE || "", updaterImage: env.MMH_UPDATER_IMAGE || "" },
+      ...Object.entries(imageSources).map(([value, sourceConfig]) => ({
+        value,
+        label: sourceConfig.name,
+        appImage: sourceConfig.app,
+        updaterImage: sourceConfig.updater,
+      })),
+      { value: "custom", label: "自定义", appImage: customAppImage, updaterImage: customUpdaterImage },
     ],
   };
 }
@@ -164,6 +168,65 @@ async function saveImageSourceConfig(input) {
 
   await updateEnvValues(values);
   return getImageSourceConfig();
+}
+
+function getImageForSpeedTest(source, env, customAppImage) {
+  if (source === "custom") return customAppImage || env.CUSTOM_MMH_APP_IMAGE || "";
+  return imageSources[source]?.app || "";
+}
+
+function testImageManifest(source, image) {
+  return new Promise((resolve) => {
+    if (!image) {
+      resolve({ source, ok: false, error: "未填写镜像地址" });
+      return;
+    }
+
+    const startedAt = Date.now();
+    let stderr = "";
+    let settled = false;
+    const child = spawn("docker", ["manifest", "inspect", image], { cwd: workdir });
+    const timer = setTimeout(() => {
+      if (!settled) child.kill("SIGTERM");
+    }, 12000);
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("close", (code) => {
+      settled = true;
+      clearTimeout(timer);
+      const ms = Date.now() - startedAt;
+      resolve({
+        source,
+        image,
+        ok: code === 0,
+        ms,
+        error: code === 0 ? "" : (stderr.trim().split(/\r?\n/).slice(-1)[0] || `退出码 ${code}`),
+      });
+    });
+    child.on("error", (error) => {
+      settled = true;
+      clearTimeout(timer);
+      resolve({ source, image, ok: false, ms: Date.now() - startedAt, error: error.message });
+    });
+  });
+}
+
+async function testImageSourceSpeed(input) {
+  const env = await readEnvValues();
+  const requestedSource = String(input?.source || "").trim();
+  const customAppImage = String(input?.customAppImage || "").trim();
+  const sources = requestedSource
+    ? [requestedSource]
+    : [...Object.keys(imageSources), "custom"];
+
+  const results = [];
+  for (const source of sources) {
+    const image = getImageForSpeedTest(source, env, customAppImage);
+    results.push(await testImageManifest(source, image));
+  }
+  return results;
 }
 
 async function chooseImageSource() {
@@ -292,6 +355,26 @@ const server = http.createServer((req, res) => {
       saveImageSourceConfig(input)
         .then((config) => sendJson(res, 200, { ok: true, config }))
         .catch((error) => sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) }));
+    });
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/speed") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      let input = {};
+      try {
+        input = body ? JSON.parse(body) : {};
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid json" });
+        return;
+      }
+      testImageSourceSpeed(input)
+        .then((results) => sendJson(res, 200, { ok: true, results }))
+        .catch((error) => sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }));
     });
     return;
   }

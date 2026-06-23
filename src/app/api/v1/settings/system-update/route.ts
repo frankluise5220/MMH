@@ -45,7 +45,7 @@ type ImageSourceConfig = {
   updaterImage: string;
   customAppImage: string;
   customUpdaterImage: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; appImage?: string; updaterImage?: string }>;
 };
 
 let updateRunning = false;
@@ -323,6 +323,19 @@ export async function POST(req: NextRequest) {
       }));
     } catch (e) {
       return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存镜像源失败" }, { status: 500 });
+    }
+  }
+
+  if (searchParams.get("speed") === "1") {
+    try {
+      const body = await req.json().catch(() => ({}));
+      return NextResponse.json(await callUpdater("/speed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "测速失败" }, { status: 500 });
     }
   }
 
