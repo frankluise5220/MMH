@@ -22,17 +22,40 @@ MMH_SOURCE="github"
 - `github`：正式发布源。
 - `local`：本地测试源。
 
+镜像源只改这一行：
+
+```bash
+MMH_IMAGE_SOURCE="ghcr"
+```
+
+可选值：
+
+- `ghcr`：正式镜像源，`ghcr.io/frankluise5220/mmh:latest`。
+- `daocloud`：GHCR 代理源，`ghcr.m.daocloud.io/frankluise5220/mmh:latest`。
+- `nju`：GHCR 代理源，`ghcr.nju.edu.cn/frankluise5220/mmh:latest`。
+- `custom`：自定义镜像源，填写 `CUSTOM_MMH_APP_IMAGE`。
+
+国内网络拉 GHCR 很慢时，优先把 `MMH_IMAGE_SOURCE` 改成 `daocloud` 或 `nju`。代理源是第三方服务，可能有波动；正式源仍以 GHCR 为准。
+
 来源展开：
 
 ```bash
 if [ "$MMH_SOURCE" = "github" ]; then
   REPO_URL="https://github.com/frankluise5220/MMH.git"
-  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 fi
 
 if [ "$MMH_SOURCE" = "local" ]; then
   REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
-  MMH_APP_IMAGE="LOCAL_IMAGE_SOURCE/mmh:latest"
+fi
+
+if [ "$MMH_IMAGE_SOURCE" = "ghcr" ]; then
+  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "daocloud" ]; then
+  MMH_APP_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "nju" ]; then
+  MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "custom" ]; then
+  MMH_APP_IMAGE="$CUSTOM_MMH_APP_IMAGE"
 fi
 ```
 
@@ -134,15 +157,33 @@ APP_DIR="$INSTALL_HOME/mmh"
 
 # 只需要改这里：github 使用正式源，local 使用局域网测试源。
 MMH_SOURCE="github"
+# GHCR 慢时可改为 daocloud 或 nju；有自建仓库时改为 custom 并填写 CUSTOM_MMH_APP_IMAGE。
+MMH_IMAGE_SOURCE="ghcr"
+CUSTOM_MMH_APP_IMAGE=""
 
 if [ "$MMH_SOURCE" = "github" ]; then
   REPO_URL="https://github.com/frankluise5220/MMH.git"
-  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 elif [ "$MMH_SOURCE" = "local" ]; then
   REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
-  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 else
   echo "未知 MMH_SOURCE: $MMH_SOURCE"
+  exit 1
+fi
+
+if [ "$MMH_IMAGE_SOURCE" = "ghcr" ]; then
+  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "daocloud" ]; then
+  MMH_APP_IMAGE="ghcr.m.daocloud.io/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "nju" ]; then
+  MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
+elif [ "$MMH_IMAGE_SOURCE" = "custom" ]; then
+  if [ -z "$CUSTOM_MMH_APP_IMAGE" ]; then
+    echo "MMH_IMAGE_SOURCE=custom 时必须填写 CUSTOM_MMH_APP_IMAGE"
+    exit 1
+  fi
+  MMH_APP_IMAGE="$CUSTOM_MMH_APP_IMAGE"
+else
+  echo "未知 MMH_IMAGE_SOURCE: $MMH_IMAGE_SOURCE"
   exit 1
 fi
 
