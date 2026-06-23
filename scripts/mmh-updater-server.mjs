@@ -291,7 +291,7 @@ async function startUpdate() {
       setTimeout(() => {
         void (async () => {
           try {
-            await run(`docker compose -p ${composeProject} up -d --no-deps app`, "重启服务");
+            await run(`docker compose -p ${composeProject} up -d --no-deps --force-recreate app`, "重启服务");
             task.status = "completed";
             task.running = false;
             task.currentStep = "完成";
