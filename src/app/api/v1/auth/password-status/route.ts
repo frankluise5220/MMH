@@ -6,8 +6,62 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 import { cookies } from "next/headers";
 import { hasEmailService } from "@/lib/mail/passwordReset";
+import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
+import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 
 const LEGACY_PASSWORD_KEY = "access_password";
+
+async function ensureInitialHousehold(adminName: string) {
+  const ownerName = adminName.trim() || "admin";
+  let household = await prisma.household.findFirst({ select: { id: true }, orderBy: { createdAt: "asc" } });
+  let createdHousehold = false;
+
+  if (!household) {
+    household = await prisma.household.create({ data: { name: "默认" }, select: { id: true } });
+    createdHousehold = true;
+  }
+
+  let defaultOwner = await prisma.accountGroup.findFirst({
+    where: { householdId: household.id, name: ownerName },
+    select: { id: true },
+  });
+  if (!defaultOwner) {
+    const groupCount = await prisma.accountGroup.count({ where: { householdId: household.id } });
+    defaultOwner = await prisma.accountGroup.create({
+      data: { name: ownerName, householdId: household.id, sortOrder: groupCount },
+      select: { id: true },
+    });
+  }
+
+  const accountCount = await prisma.account.count({ where: { householdId: household.id } });
+  if (accountCount === 0) {
+    const defaultAccounts: { name: string; kind: string; investProductType?: string }[] = [
+      { name: "现金钱包", kind: "cash" },
+      { name: "银行储蓄", kind: "bank_debit" },
+      { name: "投资账户", kind: "investment", investProductType: "fund" },
+    ];
+    for (const account of defaultAccounts) {
+      await prisma.account.create({
+        data: {
+          name: account.name,
+          kind: account.kind as any,
+          groupId: defaultOwner.id,
+          investProductType: account.investProductType as any,
+          householdId: household.id,
+          isActive: true,
+          currency: "CNY",
+        },
+      });
+    }
+  }
+
+  if (createdHousehold) {
+    await createDefaultCategoriesForHousehold(prisma, household.id);
+    await createDefaultInstitutionsForHousehold(prisma, household.id);
+  }
+
+  return household.id;
+}
 
 /**
  * GET /api/v1/auth/password-status
@@ -74,20 +128,21 @@ export async function POST(req: NextRequest) {
       ? await prisma.user.findFirst({ where: { name: username } })
       : null;
 
-  // 如果没找到且指定了 username，创建首个管理员用户
+  // 如果没找到且指定了 username，首次设置时创建当前账簿管理员用户
   if (!user && username) {
     const existingUser = await prisma.user.findFirst({ select: { id: true } });
     const isFirstUser = !existingUser;
-    const isSystemUser = isFirstUser || username === "admin";
     let householdId: string | null = null;
 
-    if (!isSystemUser) {
+    if (isFirstUser) {
+      householdId = await ensureInitialHousehold(username);
+    } else if (username !== "admin") {
       const { hidFilter } = await getHouseholdScope();
       householdId = hidFilter.householdId;
     }
 
     user = await prisma.user.create({
-      data: { name: username, role: isFirstUser || isSystemUser ? "admin" : "user", isSystem: isSystemUser, householdId },
+      data: { name: username, role: isFirstUser ? "admin" : "user", isSystem: false, householdId },
     });
   }
 

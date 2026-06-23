@@ -73,9 +73,9 @@ export async function POST(req: NextRequest) {
     data: { name },
   });
 
-  // 创建默认所有人
+  // 创建默认所有人。账簿的第一个所有人默认使用管理员用户名。
   const defaultOwner = await prisma.accountGroup.create({
-    data: { name: "所有人", householdId: household.id, sortOrder: 0 },
+    data: { name: adminName, householdId: household.id, sortOrder: 0 },
   });
 
   // 创建默认账户
@@ -94,21 +94,12 @@ export async function POST(req: NextRequest) {
   await createDefaultCategoriesForHousehold(prisma, household.id);
   await createDefaultInstitutionsForHousehold(prisma, household.id);
 
-  // 为新账簿创建管理员用户（创建时即设置密码哈希）
-  // 处理同名用户冲突：追加数字后缀
-  let finalAdminName = adminName;
-  const existingUser = await prisma.user.findFirst({ where: { name: finalAdminName } });
-  if (existingUser) {
-    let suffix = 1;
-    while (await prisma.user.findFirst({ where: { name: `${adminName}_${suffix}` } })) {
-      suffix++;
-    }
-    finalAdminName = `${adminName}_${suffix}`;
-  }
+  // 为新账簿创建管理员用户（创建时即设置密码哈希）。
+  // 用户名允许在不同账簿中重复，登录时由账簿身份区分。
   const passwordHash = await hashPassword(adminPassword);
   await prisma.user.create({
     data: {
-      name: finalAdminName,
+      name: adminName,
       role: "admin",
       isSystem: false,
       passwordHash,

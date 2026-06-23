@@ -36,7 +36,21 @@ if [ "$MMH_SOURCE" = "local" ]; then
 fi
 ```
 
-## 2. 更新流程
+## 2. Docker 权限
+
+安装或更新前先确认当前 shell 有 Docker 权限：
+
+```bash
+docker ps
+```
+
+如果提示 `permission denied`，先进入 root shell，再继续执行安装或更新命令：
+
+```bash
+sudo -i
+```
+
+## 3. 更新流程
 
 无论测试环境还是正式环境，更新步骤都相同：
 
@@ -61,33 +75,19 @@ sudo docker compose build --pull=false app
 
 这条命令会在 NAS 本机执行依赖安装和应用构建，容易拖慢飞牛，只能作为临时调试手段。
 
-## 3. 基础镜像检查
+## 4. 基础镜像处理
 
-安装前可以先看 NAS 里是否已有基础镜像：
+安装前不用手动判断基础镜像是否存在。Docker 会自动复用 NAS 上已有的镜像层，缺少时再按需要拉取。
+
+需要确认或排障时再查看：
 
 ```bash
 sudo docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E 'node:20-bookworm|postgres:15-alpine'
 ```
 
-如果能看到：
+看到 `node:20-bookworm` 或 `postgres:15-alpine`，表示对应镜像已经在本机，后续安装和更新会直接复用。
 
-```text
-node:20-bookworm
-postgres:15-alpine
-```
-
-说明基础镜像已经存在，可以跳过手动准备基础镜像，直接执行安装命令。
-
-如果缺少镜像，可以先拉取：
-
-```bash
-sudo docker pull node:20-bookworm
-sudo docker pull postgres:15-alpine
-```
-
-如果网络慢，也可以不提前拉。后面的 `docker compose pull app` 和 `docker compose up -d` 会按需要拉取缺少的镜像。
-
-## 4. 镜像策略
+## 5. 镜像策略
 
 第一次安装或第一次切换到新的镜像源时，可能需要下载较大的基础层，这是可以接受的。
 
@@ -104,7 +104,7 @@ sudo docker pull postgres:15-alpine
 - NAS 只拉镜像并重启容器，不在本机编译应用。
 - 普通业务代码更新时，理想状态是只下载应用变化层，而不是重新下载 Node/PostgreSQL 基础层。
 
-## 5. 测试与正式发布
+## 6. 测试与正式发布
 
 测试链路和正式链路应保持同构。
 
@@ -122,19 +122,17 @@ sudo docker pull postgres:15-alpine
 
 最终产品不依赖本地仓库。本地仓库只用于测试阶段提高迭代速度。
 
-## 6. 首次安装模板
-
-安装时先确定来源：
-
-```bash
-MMH_SOURCE="github"
-```
-
-然后执行：
+## 7. 首次安装模板
 
 ```bash
 sh -c 'set -e
-APP_DIR="$HOME/mmh"
+INSTALL_HOME="$HOME"
+if [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  INSTALL_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+fi
+APP_DIR="$INSTALL_HOME/mmh"
+
+# 只需要改这里：github 使用正式源，local 使用局域网测试源。
 MMH_SOURCE="github"
 
 if [ "$MMH_SOURCE" = "github" ]; then
@@ -142,16 +140,33 @@ if [ "$MMH_SOURCE" = "github" ]; then
   MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 elif [ "$MMH_SOURCE" = "local" ]; then
   REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
-  MMH_APP_IMAGE="LOCAL_IMAGE_SOURCE/mmh:latest"
+  MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 else
   echo "未知 MMH_SOURCE: $MMH_SOURCE"
   exit 1
 fi
 
-cd "$HOME"
-if [ -d "$APP_DIR" ]; then
-  echo "发现旧安装目录，先删除: $APP_DIR"
-  sudo rm -rf "$APP_DIR"
+if ! docker ps >/dev/null 2>&1; then
+  echo "当前 shell 没有 Docker 权限。请先执行 sudo -i，然后重新运行安装命令。"
+  exit 1
+fi
+
+cd "$INSTALL_HOME"
+if [ -d "$APP_DIR" ] || docker ps -a --format "{{.Names}}" | grep -Eq "^(mmh-app|mmh-db)$" || docker volume inspect mmh_pgdata >/dev/null 2>&1; then
+  echo "发现已有 MMH 安装目录、容器或数据库卷。"
+  echo "安装脚本已停止，避免生成新数据库密码后连接旧数据库失败。"
+  echo ""
+  echo "如果是更新，请执行:"
+  echo "cd $APP_DIR && git pull && docker compose pull app && docker compose up -d app"
+  echo ""
+  echo "如果要清空重装，会删除 MMH 数据库数据，请先执行:"
+  echo "if [ -d $APP_DIR ]; then cd $APP_DIR && docker compose down -v; fi"
+  echo "docker rm -f mmh-app mmh-db 2>/dev/null || true"
+  echo "docker volume rm mmh_pgdata 2>/dev/null || true"
+  echo "rm -rf $APP_DIR"
+  echo ""
+  echo "清理后重新执行安装命令。"
+  exit 1
 fi
 
 git clone "$REPO_URL" "$APP_DIR"
@@ -174,8 +189,8 @@ NODE_RUNTIME_IMAGE="node:20-bookworm"
 POSTGRES_IMAGE="postgres:15-alpine"
 EOF
 
-sudo docker compose pull app
-sudo docker compose up -d
+docker compose pull app
+docker compose up -d
 
 echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
@@ -184,7 +199,7 @@ echo "数据库密码已写入 $APP_DIR/.env"
 '
 ```
 
-## 7. 本机构建只作兜底
+## 8. 本机构建只作兜底
 
 只有在需要临时验证 Dockerfile 或镜像结构时，才在 NAS 上执行本机构建：
 

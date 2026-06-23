@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 
 /**
  * 获取或创建系统级占位账户（「空白」）
@@ -26,19 +27,7 @@ export async function getOrCreatePlaceholderAccountId(householdId: string): Prom
   }
 
   // 找到当前账簿的默认所有人，确保 groupId 存在
-  let groupId: string;
-  const defaultGroup = await prisma.accountGroup.findFirst({
-    where: { householdId },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-  });
-  if (defaultGroup) {
-    groupId = defaultGroup.id;
-  } else {
-    const created = await prisma.accountGroup.create({
-      data: { name: "所有人", householdId, sortOrder: 0 },
-    });
-    groupId = created.id;
-  }
+  const groupId = await getOrCreateDefaultAccountGroupId(prisma, householdId);
 
   // 创建占位账户
   const placeholder = await prisma.account.create({

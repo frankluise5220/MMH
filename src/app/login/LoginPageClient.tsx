@@ -505,6 +505,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 type="text"
                 autoComplete="username"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder="例如：admin 或张四"
                 autoFocus
               />
             </div>

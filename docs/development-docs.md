@@ -60,23 +60,6 @@
 - 安装流程、更新流程、系统更新页面能力发生变化。
 - 发布方式从本地测试源切换或同步到 GitHub/GHCR。
 
-### `docs/local-install.md`
-
-用途：普通电脑或本地服务器上的 Docker 安装和更新说明。
-
-记录内容：
-
-- 本地 Docker 安装步骤。
-- 本地更新命令。
-- 本地安装与 NAS 安装共用的镜像策略。
-- 本地开发预览与普通安装的区别。
-
-更新时机：
-
-- `docker-compose.yml`、`Dockerfile`、`.env.example`、Windows 安装脚本发生变化。
-- 本地安装从 build 模式切换到预构建镜像模式，或更新流程发生变化。
-- 本地开发预览方式变化。
-
 ### `docs/android-release.md`
 
 用途：Android 客户端打包、安装、发布说明。
@@ -219,7 +202,6 @@
 - `docker-compose.yml`
 - `.env.example`
 - `docs/nas-install-manual.md`
-- `docs/local-install.md`
 - `scripts/install-windows.bat`
 - 系统设置里的系统更新页面
 
@@ -234,7 +216,7 @@
 发布前至少确认：
 
 - 新接口是否补了 route JSDoc 和 `docs/client-api.md`。
-- 安装或更新方式是否影响 `docs/nas-install-manual.md`、`docs/local-install.md` 或 `scripts/install-windows.bat`。
+- 安装或更新方式是否影响 `docs/nas-install-manual.md` 或 `scripts/install-windows.bat`。
 - Android 相关变更是否影响 `docs/android-release.md`。
 - 基金/投资计算变化是否更新 `docs/check-investment-data.md`。
 - 新增/编辑窗口行为变化是否更新 `docs/edit-window-checklist.md`。

@@ -112,6 +112,8 @@ settings-accounts*.png
 
 # personal docs (only nas-install-manual.md is kept)
 docs/迁移指南.md
+docs/local-install.md
+docs/local-install.private.md
 
 # personal data files
 cookies*.txt

@@ -6,6 +6,7 @@ import { isAdmin } from "@/lib/server/auth";
 import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 
 export const runtime = "nodejs";
 
@@ -52,9 +53,7 @@ export async function POST(req: NextRequest) {
     const group = requestedGroupId
       ? await prisma.accountGroup.findFirst({ where: { id: requestedGroupId, householdId } })
       : await prisma.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
-    const ensuredGroup = group ?? await prisma.accountGroup.create({
-      data: { name: "所有人", householdId, sortOrder: 0 },
-    });
+    const ensuredGroup = group ?? { id: await getOrCreateDefaultAccountGroupId(prisma, householdId) };
 
     const institution = requestedInstitutionId
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })

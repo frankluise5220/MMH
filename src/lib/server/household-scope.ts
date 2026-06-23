@@ -25,7 +25,7 @@ export function assertBelongsToHousehold(record: { householdId?: string | null }
  * 从 cookie 读取 householdId，结合当前用户身份验证权限：
  * - admin 用户：cookie 中的 householdId 只要存在即可，否则回退到 DB 第一个 household
  * - 普通用户：只允许访问自己 householdId 对应的账簿
- * 如果 DB 中没有任何 Household，自动创建默认账簿（含默认所有人、账户、分类）。
+ * 如果 DB 中没有任何 Household，自动创建默认账簿（含默认账户分组、账户、分类）。
  * 返回 HouseholdContext，householdId 始终为 string，hidFilter 始终非空。
  */
 export async function getHouseholdScope(): Promise<HouseholdContext> {
@@ -73,18 +73,8 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
   // DB 完全空 → 创建初始账簿
   const household = await prisma.household.create({ data: { name: "默认" } });
 
-  // 创建默认管理员用户
-  await prisma.user.create({
-    data: {
-      name: "管理员",
-      role: "admin",
-      isSystem: false,
-      householdId: household.id,
-    },
-  });
-
   const defaultOwner = await prisma.accountGroup.create({
-    data: { name: "所有人", householdId: household.id, sortOrder: 0 },
+    data: { name: user?.name?.trim() || "admin", householdId: household.id, sortOrder: 0 },
   });
 
   const defaultAccounts: { name: string; kind: string; groupId: string; investProductType?: string }[] = [
