@@ -1,22 +1,23 @@
-# MMH 本地 Docker 安装与更新
+# MMH 本地发布源安装与更新
 
-本文档只说明本地安装模式。项目主入口和正式发布以 GitHub 项目及 NAS Docker 安装说明为准；其他项目文档不需要关心本地环境细节。
+本文档说明如何从本地发布源安装。这里的“本地”不是指在本机 build，而是指代码源和应用镜像源都使用本地/局域网发布源。
 
-本地安装使用与正式发布相同的镜像更新思路：首次安装可以下载较大的基础层，后续更新通过预构建镜像复用稳定层。
+项目最终发布仍以 GitHub/GHCR 为准。本地发布源只用于局域网测试安装，方便验证安装和更新流程。
 
 安装来源只改这一行：
-
-```bash
-MMH_SOURCE="github"
-```
-
-需要测试本地源时改成：
 
 ```bash
 MMH_SOURCE="local"
 ```
 
-公开文档不写入具体内网地址。使用 `local` 时，在本机或测试环境把 local 预设替换为自己的 Git 地址和镜像地址。
+`local` 必须同时指向：
+
+- 本地 Git 仓库：`REPO_URL`
+- 本地应用镜像：`MMH_APP_IMAGE`
+
+如果只把 `REPO_URL` 指向本地，但 `MMH_APP_IMAGE` 仍然指向 GHCR，就不是完整的本地发布源安装。
+
+公开文档不写入具体内网地址。使用前把下面 local 预设替换为自己的 Git 地址和镜像地址。
 
 ## 1. 准备
 
@@ -38,14 +39,14 @@ git --version
 
 ```bash
 cd ~
-MMH_SOURCE="github"
+MMH_SOURCE="local"
 
 if [ "$MMH_SOURCE" = "github" ]; then
   REPO_URL="https://github.com/frankluise5220/MMH.git"
   MMH_APP_IMAGE="ghcr.io/frankluise5220/mmh:latest"
 elif [ "$MMH_SOURCE" = "local" ]; then
   REPO_URL="ssh://USER@LOCAL_NAS_HOST:PORT/path/to/MMH.git"
-  MMH_APP_IMAGE="LOCAL_IMAGE_SOURCE/mmh:latest"
+  MMH_APP_IMAGE="LOCAL_REGISTRY_HOST:PORT/mmh:latest"
 else
   echo "未知 MMH_SOURCE: $MMH_SOURCE"
   exit 1
@@ -103,6 +104,7 @@ docker compose up -d app
 - 构建和运行默认使用 `node:20-bookworm`，减少基础镜像种类。
 - PostgreSQL 镜像独立，普通应用更新不应重新下载数据库镜像。
 - 普通用户安装和更新不在本机 build 应用。
+- 本地发布源安装时，`docker compose pull app` 应从 `LOCAL_REGISTRY_HOST:PORT/mmh:latest` 这类本地镜像源拉取。
 
 日常安装/更新不要运行：
 
