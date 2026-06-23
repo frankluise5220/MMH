@@ -28,12 +28,6 @@ const TIME_ZONE_OPTIONS = [
 
 const FUND_UNITS_DECIMAL_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
 
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
 export default function DisplaySettingsPage() {
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [fundUnitsDecimals, setFundUnitsDecimals] = useState(2);
@@ -44,16 +38,8 @@ export default function DisplaySettingsPage() {
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingFundUnitsDecimals, setSavingFundUnitsDecimals] = useState(false);
-  const [currentUserName, setCurrentUserName] = useState("加载中…");
-  const [activeHousehold, setActiveHousehold] = useState<{ id: string; name: string } | null>(null);
-  const [allHouseholds, setAllHouseholds] = useState<Array<{ id: string; name: string }>>([]);
-  const [, setIsAdmin] = useState(false);
-  const [switchLoading, setSwitchLoading] = useState(false);
 
   useEffect(() => {
-    const cookieUser = getCookie("mmh_username");
-    if (cookieUser) setCurrentUserName(cookieUser);
-
     fetch("/api/v1/settings/color-scheme")
       .then(r => r.json())
       .then(d => {
@@ -76,17 +62,6 @@ export default function DisplaySettingsPage() {
         }
         if (d.ok && typeof d.timeZone === "string") {
           setTimeZone(d.timeZone);
-        }
-      })
-      .catch(() => {});
-
-    fetch("/api/v1/households")
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok) {
-          if (d.active) setActiveHousehold(d.active);
-          if (d.households) setAllHouseholds(d.households);
-          setIsAdmin(d.isAdmin === true);
         }
       })
       .catch(() => {});
@@ -179,27 +154,6 @@ export default function DisplaySettingsPage() {
     setSidebarHideZeroPreference(next);
   }
 
-  async function switchHousehold(hid: string) {
-    setSwitchLoading(true);
-    try {
-      const res = await fetch("/api/v1/households/switch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ householdId: hid }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        window.location.href = "/";
-      } else {
-        alert(data.error || "切换失败");
-      }
-    } catch {
-      alert("切换失败");
-    } finally {
-      setSwitchLoading(false);
-    }
-  }
-
   const colorOptions: { value: ColorScheme; label: string; desc: string; preview: { up: string; down: string } }[] = [
     {
       value: "red_up_green_down",
@@ -221,49 +175,6 @@ export default function DisplaySettingsPage() {
         <h2 className="text-sm font-semibold text-slate-800">显示与应用设置</h2>
         <p className="mt-1 text-xs text-slate-500">管理显示密度、颜色、时区和侧边栏行为。</p>
       </div>
-
-      {/* --- 账簿与账户 --- */}
-      <section className="panel-surface overflow-hidden">
-        <div className="panel-header">
-          <div>
-            <div className="text-sm font-medium text-slate-800">当前账簿</div>
-            <div className="mt-1 text-xs text-slate-500">当前正在管理和记录的账簿，可在此切换。</div>
-          </div>
-        </div>
-        <div className="space-y-4 p-4">
-          <div className="flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-slate-800">
-                {activeHousehold ? activeHousehold.name : "加载中…"}
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                登录账户：{currentUserName}
-              </div>
-            </div>
-          </div>
-          {allHouseholds.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium text-slate-600">切换账簿</div>
-              <div className="flex flex-wrap gap-2">
-                {allHouseholds.map(h => (
-                  <button
-                    key={h.id}
-                    disabled={switchLoading}
-                    onClick={() => switchHousehold(h.id)}
-                    className={`h-8 px-3 rounded-md border text-sm transition ${
-                      activeHousehold?.id === h.id
-                        ? "border-blue-300 bg-blue-50 text-blue-700 font-medium"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    {h.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
 
       {/* --- 侧边栏 --- */}
       <section className="panel-surface overflow-hidden">

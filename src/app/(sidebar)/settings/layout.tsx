@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Building2, Database, Mail, Palette, Settings,
+  BookOpen, Building2, Database, Mail, Palette, Settings,
   Tag, Users, Cpu, ChevronRight, Key, Globe, Hash,
   RefreshCw,
 } from "lucide-react";
 
 const navItems = [
+  { href: "/settings/ledgers", label: "账簿", icon: BookOpen },
   { href: "/settings/accounts", label: "账户", icon: Users },
   { href: "/settings/institutions", label: "机构", icon: Building2 },
   { href: "/settings/categories", label: "收支类别", icon: Tag },
