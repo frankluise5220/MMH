@@ -60,7 +60,7 @@ function authorized(req) {
   return req.headers.authorization === `Bearer ${token}`;
 }
 
-function run(command, step) {
+function run(command, step, options = {}) {
   return new Promise((resolve, reject) => {
     task.currentStep = step;
     pushLog(`开始：${step}`);
@@ -72,7 +72,13 @@ function run(command, step) {
         pushLog(`完成：${step}`);
         resolve();
       } else {
-        reject(new Error(`${step}失败，退出码 ${code}`));
+        const message = `${step}失败，退出码 ${code}`;
+        if (options.allowFailure) {
+          pushLog(`${message}，继续执行`);
+          resolve();
+          return;
+        }
+        reject(new Error(message));
       }
     });
     child.on("error", reject);
@@ -81,6 +87,15 @@ function run(command, step) {
 
 function composeCommand(args) {
   return `docker compose -p ${composeProject} -f "${composeFile}" ${args}`;
+}
+
+function syncDeployFilesCommand() {
+  return [
+    `if [ -d ${quotedWorkdir}/.git ]; then`,
+    `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true;`,
+    `git -C ${quotedWorkdir} pull --ff-only;`,
+    `else echo "未发现 .git，跳过代码仓库更新"; fi`,
+  ].join(" ");
 }
 
 async function updateEnvImageSource(appImage, updaterImage) {
@@ -288,7 +303,7 @@ async function startUpdate() {
 
   void (async () => {
     try {
-      await run(`if [ -d .git ]; then git config --global --add safe.directory ${quotedWorkdir} && git -C ${quotedWorkdir} pull --ff-only || echo "代码仓库同步失败，继续拉取镜像"; else echo "未发现 .git，跳过代码仓库更新"; fi`, "同步部署文件");
+      await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
       await chooseImageSource();
       await run(composeCommand("pull app"), "拉取应用镜像");
       task.status = "restarting";

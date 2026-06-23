@@ -49,7 +49,7 @@ services:
     container_name: mmh-updater
     restart: unless-stopped
     working_dir: /workspace
-    command: sh -lc "if [ -f /workspace/scripts/mmh-updater-server.mjs ]; then exec node /workspace/scripts/mmh-updater-server.mjs; fi; exec node /updater/mmh-updater-server.mjs"
+    command: sh -lc "git config --global --add safe.directory /workspace >/dev/null 2>&1 || true; if [ -f /updater/mmh-updater-server.mjs ]; then exec node /updater/mmh-updater-server.mjs; fi; exec node /workspace/scripts/mmh-updater-server.mjs"
     environment:
       MMH_UPDATE_TOKEN: ${MMH_UPDATE_TOKEN:-}
       MMH_WORKDIR: /workspace
