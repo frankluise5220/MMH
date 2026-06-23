@@ -268,13 +268,17 @@ export default function SystemUpdatePage() {
 
   async function pollDockerUpdate() {
     let shouldContinue = true;
+    let statusFetchFailures = 0;
+    let lastCurrentStep = "";
     while (shouldContinue) {
       try {
         const res = await fetch("/api/v1/settings/system-update?status=1", { method: "POST", cache: "no-store" });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "查询更新状态失败");
+        statusFetchFailures = 0;
         const task = data.task as { status?: string; currentStep?: string; logs?: string[]; error?: string };
         const current = task.currentStep || "";
+        lastCurrentStep = current || lastCurrentStep;
         const logs = (task.logs ?? []).slice(-8).join("\n");
         setSteps((prev) =>
           prev.map((step) => {
@@ -300,6 +304,19 @@ export default function SystemUpdatePage() {
           await new Promise((resolve) => setTimeout(resolve, 1500));
         }
       } catch (e) {
+        statusFetchFailures += 1;
+        const isRestarting = lastCurrentStep === "重启服务";
+        if (isRestarting && statusFetchFailures <= 20) {
+          setSteps((prev) =>
+            prev.map((step) =>
+              step.label === "重启服务"
+                ? { ...step, status: "running", output: "服务正在重启，正在重新连接..." }
+                : step,
+            ),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
         setUpdateDone(true);
         setUpdateOk(false);
         setUpdateError(e instanceof Error ? e.message : "查询更新状态失败");
