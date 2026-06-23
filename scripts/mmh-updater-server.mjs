@@ -281,7 +281,7 @@ async function startUpdate() {
 
   void (async () => {
     try {
-      await run('if [ -d .git ]; then git config --global --add safe.directory "$PWD" && git pull --ff-only; else echo "未发现 .git，跳过代码仓库更新"; fi', "同步部署文件");
+      await run('if [ -d .git ]; then git config --global --add safe.directory "$PWD" && git pull --ff-only || echo "代码仓库同步失败，继续拉取镜像"; else echo "未发现 .git，跳过代码仓库更新"; fi', "同步部署文件");
       await chooseImageSource();
       await run("docker compose pull app updater", "拉取软件镜像");
       task.status = "restarting";
