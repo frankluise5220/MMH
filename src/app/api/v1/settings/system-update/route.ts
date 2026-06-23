@@ -18,6 +18,7 @@ export const runtime = "nodejs";
 
 type VersionInfo = {
   localCommit: string;
+  localCommitFull: string;
   localCommitMsg: string;
   localCommitDate: string;
   remoteName: string;
@@ -69,6 +70,7 @@ function getLocalGitInfo(projectRoot: string) {
   if (envCommit) {
     return {
       localCommit: envCommit.slice(0, 7),
+      localCommitFull: envCommit,
       localCommitMsg: envCommitMsg,
       localCommitDate: envCommitDate,
       versionSource: "env" as const,
@@ -77,12 +79,13 @@ function getLocalGitInfo(projectRoot: string) {
   try {
     return {
       localCommit: execSync("git rev-parse --short HEAD", { cwd: projectRoot, encoding: "utf-8" }).trim(),
+      localCommitFull: execSync("git rev-parse HEAD", { cwd: projectRoot, encoding: "utf-8" }).trim(),
       localCommitMsg: execSync("git log -1 --format=%s", { cwd: projectRoot, encoding: "utf-8" }).trim(),
       localCommitDate: execSync("git log -1 --format=%ci", { cwd: projectRoot, encoding: "utf-8" }).trim(),
       versionSource: "git" as const,
     };
   } catch {
-    return { localCommit: "unknown", localCommitMsg: "", localCommitDate: "", versionSource: "git" as const };
+    return { localCommit: "unknown", localCommitFull: "unknown", localCommitMsg: "", localCommitDate: "", versionSource: "git" as const };
   }
 }
 
@@ -123,6 +126,27 @@ function getGitVersionInfo(projectRoot: string): VersionInfo {
   const local = getLocalGitInfo(projectRoot);
   const github = getGitHubVersionInfo(projectRoot);
   let remoteUrl = String(process.env.MMH_UPDATE_SOURCE_URL ?? "").trim();
+
+  if (isDockerEnvironment() || local.versionSource === "env") {
+    remoteUrl = remoteUrl || DEFAULT_GITHUB_REPO_URL;
+    const githubCommit = github.githubCommit;
+    const canCheck = github.githubCanCheck && githubCommit !== "unknown" && local.localCommit !== "unknown";
+    const localComparable = local.localCommitFull !== "unknown" ? local.localCommitFull.slice(0, 7) : local.localCommit;
+
+    return {
+      ...local,
+      ...github,
+      remoteName: "github",
+      remoteBranch: "main",
+      remoteUrl,
+      remoteCommit: githubCommit,
+      remoteCommitMsg: github.githubCommitMsg,
+      needsUpdate: canCheck ? localComparable !== githubCommit : false,
+      canCheckUpdate: canCheck,
+      fetchError: undefined,
+    };
+  }
+
   try {
     if (!remoteUrl) {
       remoteUrl = readCommand(projectRoot, `git remote get-url ${remote}`);

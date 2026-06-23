@@ -197,7 +197,7 @@ export default function SystemUpdatePage() {
               {needsUpdate ? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">有新版本</span> : null}
             </div>
             <div className="text-xs text-slate-500">
-              本地仓库 <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
+              {dockerManaged ? "当前镜像" : "本地仓库"} <span className="font-medium text-slate-700">{versionInfo.localCommit}</span>
               {versionInfo.localCommitMsg ? ` ${versionInfo.localCommitMsg}` : ""}
               {versionInfo.localCommitDate ? ` · ${versionInfo.localCommitDate}` : ""}
             </div>
