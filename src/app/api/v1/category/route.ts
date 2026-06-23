@@ -114,3 +114,72 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
   }
 }
+
+/**
+ * PUT /api/v1/category
+ * 修改分类名称。
+ *
+ * Body: { id: string, name: string }
+ * - 只修改名称，不改变分类类型和层级。
+ * - 同步更新已记账记录中的 categoryName，避免旧流水继续显示旧名称。
+ *
+ * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
+ */
+export async function PUT(req: NextRequest) {
+  try {
+    const { householdId } = await getHouseholdScope();
+    const body = await req.json().catch(() => ({}));
+    const id = String(body.id ?? "").trim();
+    const name = String(body.name ?? "").trim();
+
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "缺少分类 ID" }, { status: 400 });
+    }
+    if (!name || name.length > 50) {
+      return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
+    }
+    if (RESERVED_CATEGORY_NAMES.has(name)) {
+      return NextResponse.json({ ok: false, error: "支出、收入、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
+    }
+
+    const current = await prisma.category.findFirst({
+      where: { id, householdId },
+      select: { id: true, type: true, parentId: true },
+    });
+    if (!current) {
+      return NextResponse.json({ ok: false, error: "分类不存在" }, { status: 404 });
+    }
+
+    const duplicate = await prisma.category.findFirst({
+      where: {
+        householdId,
+        type: current.type,
+        parentId: current.parentId,
+        name,
+        NOT: { id },
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      return NextResponse.json({ ok: false, error: "同级分类已存在" }, { status: 409 });
+    }
+
+    const category = await prisma.$transaction(async (tx) => {
+      const updated = await tx.category.update({
+        where: { id },
+        data: { name },
+        select: { id: true, name: true, type: true, parentId: true, isSystem: true },
+      });
+      await tx.txRecord.updateMany({
+        where: { householdId, categoryId: id },
+        data: { categoryName: name },
+      });
+      return updated;
+    });
+
+    return NextResponse.json({ ok: true, category });
+  } catch (e) {
+    console.error("PUT /api/v1/category error:", e);
+    return NextResponse.json({ ok: false, error: "修改失败" }, { status: 500 });
+  }
+}

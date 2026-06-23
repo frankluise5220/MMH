@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Trash2, ChevronRight, ChevronDown, Plus } from "lucide-react";
+import { Trash2, ChevronRight, ChevronDown, Plus, Save } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 
 type Category = {
@@ -26,6 +26,9 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addingUnder, setAddingUnder] = useState<string | null>(null);
   const [addingType, setAddingType] = useState<string>("expense");
+  const [editingName, setEditingName] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const roots = categories.filter(c => c.parentId === null);
@@ -43,7 +46,13 @@ export default function SettingsCategoriesClient({ categories: initialCategories
     setExpanded(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
 
-  function select(id: string) { setSelectedId(id); setAddingUnder(null); }
+  function select(id: string) {
+    const category = categories.find(c => c.id === id);
+    setSelectedId(id);
+    setAddingUnder(null);
+    setEditingName(category?.name ?? "");
+    setEditError("");
+  }
 
   function openAdd(parentId: string | null, type?: string) {
     setAddingUnder(parentId);
@@ -90,6 +99,37 @@ export default function SettingsCategoriesClient({ categories: initialCategories
         window.alert(data.error || "删除失败");
       }
     } catch { window.alert("删除失败"); }
+  }
+
+  async function handleRename() {
+    if (!selectedCategory) return;
+    const nextName = editingName.trim();
+    if (!nextName) {
+      setEditError("请填写分类名称");
+      return;
+    }
+    if (nextName === selectedCategory.name) return;
+
+    setSavingEdit(true);
+    setEditError("");
+    try {
+      const res = await fetch("/api/v1/category", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedCategory.id, name: nextName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setEditError(data.error ?? "修改失败");
+        return;
+      }
+      setCategories(prev => prev.map(c => c.id === selectedCategory.id ? { ...c, name: data.category.name } : c));
+      setEditingName(data.category.name);
+    } catch {
+      setEditError("修改失败");
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   /** Build parent category options for EntityCreateForm — all categories with hierarchy. */
@@ -230,9 +270,34 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                 <div className="text-sm font-semibold text-slate-800">分类详情</div>
               </div>
               <div className="p-4">
-                <div className="text-xs text-slate-500 mb-1">路径：{selectedPath.join(" 〉")}</div>
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-base font-medium text-slate-800">{selectedCategory.name}</span>
+                <div className="text-xs text-slate-500 mb-3">路径：{selectedPath.join(" 〉")}</div>
+                <div className="flex items-end gap-3">
+                  <label className="min-w-0 flex-1">
+                    <span className="form-label mb-1 block">分类名称</span>
+                    <input
+                      value={editingName}
+                      onChange={(e) => {
+                        setEditingName(e.target.value);
+                        setEditError("");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void handleRename();
+                      }}
+                      className="form-input"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleRename}
+                    disabled={savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
+                    className="primary-button h-9 gap-1.5 disabled:opacity-50"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    保存
+                  </button>
+                </div>
+                {editError && <div className="mt-2 text-xs text-red-600">{editError}</div>}
+                <div className="flex items-center gap-2 mt-3">
                   <span className={`text-xs px-1.5 py-0.5 rounded-full ${
                     selectedCategory.type === "expense" ? "bg-red-50 text-red-600" :
                     selectedCategory.type === "income" ? "bg-emerald-50 text-emerald-600" :
