@@ -14,6 +14,9 @@ import {
   EyeOff,
   Landmark,
   BarChart3,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
 } from "lucide-react";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
@@ -24,6 +27,7 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
+  setSidebarCollapsedPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
 } from "@/lib/client/appPreferences";
@@ -55,6 +59,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
 
   const [groupByInstitution, setGroupByInstitution] = useState(false);
   const [hideZero, setHideZero] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [items, setItems] = useState(initialItems);
@@ -144,6 +149,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
       const prefs = getAppPreferences();
       setGroupByInstitution(prefs.sidebarGroupBy === "institution");
       setHideZero(prefs.sidebarHideZero);
+      setSidebarCollapsed(prefs.sidebarCollapsed);
     };
     applyPrefs();
     window.addEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
@@ -160,6 +166,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
     const next = !hideZero;
     setHideZero(next);
     setSidebarHideZeroPreference(next);
+  }
+
+  function toggleSidebarCollapsed() {
+    const next = !sidebarCollapsed;
+    setSidebarCollapsed(next);
+    setSidebarCollapsedPreference(next);
+    if (next) setSwitcherOpen(false);
   }
 
   function toggleSection(key: string) {
@@ -185,6 +198,12 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
     }`;
 
   const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
+  const collapsedNavCls = (active: boolean) =>
+    `flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 ${
+      active
+        ? "bg-blue-50 text-blue-600 shadow-sm"
+        : "text-slate-500 hover:bg-white hover:text-slate-900"
+    }`;
 
   // Restore and Refine Grouping logic
   const visibleItems = hideZero ? items.filter(it => it.balance !== 0) : items;
@@ -219,8 +238,74 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
     }
   }, [visibleItems, groupByInstitution]);
 
+  if (sidebarCollapsed) {
+    return (
+      <aside className="flex h-screen w-16 shrink-0 flex-col items-center overflow-hidden border-r border-slate-200/80 bg-white/84 px-2 py-3 backdrop-blur-xl transition-[width] duration-200">
+        <div className="flex shrink-0 flex-col items-center gap-2">
+          <div ref={footerAvatarRef}>
+            <button
+              onClick={() => setSwitcherOpen(!switcherOpen)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 transition-colors hover:bg-blue-100"
+              title={`${user?.name || "未登录"} · ${householdDisplayName}`}
+            >
+              <Leaf size={18} />
+            </button>
+          </div>
+          <button
+            onClick={toggleSidebarCollapsed}
+            className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
+            title="展开左侧栏"
+          >
+            <PanelLeftOpen size={18} />
+          </button>
+          <LedgerSwitcher
+            current={household}
+            anchorRef={footerAvatarRef}
+            open={switcherOpen}
+            onOpenChange={setSwitcherOpen}
+          />
+        </div>
+
+        <nav className="mt-5 flex min-h-0 flex-1 flex-col items-center gap-1">
+          <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title="概览">
+            <LayoutDashboard size={18} />
+          </Link>
+          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title="账户">
+            <Landmark size={18} />
+          </Link>
+          <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
+            <BarChart3 size={18} />
+          </Link>
+          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="负债">
+            <Landmark size={18} />
+          </Link>
+        </nav>
+
+        <div className="flex shrink-0 flex-col items-center gap-1 border-t border-slate-200 pt-3">
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="定投">
+            <CalendarClock size={18} />
+          </Link>
+          <button
+            onClick={() => setInitOpen(true)}
+            className={collapsedNavCls(false)}
+            title="初始数据"
+          >
+            <Plus size={18} />
+          </button>
+          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title="账户管理">
+            <Users size={18} />
+          </Link>
+        </div>
+
+        <NewLedgerSetupCheck />
+        <InitModal open={initOpen} onOpenChange={setInitOpen} />
+        <DailyTaskCheck />
+      </aside>
+    );
+  }
+
   return (
-    <aside className="h-screen w-72 shrink-0 overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl">
+    <aside className="h-screen w-72 shrink-0 overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl transition-[width] duration-200">
       {/* Fixed Header */}
       <div className="shrink-0 px-5 pt-5 pb-3">
         <div
@@ -245,6 +330,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
             </div>
           </div>
           <ChevronDown size={16} className={`text-slate-300 transition-all duration-200 group-hover:text-slate-500 ${switcherOpen ? "rotate-180" : ""}`} />
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleSidebarCollapsed(); }}
+            className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
+            title="收起左侧栏"
+          >
+            <PanelLeftClose size={18} />
+          </button>
           <Link href="/settings" onClick={(e) => e.stopPropagation()} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600">
             <Settings size={18} />
           </Link>
@@ -356,9 +448,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
             onClick={() => setInitOpen(true)}
             className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
           >
-            <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2v20M2 12h20" />
-            </svg>
+            <Plus size={18} />
             <span className="font-medium">初始数据</span>
           </button>
           <Link href="/settings" className={navItemCls("/settings")}>

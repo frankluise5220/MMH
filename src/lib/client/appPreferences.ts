@@ -7,6 +7,7 @@ export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
 export const TIME_ZONE_COOKIE = "mmh_time_zone";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
+export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 
 export type SidebarGroupMode = "kind" | "institution";
@@ -20,6 +21,7 @@ export type AppPreferencesSnapshot = {
   timeZone: string;
   sidebarGroupBy: SidebarGroupMode;
   sidebarHideZero: boolean;
+  sidebarCollapsed: boolean;
 };
 
 const DEFAULT_SESSION_DAYS = 30;
@@ -123,6 +125,21 @@ export function setSidebarHideZeroPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
+export function getSidebarCollapsedPreference(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setSidebarCollapsedPreference(value: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(value));
+  } catch {}
+  emitPreferencesChanged();
+}
+
 export function getAppPreferences(): AppPreferencesSnapshot {
   return {
     sessionDays: getSessionDaysPreference(),
@@ -132,5 +149,6 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     timeZone: getTimeZonePreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),
+    sidebarCollapsed: getSidebarCollapsedPreference(),
   };
 }
