@@ -22,7 +22,7 @@ MMH_SOURCE="github"
 - `github`：正式发布源。
 - `local`：本地测试源。
 
-镜像源只改这一行：
+镜像源只改这一行；安装后也可以在 Web 的系统更新页切换：
 
 ```bash
 MMH_IMAGE_SOURCE="auto"
@@ -30,14 +30,14 @@ MMH_IMAGE_SOURCE="auto"
 
 可选值：
 
-- `auto`：自动检测可用镜像源，优先使用 `ghcr.dockerproxy.net`，然后是 NJU、GHCR、DaoCloud。
+- `auto`：自动检测可用镜像源。
 - `ghcr`：正式镜像源，`ghcr.io/frankluise5220/mmh:latest`。
 - `dockerproxy`：GHCR 代理源，`ghcr.dockerproxy.net/frankluise5220/mmh:latest`。
 - `daocloud`：GHCR 代理源，`ghcr.m.daocloud.io/frankluise5220/mmh:latest`。
 - `nju`：GHCR 代理源，`ghcr.nju.edu.cn/frankluise5220/mmh:latest`。
 - `custom`：自定义镜像源，填写 `CUSTOM_MMH_APP_IMAGE`。
 
-国内网络拉 GHCR 很慢时，保持 `auto` 即可。代理源是第三方服务，可能有波动；正式源仍以 GHCR 为准。
+不同网络环境下镜像源速度不同。代理源是第三方服务，可能有波动；正式源仍以 GHCR 为准。
 
 来源展开：
 
@@ -163,9 +163,10 @@ APP_DIR="$INSTALL_HOME/mmh"
 
 # 只需要改这里：github 使用正式源，local 使用局域网测试源。
 MMH_SOURCE="github"
-# 默认 auto：优先 dockerproxy，然后 NJU、GHCR、DaoCloud。
+# 默认 auto；安装后可在 Web 系统更新页切换。
 MMH_IMAGE_SOURCE="auto"
 CUSTOM_MMH_APP_IMAGE=""
+CUSTOM_MMH_UPDATER_IMAGE=""
 
 if [ "$MMH_SOURCE" = "github" ]; then
   REPO_URL="https://github.com/frankluise5220/MMH.git"
@@ -271,7 +272,10 @@ POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 STATEMENT_API_KEY=""
 MMH_UPDATE_TOKEN="$MMH_UPDATE_TOKEN"
 MMH_UPDATER_URL="http://updater:7788"
+MMH_IMAGE_SOURCE="$MMH_IMAGE_SOURCE"
 MMH_UPDATER_IMAGE="$MMH_UPDATER_IMAGE"
+CUSTOM_MMH_APP_IMAGE="$CUSTOM_MMH_APP_IMAGE"
+CUSTOM_MMH_UPDATER_IMAGE="$CUSTOM_MMH_UPDATER_IMAGE"
 PRISMA_CLIENT_ENGINE_TYPE="binary"
 MMH_APP_IMAGE="$MMH_APP_IMAGE"
 NODE_BUILD_IMAGE="node:20-bookworm"

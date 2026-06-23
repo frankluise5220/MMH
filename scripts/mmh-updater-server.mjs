@@ -14,6 +14,15 @@ const daocloudUpdaterImage = "ghcr.m.daocloud.io/frankluise5220/mmh-updater:late
 const dockerproxyUpdaterImage = "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest";
 const njuUpdaterImage = "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest";
 
+const imageSources = {
+  ghcr: { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
+  dockerproxy: { name: "dockerproxy", app: dockerproxyImage, updater: dockerproxyUpdaterImage },
+  nju: { name: "NJU", app: njuImage, updater: njuUpdaterImage },
+  daocloud: { name: "DaoCloud", app: daocloudImage, updater: daocloudUpdaterImage },
+};
+
+const autoImageSourceOrder = ["dockerproxy", "nju", "ghcr", "daocloud"];
+
 let task = {
   running: false,
   status: "idle",
@@ -68,13 +77,38 @@ function run(command, step) {
 }
 
 async function updateEnvImageSource(appImage, updaterImage) {
+  await updateEnvValues({
+    MMH_APP_IMAGE: appImage,
+    MMH_UPDATER_IMAGE: updaterImage,
+  });
+}
+
+async function readEnvValues() {
   const envPath = `${workdir}/.env`;
   let text = "";
   try {
     text = await readFile(envPath, "utf8");
   } catch {
-    return;
+    return {};
   }
+  const values = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    values[match[1]] = match[2].trim().replace(/^"(.*)"$/, "$1");
+  }
+  return values;
+}
+
+async function updateEnvValues(values) {
+  const envPath = `${workdir}/.env`;
+  let text = "";
+  try {
+    text = await readFile(envPath, "utf8");
+  } catch {
+    text = "";
+  }
+
   const setLine = (source, key, value) => {
     const line = `${key}="${value}"`;
     if (source.match(new RegExp(`^${key}=`, "m"))) {
@@ -82,18 +116,76 @@ async function updateEnvImageSource(appImage, updaterImage) {
     }
     return `${source.trimEnd()}\n${line}\n`;
   };
-  text = setLine(text, "MMH_APP_IMAGE", appImage);
-  text = setLine(text, "MMH_UPDATER_IMAGE", updaterImage);
+
+  for (const [key, value] of Object.entries(values)) {
+    text = setLine(text, key, String(value ?? ""));
+  }
   await writeFile(envPath, text);
 }
 
+async function getImageSourceConfig() {
+  const env = await readEnvValues();
+  const source = env.MMH_IMAGE_SOURCE || "auto";
+  return {
+    source,
+    appImage: env.MMH_APP_IMAGE || "",
+    updaterImage: env.MMH_UPDATER_IMAGE || "",
+    customAppImage: env.CUSTOM_MMH_APP_IMAGE || "",
+    customUpdaterImage: env.CUSTOM_MMH_UPDATER_IMAGE || "",
+    options: [
+      { value: "auto", label: "自动选择" },
+      { value: "ghcr", label: "GHCR" },
+      { value: "dockerproxy", label: "dockerproxy" },
+      { value: "nju", label: "NJU" },
+      { value: "daocloud", label: "DaoCloud" },
+      { value: "custom", label: "自定义" },
+    ],
+  };
+}
+
+async function saveImageSourceConfig(input) {
+  const source = String(input?.source || "auto").trim();
+  const customAppImage = String(input?.customAppImage || "").trim();
+  const customUpdaterImage = String(input?.customUpdaterImage || "").trim();
+  const values = { MMH_IMAGE_SOURCE: source };
+
+  if (source === "custom") {
+    if (!customAppImage) throw new Error("自定义镜像源需要填写应用镜像地址");
+    values.CUSTOM_MMH_APP_IMAGE = customAppImage;
+    values.CUSTOM_MMH_UPDATER_IMAGE = customUpdaterImage;
+    values.MMH_APP_IMAGE = customAppImage;
+    values.MMH_UPDATER_IMAGE = customUpdaterImage || imageSources.ghcr.updater;
+  } else if (source !== "auto") {
+    const selected = imageSources[source];
+    if (!selected) throw new Error(`未知镜像源: ${source}`);
+    values.MMH_APP_IMAGE = selected.app;
+    values.MMH_UPDATER_IMAGE = selected.updater;
+  }
+
+  await updateEnvValues(values);
+  return getImageSourceConfig();
+}
+
 async function chooseImageSource() {
-  const candidates = [
-    { name: "dockerproxy", app: dockerproxyImage, updater: dockerproxyUpdaterImage },
-    { name: "NJU", app: njuImage, updater: njuUpdaterImage },
-    { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
-    { name: "DaoCloud", app: daocloudImage, updater: daocloudUpdaterImage },
-  ];
+  const config = await getImageSourceConfig();
+
+  if (config.source === "custom") {
+    if (!config.customAppImage) throw new Error("自定义镜像源需要填写应用镜像地址");
+    const updaterImage = config.customUpdaterImage || imageSources.ghcr.updater;
+    pushLog("使用自定义镜像源");
+    await updateEnvImageSource(config.customAppImage, updaterImage);
+    return;
+  }
+
+  if (config.source !== "auto") {
+    const selected = imageSources[config.source];
+    if (!selected) throw new Error(`未知镜像源: ${config.source}`);
+    pushLog(`使用 ${selected.name} 镜像源`);
+    await updateEnvImageSource(selected.app, selected.updater);
+    return;
+  }
+
+  const candidates = autoImageSourceOrder.map((key) => imageSources[key]);
 
   pushLog("检测镜像源");
   for (const source of candidates) {
@@ -173,6 +265,33 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/update") {
     startUpdate().then((started) => {
       sendJson(res, started ? 202 : 409, { ok: started, task });
+    });
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/config") {
+    getImageSourceConfig()
+      .then((config) => sendJson(res, 200, { ok: true, config }))
+      .catch((error) => sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/config") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      let input = {};
+      try {
+        input = body ? JSON.parse(body) : {};
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid json" });
+        return;
+      }
+      saveImageSourceConfig(input)
+        .then((config) => sendJson(res, 200, { ok: true, config }))
+        .catch((error) => sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) }));
     });
     return;
   }

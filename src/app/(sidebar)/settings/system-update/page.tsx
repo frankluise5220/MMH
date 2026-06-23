@@ -27,6 +27,7 @@ type VersionInfo = {
   remoteCommitDate?: string;
   needsUpdate: boolean;
   canCheckUpdate?: boolean;
+  imageSourceConfig?: ImageSourceConfig | null;
   fetchError?: string;
   error?: string;
 };
@@ -37,6 +38,21 @@ type StepState = {
   label: string;
   status: StepStatus;
   output: string;
+};
+
+type ImageSourceConfig = {
+  source: string;
+  appImage: string;
+  updaterImage: string;
+  customAppImage: string;
+  customUpdaterImage: string;
+  options: Array<{ value: string; label: string }>;
+};
+
+type ImageSourceDraft = {
+  source: string;
+  customAppImage: string;
+  customUpdaterImage: string;
 };
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
@@ -50,6 +66,13 @@ export default function SystemUpdatePage() {
   const [updateDone, setUpdateDone] = useState(false);
   const [updateOk, setUpdateOk] = useState(false);
   const [updateError, setUpdateError] = useState("");
+  const [imageSourceDraft, setImageSourceDraft] = useState<ImageSourceDraft>({
+    source: "auto",
+    customAppImage: "",
+    customUpdaterImage: "",
+  });
+  const [savingImageSource, setSavingImageSource] = useState(false);
+  const [imageSourceMessage, setImageSourceMessage] = useState("");
 
   const loadVersionInfo = useCallback(async () => {
     setLoadingVersion(true);
@@ -57,6 +80,13 @@ export default function SystemUpdatePage() {
       const res = await fetch("/api/v1/settings/system-update", { cache: "no-store" });
       const data = await res.json();
       setVersionInfo(data);
+      if (data?.imageSourceConfig) {
+        setImageSourceDraft({
+          source: data.imageSourceConfig.source || "auto",
+          customAppImage: data.imageSourceConfig.customAppImage || "",
+          customUpdaterImage: data.imageSourceConfig.customUpdaterImage || "",
+        });
+      }
     } catch {
       setVersionInfo(null);
     } finally {
@@ -70,6 +100,28 @@ export default function SystemUpdatePage() {
 
   function initSteps() {
     return UPDATE_STEPS.map((label) => ({ label, status: "pending" as StepStatus, output: "" }));
+  }
+
+  async function saveImageSource() {
+    setSavingImageSource(true);
+    setImageSourceMessage("");
+    try {
+      const res = await fetch("/api/v1/settings/system-update?config=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(imageSourceDraft),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "保存失败");
+      }
+      setVersionInfo((prev) => prev ? { ...prev, imageSourceConfig: data.config } : prev);
+      setImageSourceMessage("已保存");
+    } catch (e) {
+      setImageSourceMessage(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setSavingImageSource(false);
+    }
   }
 
   async function startUpdate() {
@@ -284,6 +336,64 @@ export default function SystemUpdatePage() {
             {!canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 获取远端版本失败：{versionInfo.fetchError || versionInfo.githubFetchError}
+              </div>
+            ) : null}
+
+            {dockerManaged && versionInfo.imageSourceConfig ? (
+              <div className="border-t border-slate-100 pt-3">
+                <div className="grid gap-2 md:grid-cols-[104px_1fr_auto] md:items-center">
+                  <label className="text-slate-500" htmlFor="image-source">
+                    镜像源
+                  </label>
+                  <select
+                    id="image-source"
+                    value={imageSourceDraft.source}
+                    onChange={(event) => {
+                      setImageSourceDraft((draft) => ({ ...draft, source: event.target.value }));
+                      setImageSourceMessage("");
+                    }}
+                    disabled={savingImageSource || updating}
+                    className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
+                  >
+                    {versionInfo.imageSourceConfig.options.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={saveImageSource}
+                    disabled={savingImageSource || updating}
+                    className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
+                  >
+                    {savingImageSource ? "保存中" : "保存"}
+                  </button>
+                </div>
+
+                {imageSourceDraft.source === "custom" ? (
+                  <div className="mt-2 grid gap-2 md:grid-cols-[104px_1fr]">
+                    <div className="text-xs text-slate-500">应用镜像</div>
+                    <input
+                      value={imageSourceDraft.customAppImage}
+                      onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customAppImage: event.target.value }))}
+                      disabled={savingImageSource || updating}
+                      className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
+                      placeholder="registry.example.com/frankluise5220/mmh:latest"
+                    />
+                    <div className="text-xs text-slate-500">更新器镜像</div>
+                    <input
+                      value={imageSourceDraft.customUpdaterImage}
+                      onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customUpdaterImage: event.target.value }))}
+                      disabled={savingImageSource || updating}
+                      className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
+                      placeholder="registry.example.com/frankluise5220/mmh-updater:latest"
+                    />
+                  </div>
+                ) : null}
+
+                <div className="mt-1 min-h-4 text-xs text-slate-500">
+                  {imageSourceMessage || versionInfo.imageSourceConfig.appImage}
+                </div>
               </div>
             ) : null}
           </div>

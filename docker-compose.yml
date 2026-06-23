@@ -52,6 +52,9 @@ services:
     environment:
       MMH_UPDATE_TOKEN: ${MMH_UPDATE_TOKEN:-}
       MMH_WORKDIR: /workspace
+      MMH_IMAGE_SOURCE: ${MMH_IMAGE_SOURCE:-auto}
+      CUSTOM_MMH_APP_IMAGE: ${CUSTOM_MMH_APP_IMAGE:-}
+      CUSTOM_MMH_UPDATER_IMAGE: ${CUSTOM_MMH_UPDATER_IMAGE:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace

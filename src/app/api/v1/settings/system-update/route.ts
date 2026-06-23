@@ -39,6 +39,15 @@ type VersionInfo = {
   versionSource: "git" | "env";
 };
 
+type ImageSourceConfig = {
+  source: string;
+  appImage: string;
+  updaterImage: string;
+  customAppImage: string;
+  customUpdaterImage: string;
+  options: Array<{ value: string; label: string }>;
+};
+
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 
@@ -250,12 +259,22 @@ export async function GET() {
     const projectRoot = process.cwd();
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
+    let imageSourceConfig: ImageSourceConfig | null = null;
+    if (isDockerEnvironment() && getUpdaterConfig().enabled) {
+      try {
+        const data = await callUpdater("/config");
+        imageSourceConfig = data.config ?? null;
+      } catch {
+        imageSourceConfig = null;
+      }
+    }
 
     return NextResponse.json({
       ok: true,
       isDocker: isDockerEnvironment(),
       updateMode: "git",
       updaterEnabled: getUpdaterConfig().enabled,
+      imageSourceConfig,
       localVersion,
       ...await getGitVersionInfo(projectRoot),
     });
@@ -288,6 +307,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(await callUpdater("/status"));
     } catch (e) {
       return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询更新状态失败" }, { status: 500 });
+    }
+  }
+
+  if (searchParams.get("config") === "1") {
+    if (req.method !== "POST") {
+      return NextResponse.json({ ok: false, error: "method not allowed" }, { status: 405 });
+    }
+    try {
+      const body = await req.json().catch(() => ({}));
+      return NextResponse.json(await callUpdater("/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存镜像源失败" }, { status: 500 });
     }
   }
 
