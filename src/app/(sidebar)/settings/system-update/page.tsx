@@ -6,6 +6,7 @@ import { CheckCircle2, Download, Loader2, RefreshCw, XCircle } from "lucide-reac
 type VersionInfo = {
   ok: boolean;
   isDocker?: boolean;
+  updaterEnabled?: boolean;
   updateMode?: "git";
   versionSource?: "git" | "env";
   localVersion: string;
@@ -37,6 +38,7 @@ type StepState = {
 };
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
+const DOCKER_UPDATE_STEPS = ["更新代码", "拉取镜像", "重启容器"];
 
 export default function SystemUpdatePage() {
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
@@ -73,7 +75,7 @@ export default function SystemUpdatePage() {
     setUpdateDone(false);
     setUpdateOk(false);
     setUpdateError("");
-    setSteps(initSteps());
+    setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((label) => ({ label, status: "pending" as StepStatus, output: "" })) : initSteps());
 
     try {
       const res = await fetch("/api/v1/settings/system-update?mode=update", { method: "POST" });
@@ -83,6 +85,11 @@ export default function SystemUpdatePage() {
         setUpdateOk(false);
         setUpdateError(errData?.error || "更新不可用");
         setUpdating(false);
+        return;
+      }
+
+      if (versionInfo?.isDocker) {
+        pollDockerUpdate();
         return;
       }
 
@@ -128,6 +135,49 @@ export default function SystemUpdatePage() {
       setUpdateOk(false);
       setUpdateError(e instanceof Error ? e.message : "网络错误");
       setUpdating(false);
+    }
+  }
+
+  async function pollDockerUpdate() {
+    let shouldContinue = true;
+    while (shouldContinue) {
+      try {
+        const res = await fetch("/api/v1/settings/system-update?status=1", { method: "POST", cache: "no-store" });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "查询更新状态失败");
+        const task = data.task as { status?: string; currentStep?: string; logs?: string[]; error?: string };
+        const current = task.currentStep || "";
+        const logs = (task.logs ?? []).slice(-8).join("\n");
+        setSteps((prev) =>
+          prev.map((step) => {
+            if (step.label === current) return { ...step, status: "running", output: logs };
+            if (DOCKER_UPDATE_STEPS.indexOf(step.label) < DOCKER_UPDATE_STEPS.indexOf(current)) return { ...step, status: "completed", output: step.output || logs };
+            return step;
+          }),
+        );
+        if (task.status === "completed") {
+          setSteps((prev) => prev.map((step) => ({ ...step, status: "completed", output: step.output || logs })));
+          setUpdateDone(true);
+          setUpdateOk(true);
+          setUpdating(false);
+          shouldContinue = false;
+          setTimeout(() => window.location.reload(), 2500);
+        } else if (task.status === "failed") {
+          setUpdateDone(true);
+          setUpdateOk(false);
+          setUpdateError(task.error || "更新失败");
+          setUpdating(false);
+          shouldContinue = false;
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      } catch (e) {
+        setUpdateDone(true);
+        setUpdateOk(false);
+        setUpdateError(e instanceof Error ? e.message : "查询更新状态失败");
+        setUpdating(false);
+        shouldContinue = false;
+      }
     }
   }
 
@@ -243,9 +293,25 @@ export default function SystemUpdatePage() {
 
       {!updating && !updateDone && versionInfo?.ok ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">
-          {dockerManaged ? (
+          {dockerManaged && needsUpdate && versionInfo.updaterEnabled ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
+                  <Download className="h-4 w-4 shrink-0" />
+                  发现新版本
+                </div>
+                <div className="mt-1 text-xs text-slate-500">将拉取新镜像并重启 app 容器。</div>
+              </div>
+              <button
+                onClick={startUpdate}
+                className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
+              >
+                更新
+              </button>
+            </div>
+          ) : dockerManaged ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              当前为 Docker 部署。网页内“更新/重建”不会在运行中的容器里执行构建，请在宿主机项目目录运行
+              当前为 Docker 部署，但未启用宿主机更新执行器。请在宿主机项目目录运行
               <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
                 git pull
                 <br />

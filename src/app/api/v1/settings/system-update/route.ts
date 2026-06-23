@@ -40,6 +40,32 @@ type VersionInfo = {
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 
+function getUpdaterConfig() {
+  const url = String(process.env.MMH_UPDATER_URL ?? "").trim();
+  const token = String(process.env.MMH_UPDATE_TOKEN ?? "").trim();
+  return { url, token, enabled: Boolean(url && token) };
+}
+
+async function callUpdater(path: string, init?: RequestInit) {
+  const { url, token } = getUpdaterConfig();
+  if (!url || !token) {
+    throw new Error("未配置宿主机更新执行器");
+  }
+  const res = await fetch(`${url.replace(/\/$/, "")}${path}`, {
+    ...init,
+    headers: {
+      ...(init?.headers ?? {}),
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => null) as any;
+  if (!res.ok) {
+    throw new Error(data?.error ?? `更新执行器请求失败：${res.status}`);
+  }
+  return data;
+}
+
 function isDockerEnvironment(): boolean {
   if (existsSync("/.dockerenv")) return true;
   try {
@@ -199,6 +225,7 @@ export async function GET() {
       ok: true,
       isDocker: isDockerEnvironment(),
       updateMode: "git",
+      updaterEnabled: getUpdaterConfig().enabled,
       localVersion,
       ...getGitVersionInfo(projectRoot),
     });
@@ -226,18 +253,23 @@ export async function POST(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
+  if (searchParams.get("status") === "1") {
+    try {
+      return NextResponse.json(await callUpdater("/status"));
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询更新状态失败" }, { status: 500 });
+    }
+  }
+
   const mode = searchParams.get("mode") === "rebuild" ? "rebuild" : "update";
   const projectRoot = process.cwd();
   const dockerMode = isDockerEnvironment();
   if (dockerMode) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "Docker 部署下不支持在运行中的应用容器内执行网页更新或重建。请在宿主机项目目录运行 git pull && sudo docker compose pull app && sudo docker compose up -d app，或使用容器管理界面拉取并重启 app 容器。",
-      },
-      { status: 400 },
-    );
+    try {
+      return NextResponse.json(await callUpdater("/update", { method: "POST" }), { status: 202 });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "启动更新失败" }, { status: 500 });
+    }
   }
   const { remote, branch, ref } = getGitTarget();
 

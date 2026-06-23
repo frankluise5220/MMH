@@ -38,3 +38,13 @@ jobs:
             APP_COMMIT_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push updater
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.updater
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/mmh-updater:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

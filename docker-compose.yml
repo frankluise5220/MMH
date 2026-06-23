@@ -32,6 +32,8 @@ services:
       MMH_GIT_REMOTE: ${MMH_GIT_REMOTE:-origin}
       MMH_GIT_BRANCH: ${MMH_GIT_BRANCH:-main}
       MMH_UPDATE_SOURCE_URL: ${MMH_UPDATE_SOURCE_URL:-https://github.com/frankluise5220/MMH.git}
+      MMH_UPDATER_URL: ${MMH_UPDATER_URL:-http://updater:7788}
+      MMH_UPDATE_TOKEN: ${MMH_UPDATE_TOKEN:-}
       NODE_ENV: production
       POSTGRES_DB: ${POSTGRES_DB:-mmh}
       POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}
@@ -40,6 +42,19 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
     depends_on:
       - postgres
+      - updater
+
+  updater:
+    image: ${MMH_UPDATER_IMAGE:-ghcr.io/frankluise5220/mmh-updater:latest}
+    container_name: mmh-updater
+    restart: unless-stopped
+    working_dir: /workspace
+    environment:
+      MMH_UPDATE_TOKEN: ${MMH_UPDATE_TOKEN:-}
+      MMH_WORKDIR: /workspace
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
 
 volumes:
   pgdata:

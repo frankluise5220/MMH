@@ -228,6 +228,7 @@ cd "$APP_DIR"
 POSTGRES_DB="mmh"
 POSTGRES_USER="mmh-fs"
 POSTGRES_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p)"
+MMH_UPDATE_TOKEN="$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p)"
 
 cat > .env <<EOF
 DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public"
@@ -235,6 +236,9 @@ POSTGRES_DB="$POSTGRES_DB"
 POSTGRES_USER="$POSTGRES_USER"
 POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 STATEMENT_API_KEY=""
+MMH_UPDATE_TOKEN="$MMH_UPDATE_TOKEN"
+MMH_UPDATER_URL="http://updater:7788"
+MMH_UPDATER_IMAGE="ghcr.io/frankluise5220/mmh-updater:latest"
 PRISMA_CLIENT_ENGINE_TYPE="binary"
 MMH_APP_IMAGE="$MMH_APP_IMAGE"
 NODE_BUILD_IMAGE="node:20-bookworm"
@@ -249,6 +253,7 @@ echo "MMH 安装完成"
 echo "访问地址: http://NAS_IP:7777/"
 echo "数据库密码: $POSTGRES_PASSWORD"
 echo "数据库密码已写入 $APP_DIR/.env"
+echo "在线更新令牌已写入 $APP_DIR/.env"
 '
 ```
 

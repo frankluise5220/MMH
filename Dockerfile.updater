@@ -1,0 +1,10 @@
+FROM docker:28-cli
+
+RUN apk add --no-cache git nodejs
+
+WORKDIR /updater
+COPY scripts/mmh-updater-server.mjs /updater/mmh-updater-server.mjs
+
+EXPOSE 7788
+
+CMD ["node", "/updater/mmh-updater-server.mjs"]
