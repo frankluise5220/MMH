@@ -1,10 +1,11 @@
 ﻿﻿﻿﻿﻿"use client";
 
-import { ChevronDown, DatabaseZap, Pencil, Plus, Trash2 } from "lucide-react";
+import { DatabaseZap, Pencil, Plus, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { HoldingPicker } from "./HoldingPicker";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   type FundSubtype,
   type ProductType,
@@ -85,6 +86,8 @@ export function InvestmentFormModal({
   allEntries,
   createAction,
   editAction,
+  openSignal,
+  hideTrigger,
 }: {
   mode: "create" | "edit";
   accountId: string; // 默认基金账户ID（新增模式）或当前账户ID（编辑模式）
@@ -97,6 +100,8 @@ export function InvestmentFormModal({
   allEntries?: { date: string; fundConfirmDate?: string | null; fundArrivalDate?: string | null; fundCode: string; fundSubtype: string; fundUnits: number | null; source: string | null }[];
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  openSignal?: number;
+  hideTrigger?: boolean;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -195,9 +200,7 @@ export function InvestmentFormModal({
   const unitsEditedRef = useRef(false);
   const amountEditedRef = useRef(false);
   const navEditedRef = useRef(false);
-  const holdingDropdownRef = useRef<HTMLDivElement>(null);
   const [holdingSearch, setHoldingSearch] = useState(initFundCode && initFundName ? `${initFundCode} ${initFundName}` : "");
-  const [showHoldingDropdown, setShowHoldingDropdown] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const dividendAmountRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef<string | null>(null);
@@ -431,15 +434,6 @@ export function InvestmentFormModal({
     window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
-  // 当前选中项的显示文本（用于判断搜索词是否只是默认选中值）
-  const selectedHoldingText = useMemo(() =>
-    fundCode && fundName ? `${fundCode} ${fundName}` : "",
-    [fundCode, fundName]
-  );
-
-  // 当搜索词等于选中项文本时视为"未主动搜索"，下拉展开显示全部
-  const isUserSearching = holdingSearch !== "" && holdingSearch !== selectedHoldingText;
-
   // 赎回模式：计算申请日期前已确认/到账的可赎回份额
   const holdingsAsOfDate = useMemo(() => {
     if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
@@ -475,29 +469,8 @@ export function InvestmentFormModal({
     }));
   }, [holdings, holdingsAsOfDate]);
 
-  const filteredHoldings = useMemo(() => {
-    const base = effectiveHoldings ?? [];
-    const filtered = isUserSearching
-      ? base.filter(h => h.fundCode.includes(holdingSearch) || h.name.includes(holdingSearch))
-      : base;
-    return [...filtered].sort((a, b) => a.fundCode.localeCompare(b.fundCode));
-  }, [effectiveHoldings, holdingSearch, isUserSearching]);
-
   const subtypeGroups = PRODUCT_SUBTYPES[productType];
   const allSubtypes = subtypeGroups.flat();
-
-  // 下拉菜单：点击外部关闭，并恢复搜索词为选中项文本
-  useEffect(() => {
-    if (!showHoldingDropdown) return;
-    function handleOutside(e: MouseEvent) {
-      if (holdingDropdownRef.current && !holdingDropdownRef.current.contains(e.target as Node)) {
-        setShowHoldingDropdown(false);
-        if (isUserSearching) setHoldingSearch(selectedHoldingText);
-      }
-    }
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, [showHoldingDropdown, isUserSearching, selectedHoldingText]);
 
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
@@ -774,21 +747,26 @@ export function InvestmentFormModal({
     if (!amountEditedRef.current && gross > 0) setAmount(gross.toFixed(2));
   }, [redeemGrossAmount, amount, fee, computedFee, subtype, mode]);
 
-  function resetForCreate(keepSubtype = false) {
+  function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
     let urlFundCode = "";
-    try {
-      const q = new URLSearchParams(window.location.search);
-      const view = q.get("view") ?? "";
-      if (view === "investfund" || view === "investmoney") urlFundCode = q.get("fundCode") ?? "";
-    } catch { /* SSR guard */ }
+    if (!options?.preferDefaults) {
+      try {
+        const q = new URLSearchParams(window.location.search);
+        const view = q.get("view") ?? "";
+        if (view === "investfund" || view === "investmoney") urlFundCode = q.get("fundCode") ?? "";
+      } catch { /* SSR guard */ }
+    }
 
     if (!keepSubtype) {
       setSubtype("buy");
       setCashAccountId("");
       setToAccountId(defaultAccountId);
-      setFundCode(urlFundCode ? urlFundCode : (defaults?.fundCode ?? ""));
-      setFundName(urlFundCode ? (defaults?.fundName ?? urlFundCode) : (defaults?.fundName ?? ""));
+      const nextFundCode = urlFundCode ? urlFundCode : (defaults?.fundCode ?? "");
+      const nextFundName = urlFundCode ? (defaults?.fundName ?? urlFundCode) : (defaults?.fundName ?? "");
+      setFundCode(nextFundCode);
+      setFundName(nextFundName);
+      setHoldingSearch(nextFundCode ? `${nextFundCode} ${nextFundName || nextFundCode}` : "");
       setFeeRate(defaults?.feeRate ?? "0");
       setFeeRateEdited(false);
     }
@@ -814,6 +792,13 @@ export function InvestmentFormModal({
     amountEditedRef.current = false;
     navEditedRef.current = false;
   }
+
+  useEffect(() => {
+    if (mode !== "create" || !openSignal) return;
+    resetForCreate(false, { preferDefaults: true });
+    setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal]);
 
   // 基金代码失焦时查询基金名称、费率、确认天数
   async function handleFundCodeBlur() {
@@ -1092,12 +1077,11 @@ export function InvestmentFormModal({
 
   return (
     <>
-      {triggerButton}
+      {!hideTrigger ? triggerButton : null}
 
-      {open && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
-          <div className="flex min-h-full items-start justify-center px-3 pb-6 pt-[8vh] sm:px-4 sm:pb-8 sm:pt-[10vh]">
-            <div className="modal-surface flex max-h-[calc(100dvh-8vh-1.5rem)] w-full max-w-md flex-col overflow-hidden sm:max-h-[calc(100dvh-10vh-2rem)]">
+      {open && typeof document !== "undefined" ? createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/28 p-3 backdrop-blur-[2px] sm:p-4">
+          <div className="modal-surface flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col overflow-hidden sm:max-h-[calc(100dvh-2rem)]">
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
                   {title}
@@ -1480,10 +1464,10 @@ export function InvestmentFormModal({
                 </div>
               ) : null}
 
-              {/* 基金代码（手工输入）+ 名称 + 持仓快捷选择 */}
+              {/* 基金代码（手工输入）+ 名称 */}
               {showCode ? (
                 <>
-                  <div className="grid grid-cols-[1fr_2fr_auto] gap-2 items-end">
+                  <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">基金代码</div>
                       <input value={fundCode} onChange={(e) => changeFundCode(e.target.value)} onBlur={handleFundCodeBlur} placeholder="6位代码"
@@ -1496,33 +1480,7 @@ export function InvestmentFormModal({
                         <input value={fundName} readOnly
                           className="form-input" />
                     </div>
-                    {effectiveHoldings && effectiveHoldings.length > 0 && (
-                      <div className="flex items-end">
-                        <button type="button" onClick={() => setShowHoldingDropdown(!showHoldingDropdown)}
-                          className="secondary-button h-9 w-9 shrink-0 px-0 text-slate-500"
-                          title="从持仓选择">
-                          <ChevronDown className="h-4 w-4" />
-                        </button>
-                      </div>
-                    )}
                   </div>
-                  {effectiveHoldings && effectiveHoldings.length > 0 && showHoldingDropdown && (
-                    <div className="relative" ref={holdingDropdownRef}>
-                      <div className="absolute z-50 w-full max-h-56 overflow-y-auto rounded-[12px] border border-slate-200/80 bg-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-                        {filteredHoldings.map(h => (
-                          <button key={h.fundCode} type="button" className="w-full border-b border-slate-100 px-3 py-2 text-left text-sm transition-colors hover:bg-blue-50/80 last:border-b-0"
-                            onClick={() => {
-                              changeFundCode(h.fundCode);
-                              setFundName(h.name);
-                              setShowHoldingDropdown(false);
-                            }}>
-                            <span className="font-medium">{h.fundCode}</span> <span className="text-slate-600">{h.name}</span>
-                            <span className="text-slate-400 ml-1">（{Number(h.units).toFixed(3)}份）</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </>
               ) : null}
 
@@ -1628,10 +1586,10 @@ export function InvestmentFormModal({
               </>
               )}
               </form>
-            </div>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
     </>
   );
 }

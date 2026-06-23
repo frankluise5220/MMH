@@ -172,6 +172,8 @@ export function FundShell(props: Props) {
   const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
   const [regularPlans, setRegularPlans] = useState<any[]>([]);
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
+  const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
+  const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
   const summaryTableViewportRef = useRef<HTMLDivElement>(null);
   const detailTableViewportRef = useRef<HTMLDivElement>(null);
@@ -715,6 +717,19 @@ export function FundShell(props: Props) {
     }));
 
     if (code) void loadFundShellData(code, showClearedRef.current);
+  }
+
+  function openPositionEntryModal(position: any) {
+    const code = String(position?.fundCode ?? "").trim();
+    if (!code) return;
+    setPositionEntryDefaults({
+      fundCode: code,
+      fundName: String(position?.name ?? code),
+      fundUnits: position?.units != null ? toNumber(position.units) : null,
+      confirmDays: d.confirmDaysMap[code] ?? selectedAccount?.defaultConfirmDays ?? undefined,
+      feeRate: d.feeRateMap[`${code}:buy`] ?? null,
+    });
+    setPositionEntryOpenSignal((value) => value + 1);
   }
 
   const shellRefreshHandler = useCallback(async () => {
@@ -1353,6 +1368,19 @@ export function FundShell(props: Props) {
         <div className="panel-header shrink-0">
 
           <div className="flex items-center gap-2">
+            <InvestmentFormModal
+              mode="create"
+              accountId={accountId}
+              accountProductType={selectedAccount?.investProductType ?? null}
+              defaults={positionEntryDefaults ?? undefined}
+              cashAccounts={cashAccounts}
+              investmentAccounts={investmentAccounts}
+              holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
+              allEntries={d.allEntries.map((e: any) => ({ date: fmtDate(e.date), fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundCode: e.fundCode, fundSubtype: e.fundSubtype, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, source: e.source ?? null }))}
+              createAction={createAction}
+              openSignal={positionEntryOpenSignal}
+              hideTrigger
+            />
 
             <div className="flex items-center gap-0.5">
 
@@ -1466,6 +1494,7 @@ export function FundShell(props: Props) {
                       key={p.fundCode}
 
                       onClick={() => switchFund(p.fundCode)}
+                      onDoubleClick={() => openPositionEntryModal(p)}
 
                       className={`cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`}
 
@@ -1499,7 +1528,7 @@ export function FundShell(props: Props) {
 
                       <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(p.historicalProfit)}`}>{formatMoney(p.historicalProfit)}</td>
 
-                      <td className="px-2 py-2 border-b border-slate-100" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-2 py-2 border-b border-slate-100" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           {regularPlanByFundCode.get(p.fundCode) ? (
                             <button
