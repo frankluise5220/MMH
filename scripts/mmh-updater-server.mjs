@@ -1,9 +1,14 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 
 const port = Number(process.env.MMH_UPDATER_PORT || 7788);
 const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
 const workdir = process.env.MMH_WORKDIR || "/workspace";
+const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
+const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
+const ghcrUpdaterImage = "ghcr.io/frankluise5220/mmh-updater:latest";
+const daocloudUpdaterImage = "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest";
 
 let task = {
   running: false,
@@ -58,6 +63,42 @@ function run(command, step) {
   });
 }
 
+async function updateEnvImageSource(appImage, updaterImage) {
+  const envPath = `${workdir}/.env`;
+  let text = "";
+  try {
+    text = await readFile(envPath, "utf8");
+  } catch {
+    return;
+  }
+  const setLine = (source, key, value) => {
+    const line = `${key}="${value}"`;
+    if (source.match(new RegExp(`^${key}=`, "m"))) {
+      return source.replace(new RegExp(`^${key}=.*$`, "m"), line);
+    }
+    return `${source.trimEnd()}\n${line}\n`;
+  };
+  text = setLine(text, "MMH_APP_IMAGE", appImage);
+  text = setLine(text, "MMH_UPDATER_IMAGE", updaterImage);
+  await writeFile(envPath, text);
+}
+
+async function chooseImageSource() {
+  pushLog("检测 GHCR 镜像源速度");
+  const result = await new Promise((resolve) => {
+    const child = spawn("sh", ["-lc", `timeout 8 docker manifest inspect ${ghcrImage} >/dev/null 2>&1`], { cwd: workdir });
+    child.on("close", (code) => resolve(code === 0));
+    child.on("error", () => resolve(false));
+  });
+  if (result) {
+    pushLog("使用 GHCR 镜像源");
+    await updateEnvImageSource(ghcrImage, ghcrUpdaterImage);
+  } else {
+    pushLog("GHCR 较慢或不可用，切换到 DaoCloud 代理源");
+    await updateEnvImageSource(daocloudImage, daocloudUpdaterImage);
+  }
+}
+
 async function startUpdate() {
   if (task.running) return false;
   task = {
@@ -73,6 +114,7 @@ async function startUpdate() {
   void (async () => {
     try {
       await run('if [ -d .git ]; then git pull --ff-only; else echo "未发现 .git，跳过代码仓库更新"; fi', "更新代码");
+      await chooseImageSource();
       await run("docker compose pull app", "拉取镜像");
       task.status = "restarting";
       task.currentStep = "重启容器";
