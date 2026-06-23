@@ -7,4 +7,5 @@ COPY scripts/mmh-updater-server.mjs /updater/mmh-updater-server.mjs
 
 EXPOSE 7788
 
+ENTRYPOINT []
 CMD ["node", "/updater/mmh-updater-server.mjs"]
