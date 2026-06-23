@@ -18,7 +18,7 @@ const typeLabel = (t: string) =>
 const typeColor = (t: string) =>
   t === "expense" ? "text-red-600" : t === "income" ? "text-emerald-600" : "text-blue-600";
 
-const TYPE_ORDER = ["expense", "income", "investment"] as const;
+const TYPE_ORDER = ["expense", "income"] as const;
 
 export default function SettingsCategoriesClient({ categories: initialCategories }: { categories: Category[] }) {
   const [categories, setCategories] = useState<Category[]>(initialCategories);

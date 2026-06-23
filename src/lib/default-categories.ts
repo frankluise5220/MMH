@@ -42,7 +42,7 @@ const categoryTypeLabels: Record<CategoryMainType, string> = {
 const categoryTypeFallbackNames: Record<CategoryMainType, string> = {
   expense: "其他支出",
   income: "其他收入",
-  investment: "其他投资",
+  investment: "投资记录",
 };
 
 export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
@@ -259,15 +259,22 @@ async function removeCategoryTypeLabelNode(
     }
   }
 
-  const fallbackId = parentId ?? await ensureFallbackCategory(writer, householdId, type);
-  const fallbackName = parentId
-    ? (await writer.category.findUnique({ where: { id: parentId }, select: { name: true } }))?.name ?? categoryTypeFallbackNames[type]
-    : categoryTypeFallbackNames[type];
+  if (type === "investment" && parentId === null) {
+    await writer.txRecord.updateMany({
+      where: { householdId, categoryId },
+      data: { categoryId: null, categoryName: null },
+    });
+  } else {
+    const fallbackId = parentId ?? await ensureFallbackCategory(writer, householdId, type);
+    const fallbackName = parentId
+      ? (await writer.category.findUnique({ where: { id: parentId }, select: { name: true } }))?.name ?? categoryTypeFallbackNames[type]
+      : categoryTypeFallbackNames[type];
 
-  await writer.txRecord.updateMany({
-    where: { householdId, categoryId },
-    data: { categoryId: fallbackId, categoryName: fallbackName },
-  });
+    await writer.txRecord.updateMany({
+      where: { householdId, categoryId },
+      data: { categoryId: fallbackId, categoryName: fallbackName },
+    });
+  }
 
   await writer.category.deleteMany({ where: { id: categoryId } });
 }

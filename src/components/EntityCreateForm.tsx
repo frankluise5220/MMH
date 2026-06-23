@@ -93,7 +93,6 @@ const INSTITUTION_TYPES = [
 const CATEGORY_TYPES = [
   { value: "expense", label: "支出" },
   { value: "income", label: "收入" },
-  { value: "investment", label: "投资" },
 ];
 
 /* ---- Cost basis method options ---- */
