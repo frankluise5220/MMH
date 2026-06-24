@@ -85,9 +85,11 @@ function filterWithGroups(options: SmartSelectOption[], search: string): SmartSe
   if (!search.trim()) return options;
   const q = search.toLowerCase();
   const matchedIds = new Set<string>();
-  // Find all matching non-header options
+  // Find all matching non-header options. Include subLabel so institution/person
+  // types such as "债权债务" can be searched directly.
   for (const o of options) {
-    if (!o.isHeader && o.label.toLowerCase().includes(q)) {
+    const haystack = `${o.label} ${o.subLabel ?? ""}`.toLowerCase();
+    if (!o.isHeader && haystack.includes(q)) {
       matchedIds.add(o.id);
     }
   }
@@ -177,6 +179,7 @@ export function SmartSelect(props: SmartSelectProps) {
 
   const hasGroups = options.some(o => o.isHeader || o.isGroup);
   const groupChildCounts = useMemo(() => buildGroupChildCounts(options), [options]);
+  const selectableOptions = useMemo(() => options.filter(o => !o.isHeader), [options]);
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -243,14 +246,14 @@ export function SmartSelect(props: SmartSelectProps) {
   }, [searchable, onCreateClick, mode, visible.length]);
 
   /* ---- Open/close ---- */
-  const handleOpenToggle = useCallback(() => {
-    if (open) {
-      setOpen(false);
-      setSearch("");
-      setShowNew(false);
-      setFocusedIndex(-1);
-      return;
-    }
+  const closeDropdown = useCallback(() => {
+    setOpen(false);
+    setSearch("");
+    setShowNew(false);
+    setFocusedIndex(-1);
+  }, []);
+
+  const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     // Initialize collapsed groups: root headers expanded, mid-level groups collapsed
     if (hasGroups) {
       setCollapsedGroups(initialCollapsedGroups(options, (value as string)));
@@ -264,12 +267,28 @@ export function SmartSelect(props: SmartSelectProps) {
 
     // Find selected item index in visible list
     if (mode === "single") {
+      if (preferredIndex === "last" && visible.length > 0) {
+        setFocusedIndex(visible.length - 1);
+        return;
+      }
+      if (preferredIndex === "first") {
+        setFocusedIndex(0);
+        return;
+      }
       const idx = visible.findIndex(o => o.id === (value as string));
       setFocusedIndex(idx >= 0 ? idx : 0);
     } else {
-      setFocusedIndex(0);
+      setFocusedIndex(preferredIndex === "last" && visible.length > 0 ? visible.length - 1 : 0);
     }
-  }, [open, visible, value, mode, calcPosition, hasGroups, options]);
+  }, [visible, value, mode, calcPosition, hasGroups, options]);
+
+  const handleOpenToggle = useCallback(() => {
+    if (open) {
+      closeDropdown();
+      return;
+    }
+    openDropdown();
+  }, [open, closeDropdown, openDropdown]);
 
   /* ---- Recalc position on scroll / resize while open ---- */
   useEffect(() => {
@@ -451,6 +470,63 @@ export function SmartSelect(props: SmartSelectProps) {
     }
   }
 
+  function handleTriggerKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (!open) {
+      if (mode === "single") {
+        const currentIndex = selectableOptions.findIndex(o => o.id === (value as string));
+        const selectByIndex = (index: number) => {
+          const next = selectableOptions[index];
+          if (next) (onChange as (id: string) => void)(next.id);
+        };
+
+        switch (e.key) {
+          case "ArrowDown":
+          case "ArrowRight": {
+            e.preventDefault();
+            if (selectableOptions.length === 0) return;
+            const nextIndex = currentIndex >= 0
+              ? (currentIndex + 1) % selectableOptions.length
+              : 0;
+            selectByIndex(nextIndex);
+            return;
+          }
+          case "ArrowUp":
+          case "ArrowLeft": {
+            e.preventDefault();
+            if (selectableOptions.length === 0) return;
+            const nextIndex = currentIndex >= 0
+              ? (currentIndex - 1 + selectableOptions.length) % selectableOptions.length
+              : selectableOptions.length - 1;
+            selectByIndex(nextIndex);
+            return;
+          }
+          case "Home":
+            e.preventDefault();
+            if (selectableOptions.length > 0) selectByIndex(0);
+            return;
+          case "End":
+            e.preventDefault();
+            if (selectableOptions.length > 0) selectByIndex(selectableOptions.length - 1);
+            return;
+        }
+      }
+
+      switch (e.key) {
+        case "Enter":
+        case " ":
+          e.preventDefault();
+          openDropdown("first");
+          return;
+        default:
+          return;
+      }
+    }
+
+    if (!searchable) {
+      handleDropdownKeyDown(e);
+    }
+  }
+
   /* ---- ARIA IDs ---- */
   const listId = `ss-list-${useId()}`;
 
@@ -522,28 +598,37 @@ export function SmartSelect(props: SmartSelectProps) {
             className="overflow-y-auto max-h-[240px]"
           >
             {visible.map((o, i) => {
-              // Root group header (isHeader) — non-selectable, collapsible
+              // Root group header (isHeader) is only a group label, never a selected value.
               if (o.isHeader) {
                 return (
                   <div
                     key={o.id}
-                    onClick={() => toggleGroup(o.id)}
-                    className={`flex h-8 w-full cursor-pointer items-center justify-between px-3 text-xs font-medium transition-colors ${
-                      i === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
+                    className={`flex h-8 w-full items-center justify-between px-3 text-xs font-medium transition-colors ${
+                      i === focusedIndex
+                          ? "bg-blue-50 text-blue-700"
+                          : "hover:bg-slate-50"
                     }`}
                     onMouseEnter={() => setFocusedIndex(i)}
                   >
-                    <span className="flex items-center gap-1 text-slate-500">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(o.id)}
+                      className="min-w-0 flex flex-1 items-center gap-1 text-left text-slate-600"
+                    >
                       {collapsedGroups.has(o.id) && !isSearching
                         ? <ChevronRight className="w-3 h-3 shrink-0" />
                         : <ChevronDown className="w-3 h-3 shrink-0" />
                       }
-                      {o.label}
-                    </span>
+                      <span className="truncate">{o.label}</span>
+                    </button>
                     {!isSearching && (
-                      <span className="shrink-0 text-[10px] text-slate-400">
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(o.id)}
+                        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-white/80 hover:text-slate-600"
+                      >
                         {groupChildCounts.get(o.id) ?? 0}
-                      </span>
+                      </button>
                     )}
                   </div>
                 );
@@ -561,6 +646,8 @@ export function SmartSelect(props: SmartSelectProps) {
                     type="button"
                     role="option"
                     aria-selected={isSelected}
+                    onClick={() => selectSingle(o.id)}
+                    onMouseEnter={() => setFocusedIndex(i)}
                     className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
                       i === focusedIndex ? "bg-blue-50" : ""
                     } ${isSelected ? "font-medium text-blue-700" : "text-slate-700"}`}
@@ -578,7 +665,6 @@ export function SmartSelect(props: SmartSelectProps) {
                     </span>
                     {/* Selectable label — click selects this item */}
                     <span
-                      onClick={() => selectSingle(o.id)}
                       className="truncate flex-1 cursor-pointer"
                     >
                       {o.label}
@@ -747,6 +833,7 @@ export function SmartSelect(props: SmartSelectProps) {
         ref={triggerRef}
         type="button"
         onClick={handleOpenToggle}
+        onKeyDown={handleTriggerKeyDown}
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}

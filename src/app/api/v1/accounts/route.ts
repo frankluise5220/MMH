@@ -23,6 +23,15 @@ function normalizeCostBasisMethod(raw: unknown) {
   return costBasisMethods.includes(value as (typeof costBasisMethods)[number]) ? value : "moving_avg";
 }
 
+function parseDay(raw: unknown) {
+  if (raw === undefined) return undefined;
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 1 || n > 31) return undefined;
+  return n;
+}
+
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -45,6 +54,7 @@ export async function POST(req: NextRequest) {
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
+    const isCreditLike = kind === "bank_credit" || kind === "loan";
 
     if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
 
@@ -64,14 +74,23 @@ export async function POST(req: NextRequest) {
       data: {
         name,
         kind,
+        debtDirection: kind === "bank_credit" ? "payable" : null,
         currency,
         groupId: ensuredGroup.id,
         institutionId: institution?.id ?? null,
         householdId,
         isActive: true,
+        billingDay: isCreditLike ? (parseDay(body.billingDay) ?? null) : null,
+        repaymentDay: isCreditLike ? (parseDay(body.repaymentDay) ?? null) : null,
+        creditLimit: isCreditLike ? String(body.creditLimit ?? "").trim() || null : null,
+        numberMasked: isCreditLike ? String(body.numberMasked ?? "").trim() || null : null,
         investProductType: isInvestment ? normalizeFundProductType(body.investProductType) as any : null,
         costBasisMethod: isInvestment ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
         defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
+      },
+      include: {
+        AccountGroup: { select: { id: true, name: true } },
+        Institution: { select: { id: true, name: true, shortName: true, type: true } },
       },
     });
     // Client-side handles page refresh
@@ -102,20 +121,13 @@ export async function PUT(req: NextRequest) {
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
 
-    const parseDay = (raw: unknown) => {
-      if (raw === undefined) return undefined;
-      const s = String(raw ?? "").trim();
-      if (!s) return null;
-      const n = Number(s);
-      if (!Number.isFinite(n) || n < 1 || n > 31) return undefined;
-      return n;
-    };
     if (body.billingDay !== undefined) data.billingDay = parseDay(body.billingDay);
     if (body.repaymentDay !== undefined) data.repaymentDay = parseDay(body.repaymentDay);
     if (body.creditLimit !== undefined) data.creditLimit = String(body.creditLimit ?? "").trim() || null;
     if (body.numberMasked !== undefined) data.numberMasked = String(body.numberMasked ?? "").trim() || null;
 
     const nextKind = String(data.kind ?? existing.kind);
+    data.debtDirection = nextKind === "bank_credit" ? "payable" : null;
     if (nextKind === "investment") {
       if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
       if (body.costBasisMethod !== undefined || existing.kind !== "investment") data.costBasisMethod = normalizeCostBasisMethod(body.costBasisMethod ?? existing.costBasisMethod) as any;
@@ -273,6 +285,7 @@ export async function GET(req: Request) {
       balance: toNumber(account.balance),
       count: 0,
       kind: account.kind,
+      debtDirection: account.debtDirection,
       currency: account.currency,
       groupName: account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",

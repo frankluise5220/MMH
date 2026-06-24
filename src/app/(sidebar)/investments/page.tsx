@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { formatAccountDisplayName } from "@/lib/account-display";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
@@ -40,6 +40,7 @@ export default async function InvestmentsPage({
   const { hidFilter } = ctx;
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
+  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const pnlCls = (n: number) =>
     n > 0
       ? isRedUp
@@ -57,6 +58,7 @@ export default async function InvestmentsPage({
       select: {
         id: true,
         name: true,
+        kind: true,
         investProductType: true,
         AccountGroup: { select: { id: true, name: true, sortOrder: true } },
         Institution: { select: { id: true, name: true } },
@@ -73,9 +75,18 @@ export default async function InvestmentsPage({
     const marketValue = detail?.marketValue ?? 0;
     const totalCost = detail?.totalCost ?? 0;
     const floatingPnL = detail?.floatingPnL ?? 0;
-    const accountLabel = formatAccountDisplayName(account.name, account.Institution?.name);
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      groupId: account.AccountGroup?.id,
+      investProductType: account.investProductType,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup,
+    }, creditCardLabelMode);
+    const accountLabel = display.label;
     const groupName = account.AccountGroup?.name?.trim() || "未设置所有人";
-    const institutionName = account.Institution?.name?.trim() || "未指定机构";
+    const institutionName = display.institutionName || "未指定机构";
     const ownerName = account.User?.name?.trim() || "未指定";
     const productType = investProductTypeLabel(account.investProductType);
 

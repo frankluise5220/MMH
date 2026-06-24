@@ -113,6 +113,7 @@
 - 投资账户。
 - 账户余额。
 - 账户分组。
+- 往来机构/人员及简称。
 - 余额重算。
 
 相关路径示例：
@@ -200,6 +201,7 @@
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`
+- `/api/v1/settings/backup`
 - `/api/v1/settings/system-update`
 
 ### Mobile Sync

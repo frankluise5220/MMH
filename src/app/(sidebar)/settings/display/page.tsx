@@ -2,15 +2,18 @@
 
 import { useEffect, useState } from "react";
 import {
+  getCreditCardLabelModePreference,
   getFundUnitsDecimalsPreference,
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
+  setCreditCardLabelModePreference,
   setFundUnitsDecimalsPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
   setTimeZonePreference,
+  type CreditCardLabelMode,
   type SidebarGroupMode,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
@@ -33,6 +36,7 @@ export default function DisplaySettingsPage() {
   const [fundUnitsDecimals, setFundUnitsDecimals] = useState(2);
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
+  const [creditCardLabelMode, setCreditCardLabelMode] = useState<CreditCardLabelMode>("short_last4");
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [savingScheme, setSavingScheme] = useState(false);
@@ -63,6 +67,10 @@ export default function DisplaySettingsPage() {
         if (d.ok && typeof d.timeZone === "string") {
           setTimeZone(d.timeZone);
         }
+        if (d.ok && (d.creditCardLabelMode === "short_last4" || d.creditCardLabelMode === "full_name")) {
+          setCreditCardLabelMode(d.creditCardLabelMode);
+          setCreditCardLabelModePreference(d.creditCardLabelMode);
+        }
       })
       .catch(() => {});
 
@@ -71,6 +79,7 @@ export default function DisplaySettingsPage() {
     setFundUnitsDecimals(getFundUnitsDecimalsPreference());
     setTimeZoneMode(getTimeZoneModePreference());
     setTimeZone(getTimeZonePreference());
+    setCreditCardLabelMode(getCreditCardLabelModePreference());
   }, []);
 
   async function saveScheme(next: ColorScheme) {
@@ -144,6 +153,27 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function saveCreditCardLabelMode(next: CreditCardLabelMode) {
+    const prev = creditCardLabelMode;
+    setCreditCardLabelMode(next);
+    setCreditCardLabelModePreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ creditCardLabelMode: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setCreditCardLabelMode(prev);
+        setCreditCardLabelModePreference(prev);
+      }
+    } catch {
+      setCreditCardLabelMode(prev);
+      setCreditCardLabelModePreference(prev);
+    }
+  }
+
   function updateSidebarGroup(next: SidebarGroupMode) {
     setSidebarGroupBy(next);
     setSidebarGroupPreference(next);
@@ -197,10 +227,10 @@ export default function DisplaySettingsPage() {
               </button>
               <button
                 type="button"
-                onClick={() => updateSidebarGroup("institution")}
-                className={`segment-button h-9 px-4 ${sidebarGroupBy === "institution" ? "segment-button-active font-medium" : ""}`}
+                onClick={() => updateSidebarGroup("owner")}
+                className={`segment-button h-9 px-4 ${sidebarGroupBy === "owner" ? "segment-button-active font-medium" : ""}`}
               >
-                按机构
+                按所有人
               </button>
             </div>
           </div>
@@ -285,6 +315,57 @@ export default function DisplaySettingsPage() {
               只影响页面显示；数据库仍保留原始精度，计算不会因为这里减少小数位而丢失。
             </p>
           </div>
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">信用卡名称显示</div>
+            <div className="mt-1 text-xs text-slate-500">控制信用卡在侧边栏、账户页等处的默认显示方式。</div>
+          </div>
+        </div>
+        <div className="space-y-2 p-4">
+          <label
+            className={`flex cursor-pointer items-center gap-3 rounded-[10px] border p-3 transition ${
+              creditCardLabelMode === "short_last4"
+                ? "border-blue-300 bg-blue-50"
+                : "border-slate-200 bg-white hover:border-slate-300"
+            }`}
+          >
+            <input
+              type="radio"
+              name="creditCardLabelMode"
+              value="short_last4"
+              checked={creditCardLabelMode === "short_last4"}
+              onChange={() => saveCreditCardLabelMode("short_last4")}
+              className="shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-slate-800">简称 + 后四位</div>
+              <div className="text-xs text-slate-500">例如：招行3833、中信1024。</div>
+            </div>
+          </label>
+          <label
+            className={`flex cursor-pointer items-center gap-3 rounded-[10px] border p-3 transition ${
+              creditCardLabelMode === "full_name"
+                ? "border-blue-300 bg-blue-50"
+                : "border-slate-200 bg-white hover:border-slate-300"
+            }`}
+          >
+            <input
+              type="radio"
+              name="creditCardLabelMode"
+              value="full_name"
+              checked={creditCardLabelMode === "full_name"}
+              onChange={() => saveCreditCardLabelMode("full_name")}
+              className="shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-slate-800">全称 + 信用卡名称</div>
+              <div className="text-xs text-slate-500">例如：中国银行·家庭信用卡。</div>
+            </div>
+          </label>
         </div>
       </section>
 

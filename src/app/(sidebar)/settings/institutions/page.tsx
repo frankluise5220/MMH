@@ -11,13 +11,14 @@ async function updateInstitutionRow(formData: FormData) {
   const { householdId } = await getHouseholdScope();
   const institutionId = String(formData.get("institutionId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
+  const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
   if (!institutionId || !name) return;
 
   await prisma.institution
     .updateMany({
       where: { id: institutionId, householdId },
-      data: { name, type: type || null },
+      data: { name, shortName: shortName || null, type: type || null },
     })
     .catch(() => null);
 
@@ -32,7 +33,7 @@ export default async function SettingsInstitutionsPage() {
 
   return (
     <SettingsInstitutionsClient
-      institutions={institutions.map(i => ({ id: i.id, name: i.name, type: i.type }))}
+      institutions={institutions.map(i => ({ id: i.id, name: i.name, shortName: i.shortName, type: i.type }))}
       updateAction={updateInstitutionRow}
     />
   );

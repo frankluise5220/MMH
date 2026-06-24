@@ -9,7 +9,7 @@ export function kindLabel(k: string): string {
     ewallet: "电子钱包",
     cash: "现金",
     investment: "投资",
-    loan: "贷款",
+    loan: "债务/债权",
     other: "其他",
     bank_savings: "储蓄卡",
   };
@@ -60,6 +60,7 @@ export function institutionTypeLabel(t: string | null): string {
     brokerage: "证券",
     payment: "第三方支付",
     ewallet: "钱包",
+    debt: "债权债务",
     other: "其他",
   };
   return m[t ?? "other"] ?? t ?? "其他";
@@ -72,6 +73,7 @@ export function institutionTypeIconName(t: string | null): string {
   if (t === "brokerage") return "building-2";
   if (t === "payment") return "credit-card";
   if (t === "ewallet") return "wallet";
+  if (t === "debt") return "hand-coins";
   return "building-2";
 }
 

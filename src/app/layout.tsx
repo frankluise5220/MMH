@@ -8,7 +8,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <head>
+      <body
+        suppressHydrationWarning
+        className="antialiased h-screen overflow-x-auto overflow-y-hidden"
+      >
+        {children}
         <Script
           id="performance-measure-guard"
           strategy="beforeInteractive"
@@ -34,12 +38,6 @@ export default function RootLayout({
             `,
           }}
         />
-      </head>
-      <body
-        suppressHydrationWarning
-        className="antialiased h-screen overflow-x-auto overflow-y-hidden"
-      >
-        {children}
       </body>
     </html>
   );

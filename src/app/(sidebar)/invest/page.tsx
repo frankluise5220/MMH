@@ -2,7 +2,7 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { InvestHeaderSync } from "@/components/InvestHeaderSync";
-import { formatAccountDisplayName } from "@/lib/account-display";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan } from "@/lib/format";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -32,6 +32,7 @@ const investProductTypeLabel = (type: string | null) => {
   const pageSize = [10, 20, 40].includes(pageSizeParam) ? pageSizeParam : 10;
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
+  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const isRedUp = colorScheme === "red_up_green_down";
   const pnlClass = (n: number) =>
     n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
@@ -189,7 +190,17 @@ const investProductTypeLabel = (type: string | null) => {
     const totalReturn = floatingPnL + realizedPnL;
     const totalReturnRate = totalBuy > 0 ? totalReturn / totalBuy : 0;
 
-    const label = formatAccountDisplayName(a.name, a.Institution?.name);
+    const display = buildAccountDisplayOption({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      numberMasked: a.numberMasked,
+      groupId: a.groupId,
+      investProductType: a.investProductType,
+      Institution: a.Institution,
+      AccountGroup: a.AccountGroup,
+    }, creditCardLabelMode);
+    const label = display.label;
     const groupName = a.AccountGroup?.name?.trim() || "未设置所有人";
     const productTypeLabel = investProductTypeLabel(a.investProductType);
 

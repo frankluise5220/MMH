@@ -3,7 +3,7 @@ import { Banknote, Coins, CreditCard, HandCoins, Landmark, Plus, Wallet } from "
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { formatAccountDisplayName } from "@/lib/account-display";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
@@ -26,7 +26,7 @@ const KIND_LABEL: Record<string, string> = {
   ewallet: "电子钱包",
   cash: "现金",
   bank_credit: "信用卡",
-  loan: "贷款",
+  loan: "债务/债权",
   other: "其他",
 };
 const KIND_ICON = {
@@ -55,7 +55,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const tab = typeof params.tab === "string" && params.tab === "credit" ? "credit" : "assets";
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
-  await cookies();
+  const cookieStore = await cookies();
+  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: [...MONEY_KINDS, ...CREDIT_KINDS] }, ...hidFilter },
@@ -82,10 +83,19 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const moneyAccounts = accounts
     .filter((account) => MONEY_KINDS.includes(account.kind))
     .map((account) => {
-      const institutionName = account.Institution?.name?.trim() ?? "";
+      const display = buildAccountDisplayOption({
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        numberMasked: account.numberMasked,
+        groupId: account.groupId,
+        investProductType: account.investProductType,
+        Institution: account.Institution,
+        AccountGroup: account.AccountGroup,
+      }, creditCardLabelMode);
       return {
         id: account.id,
-        name: formatAccountDisplayName(account.name, institutionName),
+        name: display.label,
         kind: account.kind,
         groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance: toNumber(account.balance),
@@ -95,13 +105,22 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const creditAccounts = accounts
     .filter((account) => account.kind === AccountKind.bank_credit)
     .map((account) => {
-      const institutionName = account.Institution?.name?.trim() ?? "";
+      const display = buildAccountDisplayOption({
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        numberMasked: account.numberMasked,
+        groupId: account.groupId,
+        investProductType: account.investProductType,
+        Institution: account.Institution,
+        AccountGroup: account.AccountGroup,
+      }, creditCardLabelMode);
       const cycle = cycleByAccountId.get(account.id);
       const balance = toNumber(account.balance);
       const creditLimit = toNumber(account.creditLimit);
       return {
         id: account.id,
-        name: formatAccountDisplayName(account.name, institutionName),
+        name: display.label,
         kind: account.kind,
         groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance,
@@ -121,7 +140,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
     .reduce((sum, account) => sum + account.balance, 0);
   const loanTotal = moneyAccounts
     .filter((account) => account.kind === AccountKind.loan)
-    .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+    .reduce((sum, account) => sum + Math.abs(Math.min(0, account.balance)), 0);
   const creditUsedTotal = creditAccounts.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccounts.reduce((sum, account) => sum + account.creditLimit, 0);
   const creditAvailableTotal = Math.max(0, creditLimitTotal - creditUsedTotal);
@@ -139,7 +158,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">资金账户</div>
-            <div className="text-xs text-slate-500">现金、借记卡、信用卡和贷款</div>
+            <div className="text-xs text-slate-500">现金、借记卡、信用卡和债务/债权</div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <Link href="/" className="primary-button h-8 gap-1 px-3">
@@ -158,13 +177,13 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
             <div className="space-y-2">
               <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Money Accounts</div>
               <h1 className="text-2xl font-semibold tracking-tight text-slate-900">资金账户</h1>
-              <p className="text-sm text-slate-500">现金、借记卡、电子钱包、信用卡和贷款集中在这里；投资账户继续放在投资页。</p>
+              <p className="text-sm text-slate-500">现金、借记卡、电子钱包、信用卡和债务/债权集中在这里；投资账户继续放在投资页。</p>
             </div>
             <div className="grid grid-cols-2 gap-3 md:min-w-[420px]">
               <SummaryCard label="可用资产" value={formatMoneyYuan(assetTotal)} />
               <SummaryCard label="信用卡已用" value={formatMoneyYuan(creditUsedTotal)} />
               <SummaryCard label="信用卡可用" value={formatMoneyYuan(creditAvailableTotal)} />
-              <SummaryCard label="贷款余额" value={formatMoneyYuan(loanTotal)} />
+              <SummaryCard label="债务/债权" value={formatMoneyYuan(loanTotal)} />
             </div>
           </div>
           <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-3">

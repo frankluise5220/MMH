@@ -5,13 +5,16 @@ export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
 export const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
 export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
 export const TIME_ZONE_COOKIE = "mmh_time_zone";
+export const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
+export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 
-export type SidebarGroupMode = "kind" | "institution";
+export type SidebarGroupMode = "kind" | "owner";
 export type TimeZoneMode = "system" | "specified";
+export type CreditCardLabelMode = "short_last4" | "full_name";
 
 export type AppPreferencesSnapshot = {
   sessionDays: number;
@@ -19,7 +22,9 @@ export type AppPreferencesSnapshot = {
   aiPanelEnabled: boolean;
   timeZoneMode: TimeZoneMode;
   timeZone: string;
+  creditCardLabelMode: CreditCardLabelMode;
   sidebarGroupBy: SidebarGroupMode;
+  sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
   sidebarCollapsed: boolean;
 };
@@ -27,6 +32,7 @@ export type AppPreferencesSnapshot = {
 const DEFAULT_SESSION_DAYS = 30;
 const DEFAULT_FUND_UNITS_DECIMALS = 2;
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
+const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
@@ -95,9 +101,22 @@ export function setTimeZonePreference(mode: TimeZoneMode, timeZone: string) {
   emitPreferencesChanged();
 }
 
+export function getCreditCardLabelModePreference(): CreditCardLabelMode {
+  return parseCookieValue(CREDIT_CARD_LABEL_MODE_COOKIE) === "full_name" ? "full_name" : DEFAULT_CREDIT_CARD_LABEL_MODE;
+}
+
+export function setCreditCardLabelModePreference(mode: CreditCardLabelMode) {
+  if (typeof document === "undefined") return;
+  const normalized = mode === "full_name" ? "full_name" : DEFAULT_CREDIT_CARD_LABEL_MODE;
+  document.cookie = `${CREDIT_CARD_LABEL_MODE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  emitPreferencesChanged();
+}
+
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
-    return localStorage.getItem(SIDEBAR_GROUP_BY_KEY) === "institution" ? "institution" : "kind";
+    const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY);
+    if (value === "owner" || value === "institution") return "owner";
+    return "kind";
   } catch {
     return "kind";
   }
@@ -106,6 +125,21 @@ export function getSidebarGroupPreference(): SidebarGroupMode {
 export function setSidebarGroupPreference(mode: SidebarGroupMode) {
   try {
     localStorage.setItem(SIDEBAR_GROUP_BY_KEY, mode);
+  } catch {}
+  emitPreferencesChanged();
+}
+
+export function getSidebarOwnerFilterPreference(): string {
+  try {
+    return localStorage.getItem(SIDEBAR_OWNER_FILTER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setSidebarOwnerFilterPreference(value: string) {
+  try {
+    localStorage.setItem(SIDEBAR_OWNER_FILTER_KEY, value);
   } catch {}
   emitPreferencesChanged();
 }
@@ -147,7 +181,9 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     aiPanelEnabled: getAiPanelEnabledPreference(),
     timeZoneMode: getTimeZoneModePreference(),
     timeZone: getTimeZonePreference(),
+    creditCardLabelMode: getCreditCardLabelModePreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
+    sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),
     sidebarCollapsed: getSidebarCollapsedPreference(),
   };

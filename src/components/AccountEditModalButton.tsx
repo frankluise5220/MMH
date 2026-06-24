@@ -51,6 +51,7 @@ export function AccountEditModalButton({
     investProductType: string | null;
     costBasisMethod: string | null;
     defaultFundQueryApiId: string | null;
+    debtDirection?: string | null;
   };
   groups: GroupOption[];
   institutions: InstitutionOption[];
@@ -85,7 +86,7 @@ export function AccountEditModalButton({
 
   function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
     setInstitutionList(prev => [...prev, { id, name, type: extra?.type }]);
-    setInstitutionId(id);
+    if (kind === "loan" ? extra?.type === "debt" : extra?.type !== "debt") setInstitutionId(id);
     setNestedEntityType(null);
   }
 
@@ -95,8 +96,12 @@ export function AccountEditModalButton({
     setNestedEntityType(null);
   }
 
+  const filteredInstitutionList = institutionList.filter((it) =>
+    kind === "loan" ? it.type === "debt" : it.type !== "debt"
+  );
+
   const institutionOptions: SmartSelectOption[] = [
-    ...institutionList.map(it => ({
+    ...filteredInstitutionList.map(it => ({
       id: it.id,
       label: it.name,
       subLabel: institutionTypeLabel(it.type ?? null),
@@ -163,15 +168,16 @@ export function AccountEditModalButton({
                 </div>
 
                 <div>
-                  <div className="text-xs text-slate-500 mb-1">机构</div>
+                  <div className="text-xs text-slate-500 mb-1">往来机构/人员</div>
                   <SmartSelect
                     mode="single"
                     value={institutionId}
                     onChange={setInstitutionId}
                     options={institutionOptions}
-                    placeholder="选择机构"
+                    placeholder="选择往来机构/人员"
+                    searchable={true}
                     onCreateClick={() => setNestedEntityType("institution")}
-                    createLabel="新增机构"
+                    createLabel="新增往来机构/人员"
                   />
                 </div>
 
@@ -179,14 +185,17 @@ export function AccountEditModalButton({
                   name="kind"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   value={kind}
-                  onChange={(e) => setKind(e.target.value as AccountKindValue)}
+                  onChange={(e) => {
+                    setKind(e.target.value as AccountKindValue);
+                    setInstitutionId("");
+                  }}
                 >
                   <option value="cash">现金</option>
                   <option value="bank_debit">借记卡</option>
                   <option value="bank_credit">信用卡</option>
                   <option value="ewallet">电子钱包</option>
                   <option value="investment">投资</option>
-                  <option value="loan">贷款</option>
+                  <option value="loan">债务/债权</option>
                   <option value="other">其他</option>
                 </select>
                 {kind === "investment" && (
@@ -305,6 +314,7 @@ export function AccountEditModalButton({
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={nestedEntityType === "institution" ? handleInstitutionCreated : handleGroupCreated}
+          defaultType={nestedEntityType === "institution" && kind === "loan" ? "debt" : undefined}
         />
       )}
     </>

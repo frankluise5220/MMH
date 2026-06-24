@@ -10,10 +10,10 @@ function toNum(v: unknown): number {
 
 type Lot = { units: number; costPerUnit: number };
 
+// Calculation input intentionally excludes display metadata such as fundName.
 type EntryLike = {
   id: string;
   fundCode: string | null;
-  fundName: string | null;
   amount: number;
   fee: number;
   arrivalAmount: number | null;
@@ -214,7 +214,6 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     .map(e => ({
       id: e.id,
       fundCode: e.fundCode,
-      fundName: e.fundName ?? null,
       amount: toNum(e.amount),
       fee: toNum(e.fundFee ?? 0),
       arrivalAmount: e.fundArrivalAmount != null ? toNum(e.fundArrivalAmount) : null,
@@ -259,6 +258,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
   }
 
   const entryNameMap = new Map<string, string>();
+  // Fund names are display-only; fundCode is the calculation key.
   for (const e of [...rawEntries].reverse()) {
     const code = (e.fundCode ?? "").trim();
     const name = (e.fundName ?? "").trim();

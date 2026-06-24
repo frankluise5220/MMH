@@ -471,7 +471,7 @@ export function InitModal({
                     <th className="text-left px-3 py-2 border-b border-slate-200">日期</th>
                   </tr></thead>
                   <tbody>{balanceRows.map((row) => {
-                    const kl = row.kind ? (row.kind === "bank_debit" ? "借记卡" : row.kind === "bank_credit" ? "信用卡" : row.kind === "cash" ? "现金" : row.kind === "loan" ? "贷款" : row.kind === "ewallet" ? "电子钱包" : row.kind) : "";
+                    const kl = row.kind ? (row.kind === "bank_debit" ? "借记卡" : row.kind === "bank_credit" ? "信用卡" : row.kind === "cash" ? "现金" : row.kind === "loan" ? "债务/债权" : row.kind === "ewallet" ? "电子钱包" : row.kind) : "";
                     const accountOptions = getBalanceAccountSSOptions(row);
                     return (<tr key={row.tempId} className="hover:bg-slate-50">
                       <td className="px-3 py-1.5 border-b border-slate-100 text-sm text-slate-700">

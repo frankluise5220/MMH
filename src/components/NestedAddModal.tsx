@@ -24,9 +24,9 @@ interface NestedAddModalProps {
 
 const ENTITY_CONFIG = {
   institution: {
-    title: "新增机构",
+    title: "新增往来机构/人员",
     namePlaceholder: "例如：中国银行",
-    nameLabel: "机构名称",
+    nameLabel: "往来机构/人员名称",
     typeLabel: "类型",
     typeKey: "type",
     types: [
@@ -34,6 +34,7 @@ const ENTITY_CONFIG = {
       { value: "brokerage", label: "证券" },
       { value: "payment", label: "三方支付" },
       { value: "ewallet", label: "钱包" },
+      { value: "debt", label: "债权债务" },
       { value: "other", label: "其他" },
     ],
     apiPath: "/api/v1/institution",
@@ -52,7 +53,7 @@ const ENTITY_CONFIG = {
       { value: "ewallet", label: "电子钱包" },
       { value: "cash", label: "现金" },
       { value: "investment", label: "投资" },
-      { value: "loan", label: "贷款" },
+      { value: "loan", label: "债务/债权" },
       { value: "other", label: "其他" },
     ],
     apiPath: "/api/v1/accounts",

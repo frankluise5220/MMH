@@ -1,8 +1,9 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 
-import { formatAccountDisplayName } from "@/lib/account-display";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { computeInvestBalances } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export const KIND_LABEL: Record<string, string> = {
@@ -10,7 +11,7 @@ export const KIND_LABEL: Record<string, string> = {
   bank_debit: "借记卡",
   bank_credit: "信用卡",
   ewallet: "第三方余额",
-  loan: "负债",
+  loan: "债务/债权",
   other: "其他",
 };
 
@@ -18,7 +19,6 @@ export const DAILY_KIND_ORDER: AccountKind[] = [
   AccountKind.cash,
   AccountKind.bank_debit,
   AccountKind.ewallet,
-  AccountKind.loan,
   AccountKind.other,
 ];
 
@@ -53,15 +53,20 @@ export type AccountTypeTotals = {
   cash: number;
   bankDebit: number;
   ewallet: number;
+  investmentMarketValue: number;
+  investmentCost: number;
+  investmentFloatingPnL: number;
   creditUsed: number;
   creditLimit: number;
   creditAvailable: number;
   creditCurrentBill: number;
   loan: number;
+  loanReceivable: number;
   other: number;
   liquidAssets: number;
   liabilities: number;
   dailyNetWorth: number;
+  totalNetWorth: number;
 };
 
 export type TopPositionRow = {
@@ -82,16 +87,24 @@ export type OverviewSummary = {
   assetDistribution: AssetDistributionItem[];
   accountList: AccountListRow[];
   topPositions: TopPositionRow[];
+  investmentAccountList: TopPositionRow[];
   dailyNetWorth: number;
   dailyAssetDistribution: AssetDistributionItem[];
   dailyAccountList: AccountListRow[];
   creditAccountList: CreditAccountRow[];
+  debtAccountList: AccountListRow[];
   accountTypeTotals: AccountTypeTotals;
   creditUsedTotal: number;
   creditLimitTotal: number;
   creditAvailableTotal: number;
   creditCurrentBillTotal: number;
+  investmentMarketValue: number;
+  investmentCost: number;
+  investmentFloatingPnL: number;
+  investmentFloatingPnLRate: number;
 };
+
+type CreditCardLabelMode = "short_last4" | "full_name";
 
 function dateToIso(date: Date | null | undefined) {
   return date ? date.toISOString().slice(0, 10) : null;
@@ -120,7 +133,7 @@ function buildDistribution(rows: AccountListRow[]) {
     .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 }
 
-export async function computeOverviewSummary(ctx: HouseholdContext): Promise<OverviewSummary> {
+export async function computeOverviewSummary(ctx: HouseholdContext, creditCardLabelMode: CreditCardLabelMode = "short_last4"): Promise<OverviewSummary> {
   const { hidFilter } = ctx;
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -132,20 +145,24 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
       id: true,
       name: true,
       kind: true,
+      groupId: true,
       balance: true,
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
-      Institution: { select: { name: true } },
+      numberMasked: true,
+      Institution: { select: { name: true, shortName: true } },
       AccountGroup: { select: { name: true } },
     },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
   const dailyAccounts = accounts.filter(
-    (account) => account.kind !== AccountKind.investment && account.kind !== AccountKind.bank_credit,
+    (account) => account.kind !== AccountKind.investment && account.kind !== AccountKind.bank_credit && account.kind !== AccountKind.loan,
   );
+  const investmentAccounts = accounts.filter((account) => account.kind === AccountKind.investment);
   const creditAccounts = accounts.filter((account) => account.kind === AccountKind.bank_credit);
+  const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
   const dailyAccountIds = dailyAccounts.map((account) => account.id);
 
   let monthIncome = 0;
@@ -179,14 +196,22 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
   }
 
   const dailyAccountList: AccountListRow[] = dailyAccounts.map((account) => {
-    const institutionName = account.Institution?.name?.trim() ?? "";
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+    }, creditCardLabelMode);
     return {
       id: account.id,
-      name: formatAccountDisplayName(account.name, institutionName),
+      name: display.label,
       kind: account.kind,
       balance: toNumber(account.balance),
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
-      institutionName,
+      institutionName: display.institutionName,
     };
   });
 
@@ -201,7 +226,15 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
   const cycleByAccountId = new Map(currentCycles.map((cycle) => [cycle.accountId, cycle]));
 
   const creditAccountList: CreditAccountRow[] = creditAccounts.map((account) => {
-    const institutionName = account.Institution?.name?.trim() ?? "";
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+    }, creditCardLabelMode);
     const balance = toNumber(account.balance);
     const creditLimit = toNumber(account.creditLimit);
     const cycle = cycleByAccountId.get(account.id);
@@ -211,11 +244,11 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
 
     return {
       id: account.id,
-      name: formatAccountDisplayName(account.name, institutionName),
+      name: display.label,
       kind: account.kind,
       balance,
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
-      institutionName,
+      institutionName: display.institutionName,
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
       billingDay: account.billingDay,
@@ -227,10 +260,35 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
     };
   });
 
+  const debtAccountList: AccountListRow[] = debtAccounts.map((account) => {
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+    }, creditCardLabelMode);
+    return {
+      id: account.id,
+      name: display.label,
+      kind: account.kind,
+      balance: toNumber(account.balance),
+      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      institutionName: display.institutionName,
+    };
+  });
+
   const cash = dailyAccountList.filter((account) => account.kind === AccountKind.cash).reduce((sum, account) => sum + account.balance, 0);
   const bankDebit = dailyAccountList.filter((account) => account.kind === AccountKind.bank_debit).reduce((sum, account) => sum + account.balance, 0);
   const ewallet = dailyAccountList.filter((account) => account.kind === AccountKind.ewallet).reduce((sum, account) => sum + account.balance, 0);
-  const loan = dailyAccountList.filter((account) => account.kind === AccountKind.loan).reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+  const loan = debtAccountList
+    .filter((account) => account.balance < 0)
+    .reduce((sum, account) => sum + Math.abs(account.balance), 0);
+  const loanReceivable = debtAccountList
+    .filter((account) => account.balance > 0)
+    .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const other = dailyAccountList.filter((account) => account.kind === AccountKind.other).reduce((sum, account) => sum + account.balance, 0);
   const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + account.creditLimit, 0);
@@ -238,40 +296,82 @@ export async function computeOverviewSummary(ctx: HouseholdContext): Promise<Ove
   const creditCurrentBillTotal = creditAccountList.reduce((sum, account) => sum + account.currentBill, 0);
   const liquidAssets = cash + bankDebit + ewallet + Math.max(0, other);
   const liabilities = loan + creditUsedTotal;
-  const dailyNetWorth = liquidAssets + Math.min(0, other) - liabilities;
+  const dailyNetWorth = liquidAssets + loanReceivable + Math.min(0, other) - liabilities;
   const dailyAssetDistribution = buildDistribution(dailyAccountList);
+  const investBalByAccountId = await computeInvestBalances(ctx);
+  const investmentAccountList: TopPositionRow[] = investmentAccounts
+    .map((account) => {
+      const detail = investBalByAccountId.get(account.id);
+      const marketValue = detail?.marketValue ?? 0;
+      const totalCost = detail?.totalCost ?? 0;
+      const floatingPnL = detail?.floatingPnL ?? 0;
+      const display = buildAccountDisplayOption({
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        numberMasked: account.numberMasked,
+        groupId: account.groupId,
+        Institution: account.Institution,
+        AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+      }, creditCardLabelMode);
+      return {
+        accountId: account.id,
+        fundCode: "",
+        name: display.label,
+        marketValue,
+        floatingPnL,
+        floatingPnLRate: totalCost > 0 ? floatingPnL / totalCost : 0,
+      };
+    })
+    .sort((a, b) => b.marketValue - a.marketValue);
+  const investmentMarketValue = investmentAccountList.reduce((sum, row) => sum + row.marketValue, 0);
+  const investmentCost = investmentAccounts.reduce((sum, account) => sum + (investBalByAccountId.get(account.id)?.totalCost ?? 0), 0);
+  const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + row.floatingPnL, 0);
+  const investmentFloatingPnLRate = investmentCost > 0 ? investmentFloatingPnL / investmentCost : 0;
+  const totalNetWorth = dailyNetWorth + investmentMarketValue;
   const accountTypeTotals: AccountTypeTotals = {
     cash,
     bankDebit,
     ewallet,
+    investmentMarketValue,
+    investmentCost,
+    investmentFloatingPnL,
     creditUsed: creditUsedTotal,
     creditLimit: creditLimitTotal,
     creditAvailable: creditAvailableTotal,
     creditCurrentBill: creditCurrentBillTotal,
     loan,
+    loanReceivable,
     other,
     liquidAssets,
     liabilities,
     dailyNetWorth,
+    totalNetWorth,
   };
 
   return {
-    netWorth: dailyNetWorth,
-    floatingPnL: 0,
-    totalCost: 0,
+    netWorth: totalNetWorth,
+    floatingPnL: investmentFloatingPnL,
+    totalCost: investmentCost,
     monthIncome,
     monthExpense,
     assetDistribution: dailyAssetDistribution,
     accountList: dailyAccountList,
-    topPositions: [],
+    topPositions: investmentAccountList.slice(0, 5),
+    investmentAccountList,
     dailyNetWorth,
     dailyAssetDistribution,
     dailyAccountList,
     creditAccountList,
+    debtAccountList,
     accountTypeTotals,
     creditUsedTotal,
     creditLimitTotal,
     creditAvailableTotal,
     creditCurrentBillTotal,
+    investmentMarketValue,
+    investmentCost,
+    investmentFloatingPnL,
+    investmentFloatingPnLRate,
   };
 }

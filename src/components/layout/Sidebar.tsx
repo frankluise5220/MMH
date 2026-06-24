@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { AccountKind } from "@prisma/client";
 
 import { SidebarClient } from "@/components/layout/SidebarClient";
-import { formatAccountDisplayName } from "@/lib/account-display";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
@@ -17,6 +17,7 @@ async function getSidebarData() {
 
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as string;
+  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const isRedUp = colorScheme === "red_up_green_down";
 
   const household = await prisma.household.findUnique({
@@ -39,18 +40,28 @@ async function getSidebarData() {
   );
 
   const items = accounts.map((account) => {
-    const institution = account.Institution?.name?.trim() || "";
     const isInvest = account.kind === AccountKind.investment;
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
     const balance = isInvest ? (investDetail?.marketValue ?? 0) : (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance));
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      investProductType: account.investProductType,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup,
+    }, creditCardLabelMode);
 
     return {
       id: account.id,
       name: account.name,
-      label: formatAccountDisplayName(account.name, institution),
+      label: display.label,
       balance,
       kind: account.kind as string,
-      institution: institution || undefined,
+      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      institution: display.institutionName || undefined,
       investProductType: account.investProductType || undefined,
     };
   });

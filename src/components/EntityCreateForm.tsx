@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
@@ -17,13 +17,13 @@ type FieldDef = {
   placeholder?: string;
   /** Static options (for selects whose values are fixed) */
   options?: Array<{ value: string; label: string }>;
-  /** Dynamic option key — maps to fieldData prop for runtime-populated selects */
+  /** Dynamic option key 鈥?maps to fieldData prop for runtime-populated selects */
   optionsFromData?: string;
   /** Condition to show/hide this field based on current form state */
   condition?: (form: Record<string, string>) => boolean;
   /** Default value when the form opens */
   defaultValue?: string;
-  /** Whether this field supports nested inline creation (shows "+新增" button) */
+  /** Whether this field supports nested inline creation (shows "+鏂板" button) */
   nestedCreate?: NestedEntityType;
 };
 
@@ -34,7 +34,7 @@ type CompactModeProps = {
   entityType: NestedEntityType;
   open: boolean;
   onClose: () => void;
-  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string }) => void;
+  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string; groupName?: string; institutionName?: string; institutionShortName?: string }) => void;
   defaultType?: string;
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
   extraFields?: Record<string, string>;
@@ -59,7 +59,7 @@ type FullModeProps = {
   layout?: "card" | "inline" | "modal";
   open?: boolean;
   onClose?: () => void;
-  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string }) => void;
+  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string; groupName?: string; institutionName?: string; institutionShortName?: string }) => void;
   /** Dynamic data for select fields that need runtime-populated options */
   fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   /** Existing entity names for client-side duplicate check */
@@ -83,8 +83,9 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 const INSTITUTION_TYPES = [
   { value: "bank", label: "银行" },
   { value: "brokerage", label: "证券" },
-  { value: "payment", label: "三方支付" },
+  { value: "payment", label: "第三方支付" },
   { value: "ewallet", label: "钱包" },
+  { value: "debt", label: "债权债务" },
   { value: "other", label: "其他" },
 ];
 
@@ -118,22 +119,23 @@ const INVEST_PRODUCT_OPTIONS = (Object.keys(PRODUCT_LABELS) as ProductType[]).ma
 
 const ENTITY_CONFIG = {
   institution: {
-    title: "新增机构",
-    namePlaceholder: "例如：中国银行",
-    nameLabel: "机构名称",
+    title: "新增往来机构/人员",
+    namePlaceholder: "例如：中国银行、姜奶奶",
+    nameLabel: "往来机构/人员名称",
     typeLabel: "类型",
     typeKey: "type",
     types: INSTITUTION_TYPES,
     apiPath: "/api/v1/institution",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", label: "机构名称", type: "text", placeholder: "例如：中国银行" },
+      { key: "name", label: "往来机构/人员名称", type: "text", placeholder: "例如：中国银行、姜奶奶" },
+      { key: "shortName", label: "简称", type: "text", placeholder: "例如：中行、招行、姜奶奶" },
       { key: "type", label: "类型", type: "select", options: INSTITUTION_TYPES, defaultValue: "bank" },
     ] as FieldDef[],
   },
   account: {
     title: "新增账户",
-    namePlaceholder: "例如：招商卡、微信零钱",
+    namePlaceholder: "例如：招行卡、微信零钱",
     nameLabel: "账户名称",
     typeLabel: "账户类型",
     typeKey: "kind",
@@ -141,11 +143,11 @@ const ENTITY_CONFIG = {
     apiPath: "/api/v1/accounts",
     bodyKey: { name: "name", kind: "kind" },
     fullFields: [
-      { key: "name", label: "账户名称", type: "text", placeholder: "例如：招商卡、微信零钱" },
+      { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
-      { key: "institutionId", label: "机构", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
+      { key: "institutionId", label: "往来机构/人员", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
       { key: "currency", label: "币种", type: "text", defaultValue: "CNY", placeholder: "CNY" },
       { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
       { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
@@ -169,7 +171,7 @@ const ENTITY_CONFIG = {
   },
   category: {
     title: "新增分类",
-    namePlaceholder: "例如：餐饮",
+    namePlaceholder: "例如：餐饮费",
     nameLabel: "分类名称",
     typeLabel: "类型",
     typeKey: "type",
@@ -177,7 +179,7 @@ const ENTITY_CONFIG = {
     apiPath: "/api/v1/category",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", label: "分类名称", type: "text", placeholder: "例如：餐饮" },
+      { key: "name", label: "分类名称", type: "text", placeholder: "例如：餐饮费" },
       { key: "type", label: "类型", type: "select", options: CATEGORY_TYPES, defaultValue: "expense",
         condition: (f) => !f.parentId /* hide type when parentId is set (inherits from parent) */ },
       { key: "parentId", label: "上级分类", type: "select", optionsFromData: "parentId" },
@@ -198,7 +200,7 @@ function buildSelectOptions(
     const rootOpt = hideRootOption ? [] : [{ value: "", label: "无（根分类）" }];
     return [...rootOpt, ...parentCategories.map(pc => {
       // Use indentation for depth > 0 entries
-      const indent = pc.depth && pc.depth > 0 ? `    `.repeat(pc.depth) : "";
+      const indent = pc.depth && pc.depth > 0 ? `聽聽聽聽`.repeat(pc.depth) : "";
       return { value: pc.id, label: `${indent}${pc.name}` };
     })];
   }
@@ -210,6 +212,13 @@ function buildSelectOptions(
     }
   }
   return [];
+}
+
+function getSmartSelectCreateLabel(entityType: NestedEntityType) {
+  if (entityType === "institution") return "新增往来机构/人员";
+  if (entityType === "group") return "新增所有人";
+  if (entityType === "category") return "新增分类";
+  return "新增";
 }
 
 /* ---- Main Component ---- */
@@ -234,6 +243,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const open = mode === "compact" ? props.open : undefined;
   const onClose = mode === "compact" ? props.onClose : undefined;
   const defaultType = props.defaultType;
+  const typeKey = config.typeKey;
 
   /* ---- Form state ---- */
   const [form, setForm] = useState<Record<string, string>>({});
@@ -244,7 +254,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   // Full card mode: expanded state
   const [expanded, setExpanded] = useState(false);
 
-  // Nested creation state (for full mode "+新增" buttons on dynamic select fields)
+  // Nested creation state (for full mode "+鏂板" buttons on dynamic select fields)
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
@@ -254,16 +264,28 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const initial: Record<string, string> = {};
 
     if (mode === "compact") {
-      // Compact mode: just name + type
       initial.name = "";
-      initial.type = getDefaultTypeCompact();
-      initial.parentId = defaultParentId ?? "";
+      if (typeKey) initial[typeKey] = getDefaultTypeCompact();
+      if (defaultParentId) initial.parentId = defaultParentId ?? "";
+      if (extraFields) {
+        Object.entries(extraFields).forEach(([k, v]) => {
+          if (v !== undefined) initial[k] = v;
+        });
+      }
+      for (const field of config.fullFields) {
+        if (field.condition && !field.condition(initial)) continue;
+        if (initial[field.key] !== undefined) continue;
+        if (field.defaultValue) initial[field.key] = field.defaultValue;
+        if (field.optionsFromData) initial[field.key] = "";
+        if (field.type === "select" && !field.defaultValue && !field.optionsFromData) initial[field.key] = field.options?.[0]?.value ?? "";
+        if (field.type === "text" && !field.defaultValue) initial[field.key] = "";
+      }
     } else {
       // Full mode: set parentId first so type condition can evaluate correctly
       if (defaultParentId) initial.parentId = defaultParentId;
       // All fields from fullFields
       for (const field of config.fullFields) {
-        // Check condition — now parentId is set if defaultParentId was provided
+        // Check condition 鈥?now parentId is set if defaultParentId was provided
         if (field.condition && !field.condition(initial)) continue;
         // Skip if the key is already set (e.g. parentId from defaultParentId)
         if (initial[field.key] !== undefined) continue;
@@ -277,7 +299,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         if (field.type === "text" && !field.defaultValue) initial[field.key] = "";
       }
       // Apply defaultType override
-      if (defaultType) initial.type = defaultType;
+      if (defaultType && typeKey) initial[typeKey] = defaultType;
       // Apply extraFields
       if (extraFields) {
         Object.entries(extraFields).forEach(([k, v]) => {
@@ -290,7 +312,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, entityType, defaultType, extraFields, defaultParentId]);
+  }, [mode, entityType, defaultType, extraFields, defaultParentId, typeKey]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -322,11 +344,17 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   }
 
   /** Determine if the type selector should be shown in compact mode */
-  const typeKey = config.typeKey;
   const shouldHideType = !typeKey
     || (hiddenFields?.includes(typeKey))
     || (extraFields && typeKey in extraFields)
     || (entityType === "category" && form.parentId);
+  const compactVisibleFields = config.fullFields.filter((field) => {
+    if (field.key === "name" || field.key === typeKey || field.key === "parentId") return false;
+    if (field.condition && !field.condition(form)) return false;
+    if (hiddenFields?.includes(field.key)) return false;
+    if (extraFields && field.key in extraFields) return false;
+    return true;
+  });
 
   /** Client-side duplicate name check */
   function checkDuplicate(nameValue: string) {
@@ -337,6 +365,18 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     } else {
       setDupWarning("");
     }
+  }
+
+  function filterInstitutionDataForAccount(dataList: Array<{ id: string; name: string; type?: string }>) {
+    if (entityType !== "account") return dataList;
+    const accountKind = form.kind || form.type;
+    return dataList.filter((item) => accountKind === "loan" ? item.type === "debt" : item.type !== "debt");
+  }
+
+  function institutionTypeMatchesCurrentAccount(type?: string) {
+    if (entityType !== "account") return true;
+    const accountKind = form.kind || form.type;
+    return accountKind === "loan" ? type === "debt" : type !== "debt";
   }
 
   /** Build the POST body and submit */
@@ -353,38 +393,17 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setError("");
     try {
       const body: Record<string, string> = {};
-
-      if (mode === "compact") {
-        body[config.bodyKey.name] = name.trim();
-        if (typeKey && form.type) {
-          body[typeKey] = form.type;
+      for (const field of config.fullFields) {
+        if (field.condition && !field.condition(form)) continue;
+        const val = field.key === "name" ? name.trim() : form[field.key];
+        if (val !== undefined && val !== "") {
+          body[field.key] = val;
         }
-        if (entityType === "account") {
-          body.groupId = form.groupId ?? "";
-          body.institutionId = form.institutionId ?? "";
-        }
-        if (extraFields) {
-          Object.entries(extraFields).forEach(([k, v]) => {
-            if (v !== undefined && v !== "") body[k] = v;
-          });
-        }
-        if (entityType === "category" && form.parentId) {
-          body.parentId = form.parentId;
-        }
-      } else {
-        // Full mode: send all non-empty fields
-        for (const field of config.fullFields) {
-          const val = form[field.key];
-          if (val !== undefined && val !== "") {
-            body[field.key] = val;
-          }
-        }
-        // Also merge extraFields
-        if (extraFields) {
-          Object.entries(extraFields).forEach(([k, v]) => {
-            if (v !== undefined && v !== "") body[k] = v;
-          });
-        }
+      }
+      if (extraFields) {
+        Object.entries(extraFields).forEach(([k, v]) => {
+          if (v !== undefined && v !== "") body[k] = v;
+        });
       }
 
       const res = await fetch(config.apiPath, {
@@ -395,11 +414,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       const data = await res.json();
       if (data.ok && data[entityType]?.id) {
         const created = data[entityType];
+        const selectedTypeValue = typeKey ? (form[typeKey] || created[typeKey] || "") : "";
         onCreated(created.id, created.name, {
           parentId: form.parentId || undefined,
           kind: entityType === "account" ? (form.kind || created.kind || "") : undefined,
-          type: entityType === "institution" ? (form.type || created.type || "") :
-               entityType === "category" ? (form.type || created.type || "") : undefined,
+          groupName: entityType === "account" ? created.AccountGroup?.name : undefined,
+          institutionName: entityType === "account" ? created.Institution?.name : undefined,
+          institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
+          type: entityType === "institution" || entityType === "category" ? selectedTypeValue : undefined,
         });
         // Reset form
         if (mode === "compact") {
@@ -420,7 +442,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     }
   }
 
-  /** Handle nested entity creation (e.g., "+新增机构" inside account full form) */
+  /** Handle nested entity creation (e.g., "+鏂板鏈烘瀯" inside account full form) */
   function handleNestedCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
     // Add the newly created entity to the nested field data
     if (nestedEntityType === "institution") {
@@ -428,7 +450,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         ...prev,
         institutionId: [...(prev.institutionId ?? []), { id, name, type: extra?.type }],
       }));
-      setForm(prev => ({ ...prev, institutionId: id }));
+      if (institutionTypeMatchesCurrentAccount(extra?.type)) {
+        setForm(prev => ({ ...prev, institutionId: id }));
+      }
     } else if (nestedEntityType === "group") {
       setNestedFieldData(prev => ({
         ...prev,
@@ -443,21 +467,6 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   /* ---- RENDER: Compact mode (modal) ---- */
   if (mode === "compact") {
     if (!open) return null;
-
-    // Build SmartSelect options for account compact mode
-    const groupList = (nestedFieldData.groupId ?? []).filter((item) => item.id && item.name && !item.type);
-    const compactGroupOptions: SmartSelectOption[] = [
-      { id: "", label: "所有人" },
-      ...groupList.map(g => ({ id: g.id, label: g.name })),
-    ];
-    const instList = (nestedFieldData.institutionId ?? []).filter((item) => item.id && item.name);
-    const compactInstitutionOptions: SmartSelectOption[] = [
-      ...instList.map(it => ({
-        id: it.id,
-        label: it.name,
-        subLabel: institutionTypeLabel(it.type ?? null),
-      })),
-    ];
 
     return (
       <>
@@ -487,8 +496,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 <div className="space-y-1">
                   <div className="form-label">{config.typeLabel}</div>
                   <select
-                    value={form.type ?? ""}
-                    onChange={(e) => setForm(prev => ({ ...prev, type: e.target.value }))}
+                    value={(typeKey ? form[typeKey] : "") ?? ""}
+                    onChange={(e) => setForm(prev => ({ ...prev, ...(typeKey ? { [typeKey]: e.target.value } : {}), institutionId: "" }))}
                     className="form-input"
                   >
                     {config.types.map((t) => (
@@ -497,28 +506,79 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   </select>
                 </div>
               )}
-              {/* Account: group & institution SmartSelect in compact mode */}
-              {entityType === "account" && !hiddenFields?.includes("groupId") && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-foreground/60">所有人</div>
-                  <SmartSelect mode="single" value={form.groupId ?? ""}
-                    onChange={id => setForm(prev => ({ ...prev, groupId: id }))}
-                    options={compactGroupOptions} placeholder="所有人"
-                    onCreateClick={() => { setNestedEntityType("group"); setNestedOpen(true); }}
-                    createLabel="新增所有人" />
-                </div>
-              )}
-              {entityType === "account" && !hiddenFields?.includes("institutionId") && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-foreground/60">机构</div>
-                  <SmartSelect mode="single" value={form.institutionId ?? ""}
-                    onChange={id => setForm(prev => ({ ...prev, institutionId: id }))}
-                    options={compactInstitutionOptions} placeholder="选择机构"
-                    onCreateClick={() => { setNestedEntityType("institution"); setNestedOpen(true); }}
-                    createLabel="新增机构" />
-                </div>
-              )}
-              {/* Parent category selector — only for category entityType when parentCategories provided */}
+              {compactVisibleFields.map((field) => {
+                if (field.type === "text") {
+                  return (
+                    <div key={field.key} className="space-y-1">
+                      <div className="form-label">{field.label}</div>
+                      <input
+                        value={form[field.key] ?? field.defaultValue ?? ""}
+                        onChange={(e) => setForm((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                        placeholder={field.placeholder ?? ""}
+                        className="form-input"
+                        inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
+                      />
+                    </div>
+                  );
+                }
+
+                const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+                if (opts.length === 0 && !field.optionsFromData) return null;
+
+                if (field.optionsFromData && field.nestedCreate) {
+                  const dataKey = field.optionsFromData;
+                  const dataList = field.key === "institutionId"
+                    ? filterInstitutionDataForAccount(nestedFieldData[dataKey] ?? [])
+                    : nestedFieldData[dataKey] ?? [];
+                  const ssOptions: SmartSelectOption[] = field.key === "institutionId"
+                    ? dataList.map((item) => ({
+                        id: item.id,
+                        label: item.name,
+                        subLabel: institutionTypeLabel(item.type ?? null),
+                      }))
+                    : dataList.map((item) => ({
+                        id: item.id,
+                        label: item.name,
+                      }));
+                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择往来机构/人员";
+
+                  return (
+                    <div key={field.key} className="space-y-1">
+                      <div className="form-label">{field.label}</div>
+                      <SmartSelect
+                        mode="single"
+                        value={form[field.key] ?? field.defaultValue ?? ""}
+                        onChange={(id) => setForm((prev) => ({ ...prev, [field.key]: id }))}
+                        options={ssOptions}
+                        placeholder={selectPlaceholder}
+                        searchable={field.key === "institutionId"}
+                        onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
+                        createLabel={getSmartSelectCreateLabel(field.nestedCreate)}
+                      />
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={field.key} className="space-y-1">
+                    <div className="form-label">{field.label}</div>
+                    <select
+                      value={form[field.key] ?? field.defaultValue ?? ""}
+                      onChange={(e) => setForm((prev) => ({
+                        ...prev,
+                        [field.key]: e.target.value,
+                        ...(field.key === "kind" ? { institutionId: "" } : {}),
+                      }))}
+                      className="form-input"
+                    >
+                      {opts.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+              {/* Parent category selector 鈥?only for category entityType when parentCategories provided */}
               {entityType === "category" && parentCategories && parentCategories.length > 0 && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-foreground/60">上级分类</div>
@@ -527,10 +587,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     value={form.parentId ?? ""}
                     onChange={(id) => setForm(prev => ({ ...prev, parentId: id }))}
                     options={parentCategories.map(pc => {
-                      // depth 0 = root category → group header (non-selectable)
-                      // depth 1+ with isGroup → collapsible group (selectable + has sub-items)
-                      // depth 1+ without isGroup → regular selectable item
-                      const indent = pc.depth && pc.depth > 0 ? "　".repeat(pc.depth) : "";
+                      // depth 0 = root category 鈫?group header (non-selectable)
+                      // depth 1+ with isGroup 鈫?collapsible group (selectable + has sub-items)
+                      // depth 1+ without isGroup 鈫?regular selectable item
+                      const indent = pc.depth && pc.depth > 0 ? "銆€".repeat(pc.depth) : "";
                       return {
                         id: pc.id,
                         label: `${indent}${pc.name}`,
@@ -555,7 +615,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 </button>
                 <button type="submit" disabled={saving || !(form.name?.trim())}
                   className="primary-button h-9 disabled:opacity-50">
-                  {saving ? "保存中…" : "保存"}
+                  {saving ? "保存中..." : "保存"}
                 </button>
               </div>
             </form>
@@ -570,6 +630,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             open={nestedOpen}
             onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
             onCreated={handleNestedCreated}
+            defaultType={entityType === "account" && nestedEntityType === "institution" && (form.kind || form.type) === "loan" ? "debt" : undefined}
           />
         )}
       </>
@@ -595,7 +656,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               return (
                 <input
                   key={field.key}
-                  value={form[field.key] ?? ""}
+                  value={form[field.key] ?? field.defaultValue ?? ""}
                   onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                   placeholder={field.placeholder ?? field.label}
                   className="form-input flex-1 min-w-[120px]"
@@ -609,7 +670,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             return (
               <select
                 key={field.key}
-                value={form[field.key] ?? ""}
+                value={form[field.key] ?? field.defaultValue ?? ""}
                 onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                 className="form-input"
               >
@@ -622,7 +683,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             disabled={saving || !(form.name?.trim())}
             className="primary-button h-9 shrink-0"
           >
-            {saving ? "…" : "新增"}
+            {saving ? "新增中..." : "新增"}
           </button>
         </form>
         {error && <div className="text-xs text-red-500 mt-1">{error}</div>}
@@ -667,7 +728,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <div key={field.key}>
                         <label className="form-label mb-1 block">{field.label}</label>
                         <input
-                          value={form[field.key] ?? ""}
+                          value={form[field.key] ?? field.defaultValue ?? ""}
                           onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                           placeholder={field.placeholder ?? ""}
                           className="form-input"
@@ -683,7 +744,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
                   if (field.optionsFromData && field.nestedCreate) {
                     const dataKey = field.optionsFromData;
-                    const dataList = nestedFieldData[dataKey] ?? [];
+                    const dataList = field.key === "institutionId"
+                      ? filterInstitutionDataForAccount(nestedFieldData[dataKey] ?? [])
+                      : nestedFieldData[dataKey] ?? [];
                     const ssOptions: SmartSelectOption[] = field.key === "institutionId"
                       ? dataList.map(d => ({
                           id: d.id,
@@ -694,19 +757,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                           id: d.id,
                           label: d.name,
                         }));
-                    const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                    const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择往来机构/人员";
 
                     return (
                       <div key={field.key}>
                         <label className="form-label mb-1 block">{field.label}</label>
                         <SmartSelect
                           mode="single"
-                          value={form[field.key] ?? ""}
+                          value={form[field.key] ?? field.defaultValue ?? ""}
                           onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
                           options={ssOptions}
                           placeholder={selectPlaceholder}
+                          searchable={field.key === "institutionId"}
                           onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                          createLabel={`新增${field.nestedCreate === "institution" ? "机构" : "所有人"}`}
+                          createLabel={`新增${field.nestedCreate === "institution" ? "往来机构/人员" : "所有人"}`}
                         />
                       </div>
                     );
@@ -716,7 +780,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     <div key={field.key}>
                       <label className="form-label mb-1 block">{field.label}</label>
                       <select
-                        value={form[field.key] ?? ""}
+                        value={form[field.key] ?? field.defaultValue ?? ""}
                         onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                         className="form-input"
                       >
@@ -740,7 +804,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   disabled={saving || !(form.name?.trim())}
                   className="primary-button h-9"
                 >
-                  {saving ? "保存中…" : "创建"}
+                  {saving ? "保存中..." : "创建"}
                 </button>
               </div>
             </form>
@@ -767,9 +831,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="primary-button h-9 gap-1.5 shrink-0"
+          className="primary-button h-9 shrink-0 gap-1.5"
         >
-          <Plus className="w-3.5 h-3.5" />{config.title}
+          <Plus className="h-3.5 w-3.5" />{config.title}
         </button>
       ) : (
         <div className="panel-surface overflow-hidden">
@@ -785,7 +849,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     <div key={field.key}>
                       <label className="form-label mb-1 block">{field.label}</label>
                       <input
-                        value={form[field.key] ?? ""}
+                        value={form[field.key] ?? field.defaultValue ?? ""}
                         onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                         placeholder={field.placeholder ?? ""}
                         className="form-input"
@@ -796,14 +860,16 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   );
                 }
 
-                // Select field — use SmartSelect for dynamic fields with nestedCreate, plain <select> for static
+                // Select field - use SmartSelect for dynamic fields with nestedCreate, plain <select> for static
                 const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
                 if (opts.length === 0 && !field.optionsFromData) return null;
 
                 // Build SmartSelect options for dynamic fields (institutionId / groupId)
                 if (field.optionsFromData && field.nestedCreate) {
                   const dataKey = field.optionsFromData;
-                  const dataList = nestedFieldData[dataKey] ?? [];
+                  const dataList = field.key === "institutionId"
+                    ? filterInstitutionDataForAccount(nestedFieldData[dataKey] ?? [])
+                    : nestedFieldData[dataKey] ?? [];
                   let ssOptions: SmartSelectOption[];
 
                   if (field.key === "institutionId") {
@@ -820,19 +886,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   }
 
                   // Placeholder text for the SmartSelect (no empty option in the list)
-                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择往来机构/人员";
 
                   return (
                     <div key={field.key}>
                       <label className="form-label mb-1 block">{field.label}</label>
                       <SmartSelect
                         mode="single"
-                        value={form[field.key] ?? ""}
+                        value={form[field.key] ?? field.defaultValue ?? ""}
                         onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
                         options={ssOptions}
                         placeholder={selectPlaceholder}
+                        searchable={field.key === "institutionId"}
                         onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                        createLabel={`新增${field.nestedCreate === "institution" ? "机构" : "所有人"}`}
+                        createLabel={`新增${field.nestedCreate === "institution" ? "往来机构/人员" : "所有人"}`}
                       />
                     </div>
                   );
@@ -843,8 +910,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   <div key={field.key}>
                     <label className="form-label mb-1 block">{field.label}</label>
                     <select
-                      value={form[field.key] ?? ""}
-                      onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                      value={form[field.key] ?? field.defaultValue ?? ""}
+                      onChange={e => setForm(prev => ({
+                        ...prev,
+                        [field.key]: e.target.value,
+                        ...(field.key === "kind" ? { institutionId: "" } : {}),
+                      }))}
                       className="form-input"
                     >
                       {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -867,7 +938,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 disabled={saving || !(form.name?.trim())}
                 className="primary-button h-9"
               >
-                {saving ? "保存中…" : "创建"}
+                {saving ? "保存中..." : "创建"}
               </button>
             </div>
           </form>
@@ -882,6 +953,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           open={nestedOpen}
           onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
           onCreated={handleNestedCreated}
+          defaultType={entityType === "account" && nestedEntityType === "institution" && (form.kind || form.type) === "loan" ? "debt" : undefined}
         />
       )}
     </>
@@ -890,3 +962,4 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
 /* ---- Backward-compatible alias ---- */
 export const NestedAddModal = EntityCreateForm;
+

@@ -11,6 +11,8 @@ import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } fr
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { FillNavButton } from "@/components/FillNavButton";
+import { DebtShell } from "@/components/DebtShell";
+import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { FundShell } from "@/components/FundShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
@@ -35,10 +37,18 @@ import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestA
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { buildFlatAccountOptions } from "@/lib/account-display";
+import { debtActionLabel } from "@/lib/debt";
+import {
+  buildCreditCardCyclePersistRows,
+  computeCreditBillCascade,
+  cycleForStatementMonth,
+  fillMissingCreditBillSummaries,
+  mergeCreditBillSummariesWithCascade,
+} from "@/lib/credit/billing";
 
 export const dynamic = "force-dynamic";
 
-import { startOfDayUtc, addDaysUtc, addMonthsUtc, toStatementMonth, creditCardCycle, toNumber, lastDayOfMonthUtc, clampDay, addWorkdaysUtc } from "@/lib/date-utils";
+import { addDaysUtc, toStatementMonth, creditCardCycle, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
 
 function formatType(type: string) {
   if (type === "expense") return "支出";
@@ -128,34 +138,6 @@ function escapeCsvCell(value: string) {
 function buildCsvDataUri(rows: string[][]) {
   const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
   return `data:text/csv;charset=utf-8,${encodeURIComponent(`\uFEFF${csv}`)}`;
-}
-
-function cycleForStatementMonth(statementMonth: string, billingDay: number, repaymentDay: number | null | undefined, now: Date) {
-  const today = startOfDayUtc(now);
-  const m = statementMonth.match(/^(\d{4})-(\d{2})$/);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const monthIndex = Number(m[2]) - 1;
-  if (!Number.isFinite(y) || !Number.isFinite(monthIndex)) return null;
-
-  const end = new Date(Date.UTC(y, monthIndex, clampDay(y, monthIndex, billingDay)));
-  const prevEnd = new Date(Date.UTC(y, monthIndex - 1, clampDay(y, monthIndex - 1, billingDay)));
-  const start = addDaysUtc(prevEnd, 1);
-  const nextEnd = addDaysUtc(end, 1);
-  const isCurrentCycle = today.getTime() >= start.getTime() && today.getTime() < nextEnd.getTime();
-
-  const due =
-    repaymentDay && repaymentDay >= 1
-      ? (() => {
-          const dueMonthOffset = repaymentDay <= billingDay ? 1 : 0;
-          const dueMonth = end.getUTCMonth() + dueMonthOffset;
-          const dueYear = end.getUTCFullYear() + Math.floor(dueMonth / 12);
-          const dueMonthNorm = ((dueMonth % 12) + 12) % 12;
-          return new Date(Date.UTC(dueYear, dueMonthNorm, clampDay(dueYear, dueMonthNorm, repaymentDay)));
-        })()
-      : null;
-
-  return { start, end, due, today, isCurrentCycle };
 }
 
 function buildCategoryPathLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
@@ -613,6 +595,112 @@ async function createTransaction(formData: FormData) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "记账失败";
     return { ok: false as const, error: msg };
+  }
+}
+
+async function createDebtTransaction(formData: FormData) {
+  "use server";
+
+  const mode = String(formData.get("mode") ?? "").trim();
+  const debtAccountId = String(formData.get("debtAccountId") ?? "").trim();
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
+  const dateStr = String(formData.get("date") ?? "").trim();
+  const principal = parseMoneyInput(formData.get("principal"));
+  const interest = parseMoneyInput(formData.get("interest"));
+  const note = String(formData.get("note") ?? "").trim();
+  const { householdId } = await getHouseholdScope();
+
+  if (!["borrow_in", "repay_out", "lend_out", "collect_in"].includes(mode)) {
+    return { ok: false as const, error: "操作类型不正确" };
+  }
+  if (!debtAccountId || !cashAccountId) {
+    return { ok: false as const, error: "请选择往来对象账户和资金账户" };
+  }
+  if (debtAccountId === cashAccountId) {
+    return { ok: false as const, error: "往来对象账户与资金账户不能相同" };
+  }
+  if (principal <= 0) {
+    return { ok: false as const, error: "请输入正确的金额" };
+  }
+  if (interest < 0) {
+    return { ok: false as const, error: "利息不能小于 0" };
+  }
+
+  const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const [debtAccount, cashAccount] = await Promise.all([
+        tx.account.findUnique({ where: { id: debtAccountId } }),
+        tx.account.findUnique({ where: { id: cashAccountId } }),
+      ]);
+
+      if (!debtAccount || debtAccount.kind !== AccountKind.loan) {
+        throw new Error("往来对象账户不存在");
+      }
+      if (!cashAccount || cashAccount.kind === AccountKind.investment || cashAccount.kind === AccountKind.loan) {
+        throw new Error("资金账户不正确");
+      }
+
+      const transferFromAccount = mode === "borrow_in" || mode === "collect_in" ? debtAccount : cashAccount;
+      const transferToAccount = mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
+      const transferStatementMonth =
+        (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
+        transferToAccount.billingDay
+          ? toStatementMonth(date, transferToAccount.billingDay)
+          : null;
+
+      await tx.txRecord.create({
+        data: {
+          accountId: transferFromAccount.id,
+          accountName: transferFromAccount.name,
+          toAccountId: transferToAccount.id,
+          toAccountName: transferToAccount.name,
+          amount: -Math.abs(principal),
+          type: TransactionType.transfer,
+          date,
+          note: note || null,
+          statementMonth: transferStatementMonth,
+          source: `debt_${mode}`,
+          householdId,
+        },
+      });
+
+      if (interest > 0 && (mode === "repay_out" || mode === "collect_in")) {
+        const interestType = mode === "repay_out" ? TransactionType.expense : TransactionType.income;
+        const interestCategoryName = mode === "repay_out" ? "利息支出" : "利息";
+        const interestCategory = await tx.category.findFirst({
+          where: {
+            householdId,
+            type: interestType === TransactionType.expense ? "expense" : "income",
+            name: interestCategoryName,
+          },
+        });
+
+        await tx.txRecord.create({
+          data: {
+            accountId: cashAccount.id,
+            accountName: cashAccount.name,
+            amount: mode === "repay_out" ? -Math.abs(interest) : Math.abs(interest),
+            type: interestType,
+            date,
+            categoryId: interestCategory?.id ?? null,
+            categoryName: interestCategory?.name ?? interestCategoryName,
+            note: note ? `${note} 利息` : "利息",
+            householdId,
+          },
+        });
+      }
+    });
+
+    await Promise.all([
+      recalcAndSaveAccountBalance(debtAccountId).catch(() => {}),
+      recalcAndSaveAccountBalance(cashAccountId).catch(() => {}),
+    ]);
+    revalidateAfterTxChange();
+    return { ok: true as const };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "借还款失败" };
   }
 }
 
@@ -1544,6 +1632,7 @@ export default async function Home({
     fundPageSize?: string;
     fundPage?: string;
     showCleared?: string;
+    debtPerson?: string;
     detailAll?: string;
     detailFilterDate?: string;
     detailFilterFlow?: string;
@@ -1563,10 +1652,11 @@ export default async function Home({
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
   // 如果没有选择账户，默认跳转到概览页
-  if (!accountId && !accountName) {
+  if (!accountId && !accountName && params?.view !== "debt") {
     redirect("/overview");
   }
-  const viewParam = params?.view === "bill" ? "bill" : params?.view === "detail" ? "detail" : params?.view === "investfund" ? "investfund" : params?.view === "investmoney" ? "investmoney" : params?.view === "regularinvest" ? "regularinvest" : "";
+  const viewParam = params?.view === "bill" ? "bill" : params?.view === "detail" ? "detail" : params?.view === "investfund" ? "investfund" : params?.view === "investmoney" ? "investmoney" : params?.view === "regularinvest" ? "regularinvest" : params?.view === "debt" ? "debt" : "";
+  const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const hideZeroBills = params?.hideZeroBills === "1";
   const hideSettledBills = params?.hideSettledBills === "1";
@@ -1626,9 +1716,21 @@ export default async function Home({
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
+  const isDebtAccount = selectedAccount?.kind === AccountKind.loan;
   const isInvestAccount = selectedAccount?.kind === AccountKind.investment;
   const isOverview = !viewParam && !accountId && !accountName;
-  const view = viewParam ? viewParam : isBillAccount ? "bill" : isInvestAccount ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund") : isOverview ? "overview" : "detail";
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" =
+    isDebtAccount
+      ? "debt"
+      : viewParam
+        ? viewParam
+        : isBillAccount
+          ? "bill"
+          : isInvestAccount
+            ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund")
+            : isOverview
+              ? "overview"
+              : "detail";
   const needsDetailEntries = view === "detail";
 
   const legacyNames = (() => {
@@ -1827,6 +1929,7 @@ export default async function Home({
   }
 
   const selectedAccountLabel = (() => {
+    if (view === "debt") return "借入/借出";
     if (selectedAccount) {
       const inst = (selectedAccount.Institution?.name ?? "").trim();
       const accountLabel = inst ? `${inst}·${selectedAccount.name}` : selectedAccount.name;
@@ -1916,6 +2019,145 @@ export default async function Home({
     groupId: groups.map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
   };
+
+  const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
+  const debtRowMap = new Map<string, {
+    key: string;
+    name: string;
+    payable: number;
+    receivable: number;
+    net: number;
+    accountCount: number;
+    accountIds: string[];
+    accountLabels: string[];
+  }>();
+
+  for (const account of debtAccounts) {
+    const institutionName = (account.Institution?.name ?? "").trim();
+    const rowKey = institutionName
+      ? `institution:${account.institutionId ?? institutionName}`
+      : `account:${account.id}`;
+    const rowName = institutionName || account.name;
+    const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+    const current = debtRowMap.get(rowKey) ?? {
+      key: rowKey,
+      name: rowName,
+      payable: 0,
+      receivable: 0,
+      net: 0,
+      accountCount: 0,
+      accountIds: [],
+      accountLabels: [],
+    };
+    current.accountCount += 1;
+    current.accountIds.push(account.id);
+    current.accountLabels.push(institutionName ? `${institutionName}·${account.name}` : account.name);
+    current.net += balance;
+    if (balance >= 0) current.receivable += balance;
+    else current.payable += Math.abs(balance);
+    debtRowMap.set(rowKey, current);
+  }
+
+  const debtRows = Array.from(debtRowMap.values()).sort(
+    (a, b) => (b.payable + b.receivable) - (a.payable + a.receivable),
+  );
+  const derivedDebtKey = selectedAccount?.kind === AccountKind.loan
+    ? (((selectedAccount.Institution?.name ?? "").trim()
+        ? `institution:${selectedAccount.institutionId ?? (selectedAccount.Institution?.name ?? "").trim()}`
+        : `account:${selectedAccount.id}`))
+    : "";
+  const selectedDebtKey = debtRows.some((row) => row.key === debtPersonParam)
+    ? debtPersonParam
+    : debtRows.some((row) => row.key === derivedDebtKey)
+      ? derivedDebtKey
+      : debtRows[0]?.key ?? "";
+  const selectedDebtRow = debtRows.find((row) => row.key === selectedDebtKey) ?? null;
+  const totalDebtPayable = debtRows.reduce((sum, row) => sum + row.payable, 0);
+  const totalDebtReceivable = debtRows.reduce((sum, row) => sum + row.receivable, 0);
+
+  const debtEntriesRaw =
+    view === "debt" && debtAccounts.length > 0
+      ? await prisma.txRecord.findMany({
+          where: {
+            deletedAt: null,
+            ...hid,
+            OR: [
+              { accountId: { in: debtAccounts.map((account) => account.id) } },
+              { toAccountId: { in: debtAccounts.map((account) => account.id) } },
+            ],
+          },
+          include: { EntryTag: { include: { Tag: true } } },
+          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+          take: 3000,
+        })
+      : [];
+  const selectedDebtAccountIds = new Set(selectedDebtRow?.accountIds ?? []);
+  const debtAccountLabelById = new Map(
+    debtAccounts.map((account) => [
+      account.id,
+      (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
+    ]),
+  );
+  const filteredDebtEntries = debtEntriesRaw.filter(
+    (entry) => selectedDebtAccountIds.has(entry.accountId ?? "") || selectedDebtAccountIds.has(entry.toAccountId ?? ""),
+  );
+  const debtBalanceByEntryId = new Map<string, number>();
+  let runningDebtBalance = 0;
+  for (const entry of [...filteredDebtEntries].sort((a, b) => compareDetailEntriesAsc(a, b))) {
+    const amount = toNumber(entry.amount);
+    const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
+    const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
+    runningDebtBalance += displayAmount;
+    debtBalanceByEntryId.set(entry.id, runningDebtBalance);
+  }
+  const debtDetailEntries = filteredDebtEntries
+    .map((entry) => {
+      const amount = toNumber(entry.amount);
+      const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
+      const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
+      const relatedAccountId = isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
+      const inferredDirection = (selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable";
+      const transferActionLabel =
+        entry.source === "debt_borrow_in"
+          ? "借入"
+          : entry.source === "debt_repay_out"
+            ? "还款"
+            : entry.source === "debt_lend_out"
+              ? "借出"
+              : entry.source === "debt_collect_in"
+                ? "收回"
+                : debtActionLabel({
+                    direction: inferredDirection,
+                    isDebtAccountFromSide: !isToDebtAccount,
+                  });
+      return {
+        id: entry.id,
+        date: entryDisplayDate(entry).toISOString().slice(0, 10),
+        typeLabel: entry.type === TransactionType.transfer ? transferActionLabel : (entry.categoryName || formatType(entry.type)),
+        relatedAccountLabel: debtAccountLabelById.get(relatedAccountId) ?? "-",
+        note: entry.note ?? "",
+        amount: displayAmount,
+        balance: debtBalanceByEntryId.get(entry.id) ?? 0,
+        edit:
+          entry.type === TransactionType.transfer
+            ? {
+                type: "transfer" as const,
+                date: entryDisplayDate(entry).toISOString().slice(0, 10),
+                amount: Math.abs(amount),
+                note: entry.note ?? "",
+                fromAccountId: entry.accountId ?? "",
+                toAccountId: entry.toAccountId ?? "",
+              }
+            : {
+                type: entry.type === TransactionType.income ? "income" as const : "expense" as const,
+                date: entryDisplayDate(entry).toISOString().slice(0, 10),
+                amount: Math.abs(amount),
+                note: entry.note ?? "",
+                accountId: entry.accountId ?? "",
+                categoryId: entry.categoryId ?? "",
+              },
+      };
+    });
 
   // 查询最近使用的资金账户
   const lastUsedCashAccount = isInvestAccount && accountId
@@ -2220,119 +2462,85 @@ export default async function Home({
         orderBy: { statementMonth: "desc" },
       })
     : [];
-  const billSummaries = billMonthsForList
-    .map((m) => {
-      const existing = billSummaryByMonth.get(m);
-      if (existing) return existing;
-      const base = cycleForStatementMonth(m, selectedAccount?.billingDay ?? 1, selectedAccount?.repaymentDay ?? null, new Date());
-      if (!base) return null;
-      return { month: m, start: base.start, end: base.end, due: base.due, bill: 0, paid: 0, remain: 0, overpaid: 0, expenseAbs: 0, income: 0, isCurrentCycle: base.isCurrentCycle };
-    })
-    .filter((s): s is NonNullable<typeof s> => !!s);
+  const billSummaries = fillMissingCreditBillSummaries({
+    months: billMonthsForList,
+    summaryByMonth: billSummaryByMonth,
+    billingDay: selectedAccount?.billingDay ?? 1,
+    repaymentDay: selectedAccount?.repaymentDay ?? null,
+    now: new Date(),
+  });
 
-  const overrideByMonth = new Map<string, number>(billOverrides.filter(o => o.statementMonth != null).map((o) => [o.statementMonth as string, Number(o.amount)]));
-
-  const allMonthsForCascade = (() => {
-    const monthSet = new Set(billMonthsForCumulative);
-    const merged: { month: string; bill: number; paid: number }[] = [];
-    for (const m of Array.from(monthSet).sort((a, b) => b.localeCompare(a))) {
-      const s = billSummaryByMonth.get(m);
-      if (s) merged.push({ month: m, bill: s.bill, paid: s.paid });
-      else merged.push({ month: m, bill: 0, paid: 0 });
-    }
-    return merged;
-  })();
-
-  const effectiveBillByMonth = (() => {
-    const map = new Map<string, number>();
-    const logItems: string[] = [];
-    let prevEffective = 0;
-    for (const s of allMonthsForCascade) {
-      const override = overrideByMonth.get(s.month);
-      const effective = override !== undefined ? override : (prevEffective + s.bill);
-      map.set(s.month, effective);
-      prevEffective = effective;
-      const rem = effective - s.paid;
-      logItems.push(`${s.month}:bill=${s.bill},override=${override ?? "none"},eb=${effective},paid=${s.paid},rem=${rem}`);
-    }
-    console.log(`[cascade] ${logItems.join(" | ")}`);
-    return map;
-  })();
-
-  const cumulativeByMonth = (() => {
-    const cumByMonth = new Map<string, { cumulativeRemain: number; cumulativeOverpaid: number }>();
-    for (const s of allMonthsForCascade) {
-      const eb = effectiveBillByMonth.get(s.month) ?? s.bill;
-      const afterPaid = eb - s.paid;
-      cumByMonth.set(s.month, {
-        cumulativeRemain: Math.max(0, afterPaid),
-        cumulativeOverpaid: Math.max(0, -afterPaid),
-      });
-    }
-    return cumByMonth;
-  })();
+  const {
+    overrideByMonth,
+    allMonthsForCascade,
+    effectiveBillByMonth,
+    cumulativeByMonth,
+  } = computeCreditBillCascade({
+    monthsForCascade: billMonthsForCumulative,
+    summaryByMonth: billSummaryByMonth,
+    overrides: billOverrides.map((override) => ({
+      statementMonth: override.statementMonth,
+      amount: Number(override.amount),
+    })),
+  });
+  const creditCardCyclePersistRows = buildCreditCardCyclePersistRows({
+    billingDay: selectedAccount?.billingDay ?? 1,
+    repaymentDay: selectedAccount?.repaymentDay ?? null,
+    months: allMonthsForCascade,
+    summaryByMonth: billSummaryByMonth,
+    effectiveBillByMonth,
+    cumulativeByMonth,
+    overrideByMonth,
+    now: new Date(),
+  });
 
   if (isBillAccount && selectedAccount) {
     await Promise.all(
-      allMonthsForCascade.map(async (s) => {
-        const base = billSummaryByMonth.get(s.month) ?? cycleForStatementMonth(s.month, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, new Date());
-        if (!base) return;
-        const effectiveBill = effectiveBillByMonth.get(s.month) ?? s.bill;
-        const cum = cumulativeByMonth.get(s.month);
-        const hasOverride = overrideByMonth.has(s.month);
+      creditCardCyclePersistRows.map(async (row) => {
         await prisma.creditCardCycle.upsert({
-          where: { accountId_statementMonth: { accountId: selectedAccount.id, statementMonth: s.month } },
+          where: { accountId_statementMonth: { accountId: selectedAccount.id, statementMonth: row.statementMonth } },
           create: {
             accountId: selectedAccount.id,
-            statementMonth: s.month,
-            periodStart: base.start,
-            periodEnd: base.end,
-            dueDate: base.due ?? null,
-            expenseAbs: String((base as any).expenseAbs ?? 0),
-            income: String((base as any).income ?? 0),
-            paid: String((base as any).paid ?? 0),
-            rawBill: String((base as any).bill ?? 0),
-            effectiveBill: String(effectiveBill),
-            cumulativeRemain: String(cum?.cumulativeRemain ?? 0),
-            cumulativeOverpaid: String(cum?.cumulativeOverpaid ?? 0),
-            isCurrentCycle: Boolean((base as any).isCurrentCycle),
-            isLocked: hasOverride,
-            lockSource: hasOverride ? "override" : null,
+            statementMonth: row.statementMonth,
+            periodStart: row.periodStart,
+            periodEnd: row.periodEnd,
+            dueDate: row.dueDate,
+            expenseAbs: String(row.expenseAbs),
+            income: String(row.income),
+            paid: String(row.paid),
+            rawBill: String(row.rawBill),
+            effectiveBill: String(row.effectiveBill),
+            cumulativeRemain: String(row.cumulativeRemain),
+            cumulativeOverpaid: String(row.cumulativeOverpaid),
+            isCurrentCycle: row.isCurrentCycle,
+            isLocked: row.isLocked,
+            lockSource: row.lockSource,
           },
           update: {
-            periodStart: base.start,
-            periodEnd: base.end,
-            dueDate: base.due ?? null,
-            expenseAbs: String((base as any).expenseAbs ?? 0),
-            income: String((base as any).income ?? 0),
-            paid: String((base as any).paid ?? 0),
-            rawBill: String((base as any).bill ?? 0),
-            effectiveBill: String(effectiveBill),
-            cumulativeRemain: String(cum?.cumulativeRemain ?? 0),
-            cumulativeOverpaid: String(cum?.cumulativeOverpaid ?? 0),
-            isCurrentCycle: Boolean((base as any).isCurrentCycle),
-            isLocked: hasOverride,
-            lockSource: hasOverride ? "override" : null,
+            periodStart: row.periodStart,
+            periodEnd: row.periodEnd,
+            dueDate: row.dueDate,
+            expenseAbs: String(row.expenseAbs),
+            income: String(row.income),
+            paid: String(row.paid),
+            rawBill: String(row.rawBill),
+            effectiveBill: String(row.effectiveBill),
+            cumulativeRemain: String(row.cumulativeRemain),
+            cumulativeOverpaid: String(row.cumulativeOverpaid),
+            isCurrentCycle: row.isCurrentCycle,
+            isLocked: row.isLocked,
+            lockSource: row.lockSource,
           },
         });
       }),
     );
   }
 
-  const billSummariesWithCumulative = (() => {
-    if (!billSummaries.length) return [];
-    return billSummaries
-      .map((s) => {
-        const cum = cumulativeByMonth.get(s.month);
-        const effectiveBill = effectiveBillByMonth.get(s.month) ?? s.bill;
-        return {
-          ...s,
-          effectiveBill,
-          cumulativeRemain: cum?.cumulativeRemain ?? s.remain,
-          cumulativeOverpaid: cum?.cumulativeOverpaid ?? s.overpaid,
-        };
-      });
-  })();
+  const billSummariesWithCumulative = mergeCreditBillSummariesWithCascade(
+    billSummaries,
+    effectiveBillByMonth,
+    cumulativeByMonth,
+  );
 
   const persistedCycles = isBillAccount && selectedAccount
     ? await prisma.creditCardCycle.findMany({
@@ -2488,7 +2696,7 @@ export default async function Home({
     if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
     if (hideZeroBills) q.set("hideZeroBills", "1");
     if (hideSettledBills) q.set("hideSettledBills", "1");
-    return `/)${q.toString()}`;
+    return `/?${q.toString()}`;
   })();
 
   const renderDetailFilterHeader = (column: DetailFilterColumn, label: string, className: string) => {
@@ -2615,7 +2823,11 @@ export default async function Home({
           <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
               <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
-              {!selectedAccount ? (
+              {view === "debt" ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(totalDebtReceivable - totalDebtPayable)}`}>
+                  {formatMoney(totalDebtReceivable - totalDebtPayable)}
+                </span>
+              ) : !selectedAccount ? (
                 <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
               ) : view === "investmoney" && investmoneyData ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(investmoneyData.totalMarketValue)}`}>{formatMoney(investmoneyData.totalMarketValue)}</span>
@@ -2624,7 +2836,7 @@ export default async function Home({
               ) : (
                 <LiveAccountBalance mode="account" accountId={selectedAccount.id} initialValue={selectedAccountBalanceValue} isRedUp={isRedUp} />
               )}
-              {isBillAccount && (
+              {isBillAccount && view !== "debt" && (
                 <div className="flex items-center gap-2">
                   <a href={hrefBill} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "bill" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>账单</a>
                   <a href={hrefDetail} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "detail" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>明细</a>
@@ -2658,6 +2870,18 @@ export default async function Home({
               />
             ) : view === "regularinvest" && selectedAccount ? (
               <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={cashAccountList} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} action={regularInvestFormAction} showTriggerButton={false} />
+            ) : view === "debt" ? (
+              <DebtTransactionModal
+                debtAccounts={(selectedDebtRow?.accountIds ?? []).map((id) => ({
+                  id,
+                  label: debtAccountLabelById.get(id) ?? id,
+                  subLabel: "借入/借出",
+                }))}
+                cashAccounts={cashAccountList}
+                defaultDebtAccountId={selectedDebtRow?.accountIds?.[0] ?? ""}
+                defaultCashAccountId={cashAccountList[0]?.id ?? ""}
+                action={createDebtTransaction}
+              />
             ) : (
               <>
               <TransactionFormModal
@@ -3004,6 +3228,21 @@ export default async function Home({
                 </div>
               </div>
             </div>
+          ) : view === "debt" ? (
+            <DebtShell
+              rows={debtRows.map((row) => ({
+                key: row.key,
+                name: row.name,
+                payable: row.payable,
+                receivable: row.receivable,
+                net: row.net,
+                accountCount: row.accountCount,
+              }))}
+              selectedKey={selectedDebtKey}
+              entries={debtDetailEntries}
+              totalPayable={totalDebtPayable}
+              totalReceivable={totalDebtReceivable}
+            />
           ) : view === "investmoney" && investmoneyData ? (
             <FundShell
               key={`investmoney-${accountId}`}

@@ -130,11 +130,40 @@ export function TransactionFormModal({
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
   const [accountNestedOpen, setAccountNestedOpen] = useState(false);
+  const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to">("account");
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
+  const [transferAccountList, setTransferAccountList] = useState(transferAccounts);
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
+  const [localTransferAccountSSOpts, setLocalTransferAccountSSOpts] = useState(transferAccountSSOptions);
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
   const formRef = useRef<HTMLFormElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
+
+  async function openAccountCreate(target: "account" | "from" | "to") {
+    setAccountCreateTarget(target);
+    setAccountNestedOpen(true);
+    void (async () => {
+      const res = await fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" }).catch(() => null);
+      if (res?.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          setLocalNestedFieldData({
+            groupId: (data.groups ?? []).map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
+            institutionId: (data.institutions ?? []).map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
+              id: institution.id,
+              name: institution.shortName?.trim() || institution.name,
+              type: institution.type ?? "",
+            })),
+          });
+        }
+      }
+    })();
+  }
+
+  useEffect(() => {
+    setLocalNestedFieldData(nestedFieldData);
+  }, [nestedFieldData]);
 
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
@@ -686,7 +715,7 @@ export function TransactionFormModal({
                       <div className="form-label">{txType === "income" ? "收款账户" : "资金账户"}</div>
                       <SmartSelect mode="single" value={accountId} onChange={setAccountId}
                         options={localAccountSSOpts ?? accountList} placeholder="请选择"
-                        onCreateClick={() => setAccountNestedOpen(true)} />
+                        onCreateClick={() => { void openAccountCreate("account"); }} />
                     </div>
                   </div>
 
@@ -765,7 +794,8 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
-                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户" />
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
                         <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
@@ -775,7 +805,8 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                          options={accounts} placeholder="请选择" />
+                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户" />
                       </div>
                     </div>
                   ) : (
@@ -783,7 +814,8 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
-                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户" />
                       </div>
                       <div className="flex items-center justify-center pb-0.5">
                         <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
@@ -792,7 +824,8 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                          options={transferAccountSSOptions ?? transferAccounts} placeholder="请选择" />
+                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户" />
                       </div>
                     </div>
                   )}
@@ -882,12 +915,21 @@ export function TransactionFormModal({
         onClose={() => setAccountNestedOpen(false)}
         onCreated={(id, name, extra) => {
           const kind = extra?.kind || "bank_debit";
-          setAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
-          setLocalAccountSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev);
-          setAccountId(id);
+          const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName;
+          const label = institutionLabel ? `${institutionLabel}·${name}` : name;
+          const subLabel = [kindLabel(kind), extra?.groupName].filter(Boolean).join(" · ");
+          const option = { id, label, subLabel };
+          setAccountList(prev => [...prev, option]);
+          setTransferAccountList(prev => [...prev, option]);
+          setLocalAccountSSOpts(prev => prev ? [...prev, option] : prev);
+          setLocalTransferAccountSSOpts(prev => prev ? [...prev, option] : prev);
+          if (accountCreateTarget === "from") setFromAccountId(id);
+          else if (accountCreateTarget === "to") setToAccountId(id);
+          else setAccountId(id);
           setAccountNestedOpen(false);
+          setAccountCreateTarget("account");
         }}
-        nestedFieldData={nestedFieldData}
+        nestedFieldData={localNestedFieldData ?? nestedFieldData}
       />,
       document.body,
     )}

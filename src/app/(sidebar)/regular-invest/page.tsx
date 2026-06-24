@@ -58,7 +58,7 @@ export default async function RegularInvestPage() {
     }
   }
 
-  const accountOptions = accounts.map(buildAccountDisplayOption);
+  const accountOptions = accounts.map((account) => buildAccountDisplayOption(account));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
 
   const plansData = plans.map((plan) => {

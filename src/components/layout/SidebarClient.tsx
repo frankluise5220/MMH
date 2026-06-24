@@ -14,6 +14,7 @@ import {
   EyeOff,
   Landmark,
   BarChart3,
+  CreditCard,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -27,9 +28,10 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
+  getSidebarOwnerFilterPreference,
   setSidebarCollapsedPreference,
-  setSidebarGroupPreference,
   setSidebarHideZeroPreference,
+  setSidebarOwnerFilterPreference,
 } from "@/lib/client/appPreferences";
 
 type AccountItem = {
@@ -38,34 +40,63 @@ type AccountItem = {
   label: string;
   balance: number;
   kind: string;
+  groupName?: string;
   institution?: string;
   investProductType?: string;
 };
 
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet"];
+const CREDIT_KINDS = ["bank_credit"];
 const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
-const LIABILITY_KINDS = ["bank_credit", "loan", "other"];
+const LIABILITY_KINDS = ["loan_summary", "other"];
 const SECTION_ICON: Record<string, React.ElementType> = {
   资产: Landmark,
+  信用卡: CreditCard,
   投资: BarChart3,
   负债: Landmark,
 };
+
+function normalizeSidebarItems(items: AccountItem[]) {
+  const loanItems = items.filter((item) => item.kind === "loan");
+  const otherItems = items.filter((item) => item.kind !== "loan");
+
+  if (loanItems.length === 0) return otherItems;
+
+  const loanBalance = loanItems.reduce((sum, item) => sum + item.balance, 0);
+  return [
+    ...otherItems,
+    {
+      id: "__debt__",
+      name: "借入/借出",
+      label: "借入/借出",
+      balance: loanBalance,
+      kind: "loan_summary",
+      groupName: "未设置所有人",
+      institution: "负债",
+    },
+  ];
+}
 
 export function SidebarClient({ items: initialItems, household, isRedUp, user }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean; user: { id: string; name: string; role: string } | null }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
+  const selectedView = (searchParams.get("view") ?? "").trim();
 
-  const [groupByInstitution, setGroupByInstitution] = useState(false);
+  const [selectedOwnerFilter, setSelectedOwnerFilter] = useState("");
   const [hideZero, setHideZero] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
-  const [items, setItems] = useState(initialItems);
+  const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
   const [initOpen, setInitOpen] = useState(false);
   const footerAvatarRef = useRef<HTMLDivElement>(null);
   const householdDisplayName = getHouseholdDisplayName(household);
+  const ownerOptions = useMemo(
+    () => Array.from(new Set(items.map((item) => item.groupName || "未设置所有人"))).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
+    [items],
+  );
 
   async function handleLogout() {
     if (!window.confirm("确认退出当前账号吗？")) return;
@@ -100,21 +131,22 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
           if (data.ok && data.accounts) {
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = data.accounts.map((a: any) => ({
+                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => ({
                   id: a.id,
                   name: a.name,
                   label: (a.Institution?.name?.trim() || "") + (a.Institution?.name?.trim() ? "·" : "") + a.name,
                   balance: Number(a.balance ?? 0),
                   kind: a.kind,
+                  groupName: a.AccountGroup?.name?.trim() || "未设置所有人",
                   institution: a.Institution?.name?.trim() || undefined,
                   investProductType: a.investProductType || undefined,
-                }));
+                })));
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;
                 const next = prev.map(p => {
                   const f = fresh.find(f => f.id === p.id);
-                  if (f && (p.balance !== f.balance || p.name !== f.name || p.institution !== f.institution)) {
+                  if (f && (p.balance !== f.balance || p.name !== f.name || p.groupName !== f.groupName || p.institution !== f.institution || p.label !== f.label || p.kind !== f.kind)) {
                     changed = true;
                     return f;
                   }
@@ -147,7 +179,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
   useEffect(() => {
     const applyPrefs = () => {
       const prefs = getAppPreferences();
-      setGroupByInstitution(prefs.sidebarGroupBy === "institution");
+      setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
       setSidebarCollapsed(prefs.sidebarCollapsed);
     };
@@ -156,10 +188,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
     return () => window.removeEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
   }, []);
 
-  function toggleGroupBy() {
-    const next = !groupByInstitution;
-    setGroupByInstitution(next);
-    setSidebarGroupPreference(next ? "institution" : "kind");
+  function cycleOwnerFilter() {
+    const cycle = ["", ...ownerOptions];
+    const current = getSidebarOwnerFilterPreference();
+    const currentIndex = cycle.indexOf(current);
+    const next = cycle[(currentIndex + 1 + cycle.length) % cycle.length] ?? "";
+    setSelectedOwnerFilter(next);
+    setSidebarOwnerFilterPreference(next);
   }
 
   function toggleHideZero() {
@@ -206,37 +241,27 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
     }`;
 
   // Restore and Refine Grouping logic
-  const visibleItems = hideZero ? items.filter(it => it.balance !== 0) : items;
+  const visibleItems = items.filter((item) => {
+    if (hideZero && item.balance === 0) return false;
+    if (selectedOwnerFilter && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
+    return true;
+  });
 
   const sections = useMemo(() => {
-    if (groupByInstitution) {
-      const instGrouped: Record<string, AccountItem[]> = {};
-      for (const it of visibleItems) {
-        const instKey = it.institution || "未指定机构";
-        if (!instGrouped[instKey]) instGrouped[instKey] = [];
-        instGrouped[instKey].push(it);
-      }
-      return Object.entries(instGrouped)
-        .sort(([a], [b]) => a.localeCompare(b, "zh-Hans-CN"))
-        .map(([inst, accounts]) => ({
-          kind: inst, label: inst, accounts,
-          total: accounts.reduce((s, a) => s + a.balance, 0)
-        }));
-    } else {
-      const groups = [
-        { label: "资产", kinds: ASSET_KINDS },
-        { label: "投资", kinds: INVEST_KINDS },
-        { label: "负债", kinds: LIABILITY_KINDS }
-      ];
-      return groups.map(g => {
-        const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
-        return {
-          kind: g.label, label: g.label, accounts: filtered,
-          total: filtered.reduce((s, a) => s + a.balance, 0)
-        };
-      }).filter(s => s.accounts.length > 0);
-    }
-  }, [visibleItems, groupByInstitution]);
+    const groups = [
+      { label: "资产", kinds: ASSET_KINDS },
+      { label: "信用卡", kinds: CREDIT_KINDS },
+      { label: "投资", kinds: INVEST_KINDS },
+      { label: "负债", kinds: LIABILITY_KINDS }
+    ];
+    return groups.map(g => {
+      const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
+      return {
+        kind: g.label, label: g.label, accounts: filtered,
+        total: filtered.reduce((s, a) => s + a.balance, 0)
+      };
+    }).filter(s => s.accounts.length > 0);
+  }, [visibleItems]);
 
   if (sidebarCollapsed) {
     return (
@@ -272,6 +297,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
           </Link>
           <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title="账户">
             <Landmark size={18} />
+          </Link>
+          <Link
+            href="/accounts?tab=credit"
+            className={collapsedNavCls(pathname.startsWith("/accounts") && searchParams.get("tab") === "credit")}
+            title="信用卡"
+          >
+            <CreditCard size={18} />
           </Link>
           <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
             <BarChart3 size={18} />
@@ -363,12 +395,19 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <nav className="space-y-1">
             <div className="mb-3 mt-5 flex items-center justify-between px-2">
-              <span className="text-[11px] font-medium tracking-[0.14em] text-slate-400 uppercase">账户</span>
+              <div className="min-w-0">
+                <span className="text-[11px] font-medium tracking-[0.14em] text-slate-400 uppercase">账户</span>
+                <div className="mt-1 truncate text-[11px] text-slate-400">{selectedOwnerFilter || "全部"}</div>
+              </div>
               <div className="flex items-center gap-1">
                 <button onClick={toggleHideZero} className={`rounded-md p-1 transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title="隐藏余额为0的账户">
                   <EyeOff size={14} />
                 </button>
-                <button onClick={toggleGroupBy} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-500" title="切换所有人显示">
+                <button
+                  onClick={cycleOwnerFilter}
+                  className={`rounded-md p-1 transition-colors ${selectedOwnerFilter ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`}
+                  title={`切换所有人筛选：${selectedOwnerFilter || "全部"}`}
+                >
                   <ArrowUpDown size={14} />
                 </button>
               </div>
@@ -378,13 +417,21 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
               {sections.map((sec) => {
                 const collapsed = collapsedSections.has(sec.kind);
                 const SectionIcon = SECTION_ICON[sec.label] ?? Landmark;
+                const sectionHref =
+                  sec.label === "投资"
+                    ? "/investments"
+                    : sec.label === "信用卡"
+                      ? "/accounts?tab=credit"
+                      : sec.label === "负债"
+                        ? "/liabilities"
+                        : "/accounts";
                 return (
                   <div key={sec.kind}>
                     <div
                       className="sticky top-0 z-10 flex w-full items-center rounded-lg bg-white/92 px-3 py-2 backdrop-blur transition-all duration-200 hover:bg-white group"
                     >
                       <Link
-                        href={sec.label === "投资" ? "/investments" : "/accounts"}
+                        href={sectionHref}
                         className="flex items-center gap-2 text-sm font-semibold text-slate-800"
                       >
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
@@ -412,8 +459,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                     {!collapsed && (
                       <div className="mt-1 space-y-1">
                         {sec.accounts.map((it) => {
-                          const active = pathname === "/" && (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name);
+                          const active = pathname === "/" && (
+                            it.kind === "loan_summary"
+                              ? selectedView === "debt"
+                              : (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name)
+                          );
                           const href = (() => {
+                            if (it.kind === "loan_summary") return "/?view=debt";
                             const q = new URLSearchParams();
                             if (it.id) q.set("accountId", it.id);
                             else q.set("account", it.name);

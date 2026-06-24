@@ -5,11 +5,14 @@ export type AccountDisplaySource = {
   id: string;
   name: string;
   kind: string;
+  numberMasked?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
-  Institution?: { name: string | null } | null;
+  Institution?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
 };
+
+export type CreditCardLabelMode = "short_last4" | "full_name";
 
 export type AccountDisplayOption = {
   id: string;
@@ -32,11 +35,43 @@ export function formatAccountDisplayName(accountName: string, institutionName?: 
   return `${institution}·${account}`;
 }
 
-export function buildAccountDisplayOption(account: AccountDisplaySource): AccountDisplayOption {
-  const institutionName = account.Institution?.name?.trim() ?? "";
+export function formatDisplayInstitutionName(
+  institution?: { name: string | null; shortName?: string | null } | null,
+  preferShort = true,
+) {
+  const shortName = institution?.shortName?.trim() ?? "";
+  const fullName = institution?.name?.trim() ?? "";
+  if (preferShort && shortName) return shortName;
+  return fullName || shortName;
+}
+
+export function formatCreditCardDisplayName(input: {
+  accountName: string;
+  institution?: { name: string | null; shortName?: string | null } | null;
+  numberMasked?: string | null;
+  mode?: CreditCardLabelMode;
+}) {
+  const institutionLabel = formatDisplayInstitutionName(input.institution, true);
+  if (input.mode === "short_last4") {
+    const last4 = (input.numberMasked ?? "").trim();
+    if (institutionLabel && last4) return `${institutionLabel}${last4}`;
+    if (institutionLabel) return institutionLabel;
+  }
+  return formatAccountDisplayName(input.accountName, formatDisplayInstitutionName(input.institution, false));
+}
+
+export function buildAccountDisplayOption(account: AccountDisplaySource, creditCardLabelMode: CreditCardLabelMode = "short_last4"): AccountDisplayOption {
+  const institutionName = formatDisplayInstitutionName(account.Institution, true);
   const groupId = account.groupId ?? account.AccountGroup?.id ?? "";
   const groupName = account.AccountGroup?.name?.trim() ?? "";
-  const label = formatAccountDisplayName(account.name, institutionName);
+  const label = account.kind === "bank_credit"
+    ? formatCreditCardDisplayName({
+        accountName: account.name,
+        institution: account.Institution,
+        numberMasked: account.numberMasked,
+        mode: creditCardLabelMode,
+      })
+    : formatAccountDisplayName(account.name, institutionName);
   const subLabel = kindLabel(account.kind);
 
   return {

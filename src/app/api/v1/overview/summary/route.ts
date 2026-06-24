@@ -8,18 +8,24 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/v1/overview/summary
  *
- * Dashboard summary for daily accounts and credit cards. Investment holdings are intentionally
- * excluded from this overview because `/invest` owns the investment dashboard.
+ * Dashboard summary for daily accounts, credit cards, and compact investment overview.
  *
  * Response 200:
  * {
  *   ok: true,
  *   data: {
+ *     netWorth: number,              // dailyNetWorth + investmentMarketValue
  *     dailyNetWorth: number,
+ *     investmentMarketValue: number,
+ *     investmentCost: number,
+ *     investmentFloatingPnL: number,
+ *     investmentFloatingPnLRate: number,
+ *     topPositions: [{ accountId, name, marketValue, floatingPnL, floatingPnLRate }],
  *     monthIncome: number,
  *     monthExpense: number,
  *     dailyAssetDistribution: [{ kind, label, value, pct }],
  *     dailyAccountList: [{ id, name, kind, balance, groupName, institutionName }],
+ *     debtAccountList: [{ id, name, kind, balance, groupName, institutionName }],
  *     creditAccountList: [{
  *       id, name, kind, balance, groupName, institutionName,
  *       creditLimit, availableLimit, billingDay, repaymentDay,

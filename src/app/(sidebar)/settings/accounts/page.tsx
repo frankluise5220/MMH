@@ -23,12 +23,12 @@ function kindIcon(k: string) {
 }
 
 type Group = { id: string; name: string; sortOrder: number };
-type Institution = { id: string; name: string; type?: string };
+type Institution = { id: string; name: string; shortName?: string | null; type?: string };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   isPlaceholder?: boolean;
   institutionId: string | null; groupId: string | null;
-  Institution: { id: string; name: string } | null;
+  Institution: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
   billingDay: number | null; repaymentDay: number | null;
   creditLimit: string | null; numberMasked: string | null;
@@ -44,6 +44,7 @@ export default function SettingsAccountsPage() {
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<string>("");
   const [selectedInstitution, setSelectedInstitution] = useState<string>("");
+  const [selectedKinds, setSelectedKinds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
@@ -157,11 +158,15 @@ export default function SettingsAccountsPage() {
     loadAll({ force: true });
   }
 
-  const accountDisplayName = (account: Account) => account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
+  const accountDisplayName = (account: Account) => {
+    const institutionLabel = account.Institution?.shortName?.trim() || account.Institution?.name || "";
+    return institutionLabel ? `${institutionLabel}·${account.name}` : account.name;
+  };
 
   const filteredAccounts = accounts.filter(a => {
     if (selectedGroup && a.groupId !== selectedGroup) return false;
     if (selectedInstitution && a.institutionId !== selectedInstitution) return false;
+    if (selectedKinds.length > 0 && !selectedKinds.includes(a.kind)) return false;
     return true;
   });
 
@@ -173,97 +178,70 @@ export default function SettingsAccountsPage() {
     grouped.set(a.kind, list);
   }
 
-  // Group/institution counts
-  const groupAccountCounts = new Map<string, number>();
-  for (const a of accounts) { if (a.groupId) groupAccountCounts.set(a.groupId, (groupAccountCounts.get(a.groupId) || 0) + 1); }
-  const institutionAccountCounts = new Map<string, number>();
-  for (const a of accounts) { if (a.institutionId) institutionAccountCounts.set(a.institutionId, (institutionAccountCounts.get(a.institutionId) || 0) + 1); }
+  const groupFilterOptions = [
+    { id: "", label: "全部所有人" },
+    ...groups.map((g) => ({ id: g.id, label: g.name })),
+  ];
+  const institutionFilterOptions = [
+    { id: "", label: "全部机构/人员" },
+    ...institutions.map((i) => ({
+      id: i.id,
+      label: i.shortName?.trim() || i.name,
+      subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
+    })),
+  ];
+  const kindFilterOptions = kindOrder.map((kind) => ({
+    id: kind,
+    label: kindLabel(kind),
+  }));
 
   return (
     <div className="space-y-4">
-      {/* ===== 标题行 ===== */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">账户管理</h2>
-          <p className="text-xs text-slate-500 mt-0.5">共 {filteredAccounts.length} 个账户</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowCreateAccount(true)}
-          className="primary-button h-9 gap-1.5 shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />新增账户
-        </button>
-      </div>
-
-      {/* ===== 顶部筛选条 ===== */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1">
-          <select value={selectedGroup} onChange={e => setSelectedGroup(e.target.value)}
-            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400">
-            <option value="">全部所有人</option>
-            {groups.map(g => <option key={g.id} value={g.id}>{g.name} ({groupAccountCounts.get(g.id) || 0})</option>)}
-          </select>
-          {/* 所有人管理：新建/编辑/删除 */}
-          {!showNewGroup ? (
-            <button onClick={() => setShowNewGroup(true)} title="新建所有人"
-              className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:text-blue-600 hover:bg-blue-50">
-              <Plus className="w-3.5 h-3.5" />
-            </button>
-          ) : (
-            <div className="flex items-center gap-1">
-              <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && createGroup()}
-                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" placeholder="所有人名称" autoFocus />
-              <button onClick={createGroup} disabled={!newGroupName.trim()}
-                className="h-9 w-9 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-                <Check className="w-3.5 h-3.5" />
-              </button>
-              <button onClick={() => { setShowNewGroup(false); setNewGroupName(""); }}
-                className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:bg-slate-50">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-          {editGroupId && (
-            <div className="flex items-center gap-1">
-              <input value={editGroupName} onChange={e => setEditGroupName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && updateGroup()}
-                className="h-9 rounded-md border border-blue-200 px-2 text-sm outline-none focus:border-blue-400 w-28" autoFocus />
-              <button onClick={updateGroup}
-                className="h-9 w-9 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700">
-                <Check className="w-3.5 h-3.5" />
-              </button>
-              <button onClick={() => setEditGroupId(null)}
-                className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:bg-slate-50">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-        </div>
-        <select value={selectedInstitution} onChange={e => setSelectedInstitution(e.target.value)}
-          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400">
-          <option value="">全部机构</option>
-          {institutions.map(i => <option key={i.id} value={i.id}>{i.name} ({institutionAccountCounts.get(i.id) || 0})</option>)}
-        </select>
-        {/* 所有人列表（编辑/删除） */}
-        {groups.length > 0 && (
-          <div className="flex items-center gap-1 text-xs text-slate-400">
-            {groups.map(g => (
-              <span key={g.id} className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 hover:border-slate-300">
-                <span className="text-slate-600">{g.name}</span>
-                <button onClick={() => { setEditGroupId(g.id); setEditGroupName(g.name); }} title="编辑所有人"
-                  className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-blue-600">
-                  <Pencil className="w-2.5 h-2.5" />
-                </button>
-                <button onClick={() => { if (confirm("删除所有人？")) deleteGroup(g.id); }} title="删除所有人"
-                  className="hidden group-hover:inline-flex h-4 w-4 items-center justify-center rounded text-slate-400 hover:text-red-500">
-                  <Trash2 className="w-2.5 h-2.5" />
-                </button>
-              </span>
-            ))}
+      <div className="sticky top-0 z-20 space-y-3 border-b border-slate-200 bg-white/95 pb-3 pt-1 backdrop-blur supports-[backdrop-filter]:bg-white/85">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-800">账户管理</h2>
+            <p className="mt-0.5 text-xs text-slate-500">共 {filteredAccounts.length} 个账户</p>
           </div>
-        )}
+          <button
+            type="button"
+            onClick={() => setShowCreateAccount(true)}
+            className="primary-button h-9 shrink-0 gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />新增账户
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="w-52 max-w-full">
+            <SmartSelect
+              mode="single"
+              value={selectedGroup}
+              onChange={setSelectedGroup}
+              options={groupFilterOptions}
+              placeholder="筛选所有人"
+            />
+          </div>
+          <div className="w-64 max-w-full">
+            <SmartSelect
+              mode="single"
+              value={selectedInstitution}
+              onChange={setSelectedInstitution}
+              options={institutionFilterOptions}
+              placeholder="筛选机构/人员"
+              searchable={true}
+            />
+          </div>
+          <div className="w-72 max-w-full">
+            <SmartSelect
+              mode="multi"
+              value={selectedKinds}
+              onChange={setSelectedKinds}
+              options={kindFilterOptions}
+              placeholder="筛选账户类型"
+            />
+          </div>
+        </div>
       </div>
 
       {/* ===== 账户列表（按类型分组，可折叠） ===== */}
@@ -276,8 +254,9 @@ export default function SettingsAccountsPage() {
             <button onClick={() => setCollapsedKinds(prev => { const s = new Set(prev); if (s.has(kind)) s.delete(kind); else s.add(kind); return s; })}
               className="w-full px-4 py-3 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-50/50 transition-colors">
               <div className="flex items-center gap-2">
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${kindColor(kind)}`}>
-                  {kindIcon(kind)} {kindLabel(kind)}
+                <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${kindColor(kind)}`}>
+                  <span className="shrink-0">{kindIcon(kind)}</span>
+                  <span>{kindLabel(kind)}</span>
                 </span>
                 <span className="text-xs text-slate-500">{list.length} 个</span>
               </div>
@@ -308,9 +287,9 @@ export default function SettingsAccountsPage() {
                         <SmartSelect mode="single" value={editForm.institutionId || ""}
                           onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
                           options={institutions.map(i => ({
-                            id: i.id, label: i.name,
-
-                            subLabel: institutionTypeLabel(i.type ?? null),
+                            id: i.id,
+                            label: i.shortName?.trim() || i.name,
+                            subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
                           }))}
                           placeholder="选择机构"
                           onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
@@ -474,7 +453,7 @@ export default function SettingsAccountsPage() {
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name, extra) => {
             if (nestedEntityType === "institution") {
-              setInstitutions(prev => [...prev, { id, name, type: extra?.type }]);
+              setInstitutions(prev => [...prev, { id, name, shortName: extra?.institutionShortName ?? null, type: extra?.type }]);
               setEditForm(f => ({ ...f, institutionId: id }));
             } else if (nestedEntityType === "group") {
               setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);

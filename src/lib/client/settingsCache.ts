@@ -1,7 +1,7 @@
 "use client";
 
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
-export type SettingsInstitution = { id: string; name: string; type?: string | null };
+export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsAccountData = {
   accounts: unknown[];
   groups: SettingsAccountGroup[];

@@ -22,6 +22,7 @@ model Account {
   name                                                       String
   balance                                                    Decimal             @default(0) @db.Decimal(18, 2)
   kind                                                       AccountKind         @default(other)
+  debtDirection                                              DebtDirection?
   currency                                                   String              @default("CNY")
   isActive                                                   Boolean             @default(true)
   isPlaceholder                                              Boolean             @default(false)
@@ -351,6 +352,7 @@ model ImportBatch {
 model Institution {
   id          String     @id @default(cuid())
   name        String
+  shortName   String?
   type        String?
   householdId String?
   Account     Account[]
@@ -589,6 +591,11 @@ enum AccountKind {
   investment
   loan
   other
+}
+
+enum DebtDirection {
+  payable
+  receivable
 }
 
 enum CostBasisMethod {
