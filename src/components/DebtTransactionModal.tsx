@@ -1,11 +1,12 @@
-"use client";
+﻿"use client";
 
-import { ChevronDown, Plus } from "lucide-react";
+import { ChevronDown, Plus, Repeat } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { useAccountSSFilter } from "./TransactionFormModal";
 
 type DebtMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
@@ -25,12 +26,14 @@ const MODE_LABELS: Record<DebtMode, string> = {
 export function DebtTransactionModal({
   debtAccounts,
   cashAccounts,
+  cashAccountSSOptions,
   defaultDebtAccountId,
   defaultCashAccountId,
   action,
 }: {
   debtAccounts: AccountOption[];
   cashAccounts: AccountOption[];
+  cashAccountSSOptions?: SmartSelectOption[];
   defaultDebtAccountId?: string;
   defaultCashAccountId?: string;
   action: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -44,6 +47,23 @@ export function DebtTransactionModal({
     () => cashAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel })),
     [cashAccounts],
   );
+  const {
+    ownerFilterLabel: cashOwnerFilterLabel,
+    cycleOwnerFilter: cycleCashOwnerFilter,
+    filteredOptions: cashAccountSSFiltered,
+  } = useAccountSSFilter(cashAccountSSOptions);
+  const visibleCashOptions = cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions;
+  const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
+    <button
+      type="button"
+      onClick={cycleCashOwnerFilter}
+      title={`所有人：${cashOwnerFilterLabel}`}
+      aria-label={`切换所有人，当前 ${cashOwnerFilterLabel}`}
+      className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
+    >
+      <Repeat className="h-3.5 w-3.5" />
+    </button>
+  ) : undefined;
 
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -140,9 +160,7 @@ export function DebtTransactionModal({
                           key={item}
                           type="button"
                           onClick={() => setMode(item)}
-                          className={`segment-button h-9 ${
-                            mode === item ? "segment-button-active" : ""
-                          }`}
+                          className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
                         >
                           {MODE_LABELS[item]}
                         </button>
@@ -178,20 +196,26 @@ export function DebtTransactionModal({
                         mode="single"
                         value={cashAccountId}
                         onChange={setCashAccountId}
-                        options={cashOptions}
+                        options={visibleCashOptions}
                         placeholder="请选择"
+                        behavior={{
+                          hierarchy: "auto",
+                          search: "auto",
+                          clearable: false,
+                          headerExtra: cashOwnerCycleButton,
+                        }}
                       />
                     </div>
 
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-2" : "grid-cols-1"}`}>
                       <div className="space-y-1">
                         <div className="form-label">{mode === "repay_out" || mode === "collect_in" ? "本金" : "金额"}</div>
-                        <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" />
+                        <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (
                         <div className="space-y-1">
                           <div className="form-label">利息</div>
-                          <CalcInput value={interest} onChange={setInterest} placeholder="可选，例如：23.5" label="利息" />
+                          <CalcInput value={interest} onChange={setInterest} placeholder="可选，例如：23.5" label="利息" precision={2} />
                         </div>
                       ) : null}
                     </div>

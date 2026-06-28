@@ -92,7 +92,9 @@ COPY --from=build /app/public ./public
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=prisma-deps /opt/prisma-runtime/node_modules ./node_modules
+COPY scripts/docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "PGHOST=\"${PGHOST:-postgres}\"; PGUSER=\"${POSTGRES_USER:-mmh-fs}\"; PGDATABASE=\"${POSTGRES_DB:-mmh}\"; until pg_isready -h \"$PGHOST\" -U \"$PGUSER\" -d \"$PGDATABASE\"; do echo \"[mmh] waiting for postgres...\"; sleep 1; done; echo '[mmh] postgres ready, running prisma db push...'; ./node_modules/.bin/prisma db push --accept-data-loss && echo '[mmh] prisma setup complete, starting app...' && node server.js"]
+CMD ["./docker-entrypoint.sh"]

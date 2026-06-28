@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export type MonthlySummaryRow = {
   month: string;
@@ -31,7 +32,7 @@ export async function getMonthlySummary(
     select: { id: true, kind: true },
   });
 
-  const nonInvestAccountIds = allAccounts.filter(a => a.kind !== AccountKind.investment).map(a => a.id);
+  const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
 
   const accountFilter = accountIds
     ? { OR: [{ accountId: { in: accountIds } }, { toAccountId: { in: accountIds } }] }

@@ -32,12 +32,14 @@ type CreditAccountItem = AccountItem & {
   creditLimit: number;
   availableLimit: number;
   currentBill: number;
+  paid: number;
 };
 
 type AccountTypeTotals = {
   cash: number;
   bankDebit: number;
   ewallet: number;
+  deposit: number;
   investmentMarketValue: number;
   investmentCost: number;
   investmentFloatingPnL: number;
@@ -84,6 +86,7 @@ const ZERO_TOTALS: AccountTypeTotals = {
   cash: 0,
   bankDebit: 0,
   ewallet: 0,
+  deposit: 0,
   investmentMarketValue: 0,
   investmentCost: 0,
   investmentFloatingPnL: 0,
@@ -103,6 +106,12 @@ const ZERO_TOTALS: AccountTypeTotals = {
 function directionalClass(value: number, isRedUp: boolean) {
   if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
   if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
+  return "text-slate-500";
+}
+
+function liabilityClass(value: number, isRedUp: boolean) {
+  if (value > 0) return isRedUp ? "text-emerald-600" : "text-red-600";
+  if (value < 0) return isRedUp ? "text-red-600" : "text-emerald-600";
   return "text-slate-500";
 }
 
@@ -138,7 +147,12 @@ export function OverviewDashboard({
   const investFloatingRate = investmentFloatingPnLRate ?? (investCost > 0 ? investFloatingPnL / investCost : 0);
   const monthNet = monthIncome - monthExpense;
   const topAccounts = accountList.slice().sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance)).slice(0, 5);
-  const creditCards = creditAccountList.filter((account) => account.creditLimit > 0 || account.balance !== 0 || account.currentBill !== 0);
+  const creditCards = creditAccountList
+    .filter((account) => account.currentBill > 0)
+    .sort((a, b) => b.currentBill - a.currentBill)
+    .slice(0, 10);
+  const creditBillTotal = creditCards.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
+  const creditPaidTotal = creditCards.reduce((sum, account) => sum + Math.max(0, Math.min(account.paid, account.currentBill)), 0);
   const debtAccounts = debtAccountList.filter((account) => account.balance !== 0);
   const overviewModuleCount = 2 + (creditCards.length > 0 ? 1 : 0) + (debtAccounts.length > 0 ? 1 : 0);
   const moduleClass = (index: number) =>
@@ -158,7 +172,7 @@ export function OverviewDashboard({
             </div>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
               <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
-              <MetricCard label="总负债" value={formatMoneyYuan(totals.liabilities)} valueClass={directionalClass(totals.liabilities, isRedUp)} />
+              <MetricCard label="总负债" value={formatMoneyYuan(totals.liabilities)} valueClass={liabilityClass(totals.liabilities, isRedUp)} />
               <MetricCard label="本月净流入" value={formatMoneyYuan(monthNet)} valueClass={directionalClass(monthNet, isRedUp)} />
             </div>
           </div>
@@ -173,23 +187,26 @@ export function OverviewDashboard({
               </div>
               <Link href="/invest" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
             </div>
-            <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
-              <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
-              <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
-              <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
-              <MetricCard label="浮盈率" value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
+            <div className="space-y-4 px-4 py-4">
+              <InvestmentCostProfitBar
+                cost={investCost}
+                floatingPnL={investFloatingPnL}
+              />
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
+                <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
+                <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
+                <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
+                <MetricCard label="浮盈率" value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
+              </div>
             </div>
-            <InvestmentCostProfitBar
-              cost={investCost}
-              floatingPnL={investFloatingPnL}
-              floatingRate={investFloatingRate}
-            />
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {topPositions.length > 0 ? (
                 topPositions.slice(0, 5).map((item) => (
                   <Link
                     key={item.accountId ?? item.fundCode}
                     href={item.accountId ? `/?accountId=${item.accountId}&view=investfund` : "/invest"}
+                    prefetch={false}
+                    scroll={false}
                     className="grid grid-cols-[minmax(0,1fr)_96px_96px_72px] items-center gap-3 px-4 py-3 hover:bg-slate-50"
                   >
                     <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
@@ -244,7 +261,7 @@ export function OverviewDashboard({
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {topAccounts.length > 0 ? (
                 topAccounts.slice(0, 4).map((account) => (
-                  <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
+                  <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} prefetch={false} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                       <div className="mt-1 text-[11px] text-slate-400">{account.kind}</div>
@@ -267,33 +284,27 @@ export function OverviewDashboard({
                 </div>
                 <Link href="/accounts?tab=credit" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
               </div>
-              <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3">
-                <MetricCard label="已用额度" value={formatMoneyYuan(totals.creditUsed)} valueClass={directionalClass(totals.creditUsed, isRedUp)} />
-                <MetricCard label="可用额度" value={formatMoneyYuan(totals.creditAvailable)} valueClass={directionalClass(totals.creditAvailable, isRedUp)} />
-                <MetricCard label="本期账单" value={formatMoneyYuan(totals.creditCurrentBill)} valueClass={directionalClass(totals.creditCurrentBill, isRedUp)} />
+              <div className="space-y-4 px-4 py-4">
+                <CreditBillProgressBar bill={creditBillTotal} paid={creditPaidTotal} />
               </div>
-              <div className="grid grid-cols-1 gap-3 px-4 pb-4 sm:grid-cols-2">
-                {creditCards.slice(0, 4).map((account) => (
+              <div className="divide-y divide-slate-100 border-t border-slate-100">
+                {creditCards.map((account) => (
                   <Link
                     key={account.id}
                     href={`/?accountId=${account.id}&view=bill`}
-                    className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-amber-200 hover:bg-amber-50/30"
+                    prefetch={false}
+                    scroll={false}
+                    className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50"
                   >
-                    <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
-                    <div className="mt-3 text-[11px] text-slate-400">已用</div>
-                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(account.balance)}</div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <div className="text-[11px] text-slate-400">可用</div>
-                        <div className="mt-0.5 font-semibold tabular-nums text-slate-700">{formatMoney(account.availableLimit)}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[11px] text-slate-400">账单</div>
-                        <div className={`mt-0.5 font-semibold tabular-nums ${directionalClass(account.currentBill, isRedUp)}`}>{formatMoney(account.currentBill)}</div>
-                      </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                     </div>
+                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${liabilityClass(account.currentBill, isRedUp)}`}>{formatMoney(account.currentBill)}</div>
                   </Link>
                 ))}
+                {creditCards.length === 0 && (
+                  <div className="px-4 py-10 text-center text-sm text-slate-400">暂无信用卡账单</div>
+                )}
               </div>
             </div>
           )}
@@ -317,6 +328,8 @@ export function OverviewDashboard({
                   <Link
                     key={account.id}
                     href={`/?accountId=${account.id}&view=detail`}
+                    prefetch={false}
+                    scroll={false}
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >
                     <div className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
@@ -366,11 +379,9 @@ function MetricCard({ label, value, valueClass = "text-slate-900" }: { label: st
 function InvestmentCostProfitBar({
   cost,
   floatingPnL,
-  floatingRate,
 }: {
   cost: number;
   floatingPnL: number;
-  floatingRate: number;
 }) {
   const pnlAbs = Math.abs(floatingPnL);
   const total = cost + pnlAbs;
@@ -383,48 +394,89 @@ function InvestmentCostProfitBar({
 
   if (total <= 0) {
     return (
-      <div className="px-4 pb-4">
-        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-400">
-          暂无成本收益比例
-        </div>
+      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-400">
+        暂无投资分布
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 px-4 pb-4">
-      <div>
-        <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
-          <div
-            className="bg-blue-500 transition-all"
-            style={{ width: `${Math.max(costPct, cost > 0 ? 2 : 0)}%` }}
-            title={`成本: ${formatMoneyYuan(cost)} (${costPct.toFixed(1)}%)`}
-          />
-          <div
-            className={`${pnlClass} transition-all`}
-            style={{ width: `${Math.max(pnlPct, pnlAbs > 0 ? 2 : 0)}%` }}
-            title={`${pnlLabel}: ${formatMoneyYuan(floatingPnL)} (${pnlPct.toFixed(1)}%)`}
-          />
-        </div>
+    <div className="space-y-2">
+      <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
+        <div
+          className="bg-slate-900 transition-all"
+          style={{ width: `${Math.max(costPct, cost > 0 ? 2 : 0)}%` }}
+          title={`持仓成本 ${formatMoneyYuan(cost)}`}
+        />
+        <div
+          className={`${pnlClass} transition-all`}
+          style={{ width: `${Math.max(pnlPct, pnlAbs > 0 ? 2 : 0)}%` }}
+          title={`${pnlLabel} ${formatMoneyYuan(floatingPnL)}`}
+        />
       </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-medium text-slate-700">成本</div>
-            <div className="text-[11px] text-slate-400">{costPct.toFixed(1)}%</div>
-          </div>
-          <div className="text-xs font-medium tabular-nums text-slate-900">{formatMoney(cost)}</div>
-        </div>
-        <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
-          <span className={`h-2.5 w-2.5 rounded-full ${pnlClass}`} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-medium text-slate-700">{pnlLabel}</div>
-            <div className="text-[11px] text-slate-400">{pnlPct.toFixed(1)}%</div>
-          </div>
-          <div className={`text-xs font-medium tabular-nums ${pnlTextClass}`}>{formatMoney(floatingPnL)}</div>
-        </div>
+      <div className="flex items-center gap-4 text-[11px] text-slate-500">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full bg-slate-900" />
+          持仓成本
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className={`h-2 w-2 rounded-full ${pnlClass}`} />
+          {pnlLabel}
+        </span>
       </div>
+    </div>
+  );
+}
+
+function CreditBillProgressBar({
+  bill,
+  paid,
+  compact = false,
+}: {
+  bill: number;
+  paid: number;
+  compact?: boolean;
+}) {
+  const safeBill = Math.max(0, bill);
+  const safePaid = Math.max(0, Math.min(paid, safeBill));
+  const remain = Math.max(0, safeBill - safePaid);
+  const paidPct = safeBill > 0 ? (safePaid / safeBill) * 100 : 0;
+  const remainPct = safeBill > 0 ? (remain / safeBill) * 100 : 0;
+
+  if (safeBill <= 0) {
+    return (
+      <div className={`rounded-lg border border-dashed border-slate-200 bg-slate-50/80 text-slate-400 ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"}`}>
+        暂无账单进度
+      </div>
+    );
+  }
+
+  return (
+    <div className={compact ? "space-y-1.5" : "space-y-2"}>
+      <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
+        <div
+          className="bg-emerald-500 transition-all"
+          style={{ width: `${Math.max(paidPct, safePaid > 0 ? 2 : 0)}%` }}
+          title={`已还 ${formatMoneyYuan(safePaid)}`}
+        />
+        <div
+          className="bg-amber-500 transition-all"
+          style={{ width: `${Math.max(remainPct, remain > 0 ? 2 : 0)}%` }}
+          title={`待还 ${formatMoneyYuan(remain)}`}
+        />
+      </div>
+      {!compact && (
+        <div className="flex items-center gap-4 text-[11px] text-slate-500">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-amber-500" />
+            本期账单
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            已还金额
+          </span>
+        </div>
+      )}
     </div>
   );
 }

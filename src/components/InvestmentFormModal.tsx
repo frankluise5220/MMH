@@ -1,9 +1,11 @@
-﻿﻿﻿﻿﻿"use client";
+"use client";
 
-import { DatabaseZap, Pencil, Plus, Trash2 } from "lucide-react";
+import { DatabaseZap, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { HoldingPicker } from "./HoldingPicker";
+import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { useAccountSSFilter } from "./TransactionFormModal";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -82,6 +84,8 @@ export function InvestmentFormModal({
   defaults,
   cashAccounts,
   investmentAccounts,
+  cashAccountSSOptions,
+  investmentAccountSSOptions,
   holdings,
   allEntries,
   createAction,
@@ -96,6 +100,8 @@ export function InvestmentFormModal({
   defaults?: InvestmentDefaults; // 新增模式的默认值
   cashAccounts?: { id: string; label: string }[];
   investmentAccounts?: { id: string; label: string }[];
+  cashAccountSSOptions?: SmartSelectOption[];
+  investmentAccountSSOptions?: SmartSelectOption[];
   holdings?: { fundCode: string; name: string; units: number }[];
   allEntries?: { date: string; fundConfirmDate?: string | null; fundArrivalDate?: string | null; fundCode: string; fundSubtype: string; fundUnits: number | null; source: string | null }[];
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -208,6 +214,91 @@ export function InvestmentFormModal({
   const redeemLastAppliedRef = useRef<number>(0);
   const prevSavedDateRef = useRef<string | null>(null);
   const editAutoNavEnabledRef = useRef(mode !== "edit");
+
+  const flatCashAccountOptions = useMemo<SmartSelectOption[]>(
+    () => (cashAccounts ?? []).map((account) => ({ id: account.id, label: account.label })),
+    [cashAccounts],
+  );
+  const flatInvestmentAccountOptions = useMemo<SmartSelectOption[]>(
+    () => (investmentAccounts ?? []).map((account) => ({ id: account.id, label: account.label })),
+    [investmentAccounts],
+  );
+  const {
+    ownerFilterLabel: cashOwnerFilterLabel,
+    cycleOwnerFilter: cycleCashOwnerFilter,
+    filteredOptions: cashAccountSSFiltered,
+  } = useAccountSSFilter(cashAccountSSOptions);
+  const {
+    ownerFilterLabel: investmentOwnerFilterLabel,
+    cycleOwnerFilter: cycleInvestmentOwnerFilter,
+    filteredOptions: investmentAccountSSFiltered,
+  } = useAccountSSFilter(investmentAccountSSOptions);
+  const visibleCashAccountOptions = cashAccountSSFiltered ?? cashAccountSSOptions ?? flatCashAccountOptions;
+  const visibleInvestmentAccountOptions = investmentAccountSSFiltered ?? investmentAccountSSOptions ?? flatInvestmentAccountOptions;
+  const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
+    <button
+      type="button"
+      onClick={cycleCashOwnerFilter}
+      title={`所有人：${cashOwnerFilterLabel}`}
+      aria-label={`切换所有人，当前 ${cashOwnerFilterLabel}`}
+      className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
+    >
+      <Repeat className="h-3.5 w-3.5" />
+    </button>
+  ) : undefined;
+  const investmentOwnerCycleButton = investmentAccountSSOptions?.some((option) => option.isHeader) ? (
+    <button
+      type="button"
+      onClick={cycleInvestmentOwnerFilter}
+      title={`所有人：${investmentOwnerFilterLabel}`}
+      aria-label={`切换所有人，当前 ${investmentOwnerFilterLabel}`}
+      className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
+    >
+      <Repeat className="h-3.5 w-3.5" />
+    </button>
+  ) : undefined;
+
+  function selectCashAccount(id: string) {
+    cashAccountTouchedRef.current = true;
+    cashAccountAutoRef.current = false;
+    setCashAccountId(id);
+  }
+
+  function renderCashAccountSelect(placeholder = "请选择资金账户") {
+    return (
+      <SmartSelect
+        mode="single"
+        value={cashAccountId}
+        onChange={selectCashAccount}
+        options={visibleCashAccountOptions}
+        placeholder={placeholder}
+        behavior={{
+          hierarchy: "auto",
+          search: "auto",
+          clearable: true,
+          headerExtra: cashOwnerCycleButton,
+        }}
+      />
+    );
+  }
+
+  function renderInvestmentAccountSelect(placeholder = "请选择账户") {
+    return (
+      <SmartSelect
+        mode="single"
+        value={toAccountId}
+        onChange={setToAccountId}
+        options={visibleInvestmentAccountOptions}
+        placeholder={placeholder}
+        behavior={{
+          hierarchy: "auto",
+          search: "auto",
+          clearable: true,
+          headerExtra: investmentOwnerCycleButton,
+        }}
+      />
+    );
+  }
 
   function enableEditAutoNav() {
     if (mode === "edit") editAutoNavEnabledRef.current = true;
@@ -1115,11 +1206,7 @@ export function InvestmentFormModal({
                   {subtype === "dividend_reinvest" && investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">基金账户</div>
-                      <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                        className="form-input">
-                        <option value="">选择基金账户</option>
-                        {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                      </select>
+                      {renderInvestmentAccountSelect("选择基金账户")}
                     </div>
                   )}
 
@@ -1142,21 +1229,13 @@ export function InvestmentFormModal({
                         {investmentAccounts && investmentAccounts.length > 0 && (
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-600">基金账户</div>
-                            <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                              className="form-input">
-                              <option value="">选择基金账户</option>
-                              {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                            </select>
+                            {renderInvestmentAccountSelect("选择基金账户")}
                           </div>
                         )}
                         {cashAccounts && cashAccounts.length > 0 && (
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-600">到账资金账户</div>
-                            <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                              className="form-input">
-                              <option value="">不关聓</option>
-                              {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                            </select>
+                            {renderCashAccountSelect("不关联")}
                           </div>
                         )}
                       </div>
@@ -1206,7 +1285,7 @@ export function InvestmentFormModal({
                       <div className="text-xs font-medium text-slate-600">分红再投资份额</div>
                       <CalcInput value={units}
                         onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
-                        placeholder="0.00" label="份额" />
+                        placeholder="0.00" label="份额" precision={3} />
                     </div>
                   )}
 
@@ -1276,19 +1355,11 @@ export function InvestmentFormModal({
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">基金账户</div>
-                        <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                          className="form-input">
-                          <option value="">选择基金账户</option>
-                          {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                        </select>
+                        {renderInvestmentAccountSelect("选择基金账户")}
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">赎回到账账户</div>
-                        <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                          className="form-input">
-                          <option value="">不关联</option>
-                          {cashAccounts?.map(a => <option key={a.id} value={a.id}>{a.label}</option>) ?? []}
-                        </select>
+                        {renderCashAccountSelect("不关联")}
                       </div>
                     </div>
                   )}
@@ -1339,7 +1410,7 @@ export function InvestmentFormModal({
                       <CalcInput value={units}
                         onChange={(v) => { unitsEditedRef.current = true; amountEditedRef.current = false; setUnits(v); }}
                         placeholder="0.00"
-                        label="份额" />
+                        label="份额" precision={3} />
                     </div>
                     <button type="button" onClick={fetchNav} disabled={navLoading || !fundCode}
                       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
@@ -1403,7 +1474,7 @@ export function InvestmentFormModal({
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">到账金额</div>
-                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder="可手工填写" label="到账金额" />
+                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder="可手工填写" label="到账金额" precision={2} />
                     </div>
                   </div>
 
@@ -1429,38 +1500,22 @@ export function InvestmentFormModal({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">资金来源账户</div>
-                    <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                      className="form-input">
-                      <option value="">不关联</option>
-                      {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                    </select>
+                    {renderCashAccountSelect("不关联")}
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                      className="form-input">
-                      <option value="">选择基金账户</option>
-                      {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                    </select>
+                    {renderInvestmentAccountSelect("选择基金账户")}
                   </div>
                 </div>
               ) : showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">资金来源账户</div>
-                  <select value={cashAccountId} onChange={(e) => { cashAccountTouchedRef.current = true; cashAccountAutoRef.current = false; setCashAccountId(e.target.value); }}
-                    className="form-input">
-                    <option value="">不关联</option>
-                    {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                  </select>
+                  {renderCashAccountSelect("不关联")}
                 </div>
               ) : investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">基金账户</div>
-                  <select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}
-                    className="form-input">
-                    <option value="">选择基金账户</option>
-                    {investmentAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                  </select>
+                  {renderInvestmentAccountSelect("选择基金账户")}
                 </div>
               ) : null}
 
@@ -1510,7 +1565,7 @@ export function InvestmentFormModal({
                 </button>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{isBuyLike(subtype) ? "买入金额" : "金额"}{subtype === "dividend_reinvest" && <span className="ml-1 text-slate-400 font-normal">（留空则=份额×净值）</span>}</div>
-                  <CalcInput value={amount} onChange={(v) => { amountEditedRef.current = true; setAmount(v); onAmountBlur(); }} label="金额" placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined} />
+                  <CalcInput value={amount} onChange={(v) => { amountEditedRef.current = true; setAmount(v); onAmountBlur(); }} label="金额" placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined} precision={2} />
                 </div>
               </div>
 
@@ -1558,7 +1613,7 @@ export function InvestmentFormModal({
                   <CalcInput value={units}
                     onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
                     placeholder={computedUnits || "0.00"}
-                    label="份额" />
+                    label="份额" precision={3} />
                 </div>
               </div>
                 </>
@@ -1593,3 +1648,5 @@ export function InvestmentFormModal({
     </>
   );
 }
+
+

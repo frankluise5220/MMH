@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
@@ -41,6 +41,10 @@ export default async function InvestmentsPage({
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    cookieStore.get("mmh_credit_card_label_template")?.value,
+    creditCardLabelMode,
+  );
   const pnlCls = (n: number) =>
     n > 0
       ? isRedUp
@@ -83,7 +87,7 @@ export default async function InvestmentsPage({
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelMode);
+    }, creditCardLabelTemplate);
     const accountLabel = display.label;
     const groupName = account.AccountGroup?.name?.trim() || "未设置所有人";
     const institutionName = display.institutionName || "未指定机构";

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
@@ -7,15 +7,19 @@ import { createPortal } from "react-dom";
 export function CalcInput({
   value,
   onChange,
+  onBlur,
   placeholder,
   className,
   label,
+  precision = 2,
 }: {
   value: string;
   onChange: (v: string) => void;
+  onBlur?: () => void;
   placeholder?: string;
   className?: string;
   label?: string;
+  precision?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [dialogPos, setDialogPos] = useState<{ top: number; left: number } | null>(null);
@@ -23,6 +27,9 @@ export function CalcInput({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const numVal = parseFloat(value) || 0;
+
+  const formatValue = useCallback((num: number) => num.toFixed(precision), [precision]);
+  const sanitizeValue = useCallback((raw: string) => raw.replace(/[^\d+\-*/().]/g, ""), []);
 
   const doEval = useCallback((expression: string) => {
     let full = expression;
@@ -33,12 +40,12 @@ export function CalcInput({
       const safe = full.replace(/\s+/g, "");
       const computed = eval(safe);
       if (typeof computed === "number" && !Number.isNaN(computed) && Number.isFinite(computed)) {
-        onChange(computed.toFixed(3));
+        onChange(formatValue(computed));
       }
     } catch {
       // ignore invalid expressions
     }
-  }, [numVal, onChange]);
+  }, [formatValue, numVal, onChange]);
 
   useEffect(() => {
     if (!open) return;
@@ -72,7 +79,7 @@ export function CalcInput({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (/^[\d+\-*/.]$/.test(e.key)) {
+      if (/^[\d+\-*/().]$/.test(e.key)) {
         e.preventDefault();
         setExpr((prev) => prev + e.key);
       } else if (e.key === "Enter" || e.key === "=") {
@@ -102,15 +109,15 @@ export function CalcInput({
       return;
     }
     if (key === "1/4") {
-      onChange((numVal * 0.25).toFixed(3));
+      onChange(formatValue(numVal * 0.25));
       return;
     }
     if (key === "1/3") {
-      onChange((numVal * 0.333333).toFixed(3));
+      onChange(formatValue(numVal * 0.333333));
       return;
     }
     if (key === "1/2") {
-      onChange((numVal * 0.5).toFixed(3));
+      onChange(formatValue(numVal * 0.5));
       return;
     }
     setExpr((prev) => prev + key);
@@ -118,11 +125,22 @@ export function CalcInput({
 
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const raw = value.trim();
+    const raw = sanitizeValue(value).trim();
     if (!/^[\d.]+[+\-*/\d.()\s]+$/.test(raw)) return;
     e.preventDefault();
     e.stopPropagation();
     doEval(raw);
+  }
+
+  function handleInputBlur() {
+    const raw = sanitizeValue(value).trim();
+    if (raw && !/[+\-*/()]/.test(raw)) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        onChange(formatValue(parsed));
+      }
+    }
+    onBlur?.();
   }
 
   const keyRows = [
@@ -143,8 +161,9 @@ export function CalcInput({
       <input
         inputMode="decimal"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(sanitizeValue(e.target.value))}
         onKeyDown={handleInputKeyDown}
+        onBlur={handleInputBlur}
         placeholder={placeholder}
         style={{ caretColor: "var(--foreground)" }}
         className="form-input pr-10 font-mono placeholder:text-slate-300 caret-slate-800"
@@ -175,8 +194,8 @@ export function CalcInput({
             }}
             className="modal-surface w-[272px] select-none"
           >
-            <div className="border-b border-slate-100 bg-slate-50 px-3 pt-2.5 pb-2">
-              <div className="tabular-nums text-[11px] text-slate-400">当前值 {numVal.toFixed(3)}</div>
+            <div className="border-b border-slate-100 bg-slate-50 px-3 pb-2 pt-2.5">
+              <div className="tabular-nums text-[11px] text-slate-400">当前值 {formatValue(numVal)}</div>
               <div className="mt-0.5 h-5 text-right font-mono text-sm tabular-nums text-slate-800">
                 {expr || <span className="text-xs text-slate-300">输入运算式</span>}
               </div>
@@ -188,7 +207,7 @@ export function CalcInput({
                   key={item.val}
                   type="button"
                   onClick={() => press(item.val)}
-                  className="flex-1 h-7 rounded-[10px] border border-amber-200 bg-amber-50 text-xs font-medium text-amber-700 hover:bg-amber-100 active:bg-amber-200"
+                  className="h-7 flex-1 rounded-[10px] border border-amber-200 bg-amber-50 text-xs font-medium text-amber-700 hover:bg-amber-100 active:bg-amber-200"
                 >
                   {item.label}
                 </button>

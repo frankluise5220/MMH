@@ -10,6 +10,17 @@ import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
 type NestedEntityType = "institution" | "account" | "group" | "category";
 
+type EntityCreatedExtra = {
+  parentId?: string;
+  kind?: string;
+  type?: string;
+  groupId?: string;
+  groupName?: string;
+  institutionId?: string;
+  institutionName?: string;
+  institutionShortName?: string;
+};
+
 type FieldDef = {
   key: string;
   label: string;
@@ -34,7 +45,7 @@ type CompactModeProps = {
   entityType: NestedEntityType;
   open: boolean;
   onClose: () => void;
-  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string; groupName?: string; institutionName?: string; institutionShortName?: string }) => void;
+  onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
   defaultType?: string;
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
   extraFields?: Record<string, string>;
@@ -59,7 +70,7 @@ type FullModeProps = {
   layout?: "card" | "inline" | "modal";
   open?: boolean;
   onClose?: () => void;
-  onCreated: (id: string, name: string, extra?: { parentId?: string; kind?: string; type?: string; groupName?: string; institutionName?: string; institutionShortName?: string }) => void;
+  onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
   /** Dynamic data for select fields that need runtime-populated options */
   fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   /** Existing entity names for client-side duplicate check */
@@ -82,6 +93,7 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 
 const INSTITUTION_TYPES = [
   { value: "bank", label: "银行" },
+  { value: "insurance", label: "保险公司" },
   { value: "brokerage", label: "证券" },
   { value: "payment", label: "第三方支付" },
   { value: "ewallet", label: "钱包" },
@@ -146,13 +158,14 @@ const ENTITY_CONFIG = {
       { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
+      { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
       { key: "institutionId", label: "往来机构/人员", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
       { key: "currency", label: "币种", type: "text", defaultValue: "CNY", placeholder: "CNY" },
-      { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
-      { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
-      { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
-      { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" || f.kind === "loan" },
+      { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
+      { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
+      { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" },
+      { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" },
       { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" },
     ] as FieldDef[],
   },
@@ -418,7 +431,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         onCreated(created.id, created.name, {
           parentId: form.parentId || undefined,
           kind: entityType === "account" ? (form.kind || created.kind || "") : undefined,
+          groupId: entityType === "account" ? created.groupId ?? form.groupId ?? undefined : undefined,
           groupName: entityType === "account" ? created.AccountGroup?.name : undefined,
+          institutionId: entityType === "account" ? created.institutionId ?? form.institutionId ?? undefined : undefined,
           institutionName: entityType === "account" ? created.Institution?.name : undefined,
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
           type: entityType === "institution" || entityType === "category" ? selectedTypeValue : undefined,

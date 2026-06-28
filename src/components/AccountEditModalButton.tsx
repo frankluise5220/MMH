@@ -4,23 +4,31 @@ import { useMemo, useState } from "react";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { EntityCreateForm } from "./EntityCreateForm";
 import { institutionTypeLabel } from "@/lib/account-kinds";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 
 type GroupOption = { id: string; name: string };
 type InstitutionOption = { id: string; name: string; type?: string };
 type FundQueryApiOption = { id: string; code: string; name: string };
-type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "investment" | "loan" | "other";
-type FundProductTypeValue = "fund" | "money" | "wealth" | "deposit";
+type AccountKindValue =
+  | "cash"
+  | "bank_debit"
+  | "bank_credit"
+  | "ewallet"
+  | "deposit"
+  | "investment"
+  | "loan"
+  | "other";
+type FundProductTypeValue = "fund" | "money" | "wealth";
 type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
 
 const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   fund: "开放式基金",
   money: "货币基金",
   wealth: "银行理财",
-  deposit: "活期/存款",
 };
 
 const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
-  moving_avg: "移动加权平均（主流）",
+  moving_avg: "移动平均",
   fifo: "先进先出 FIFO",
   lifo: "后进先出 LIFO",
 };
@@ -51,6 +59,7 @@ export function AccountEditModalButton({
     investProductType: string | null;
     costBasisMethod: string | null;
     defaultFundQueryApiId: string | null;
+    fundUnitsDecimals?: number | null;
     debtDirection?: string | null;
   };
   groups: GroupOption[];
@@ -60,60 +69,55 @@ export function AccountEditModalButton({
   variant?: "default" | "credit";
 }) {
   const [open, setOpen] = useState(false);
-  const [kind, setKind] = useState<AccountKindValue>(account.kind);
+  const normalizedKind = isDepositAccount(account) ? "deposit" : account.kind;
+  const [kind, setKind] = useState<AccountKindValue>(normalizedKind);
   const [investProductType, setInvestProductType] = useState<FundProductTypeValue>(
-    (account.investProductType as FundProductTypeValue) ?? "fund"
+    normalizedKind === "investment" ? ((account.investProductType as FundProductTypeValue) ?? "fund") : "fund",
   );
   const [costBasisMethod, setCostBasisMethod] = useState<CostBasisMethodValue>(
-    (account.costBasisMethod as CostBasisMethodValue) ?? "moving_avg"
+    (account.costBasisMethod as CostBasisMethodValue) ?? "moving_avg",
   );
-
-  // SmartSelect-controlled state
   const [groupId, setGroupId] = useState(account.groupId);
   const [institutionId, setInstitutionId] = useState(account.institutionId ?? "");
   const [groupList, setGroupList] = useState(groups);
   const [institutionList, setInstitutionList] = useState<InstitutionOption[]>(institutions);
-
-  // Nested creation
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
 
   const buttonClassName =
     variant === "credit"
-      ? "h-8 px-2 rounded-md border border-blue-200 bg-blue-50 text-xs text-blue-700 hover:bg-blue-100"
-      : "h-8 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50";
+      ? "h-8 rounded-md border border-blue-200 bg-blue-50 px-2 text-xs text-blue-700 hover:bg-blue-100"
+      : "h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 hover:bg-slate-50";
 
   const initialCreditLimit = useMemo(() => account.creditLimit ?? "", [account.creditLimit]);
 
   function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
-    setInstitutionList(prev => [...prev, { id, name, type: extra?.type }]);
-    if (kind === "loan" ? extra?.type === "debt" : extra?.type !== "debt") setInstitutionId(id);
+    setInstitutionList((prev) => [...prev, { id, name, type: extra?.type }]);
+    if (kind === "loan" ? extra?.type === "debt" : extra?.type !== "debt") {
+      setInstitutionId(id);
+    }
     setNestedEntityType(null);
   }
 
   function handleGroupCreated(id: string, name: string) {
-    setGroupList(prev => [...prev, { id, name }]);
+    setGroupList((prev) => [...prev, { id, name }]);
     setGroupId(id);
     setNestedEntityType(null);
   }
 
   const filteredInstitutionList = institutionList.filter((it) =>
-    kind === "loan" ? it.type === "debt" : it.type !== "debt"
+    kind === "loan" ? it.type === "debt" : it.type !== "debt",
   );
 
-  const institutionOptions: SmartSelectOption[] = [
-    ...filteredInstitutionList.map(it => ({
-      id: it.id,
-      label: it.name,
-      subLabel: institutionTypeLabel(it.type ?? null),
-    })),
-  ];
+  const institutionOptions: SmartSelectOption[] = filteredInstitutionList.map((it) => ({
+    id: it.id,
+    label: it.name,
+    subLabel: institutionTypeLabel(it.type ?? null),
+  }));
 
-  const groupOptions: SmartSelectOption[] = [
-    ...groupList.map(g => ({
-      id: g.id,
-      label: g.name,
-    })),
-  ];
+  const groupOptions: SmartSelectOption[] = groupList.map((g) => ({
+    id: g.id,
+    label: g.name,
+  }));
 
   return (
     <>
@@ -123,11 +127,11 @@ export function AccountEditModalButton({
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
           onMouseDown={() => setOpen(false)}
         >
           <div
-            className="w-[560px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl p-4"
+            className="max-h-[calc(100vh-2rem)] w-[560px] max-w-[calc(100vw-2rem)] overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -147,7 +151,7 @@ export function AccountEditModalButton({
               <input type="hidden" name="groupId" value={groupId} />
               <input type="hidden" name="institutionId" value={institutionId} />
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <input
                   name="name"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none sm:col-span-2"
@@ -155,7 +159,7 @@ export function AccountEditModalButton({
                 />
 
                 <div>
-                  <div className="text-xs text-slate-500 mb-1">所有人</div>
+                  <div className="mb-1 text-xs text-slate-500">所有人</div>
                   <SmartSelect
                     mode="single"
                     value={groupId}
@@ -168,14 +172,14 @@ export function AccountEditModalButton({
                 </div>
 
                 <div>
-                  <div className="text-xs text-slate-500 mb-1">往来机构/人员</div>
+                  <div className="mb-1 text-xs text-slate-500">往来机构/人员</div>
                   <SmartSelect
                     mode="single"
                     value={institutionId}
                     onChange={setInstitutionId}
                     options={institutionOptions}
                     placeholder="选择往来机构/人员"
-                    searchable={true}
+                    searchable
                     onCreateClick={() => setNestedEntityType("institution")}
                     createLabel="新增往来机构/人员"
                   />
@@ -194,13 +198,15 @@ export function AccountEditModalButton({
                   <option value="bank_debit">借记卡</option>
                   <option value="bank_credit">信用卡</option>
                   <option value="ewallet">电子钱包</option>
+                  <option value="deposit">存款</option>
                   <option value="investment">投资</option>
                   <option value="loan">债务/债权</option>
                   <option value="other">其他</option>
                 </select>
-                {kind === "investment" && (
+
+                {kind === "investment" ? (
                   <div className="space-y-1">
-                    <div className="text-xs text-slate-500">投资产品类型</div>
+                    <div className="text-xs text-slate-500">投资账户类型</div>
                     <div className="grid grid-cols-2 gap-1.5">
                       {(Object.keys(FUND_PRODUCT_LABELS) as FundProductTypeValue[]).map((pt) => (
                         <button
@@ -209,8 +215,8 @@ export function AccountEditModalButton({
                           onClick={() => setInvestProductType(pt)}
                           className={`h-8 rounded-md border text-xs ${
                             investProductType === pt
-                              ? "bg-blue-50 text-blue-700 border-blue-200 font-medium"
-                              : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                              ? "border-blue-200 bg-blue-50 font-medium text-blue-700"
+                              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                           }`}
                         >
                           {FUND_PRODUCT_LABELS[pt]}
@@ -218,7 +224,18 @@ export function AccountEditModalButton({
                       ))}
                     </div>
                     <input type="hidden" name="investProductType" value={investProductType} />
-                    <div className="text-xs text-slate-500 mt-2">成本摊薄方式</div>
+                    {investProductType === "fund" ? (
+                      <>
+                        <div className="mt-2 text-xs text-slate-500">份额位数</div>
+                        <input
+                          name="fundUnitsDecimals"
+                          defaultValue={account.fundUnitsDecimals ?? 3}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          inputMode="numeric"
+                        />
+                      </>
+                    ) : null}
+                    <div className="mt-2 text-xs text-slate-500">成本摊薄方式</div>
                     <select
                       name="costBasisMethod"
                       value={costBasisMethod}
@@ -226,10 +243,12 @@ export function AccountEditModalButton({
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     >
                       {(Object.keys(COST_BASIS_LABELS) as CostBasisMethodValue[]).map((m) => (
-                        <option key={m} value={m}>{COST_BASIS_LABELS[m]}</option>
+                        <option key={m} value={m}>
+                          {COST_BASIS_LABELS[m]}
+                        </option>
                       ))}
                     </select>
-                    <div className="text-xs text-slate-500 mt-2">默认净值查询 API</div>
+                    <div className="mt-2 text-xs text-slate-500">默认净值查询 API</div>
                     <select
                       name="defaultFundQueryApiId"
                       defaultValue={account.defaultFundQueryApiId ?? ""}
@@ -243,7 +262,8 @@ export function AccountEditModalButton({
                       ))}
                     </select>
                   </div>
-                )}
+                ) : null}
+
                 <input
                   name="currency"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
@@ -251,15 +271,15 @@ export function AccountEditModalButton({
                 />
               </div>
 
-              {kind === "bank_credit" || kind === "loan" ? (
+                  {kind === "bank_credit" ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <div className="text-xs font-semibold text-slate-700">账单与额度</div>
-                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <input
                       name="numberMasked"
                       className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                       defaultValue={account.numberMasked ?? ""}
-                      placeholder="编号/尾号（可选），例如：3833"
+                      placeholder="编号/尾号，例如：3833"
                     />
                     <input
                       name="creditLimit"
@@ -290,13 +310,13 @@ export function AccountEditModalButton({
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="h-9 px-3 rounded-md border border-slate-200 bg-white text-slate-700 text-sm hover:bg-slate-50"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50"
                 >
                   取消
                 </button>
                 <button
                   type="submit"
-                  className="h-9 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+                  className="h-9 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700"
                 >
                   保存
                 </button>
@@ -306,17 +326,16 @@ export function AccountEditModalButton({
         </div>
       ) : null}
 
-      {/* Nested creation modals */}
-      {nestedEntityType && (
+      {nestedEntityType ? (
         <EntityCreateForm
           mode="compact"
           entityType={nestedEntityType}
-          open={true}
+          open
           onClose={() => setNestedEntityType(null)}
           onCreated={nestedEntityType === "institution" ? handleInstitutionCreated : handleGroupCreated}
-          defaultType={nestedEntityType === "institution" && kind === "loan" ? "debt" : undefined}
+          defaultType={kind === "loan" && nestedEntityType === "institution" ? "debt" : undefined}
         />
-      )}
+      ) : null}
     </>
   );
 }

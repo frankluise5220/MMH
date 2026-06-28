@@ -51,7 +51,7 @@ export default async function AssetsPage() {
           const instLabel = a.Institution?.name?.trim() || "";
           const prefix = instLabel ? `${instLabel}·` : "";
           return (
-            <Link
+            <a
               key={a.id}
               href={`/?accountId=${a.id}&view=detail`}
               className="block page-card px-6 py-4 transition-all"
@@ -65,7 +65,7 @@ export default async function AssetsPage() {
                 </div>
                 <div className={`text-lg font-bold tabular-nums ${pnlCls(bal)}`}>{formatMoney(bal)}</div>
               </div>
-            </Link>
+            </a>
           );
         })}
         {accounts.length === 0 && (

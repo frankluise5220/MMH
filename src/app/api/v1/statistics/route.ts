@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +65,7 @@ export async function GET(req: NextRequest) {
       orderBy: { name: "asc" },
     });
 
-    const nonInvestAccountIds = allAccounts.filter(a => a.kind !== AccountKind.investment).map(a => a.id);
+    const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
 
     const accountFilter = selectedAccountIds
       ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }

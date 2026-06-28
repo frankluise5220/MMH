@@ -118,13 +118,13 @@ export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptio
     {
       value: "account",
       label: fieldLabels.account,
-      kind: "select",
+      kind: "smartSelect",
       options: [{ value: "", label: "选择账户" }, ...accountOptions.map((account) => ({ value: account.id, label: account.label }))],
     },
     {
       value: "toAccount",
       label: fieldLabels.toAccount,
-      kind: "select",
+      kind: "smartSelect",
       options: [{ value: "", label: "选择账户" }, ...accountOptions.map((account) => ({ value: account.id, label: account.label }))],
     },
     { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },

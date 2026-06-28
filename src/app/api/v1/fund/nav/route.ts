@@ -5,6 +5,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
@@ -216,7 +217,8 @@ export async function POST(req: NextRequest) {
     const fee = amount * feeRate;
     // 计算份额 = (金额 - 手续费) / 净值
     const principal = amount - fee;
-    const units = nav > 0 ? principal / nav : null;
+    const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
+    const units = nav > 0 ? roundFundUnits(principal / nav, fundUnitsDecimals) : null;
 
     // 写入 TxRecord
     const updateData: {
@@ -231,7 +233,7 @@ export async function POST(req: NextRequest) {
       fundFee: fee,
     };
     if (units != null) {
-      updateData.fundUnits = Number(units.toFixed(6));
+      updateData.fundUnits = units;
     }
     if (navData.name) {
       updateData.fundName = navData.name;
@@ -249,7 +251,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       nav,
-      units: units != null ? Number(units.toFixed(6)) : null,
+      units,
       fee,
       confirmDate,
       name: navData.name,

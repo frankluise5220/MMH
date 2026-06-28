@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 
-export type DefaultInstitutionType = "bank" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
+export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
 
 export type DefaultInstitutionTemplate = {
   name: string;

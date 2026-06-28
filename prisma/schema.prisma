@@ -41,6 +41,7 @@ model Account {
   defaultConfirmDays                                         Int?
   defaultArrivalDays                                         Int?
   defaultFundQueryApiId                                      String?
+  fundUnitsDecimals                                          Int                 @default(3)
   FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
   Household                                                  Household           @relation(fields: [householdId], references: [id])
@@ -53,6 +54,7 @@ model Account {
   FundFeeRate                                                FundFeeRate[]
   FundHolding                                                FundHolding[]
   FundSnapshot                                               FundSnapshot[]
+  InsuranceProduct                                           InsuranceProduct[]
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[] @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[] @relation("RegularInvestPlan_cashAccountIdToAccount")
   transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
@@ -83,6 +85,7 @@ model AccountGroup {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @default(now()) @updatedAt
   Account     Account[]
+  InsuranceProduct InsuranceProduct[]
   Household   Household @relation(fields: [householdId], references: [id])
 }
 
@@ -331,6 +334,7 @@ model Household {
   EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
   ImportBatch       ImportBatch[]
+  InsuranceProduct  InsuranceProduct[]
   Institution       Institution[]
   RegularInvestPlan RegularInvestPlan[]
   Tag               Tag[]
@@ -356,6 +360,7 @@ model Institution {
   type        String?
   householdId String?
   Account     Account[]
+  InsuranceProduct InsuranceProduct[]
   Household   Household? @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
@@ -453,6 +458,7 @@ model User {
   updatedAt          DateTime             @default(now()) @updatedAt
   Account            Account[]
   Household          Household?           @relation(fields: [householdId], references: [id])
+  InsuranceProduct   InsuranceProduct[]   @relation("InsuranceProduct_insuredUserIdToUser")
   UserSettings       UserSettings?
   PasswordResetToken PasswordResetToken[]
 
@@ -503,6 +509,47 @@ model PasswordResetToken {
   @@index([expiresAt])
 }
 
+model InsuranceProduct {
+  id             String                 @id @default(cuid())
+  name           String
+  shortName      String?
+  productType    InsuranceProductType   @default(other)
+  accountingType InsuranceAccountingType @default(asset)
+  policyNo       String?
+  status         InsuranceStatus        @default(active)
+  currency       String                 @default("CNY")
+  householdId    String
+  accountId      String
+  institutionId  String?
+  ownerGroupId   String?
+  insuredUserId  String?
+  beneficiaryName String?
+  startDate      DateTime?
+  effectiveDate  DateTime?
+  maturityDate   DateTime?
+  premiumMode    String?
+  premiumAmount  Decimal?               @db.Decimal(18, 2)
+  coverageAmount Decimal?               @db.Decimal(18, 2)
+  cashValueEnabled Boolean              @default(true)
+  note           String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @default(now()) @updatedAt
+  Account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution    Institution?           @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  OwnerGroup     AccountGroup?          @relation(fields: [ownerGroupId], references: [id], onDelete: SetNull)
+  InsuredUser    User?                  @relation("InsuranceProduct_insuredUserIdToUser", fields: [insuredUserId], references: [id], onDelete: SetNull)
+  TxRecord       TxRecord[]
+
+  @@index([householdId, productType])
+  @@index([householdId, accountingType])
+  @@index([accountId])
+  @@index([institutionId])
+  @@index([ownerGroupId])
+  @@index([insuredUserId])
+  @@unique([householdId, accountId, name, policyNo])
+}
+
 model TxRecord {
   id                  String            @id @default(cuid())
   date                DateTime
@@ -519,6 +566,7 @@ model TxRecord {
   confirmDate         DateTime?
   statementMonth      String?           @db.VarChar(7)
   note                String?
+  toNote              String?
   deletedAt           DateTime?
   importBatchId       String?
   householdId         String?
@@ -530,6 +578,9 @@ model TxRecord {
   status              TransactionStatus @default(posted)
   fundArrivalAmount   Decimal?          @db.Decimal(18, 2)
   fundArrivalDate     DateTime?
+  depositAnnualRate   Decimal?          @db.Decimal(10, 6)
+  depositInterest     Decimal?          @db.Decimal(18, 2)
+  depositSourceEntryId String?
   fundConfirmDate     DateTime?
   fundFee             Decimal?          @db.Decimal(18, 2)
   fundNav             Decimal?          @db.Decimal(18, 6)
@@ -538,6 +589,7 @@ model TxRecord {
   realizedProfit      Decimal?          @db.Decimal(18, 2)
   regularInvestPlanId String?
   fundName            String?
+  insuranceProductId  String?
   source              String?           @default("manual")
   Attachment          Attachment[]
   EntryTag            EntryTag[]
@@ -545,11 +597,14 @@ model TxRecord {
   Category            Category?         @relation(fields: [categoryId], references: [id])
   Household           Household?        @relation(fields: [householdId], references: [id])
   ImportBatch         ImportBatch?      @relation(fields: [importBatchId], references: [id])
+  InsuranceProduct    InsuranceProduct? @relation(fields: [insuranceProductId], references: [id], onDelete: SetNull)
   toAccount           Account?          @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
 
   @@index([accountId, date])
   @@index([accountId, statementMonth])
   @@index([deletedAt])
+  @@index([depositSourceEntryId])
+  @@index([insuranceProductId])
   @@index([regularInvestPlanId])
   @@index([toAccountId, fundProductType])
   @@index([type])
@@ -588,9 +643,11 @@ enum AccountKind {
   bank_debit
   bank_credit
   ewallet
+  deposit
   investment
   loan
   other
+  insurance
 }
 
 enum DebtDirection {
@@ -625,6 +682,33 @@ enum FundSubtype {
   switch_in
   switch_out
   buy_failed
+}
+
+enum InsuranceProductType {
+  savings
+  dividend
+  annuity
+  universal
+  investment_linked
+  critical_illness
+  medical
+  accident
+  term_life
+  whole_life
+  other
+}
+
+enum InsuranceAccountingType {
+  asset
+  protection
+  hybrid
+}
+
+enum InsuranceStatus {
+  active
+  matured
+  surrendered
+  lapsed
 }
 
 enum IntervalUnit {

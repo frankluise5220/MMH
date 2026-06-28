@@ -9,16 +9,26 @@ function pnlCls(value: number, isRedUp: boolean) {
   return "text-slate-800";
 }
 
+function liabilityCls(value: number, isRedUp: boolean) {
+  if (value > 0) return isRedUp ? "text-emerald-800" : "text-red-700";
+  if (value < 0) return isRedUp ? "text-red-700" : "text-emerald-800";
+  return "text-slate-800";
+}
+
 export function LiveAccountBalance({
   accountId,
   initialValue,
   isRedUp,
   mode,
+  semantic = "default",
+  displayMultiplier = 1,
 }: {
   accountId?: string | null;
   initialValue: number;
   isRedUp: boolean;
   mode: "total" | "account";
+  semantic?: "default" | "liability";
+  displayMultiplier?: 1 | -1;
 }) {
   const [value, setValue] = useState(initialValue);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -61,5 +71,7 @@ export function LiveAccountBalance({
     };
   }, [accountId, mode]);
 
-  return <span className={`tabular-nums font-semibold ${pnlCls(value, isRedUp)}`}>{formatMoney(value)}</span>;
+  const displayValue = value * displayMultiplier;
+  const cls = semantic === "liability" ? liabilityCls(displayValue, isRedUp) : pnlCls(displayValue, isRedUp);
+  return <span className={`tabular-nums font-semibold ${cls}`}>{formatMoney(displayValue)}</span>;
 }

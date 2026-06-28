@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     orderBy: { name: "asc" },
   });
 
-  const nonInvestAccountIds = allAccounts.filter(a => a.kind !== AccountKind.investment).map(a => a.id);
+  const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
 
   const accountFilter = selectedAccountIds
     ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
@@ -218,7 +219,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     .map(t => ({ ...t, pct: totalExpense > 0 ? (t.value / totalExpense) * 100 : 0 }));
 
   // ── 投资浮盈 ──
-  const investAccountIds = allAccounts.filter(a => a.kind === AccountKind.investment).map(a => a.id);
+  const investAccountIds = allAccounts.filter(isPureInvestmentAccount).map(a => a.id);
   const selectedInvestIds = selectedAccountIds
     ? selectedAccountIds.filter(id => investAccountIds.includes(id))
     : investAccountIds;

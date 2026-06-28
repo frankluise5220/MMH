@@ -6,6 +6,7 @@ import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 
@@ -24,6 +25,14 @@ type Entry = {
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+const TERM_PRESETS = [
+  { label: "3个月", days: 90 },
+  { label: "半年", days: 180 },
+  { label: "1年", days: 365 },
+  { label: "2年", days: 730 },
+  { label: "3年", days: 1095 },
+  { label: "5年", days: 1825 },
+] as const;
 
 export function WealthFormModal({
   mode = "create",
@@ -74,7 +83,6 @@ export function WealthFormModal({
   const [fundName, setFundName] = useState(initName);
   const [annualRate, setAnnualRate] = useState("");
   const [termDays, setTermDays] = useState("");
-  const [minAmount, setMinAmount] = useState("");
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [toAccountId, setToAccountId] = useState(initToAccountId);
   const [memo, setMemo] = useState(initMemo);
@@ -90,6 +98,9 @@ export function WealthFormModal({
   const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
 
+  const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
+  const { ownerFilterLabel: ifLabel, cycleOwnerFilter: ifCycle, filteredOptions: investFiltered } = useAccountSSFilter(localInvestSSOpts);
+
   useEffect(() => { setCashAccountList(cashAccounts); }, [cashAccounts]);
   useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
   useEffect(() => { setLocalCashSSOpts(cashAccountSSOptions); }, [cashAccountSSOptions]);
@@ -102,7 +113,6 @@ export function WealthFormModal({
     setFundName("");
     setAnnualRate("");
     setTermDays("");
-    setMinAmount("");
     setCashAccountId("");
     setToAccountId(defaultAccountId);
     setMemo("");
@@ -227,7 +237,7 @@ export function WealthFormModal({
             </div>
             <div className="space-y-1">
               <div className="form-label">{isRedeem ? "取出金额" : "存入金额"}</div>
-              <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={isRedeem ? "取出" : "存入"} />
+              <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={isRedeem ? "取出" : "存入"} precision={2} />
             </div>
           </div>
 
@@ -247,16 +257,25 @@ export function WealthFormModal({
             </div>
             <div className="space-y-1">
               <div className="form-label">期限天数</div>
-              <input inputMode="numeric" value={termDays} onChange={(e) => setTermDays(e.target.value)} placeholder="如：30"
+              <select
+                value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : "__custom__"}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value !== "__custom__") setTermDays(value);
+                }}
+                className="form-input"
+              >
+                <option value="">请选择常见期限</option>
+                {TERM_PRESETS.map((preset) => (
+                  <option key={preset.days} value={String(preset.days)}>
+                    {preset.label}
+                  </option>
+                ))}
+                <option value="__custom__">自定义天数</option>
+              </select>
+              <input inputMode="numeric" value={termDays} onChange={(e) => setTermDays(e.target.value)} placeholder="可手填，如：30"
                 className="form-input" />
             </div>
-          </div>
-
-          {/* 最低持有金额 */}
-          <div className="space-y-1">
-            <div className="form-label">最低持有金额</div>
-            <input inputMode="decimal" value={minAmount} onChange={(e) => setMinAmount(e.target.value)} placeholder="如：10000"
-              className="form-input" />
           </div>
 
           {/* 资金账户 + 理财账户 */}
@@ -264,14 +283,16 @@ export function WealthFormModal({
             <div className="space-y-1">
               <div className="form-label">{isRedeem ? "到账账户" : "资金来源账户"}</div>
               <SmartSelect mode="single" value={cashAccountId} onChange={setCashAccountId}
-                options={localCashSSOpts ?? cashAccountList} placeholder="选择账户"
-                onCreateClick={() => setNestedEntityType("cash-account")} createLabel="新增账户" />
+                options={cashFiltered ?? cashAccountList} placeholder="选择账户"
+                onCreateClick={() => setNestedEntityType("cash-account")} createLabel="新增账户"
+                onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
             </div>
             <div className="space-y-1">
               <div className="form-label">理财账户</div>
               <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                options={localInvestSSOpts ?? investmentAccountList} placeholder="选择理财账户"
-                onCreateClick={() => setNestedEntityType("invest-account")} createLabel="新增账户" />
+                options={investFiltered ?? investmentAccountList} placeholder="选择理财账户"
+                onCreateClick={() => setNestedEntityType("invest-account")} createLabel="新增账户"
+                onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
             </div>
           </div>
 
@@ -313,3 +334,5 @@ export function WealthFormModal({
     </>
   );
 }
+
+

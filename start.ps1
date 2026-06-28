@@ -1,3 +1,12 @@
-﻿="3000"
-node -e "require('http').createServer((req, res) => { port: 3000; keepAlive: true }))
-start.ps1
+param(
+  [switch]$Build
+)
+
+$ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
+
+if ($Build) {
+  npm run build
+}
+
+node .\scripts\start-standalone.cjs

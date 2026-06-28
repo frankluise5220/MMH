@@ -12,6 +12,7 @@ import { toNumber } from "@/lib/date-utils";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export type InvestBalanceDetail = {
   marketValue: number;
@@ -57,9 +58,9 @@ export const computeInvestBalances = cache(
   async (ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> => {
   const accounts = await prisma.account.findMany({
     where: { kind: AccountKind.investment, ...ctx.hidFilter },
-    select: { id: true },
+    select: { id: true, kind: true, investProductType: true },
   });
-  const investIds = accounts.map(a => a.id);
+  const investIds = accounts.filter(isPureInvestmentAccount).map(a => a.id);
   if (investIds.length === 0) return new Map();
 
   const allHoldings = await prisma.fundHolding.findMany({

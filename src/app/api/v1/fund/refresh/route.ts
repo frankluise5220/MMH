@@ -5,6 +5,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshLatestFundNav, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
     let entryFilled = 0;
     let entryFailed = 0;
     let entryNavFilled = 0;
+    const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
 
     // 直接查询 TxRecord 中未确认的基金交易（包括 fundSubtype 为 null 的记录）
     const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
@@ -118,11 +120,11 @@ export async function POST(req: NextRequest) {
           if (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out") {
             // 赎回: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
             const divisor = navData.nav * (1 - feeRate);
-            units = divisor > 0 ? amount / divisor : null;
+            units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
           } else {
             // 买入: principal = amount - fee, units = principal / nav
             const principal = amount - fee;
-            units = principal > 0 ? principal / navData.nav : null;
+            units = principal > 0 ? roundFundUnits(principal / navData.nav, fundUnitsDecimals) : null;
           }
         }
 

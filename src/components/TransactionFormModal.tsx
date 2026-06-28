@@ -1,12 +1,59 @@
 ﻿"use client";
 
-import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus, Repeat } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { NestedAddModal } from "./EntityCreateForm";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
+
+/** Shared hook: owner-filter logic for account SS dropdowns */
+export function useAccountSSFilter(accountSSOptions?: SmartSelectOption[], controlledOwnerFilter?: string) {
+  const [internalOwnerFilter, setInternalOwnerFilter] = useState("");
+  const ownerFilter = controlledOwnerFilter ?? internalOwnerFilter;
+  const setOwnerFilter = useCallback((next: string) => {
+    if (controlledOwnerFilter === undefined) setInternalOwnerFilter(next);
+  }, [controlledOwnerFilter]);
+  const ownerFilterLabel = useMemo(() => ownerFilter || "全部", [ownerFilter]);
+  const ownerNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const option of accountSSOptions ?? []) {
+      if (option.isHeader && option.label && option.label !== "未指定") names.add(option.label);
+    }
+    return Array.from(names);
+  }, [accountSSOptions]);
+
+  const cycleOwnerFilter = useCallback(() => {
+    const owners = ownerNames;
+    if (owners.length === 0) return;
+    const current = ownerFilter;
+    const idx = owners.indexOf(current);
+    const next = idx < 0 ? owners[0] : owners[(idx + 1) % owners.length];
+    if (next === owners[0] && current === owners[owners.length - 1]) {
+      setOwnerFilter("");
+    } else {
+      setOwnerFilter(next);
+    }
+  }, [ownerFilter, ownerNames]);
+
+  const filteredOptions = useMemo(() => {
+    if (!accountSSOptions) return undefined;
+    const options = accountSSOptions;
+    const nonHeaderOptions = options.filter((option) => !option.isHeader);
+    if (!ownerFilter) return nonHeaderOptions;
+    const headerId = options.find((option) => option.isHeader && option.label === ownerFilter)?.id;
+    if (!headerId) return nonHeaderOptions;
+    return nonHeaderOptions.filter((option) => option.parentId === headerId);
+  }, [accountSSOptions, ownerFilter]);
+
+  const visibleOptionIds = useMemo(
+    () => (filteredOptions ? new Set(filteredOptions.map((option) => option.id)) : undefined),
+    [filteredOptions],
+  );
+
+  return { ownerFilter, setOwnerFilter, ownerFilterLabel, cycleOwnerFilter, filteredOptions, visibleOptionIds, ownerNames };
+}
 
 type TxType = "expense" | "income" | "transfer" | "investment";
 
@@ -137,8 +184,39 @@ export function TransactionFormModal({
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
   const [localTransferAccountSSOpts, setLocalTransferAccountSSOpts] = useState(transferAccountSSOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
+  const [entryMenuOpen, setEntryMenuOpen] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const triggerWrapRef = useRef<HTMLDivElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
+
+  function mergeSmartSelectOptions(base?: SmartSelectOption[], extra?: SmartSelectOption[]) {
+    const merged = [...(base ?? [])];
+    const seen = new Set(merged.map((opt) => opt.id));
+    for (const opt of extra ?? []) {
+      if (!seen.has(opt.id)) merged.push(opt);
+    }
+    return merged;
+  }
+
+  function appendAccountOptionWithGroup(
+    base: SmartSelectOption[] | undefined,
+    option: SmartSelectOption,
+    groupId?: string,
+    groupName?: string,
+  ) {
+    const next = [...(base ?? [])];
+    const headerId = groupId ? `group:${groupId}` : "";
+    if (headerId && groupName?.trim() && !next.some((item) => item.id === headerId)) {
+      next.push({ id: headerId, label: groupName.trim(), isHeader: true });
+    }
+    if (!next.some((item) => item.id === option.id)) {
+      next.push({
+        ...option,
+        parentId: headerId || undefined,
+      });
+    }
+    return next;
+  }
 
   async function openAccountCreate(target: "account" | "from" | "to") {
     setAccountCreateTarget(target);
@@ -149,7 +227,7 @@ export function TransactionFormModal({
         const data = await res.json().catch(() => null);
         if (data?.ok) {
           setLocalNestedFieldData({
-            groupId: (data.groups ?? []).map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
+            groupId: (data.groups ?? []).filter((group: { name: string }) => group.name !== "未指定").map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
             institutionId: (data.institutions ?? []).map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
               id: institution.id,
               name: institution.shortName?.trim() || institution.name,
@@ -164,6 +242,37 @@ export function TransactionFormModal({
   useEffect(() => {
     setLocalNestedFieldData(nestedFieldData);
   }, [nestedFieldData]);
+
+  useEffect(() => {
+    if (!entryMenuOpen) return;
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerWrapRef.current?.contains(target)) return;
+      setEntryMenuOpen(false);
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setEntryMenuOpen(false);
+    }
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [entryMenuOpen]);
+
+  useEffect(() => {
+    if (accountSSOptions) {
+      setLocalAccountSSOpts((prev) => mergeSmartSelectOptions(accountSSOptions, prev));
+    }
+  }, [accountSSOptions]);
+
+  useEffect(() => {
+    if (transferAccountSSOptions) {
+      setLocalTransferAccountSSOpts((prev) => mergeSmartSelectOptions(transferAccountSSOptions, prev));
+    }
+  }, [transferAccountSSOptions]);
 
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
@@ -276,8 +385,83 @@ export function TransactionFormModal({
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const [categoryId, setCategoryId] = useState("");
   const [note, setNote] = useState("");
+  const [toNote, setToNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
+
+  const {
+    ownerFilter,
+    ownerFilterLabel,
+    cycleOwnerFilter,
+    filteredOptions: accountSSOptionsFiltered,
+    visibleOptionIds: accountVisibleOptionIds,
+  } = useAccountSSFilter(localAccountSSOpts);
+  const {
+    filteredOptions: transferFiltered,
+    visibleOptionIds: transferVisibleOptionIds,
+  } = useAccountSSFilter(localTransferAccountSSOpts, ownerFilter);
+
+  const mergedAccountSelectOptions = useMemo(
+    () => mergeSmartSelectOptions(localAccountSSOpts, accountList),
+    [localAccountSSOpts, accountList],
+  );
+  const displayTransferOptions = useMemo(() => {
+    const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
+    const filtered = source.filter((option) => !option.isHeader);
+    let merged = mergeSmartSelectOptions(filtered, transferAccountList);
+    if (transferVisibleOptionIds) {
+      merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
+    }
+    return merged;
+  }, [localTransferAccountSSOpts, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+
+  // Apply owner filter on top of merged options (keeps locally added accounts)
+  // Recent account tracking — last used accounts float to top
+  const RECENT_ACCOUNTS_KEY = "mmh_recent_accounts";
+  const recentAccountIds = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_ACCOUNTS_KEY);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch { return []; }
+  }, []);
+
+  const recordRecentAccount = useCallback((accId: string) => {
+    if (!accId) return;
+    try {
+      const raw = localStorage.getItem(RECENT_ACCOUNTS_KEY);
+      const list: string[] = raw ? JSON.parse(raw) : [];
+      const idx = list.indexOf(accId);
+      if (idx >= 0) list.splice(idx, 1);
+      list.unshift(accId);
+      localStorage.setItem(RECENT_ACCOUNTS_KEY, JSON.stringify(list.slice(0, 20)));
+    } catch {}
+  }, []);
+
+  const displayAccountOptions = useMemo(() => {
+    let base = mergeSmartSelectOptions(accountSSOptionsFiltered, accountList);
+    if (accountVisibleOptionIds) {
+      base = base.filter((option) => accountVisibleOptionIds.has(option.id));
+    }
+    // Sort: recently used first, preserving order within each "bucket"
+    const recentSet = new Set(recentAccountIds);
+    base = [...base].sort((a, b) => {
+      const aRecent = recentSet.has(a.id) ? 1 : 0;
+      const bRecent = recentSet.has(b.id) ? 1 : 0;
+      return bRecent - aRecent;
+    });
+    return base;
+  }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
+
+  useEffect(() => {
+    if (!open || txType === "transfer" || !accountId) return;
+    setLocalAccountSSOpts((prev) => {
+      const currentOptions = prev ?? accountSSOptions ?? [];
+      if (currentOptions.some((opt) => opt.id === accountId)) return prev;
+      const fallback = accountList.find((opt) => opt.id === accountId);
+      if (!fallback) return prev;
+      return [...currentOptions, fallback];
+    });
+  }, [open, txType, accountId, accountList, accountSSOptions]);
 
   function resetDraft() {
     setTxType("expense");
@@ -293,6 +477,7 @@ export function TransactionFormModal({
     }
     setCategoryId("");
     setNote("");
+    setToNote("");
     setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -379,7 +564,9 @@ export function TransactionFormModal({
         date: string;
         amount: number;
         note: string;
+        toNote?: string;
         accountId?: string;
+        accountLabel?: string;
         categoryId?: string;
         fromAccountId?: string;
         toAccountId?: string;
@@ -405,19 +592,35 @@ export function TransactionFormModal({
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setNote(detail.note ?? "");
+      setToNote(detail.toNote ?? "");
       setSelectedTagIds(detail.tagIds ?? []);
       if (detail.type === "transfer") {
         const nextToAccountId = detail.toAccountId ?? "";
         const nextFromAccountId = detail.fromAccountId && detail.fromAccountId !== nextToAccountId
           ? detail.fromAccountId
           : detail.accountId ?? "";
+        setLocalTransferAccountSSOpts((prev) => {
+          const extras = transferAccountList.filter((opt) => opt.id === nextFromAccountId || opt.id === nextToAccountId);
+          return mergeSmartSelectOptions(prev ?? transferAccountSSOptions, extras);
+        });
         setAccountId("");
         setCategoryId("");
         setFromAccountId(nextFromAccountId);
         setToAccountId(nextToAccountId);
         setFromAccountIdEdited(true);
       } else {
-        setAccountId(detail.accountId ?? (defaultAccountId ?? ""));
+        const nextAccountId = detail.accountId ?? (defaultAccountId ?? "");
+        setLocalAccountSSOpts((prev) => {
+          const extra = accountList.find((opt) => opt.id === nextAccountId);
+          if (extra) {
+            return mergeSmartSelectOptions(prev ?? accountSSOptions, [extra]);
+          }
+          if (nextAccountId && detail.accountLabel) {
+            return mergeSmartSelectOptions(prev ?? accountSSOptions, [{ id: nextAccountId, label: detail.accountLabel }]);
+          }
+          return prev ?? accountSSOptions;
+        });
+        setAccountId(nextAccountId);
         setCategoryId(detail.categoryId ?? "");
         setFromAccountId("");
         setToAccountId(detail.toAccountId ?? "");
@@ -427,7 +630,14 @@ export function TransactionFormModal({
 
     window.addEventListener("mmh:transaction:edit", onOpenEdit as EventListener);
     return () => window.removeEventListener("mmh:transaction:edit", onOpenEdit as EventListener);
-  }, [defaultAccountId, today]);
+  }, [
+    accountList,
+    accountSSOptions,
+    defaultAccountId,
+    today,
+    transferAccountList,
+    transferAccountSSOptions,
+  ]);
 
   useEffect(() => {
     if (!open || !isCreditCardAccount || txType !== "transfer") return;
@@ -452,6 +662,7 @@ export function TransactionFormModal({
         formData.set("date", date);
         formData.set("amount", amount);
         formData.set("note", note);
+        formData.set("toNote", toNote);
         formData.set("entryId", editEntryId);
         formData.set("keepFundDetail", "true");
         setSubmitting(true);
@@ -481,6 +692,7 @@ export function TransactionFormModal({
       formData.set("date", date);
       formData.set("amount", amount);
       formData.set("note", note);
+      formData.set("toNote", toNote);
       if (editEntryId) formData.set("entryId", editEntryId);
     } else {
       formData = new FormData();
@@ -488,6 +700,7 @@ export function TransactionFormModal({
       formData.set("date", date);
       formData.set("amount", amount);
       formData.set("note", note);
+      formData.set("toNote", toNote);
       if (editEntryId) formData.set("entryId", editEntryId);
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
@@ -534,19 +747,90 @@ export function TransactionFormModal({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => {
-          setOpen(true);
-          setIsFromButton(true);
-          resetDraft();
-        }}
-        className="primary-button h-8 gap-1 px-3"
-      >
-        <Plus className="w-4 h-4" />
-        记账
-        <ChevronDown className="w-4 h-4 opacity-90" />
-      </button>
+      <div ref={triggerWrapRef} className="relative inline-flex">
+        <div className="inline-flex h-8 items-stretch overflow-hidden rounded-full bg-blue-600 text-white shadow-sm ring-1 ring-blue-600/90">
+          <button
+            type="button"
+            onClick={() => {
+              setEntryMenuOpen(false);
+              setOpen(true);
+              setIsFromButton(true);
+              resetDraft();
+            }}
+            className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10"
+          >
+            <Plus className="w-4 h-4" />
+            记账
+          </button>
+          <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={entryMenuOpen}
+            onClick={() => setEntryMenuOpen((prev) => !prev)}
+            className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
+            title="更多记账入口"
+          >
+            <ChevronDown className="w-4 h-4 opacity-90" />
+          </button>
+        </div>
+        {entryMenuOpen ? (
+          <div className="absolute right-0 top-9 z-20 min-w-[180px] overflow-hidden rounded-[12px] border border-slate-200 bg-white py-1 shadow-[0_12px_32px_rgba(15,23,42,0.16)]">
+            <button
+              type="button"
+              onClick={() => {
+                setEntryMenuOpen(false);
+                window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
+                  detail: { requestId: `create-${Date.now()}`, item: { type: "investment" }, defaultAccountId, defaultCashAccountId: defaultAccountId ?? "" },
+                }));
+              }}
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+            >
+              开放式基金 / 货币基金
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEntryMenuOpen(false);
+                window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
+                  detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
+                }));
+              }}
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+            >
+              银行理财
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEntryMenuOpen(false);
+                window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
+                  detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
+                }));
+              }}
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+            >
+              活期 / 定期存款
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEntryMenuOpen(false);
+      window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
+        detail: {
+          requestId: `create-${Date.now()}`,
+          defaultCashAccountId: defaultAccountId ?? "",
+          defaultOwnerGroupId: "",
+        },
+      }));
+              }}
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+            >
+              保险
+            </button>
+          </div>
+        ) : null}
+      </div>
 
       {open ? createPortal(
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
@@ -640,19 +924,6 @@ export function TransactionFormModal({
                     >
                       转账
                     </button>
-                    {showInvestment && (
-                    <button
-                      type="button"
-                      onClick={() => setTxType("investment")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "investment"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      投资
-                    </button>
-                    )}
                   </>
                 )}
               </div>
@@ -697,14 +968,27 @@ export function TransactionFormModal({
                     }}
                     className="h-10 w-full rounded-[10px] border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 transition-colors hover:bg-emerald-100"
                   >
-                    活期 / 存款
+                    活期 / 定期存款
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDraft();
+                      window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
+                        detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
+                      }));
+                    }}
+                    className="h-10 w-full rounded-[10px] border border-sky-200 bg-sky-50 text-sm text-sky-700 transition-colors hover:bg-sky-100"
+                  >
+                    保险
                   </button>
                 </div>
               )}
 
               {(txType === "expense" || txType === "income") && (
                 <div className="space-y-3">
-                  {/* 第一行：日期 | 资金账户 */}
+                  {/* 第一行：日期 | 账户 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">日期</div>
@@ -712,10 +996,15 @@ export function TransactionFormModal({
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{txType === "income" ? "收款账户" : "资金账户"}</div>
-                      <SmartSelect mode="single" value={accountId} onChange={setAccountId}
-                        options={localAccountSSOpts ?? accountList} placeholder="请选择"
-                        onCreateClick={() => { void openAccountCreate("account"); }} />
+                      <div className="form-label">
+                        {isCreditCardAccount ? "记账账户" : (txType === "income" ? "收款账户" : "资金账户")}
+                      </div>
+                      <SmartSelect mode="single" value={accountId}
+                        onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                        options={displayAccountOptions} placeholder="请选择"
+                        onCreateClick={() => { void openAccountCreate("account"); }}
+                        onCycleOwnerFilter={cycleOwnerFilter}
+                        ownerFilterLabel={ownerFilterLabel} />
                     </div>
                   </div>
 
@@ -754,7 +1043,7 @@ export function TransactionFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">金额</div>
-                      <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
+                      <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">附件</div>
@@ -766,15 +1055,27 @@ export function TransactionFormModal({
                   </div>
 
                   {/* 第四行：备注 */}
-                  <div className="space-y-1">
-                    <div className="form-label">备注</div>
-                    <input
-                      name="note"
-                      placeholder="可选"
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      className="form-input"
-                    />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">转出备注</div>
+                      <input
+                        name="note"
+                        placeholder="可选"
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">转入备注</div>
+                      <input
+                        name="toNote"
+                        placeholder="可选"
+                        value={toNote}
+                        onChange={(e) => setToNote(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -794,8 +1095,9 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
-                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户" />
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
                         <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
@@ -805,8 +1107,9 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户" />
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
                       </div>
                     </div>
                   ) : (
@@ -814,8 +1117,9 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
-                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户" />
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
                       </div>
                       <div className="flex items-center justify-center pb-0.5">
                         <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
@@ -824,8 +1128,9 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                          options={localTransferAccountSSOpts ?? transferAccountList} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户" />
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
                       </div>
                     </div>
                   )}
@@ -833,7 +1138,7 @@ export function TransactionFormModal({
                   {/* 第三行：金额 */}
                   <div className="space-y-1">
                     <div className="form-label">金额</div>
-                    <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" />
+                    <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
                   </div>
 
                   {/* 第四行：备注 */}
@@ -916,13 +1221,15 @@ export function TransactionFormModal({
         onCreated={(id, name, extra) => {
           const kind = extra?.kind || "bank_debit";
           const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName;
+          const groupId = extra?.groupId?.trim();
+          const groupName = extra?.groupName?.trim();
           const label = institutionLabel ? `${institutionLabel}·${name}` : name;
-          const subLabel = [kindLabel(kind), extra?.groupName].filter(Boolean).join(" · ");
+          const subLabel = kindLabel(kind);
           const option = { id, label, subLabel };
           setAccountList(prev => [...prev, option]);
           setTransferAccountList(prev => [...prev, option]);
-          setLocalAccountSSOpts(prev => prev ? [...prev, option] : prev);
-          setLocalTransferAccountSSOpts(prev => prev ? [...prev, option] : prev);
+          setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
+          setLocalTransferAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
           if (accountCreateTarget === "from") setFromAccountId(id);
           else if (accountCreateTarget === "to") setToAccountId(id);
           else setAccountId(id);
@@ -936,3 +1243,5 @@ export function TransactionFormModal({
     </>
   );
 }
+
+

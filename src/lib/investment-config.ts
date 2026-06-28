@@ -18,7 +18,7 @@ export const PRODUCT_LABELS: Record<ProductType, string> = {
   fund: "开放式基金",
   money: "货币基金",
   wealth: "银行理财",
-  deposit: "活期/存款",
+  deposit: "定期存款",
 };
 
 // 交易类型标签

@@ -35,7 +35,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
   if (!options?.force && entry?.promise) return entry.promise;
 
-  const promise = fetch("/api/v1/accounts/internal?balances=false")
+  const promise = fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" })
     .then((res) => res.json())
     .then((data) => {
       if (!data?.ok) throw new Error(data?.error || "读取账户资料失败");

@@ -1,18 +1,25 @@
 "use client";
 
+import {
+  DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE,
+  normalizeCreditCardLabelTemplate,
+} from "@/lib/account-display";
+
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
 export const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
 export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
 export const TIME_ZONE_COOKIE = "mmh_time_zone";
 export const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
+export const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 
-export type SidebarGroupMode = "kind" | "owner";
+export type SidebarGroupMode = "kind" | "institution";
 export type TimeZoneMode = "system" | "specified";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 
@@ -23,6 +30,7 @@ export type AppPreferencesSnapshot = {
   timeZoneMode: TimeZoneMode;
   timeZone: string;
   creditCardLabelMode: CreditCardLabelMode;
+  creditCardLabelTemplate: string;
   sidebarGroupBy: SidebarGroupMode;
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
@@ -109,13 +117,29 @@ export function setCreditCardLabelModePreference(mode: CreditCardLabelMode) {
   if (typeof document === "undefined") return;
   const normalized = mode === "full_name" ? "full_name" : DEFAULT_CREDIT_CARD_LABEL_MODE;
   document.cookie = `${CREDIT_CARD_LABEL_MODE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  document.cookie = `${CREDIT_CARD_LABEL_TEMPLATE_COOKIE}=${encodeURIComponent(
+    normalized === "full_name" ? FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE : DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  )}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  emitPreferencesChanged();
+}
+
+export function getCreditCardLabelTemplatePreference(): string {
+  const mode = getCreditCardLabelModePreference();
+  return normalizeCreditCardLabelTemplate(parseCookieValue(CREDIT_CARD_LABEL_TEMPLATE_COOKIE), mode);
+}
+
+export function setCreditCardLabelTemplatePreference(template: string) {
+  if (typeof document === "undefined") return;
+  const mode = getCreditCardLabelModePreference();
+  const normalized = normalizeCreditCardLabelTemplate(template, mode);
+  document.cookie = `${CREDIT_CARD_LABEL_TEMPLATE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
   emitPreferencesChanged();
 }
 
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
     const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY);
-    if (value === "owner" || value === "institution") return "owner";
+    if (value === "institution") return "institution";
     return "kind";
   } catch {
     return "kind";
@@ -182,6 +206,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     timeZoneMode: getTimeZoneModePreference(),
     timeZone: getTimeZonePreference(),
     creditCardLabelMode: getCreditCardLabelModePreference(),
+    creditCardLabelTemplate: getCreditCardLabelTemplatePreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),

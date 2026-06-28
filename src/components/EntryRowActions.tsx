@@ -10,7 +10,9 @@ type EditPayload = {
   date: string;
   amount: number;
   note: string;
+  toNote?: string;
   accountId?: string;
+  accountLabel?: string;
   categoryId?: string;
   fromAccountId?: string;
   toAccountId?: string;
@@ -18,12 +20,18 @@ type EditPayload = {
   cashAccountId?: string;
   fundCode?: string;
   fundName?: string;
+  insuranceProductId?: string | null;
   fundSubtype?: string;
   fundUnits?: number;
   fundNav?: number;
+  depositAnnualRate?: number;
+  depositInterest?: number;
+  depositSourceEntryId?: string | null;
   fundFee?: number;
   fundConfirmDate?: string;
+  fundArrivalDate?: string | null;
   fundProductType?: string;
+  source?: string | null;
   tagIds?: string[];
 };
 
@@ -42,7 +50,9 @@ export function EntryRowActions({
     const detail = { requestId, entryId, ...edit } satisfies EditPayload;
 
     const pt = edit.fundProductType;
-    if (edit.type === "investment" && pt === "wealth") {
+    if (edit.type === "investment" && edit.source === "insurance") {
+      window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
+    } else if (edit.type === "investment" && pt === "wealth") {
       window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
     } else if (edit.type === "investment" && pt === "deposit") {
       window.dispatchEvent(new CustomEvent("mmh:deposit:edit", { detail }));

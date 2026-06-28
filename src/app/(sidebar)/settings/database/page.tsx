@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, FileSpreadsheet, RotateCcw, Shield, Upload } from "lucide-react";
+import { Download, FileSpreadsheet, RotateCcw, Shield, Upload, RefreshCw } from "lucide-react";
 
 const DEFAULT_ORIGINS_LABEL = "默认白名单：局域网 IP + localhost";
 const RESET_CONFIRM_TEXT = "系统初始化";
@@ -58,6 +58,10 @@ export default function DatabaseSettingsPage() {
   const [resetDbPassword, setResetDbPassword] = useState("");
   const [resetError, setResetError] = useState("");
   const [resetting, setResetting] = useState(false);
+
+  const [cacheRefreshing, setCacheRefreshing] = useState(false);
+  const [cacheRefreshMessage, setCacheRefreshMessage] = useState("");
+  const [cacheRefreshError, setCacheRefreshError] = useState("");
 
   const canRestore = useMemo(
     () => Boolean(restoreFile) && restoreConfirmText === RESTORE_CONFIRM_TEXT && !restoring,
@@ -231,6 +235,25 @@ export default function DatabaseSettingsPage() {
       setResetError("网络错误，请重试");
     } finally {
       setResetting(false);
+    }
+  }
+
+  async function handleCacheRefresh() {
+    setCacheRefreshing(true);
+    setCacheRefreshMessage("");
+    setCacheRefreshError("");
+    try {
+      const res = await fetch("/api/v1/settings/revalidate", { method: "POST" });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "刷新失败");
+      }
+      setCacheRefreshMessage("缓存已刷新，正在重新加载页面…");
+      setTimeout(() => window.location.href = "/", 800);
+    } catch (e) {
+      setCacheRefreshError(e instanceof Error ? e.message : "刷新失败");
+    } finally {
+      setCacheRefreshing(false);
     }
   }
 
@@ -466,6 +489,28 @@ export default function DatabaseSettingsPage() {
             </div>
           </>
         ) : null}
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-slate-800">刷新服务端缓存</div>
+            <div className="mt-1 text-xs text-slate-500">
+              当数据库被外部工具直接修改（例如批量删除重复记录、Prisma Studio 编辑）后，页面可能仍显示旧数据。点击此处强制刷新服务端缓存，让 Web 重新读取最新数据。
+            </div>
+            {cacheRefreshMessage ? <div className="mt-2 text-xs text-emerald-600">{cacheRefreshMessage}</div> : null}
+            {cacheRefreshError ? <div className="mt-2 text-xs text-red-600">{cacheRefreshError}</div> : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleCacheRefresh()}
+            disabled={cacheRefreshing}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${cacheRefreshing ? "animate-spin" : ""}`} />
+            {cacheRefreshing ? "刷新中..." : "刷新缓存"}
+          </button>
+        </div>
       </section>
 
       <section className="rounded-lg border border-red-200 bg-red-50 p-4">

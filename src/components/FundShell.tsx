@@ -1418,6 +1418,8 @@ export function FundShell(props: Props) {
               defaults={positionEntryDefaults ?? undefined}
               cashAccounts={cashAccounts}
               investmentAccounts={investmentAccounts}
+              cashAccountSSOptions={cashAccountSSOptions}
+              investmentAccountSSOptions={investmentAccountSSOptions}
               holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
               allEntries={d.allEntries.map((e: any) => ({ date: fmtDate(e.date), fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundCode: e.fundCode, fundSubtype: e.fundSubtype, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, source: e.source ?? null }))}
               createAction={createAction}
@@ -2515,6 +2517,10 @@ export function FundShell(props: Props) {
 
                             investmentAccounts={investmentAccounts}
 
+                            cashAccountSSOptions={cashAccountSSOptions}
+
+                            investmentAccountSSOptions={investmentAccountSSOptions}
+
                             createAction={createAction}
 
                             editAction={editAction}
@@ -2554,6 +2560,10 @@ export function FundShell(props: Props) {
                             cashAccounts={cashAccounts}
 
                             investmentAccounts={investmentAccounts}
+
+                            cashAccountSSOptions={cashAccountSSOptions}
+
+                            investmentAccountSSOptions={investmentAccountSSOptions}
 
                             createAction={createAction}
 

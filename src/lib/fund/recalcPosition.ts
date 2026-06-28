@@ -1,5 +1,6 @@
 ﻿import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 
 function toNum(v: unknown): number {
   if (v === null || v === undefined) return 0;
@@ -52,7 +53,7 @@ function buyCostBasis(amount: number): number {
   return a > 0 ? a : 0;
 }
 
-function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
+function calcByMovingAvg(entries: EntryLike[], fundUnitsDecimals: number): PositionCalcResult {
   const map = new Map<string, HoldingCalc>();
   const realizedProfitByEntryId = new Map<string, number>();
 
@@ -80,7 +81,7 @@ function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
       const a = Math.abs(toNum(amount));
       const u = e.units ?? 0;
       if (u === 0) rec.pendingCost += a;
-      else { rec.cost += costBasis; rec.units += u; }
+      else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
@@ -90,14 +91,14 @@ function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
         const proceeds = e.arrivalAmount ?? Math.max(0, amount - (e.fee ?? 0));
         const realizedProfit = proceeds - costReduced;
         rec.cost -= costReduced;
-        rec.units -= e.units;
+        rec.units = roundFundUnits(rec.units - e.units, fundUnitsDecimals);
         rec.historicalProfit += realizedProfit;
         realizedProfitByEntryId.set(e.id, realizedProfit);
       }
     }
 
     rec.cost = Math.max(0, rec.cost);
-    rec.units = Math.max(0, rec.units);
+    rec.units = Math.max(0, roundFundUnits(rec.units, fundUnitsDecimals));
     map.set(code, rec);
   }
 
@@ -107,7 +108,7 @@ function calcByMovingAvg(entries: EntryLike[]): PositionCalcResult {
   return { holdings: map, realizedProfitByEntryId };
 }
 
-function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
+function calcByFifo(entries: EntryLike[], fundUnitsDecimals: number, lifo = false): PositionCalcResult {
   const lots = new Map<string, Lot[]>();
   const result = new Map<string, HoldingCalc>();
   const realizedProfitByEntryId = new Map<string, number>();
@@ -138,7 +139,7 @@ function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
       const a = Math.abs(toNum(amount));
       const u = e.units ?? 0;
       if (u === 0) { rec.pendingCost += a; }
-      else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units += u; rec.cost += costBasis; }
+      else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
@@ -164,7 +165,7 @@ function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
         if (toRedeem <= 0) break;
         const take = Math.min(lot.units, toRedeem);
         costReduced += take * lot.costPerUnit;
-        lot.units -= take;
+        lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
         toRedeem -= take;
       }
       const actualQueue = lifo ? [...codeLots].reverse() : codeLots;
@@ -172,11 +173,11 @@ function calcByFifo(entries: EntryLike[], lifo = false): PositionCalcResult {
       for (const lot of actualQueue) {
         if (remaining <= 0) break;
         const take = Math.min(lot.units, remaining);
-        lot.units -= take;
+        lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
         remaining -= take;
       }
-      lots.set(code, codeLots.filter(l => l.units > 0.0001));
-      rec.units = Math.max(0, rec.units - (e.units ?? 0));
+      lots.set(code, codeLots.filter(l => l.units > 0));
+      rec.units = Math.max(0, roundFundUnits(rec.units - (e.units ?? 0), fundUnitsDecimals));
       rec.cost = Math.max(0, rec.cost - costReduced);
       const proceeds = e.arrivalAmount ?? Math.max(0, amount - (e.fee ?? 0));
       const realizedProfit = proceeds - costReduced;
@@ -193,6 +194,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
   const account = await prisma.account.findUnique({ where: { id: accountId } });
   if (!account) return;
   if (account.kind !== "investment") return;
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals);
 
   const rawEntries = await prisma.txRecord.findMany({
     where: {
@@ -217,7 +219,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
       amount: toNum(e.amount),
       fee: toNum(e.fundFee ?? 0),
       arrivalAmount: e.fundArrivalAmount != null ? toNum(e.fundArrivalAmount) : null,
-      units: e.fundUnits != null ? toNum(e.fundUnits) : null,
+      units: e.fundUnits != null ? roundFundUnits(toNum(e.fundUnits), fundUnitsDecimals) : null,
       subtype: e.fundSubtype ?? null,
       source: e.source ?? null,
       isPending: e.fundSubtype === "buy_failed" || (e.fundConfirmDate == null && e.fundSubtype === "buy"),
@@ -230,11 +232,11 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
   const costBasisMethod = account.costBasisMethod ?? "moving_avg";
   let calcResult: PositionCalcResult;
   if (costBasisMethod === "fifo") {
-    calcResult = calcByFifo(entries, false);
+    calcResult = calcByFifo(entries, fundUnitsDecimals, false);
   } else if (costBasisMethod === "lifo") {
-    calcResult = calcByFifo(entries, true);
+    calcResult = calcByFifo(entries, fundUnitsDecimals, true);
   } else {
-    calcResult = calcByMovingAvg(entries);
+    calcResult = calcByMovingAvg(entries, fundUnitsDecimals);
   }
   const symbolMap = calcResult.holdings;
 
@@ -269,7 +271,8 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     const rec = symbolMap.get(code);
     if (!rec) { await prisma.fundHolding.deleteMany({ where: { accountId, fundCode: code } }); continue; }
 
-    const avgCost = rec.units > 0 ? rec.cost / rec.units : 0;
+    const roundedUnits = roundFundUnits(rec.units, fundUnitsDecimals);
+    const avgCost = roundedUnits > 0 ? rec.cost / roundedUnits : 0;
     const latestNavFromHolding = await prisma.fundHolding.findFirst({
       where: { accountId, fundCode: code, nav: { not: null } },
       orderBy: { updatedAt: "desc" },
@@ -287,7 +290,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
 
     const holdingData = {
       fundName,
-      units: rec.units,
+      units: roundedUnits,
       avgCost,
       cost: rec.cost + rec.pendingCost,
       nav: navToUse ?? undefined,

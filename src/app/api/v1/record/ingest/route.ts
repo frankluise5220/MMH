@@ -4,12 +4,28 @@ import { z } from "zod";
 import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { defaultModel, localProvider } from "@/lib/ai/config";
+import { formatAccountDisplayName, formatDisplayInstitutionName } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 
 export const runtime = "nodejs";
 
 type Db = typeof prisma | Prisma.TransactionClient;
+type AccountLookupRow = {
+  id: string;
+  name: string;
+  kind: AccountKind;
+  billingDay: number | null;
+  Institution: { name: string | null; shortName?: string | null } | null;
+};
+type ImportContext = {
+  householdId: string;
+  accountIdByMatchKey: Map<string, string>;
+  accountMetaById: Map<string, { kind: AccountKind; billingDay: number | null }>;
+  categoryIdByName: Map<string, string>;
+  tagIdByName: Map<string, string>;
+  defaultAccountGroupId: string | null;
+};
 
 function corsHeaders() {
   return {
@@ -49,6 +65,7 @@ const ParsedItemSchema = z.object({
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
   category: z.string().optional(),
+  tags: z.string().optional(),
   remark: z.string().optional(),
   counterparty: z.string().optional(),
 });
@@ -100,22 +117,107 @@ function pickAccountName(value?: string, defaultAccountName?: string) {
   return fallback;
 }
 
-async function resolveAccountId(tx: Db, accountName?: string) {
-  if (!accountName) return null;
-  const { householdId } = await getHouseholdScope();
-  const found = await tx.account.findFirst({ where: { name: accountName, householdId } });
-  return found?.id ?? null;
+function normalizeAccountMatchKey(value?: string) {
+  return String(value ?? "")
+    .trim()
+    .replace(/[·•\-—\s]/g, "")
+    .toLowerCase();
 }
 
-async function ensureDefaultAccountGroupId(tx: Db) {
-  const { householdId } = await getHouseholdScope();
-  const existing = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId } });
+function buildAccountMatchCandidates(account: {
+  name: string;
+  Institution?: { name: string | null; shortName?: string | null } | null;
+  AccountAlias?: Array<{ alias: string }> | null;
+}) {
+  const fullInstitutionName = formatDisplayInstitutionName(account.Institution, false);
+  const shortInstitutionName = formatDisplayInstitutionName(account.Institution, true);
+  const candidates = new Set<string>([
+    account.name,
+    formatAccountDisplayName(account.name, fullInstitutionName),
+    formatAccountDisplayName(account.name, shortInstitutionName),
+  ]);
+  // Also add variants without separator
+  if (fullInstitutionName) candidates.add(`${fullInstitutionName}${account.name}`);
+  if (shortInstitutionName) candidates.add(`${shortInstitutionName}${account.name}`);
+  // Add aliases
+  if (account.AccountAlias) {
+    for (const al of account.AccountAlias) {
+      candidates.add(al.alias);
+    }
+  }
+  return Array.from(candidates);
+}
+
+function indexAccountLookup(
+  map: Map<string, string>,
+  account: { id: string; name: string; Institution?: { name: string | null; shortName?: string | null } | null; AccountAlias?: Array<{ alias: string }> | null },
+) {
+  for (const candidate of buildAccountMatchCandidates(account)) {
+    const key = normalizeAccountMatchKey(candidate);
+    if (key) map.set(key, account.id);
+  }
+}
+
+async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string) {
+  if (!accountName) return null;
+  const normalizedTarget = normalizeAccountMatchKey(accountName);
+  if (!normalizedTarget) return null;
+  const cached = ctx.accountIdByMatchKey.get(normalizedTarget);
+  if (cached) return cached;
+
+  // Load all accounts with aliases for matching
+  const accounts = await tx.account.findMany({
+    where: { householdId: ctx.householdId },
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      billingDay: true,
+      Institution: {
+        select: {
+          name: true,
+          shortName: true,
+        },
+      },
+      AccountAlias: { select: { alias: true } },
+    },
+  });
+
+  // Index all accounts
+  for (const account of accounts) {
+    indexAccountLookup(ctx.accountIdByMatchKey, account);
+    ctx.accountMetaById.set(account.id, { kind: account.kind, billingDay: account.billingDay });
+  }
+
+  // Exact match
+  const exact = ctx.accountIdByMatchKey.get(normalizedTarget);
+  if (exact) return exact;
+
+  // Partial match: target contains account key or vice versa
+  for (const account of accounts) {
+    for (const candidate of buildAccountMatchCandidates(account)) {
+      const key = normalizeAccountMatchKey(candidate);
+      if (!key) continue;
+      if (key.length >= 3 && (normalizedTarget.includes(key) || key.includes(normalizedTarget))) {
+        ctx.accountIdByMatchKey.set(normalizedTarget, account.id);
+        return account.id;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function ensureDefaultAccountGroupId(ctx: ImportContext, tx: Db) {
+  if (ctx.defaultAccountGroupId) return ctx.defaultAccountGroupId;
+  const existing = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId: ctx.householdId } });
   if (existing?.id) return existing.id;
-  const legacy = await tx.accountGroup.findFirst({ where: { name: "默认", householdId } });
+  const legacy = await tx.accountGroup.findFirst({ where: { name: "默认", householdId: ctx.householdId } });
   if (legacy?.id) {
     try {
       await tx.accountGroup.update({ where: { id: legacy.id }, data: { name: "未指定" } });
     } catch {}
+    ctx.defaultAccountGroupId = legacy.id;
     return legacy.id;
   }
   try {
@@ -123,50 +225,144 @@ async function ensureDefaultAccountGroupId(tx: Db) {
       data: {
         name: "未指定",
         sortOrder: 0,
-        householdId,
+        householdId: ctx.householdId,
       },
     });
+    ctx.defaultAccountGroupId = created.id;
     return created.id;
   } catch {
-    const retry = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId } });
+    const retry = await tx.accountGroup.findFirst({ where: { name: "未指定", householdId: ctx.householdId } });
+    ctx.defaultAccountGroupId = retry?.id ?? null;
     return retry?.id ?? null;
   }
 }
 
-async function ensureAccountId(tx: Db, accountName?: string) {
+async function ensureAccountId(ctx: ImportContext, tx: Db, accountName?: string) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
-  const { householdId } = await getHouseholdScope();
-  const existingId = await resolveAccountId(tx, name);
+  const existingId = await resolveAccountId(ctx, tx, name);
   if (existingId) return existingId;
-  const groupId = await ensureDefaultAccountGroupId(tx);
+  const groupId = await ensureDefaultAccountGroupId(ctx, tx);
   if (!groupId) return null;
   try {
     const created = await tx.account.create({
       data: {
         name,
         groupId,
-        householdId,
+        householdId: ctx.householdId,
         currency: "CNY",
         kind: AccountKind.other,
         isActive: true,
       },
     });
+    indexAccountLookup(ctx.accountIdByMatchKey, { id: created.id, name: created.name, Institution: null });
+    ctx.accountMetaById.set(created.id, { kind: created.kind, billingDay: created.billingDay });
     return created.id;
   } catch {
-    return (await resolveAccountId(tx, name)) ?? null;
+    return (await resolveAccountId(ctx, tx, name)) ?? null;
   }
 }
 
-async function resolveCategoryId(tx: Db, categoryName?: string) {
+function resolveCategoryId(ctx: ImportContext, categoryName?: string) {
   if (!categoryName) return null;
-  const found = await tx.category.findFirst({ where: { name: categoryName } });
-  return found?.id ?? null;
+  return ctx.categoryIdByName.get(categoryName.trim()) ?? null;
 }
 
-async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccountName?: string) {
-  const date = parseDate(item.date);
+function parseTagNames(tags?: string) {
+  return Array.from(
+    new Set(
+      String(tags ?? "")
+        .split(/[，,、；;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function resolveTagIds(ctx: ImportContext, tags?: string) {
+  const names = parseTagNames(tags);
+  if (names.length === 0) return [];
+  return names.map((name) => ctx.tagIdByName.get(name)).filter((id): id is string => Boolean(id));
+}
+
+async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: string) {
+  const tagIds = resolveTagIds(ctx, tags);
+  if (tagIds.length === 0) return;
+  await tx.entryTag.createMany({
+    data: tagIds.map((tagId) => ({ entryId, tagId })),
+    skipDuplicates: true,
+  });
+}
+
+function statementMonthForAccountMeta(ctx: ImportContext, accountId: string | null, date: Date) {
+  if (!accountId) return null;
+  const meta = ctx.accountMetaById.get(accountId);
+  if (!meta) return null;
+  if (meta.kind !== AccountKind.bank_credit && meta.kind !== AccountKind.loan) return null;
+  if (!meta.billingDay) return null;
+  return toStatementMonth(date, meta.billingDay);
+}
+
+async function buildImportContext(): Promise<ImportContext> {
   const { householdId } = await getHouseholdScope();
+  const [accounts, categories, tags, defaultGroup] = await Promise.all([
+    prisma.account.findMany({
+      where: { householdId },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        billingDay: true,
+        Institution: {
+          select: {
+            name: true,
+            shortName: true,
+          },
+        },
+      },
+    }),
+    prisma.category.findMany({
+      where: {
+        OR: [{ householdId }, { householdId: null }],
+      },
+      select: { id: true, name: true },
+      orderBy: [{ householdId: "desc" }, { id: "asc" }],
+    }),
+    prisma.tag.findMany({
+      where: { householdId },
+      select: { id: true, name: true },
+    }),
+    prisma.accountGroup.findFirst({
+      where: { householdId, name: "未指定" },
+      select: { id: true },
+    }),
+  ]);
+
+  const ctx: ImportContext = {
+    householdId,
+    accountIdByMatchKey: new Map(),
+    accountMetaById: new Map(),
+    categoryIdByName: new Map(),
+    tagIdByName: new Map(),
+    defaultAccountGroupId: defaultGroup?.id ?? null,
+  };
+
+  for (const account of accounts) {
+    indexAccountLookup(ctx.accountIdByMatchKey, account);
+    ctx.accountMetaById.set(account.id, { kind: account.kind, billingDay: account.billingDay });
+  }
+  for (const category of categories) {
+    if (!ctx.categoryIdByName.has(category.name)) ctx.categoryIdByName.set(category.name, category.id);
+  }
+  for (const tag of tags) {
+    ctx.tagIdByName.set(tag.name, tag.id);
+  }
+
+  return ctx;
+}
+
+async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: ParsedItem, defaultAccountName?: string) {
+  const date = parseDate(item.date);
 
   const shouldUseDoubleEntry =
     item.type === "transfer" ||
@@ -177,13 +373,13 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
     const toAccountName = normalizeAccountCell(item.toAccount);
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, fromAccountName),
-      ensureAccountId(tx, toAccountName),
+      ensureAccountId(ctx, tx, fromAccountName),
+      ensureAccountId(ctx, tx, toAccountName),
     ]);
 
-    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(tx, "未指定账户") : null);
+    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(ctx, tx, "未指定账户") : null);
     const sourceAccountName = fromAccountName || (toAccountId ? "未指定账户" : "未识别账户");
-    const fromStatementMonth = await statementMonthForAccountId(tx, sourceAccountId, date);
+    const fromStatementMonth = statementMonthForAccountMeta(ctx, sourceAccountId, date);
 
     const amountAbs = Math.abs(item.amount);
 
@@ -210,7 +406,7 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
         toAccountName: toAccountName || null,
         note: item.remark ?? item.rawText,
         statementMonth: fromStatementMonth,
-        householdId,
+        householdId: ctx.householdId,
         // Add fund fields for investment type
         ...(item.type === "investment" && fundCode ? {
           fundCode,
@@ -220,15 +416,17 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       },
     });
 
+    await attachTags(ctx, tx, transaction.id, item.tags);
+
     return transaction;
   }
 
   const accountName = pickAccountName(item.account, defaultAccountName);
   const [accountId, categoryId] = await Promise.all([
-    ensureAccountId(tx, accountName),
-    resolveCategoryId(tx, item.category),
+    ensureAccountId(ctx, tx, accountName),
+    Promise.resolve(resolveCategoryId(ctx, item.category)),
   ]);
-  const statementMonth = await statementMonthForAccountId(tx, accountId, date);
+  const statementMonth = statementMonthForAccountMeta(ctx, accountId, date);
 
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * Math.abs(item.amount);
@@ -250,13 +448,13 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       type: item.type as any,
       date,
       amount,
-      accountId: accountId ?? (await ensureAccountId(tx, "未指定账户")) ?? "",
+      accountId: accountId ?? (await ensureAccountId(ctx, tx, "未指定账户")) ?? "",
       accountName: accountName || "未识别账户",
       categoryId,
       categoryName: item.category ?? null,
       note: item.remark ?? item.rawText,
       statementMonth,
-      householdId,
+      householdId: ctx.householdId,
       // Add fund fields for investment type
       ...(item.type === "investment" && fundCode ? {
         fundCode,
@@ -265,6 +463,8 @@ async function createTransactionFromItem(tx: Db, item: ParsedItem, defaultAccoun
       } : {}),
     },
   });
+
+  await attachTags(ctx, tx, transaction.id, item.tags);
 
   return transaction;
 }
@@ -399,12 +599,16 @@ export async function POST(req: Request) {
   }
 
   try {
+    const ctx = await buildImportContext();
     const created = await prisma.$transaction(async (tx) => {
       const rows: Awaited<ReturnType<typeof createTransactionFromItem>>[] = [];
       for (const item of items) {
-        rows.push(await createTransactionFromItem(tx, item, defaultAccountName));
+        rows.push(await createTransactionFromItem(ctx, tx, item, defaultAccountName));
       }
       return rows;
+    }, {
+      maxWait: 10_000,
+      timeout: 60_000,
     });
 
     const accountIdsToRecalc = new Set<string>();

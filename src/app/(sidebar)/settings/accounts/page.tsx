@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
 import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
@@ -8,6 +8,7 @@ import { kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } f
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -33,10 +34,15 @@ type Account = {
   billingDay: number | null; repaymentDay: number | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
+  fundUnitsDecimals?: number | null;
 };
 
 const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
 const investmentProductTypeLabel = (value: string | null | undefined) => PRODUCT_LABELS[(value || "fund") as ProductType] || "开放式基金";
+
+function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
+  return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;
+}
 
 export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -121,18 +127,20 @@ export default function SettingsAccountsPage() {
 
   // ---- Account handlers ----
   function openEdit(a: Account) {
+    const normalizedKind = normalizedAccountKind(a);
     setEditingId(a.id);
     setEditForm({
       name: a.name,
-      kind: a.kind,
+      kind: normalizedKind,
       groupId: a.groupId || "",
       institutionId: a.institutionId || "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
       numberMasked: a.numberMasked || "",
-      investProductType: a.investProductType || "fund",
+      investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
+      fundUnitsDecimals: String(a.fundUnitsDecimals ?? 3),
     });
   }
 
@@ -166,16 +174,17 @@ export default function SettingsAccountsPage() {
   const filteredAccounts = accounts.filter(a => {
     if (selectedGroup && a.groupId !== selectedGroup) return false;
     if (selectedInstitution && a.institutionId !== selectedInstitution) return false;
-    if (selectedKinds.length > 0 && !selectedKinds.includes(a.kind)) return false;
+    if (selectedKinds.length > 0 && !selectedKinds.includes(normalizedAccountKind(a))) return false;
     return true;
   });
 
   // Group accounts by kind for display
   const grouped = new Map<string, Account[]>();
   for (const a of filteredAccounts) {
-    const list = grouped.get(a.kind) || [];
+    const normalizedKind = normalizedAccountKind(a);
+    const list = grouped.get(normalizedKind) || [];
     list.push(a);
-    grouped.set(a.kind, list);
+    grouped.set(normalizedKind, list);
   }
 
   const groupFilterOptions = [
@@ -268,11 +277,43 @@ export default function SettingsAccountsPage() {
                 editingId === a.id ? (
                   /* ---- Edit mode ---- */
                   <div key={a.id} className="p-4 bg-blue-50/30">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {(() => {
+                      const normalizedKind = normalizedAccountKind(a);
+                      const editKind = (editForm.kind || normalizedKind) as AccountKind;
+                      const isInvestmentKind = editKind === "investment";
+                      const isBillLikeKind = editKind === "bank_credit";
+                      const filteredInstitutions = institutions.filter((institution) =>
+                        editKind === "loan" ? institution.type === "debt" : institution.type !== "debt",
+                      );
+                      return (
+                        <>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">名称</label>
                         <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">类型</label>
+                        <select
+                          value={editKind}
+                          onChange={e => setEditForm(f => ({
+                            ...f,
+                            kind: e.target.value,
+                            institutionId: "",
+                            investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : "",
+                          }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                        >
+                          <option value="cash">现金</option>
+                          <option value="bank_debit">借记卡</option>
+                          <option value="bank_credit">信用卡</option>
+                          <option value="ewallet">电子钱包</option>
+                          <option value="deposit">存款</option>
+                          <option value="investment">投资</option>
+                          <option value="loan">借入/借出</option>
+                          <option value="other">其他</option>
+                        </select>
                       </div>
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">所有人</label>
@@ -286,7 +327,7 @@ export default function SettingsAccountsPage() {
                         <label className="block text-xs text-slate-500 mb-1">机构</label>
                         <SmartSelect mode="single" value={editForm.institutionId || ""}
                           onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
-                          options={institutions.map(i => ({
+                          options={filteredInstitutions.map(i => ({
                             id: i.id,
                             label: i.shortName?.trim() || i.name,
                             subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
@@ -294,7 +335,7 @@ export default function SettingsAccountsPage() {
                           placeholder="选择机构"
                           onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
                       </div>
-                      {a.kind === "investment" && (
+                      {isInvestmentKind && (
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
                           <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
@@ -305,7 +346,7 @@ export default function SettingsAccountsPage() {
                       )}
                     </div>
 
-                    {a.kind === "investment" && (
+                    {isInvestmentKind && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">成本摊薄方式</label>
@@ -316,10 +357,22 @@ export default function SettingsAccountsPage() {
                             <option value="lifo">后进先出</option>
                           </select>
                         </div>
+                        {(editForm.investProductType || "fund") === "fund" && (
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">份额位数</label>
+                            <input
+                              value={editForm.fundUnitsDecimals || "3"}
+                              onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
+                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                              inputMode="numeric"
+                              placeholder="默认 3"
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {(a.kind === "bank_credit" || a.kind === "loan") && (
+                    {isBillLikeKind && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">账单日</label>
@@ -350,6 +403,9 @@ export default function SettingsAccountsPage() {
                       <button onClick={saveEdit}
                         className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">保存</button>
                     </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 ) : (
                   /* ---- View mode ---- */
@@ -365,12 +421,17 @@ export default function SettingsAccountsPage() {
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
                         {a.isActive ? "启用" : "停用"}
                       </span>
-                      {a.kind === "investment" && (
+                      {normalizedAccountKind(a) === "investment" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
                           {investmentProductTypeLabel(a.investProductType)}
                         </span>
                       )}
-                      {(a.kind === "bank_credit" || a.kind === "loan") && (
+                      {normalizedAccountKind(a) === "investment" && (a.investProductType ?? "fund") === "fund" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+                          份额{a.fundUnitsDecimals ?? 3}位
+                        </span>
+                      )}
+                      {normalizedAccountKind(a) === "bank_credit" && (
                         <>
                           {a.billingDay && <span className="text-[10px] text-slate-400">账单{a.billingDay}日</span>}
                           {a.repaymentDay && <span className="text-[10px] text-slate-400">还款{a.repaymentDay}日</span>}

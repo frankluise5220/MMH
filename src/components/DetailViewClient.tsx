@@ -23,6 +23,7 @@ export type DetailEntry = {
   toAccountId: string | null;
   toAccountName: string | null;
   note: string | null;
+  toNote?: string | null;
   fundSubtype: string | null;
   fundCode: string | null;
   fundName: string | null;
@@ -30,6 +31,9 @@ export type DetailEntry = {
   fundProductType: string | null;
   fundUnits: number | null;
   fundNav: number | null;
+  depositAnnualRate?: number | null;
+  depositInterest?: number | null;
+  depositSourceEntryId?: string | null;
   fundFee: number | null;
   fundConfirmDate: string | null;
   fundArrivalDate: string | null;
@@ -52,6 +56,14 @@ function activityLabel(type: string, fundSubtype: string | null, source: string 
 
 function subtypeLabelInfo(subtype: string | null | undefined, source: string | null | undefined, _amount: number): { label: string; cls: string; textCls?: string } | { label: string } | null {
   if (!subtype) return null;
+  if (source === "deposit" || source === "deposit_manual") {
+    const depositLabels: Record<string, { label: string; cls: string }> = {
+      buy: { label: "存入", cls: "bg-blue-50 text-blue-600" },
+      redeem: { label: "取出", cls: "bg-amber-50 text-amber-600" },
+    };
+    const deposit = depositLabels[subtype];
+    if (deposit) return deposit;
+  }
   const baseLabels: Record<string, { label: string; cls: string }> = {
     buy: { label: "买入", cls: "bg-blue-50 text-blue-600" },
     redeem: { label: "赎回", cls: "bg-amber-50 text-amber-600" },
@@ -152,18 +164,18 @@ export function DetailViewClient({
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
         const bal = e.runningBalance != null ? toNumber(e.runningBalance) : null;
-        const subtypeLabel = e.type === "investment" && e.fundSubtype
-          ? subtypeLabelInfo(e.fundSubtype, e.source, amount)
-          : null;
-        const actLabel = e.type === "investment" && e.fundSubtype
-          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, e.source, amount))
-          : activityLabel(e.type, e.fundSubtype, e.source, amount);
-
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
           (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
           null;
+        const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
+        const subtypeLabel = e.type === "investment" && e.fundSubtype
+          ? subtypeLabelInfo(e.fundSubtype, displaySource, amount)
+          : null;
+        const actLabel = e.type === "investment" && e.fundSubtype
+          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource, amount))
+          : activityLabel(e.type, e.fundSubtype, displaySource, amount);
         const isRedeemEditEntry =
           e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
 
@@ -181,8 +193,12 @@ export function DetailViewClient({
                 note: e.note ?? "",
                 fundCode: e.fundCode,
                 fundName: e.fundName,
+                insuranceProductId: (e as { insuranceProductId?: string | null }).insuranceProductId ?? null,
                 fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
                 fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
+                depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
+                depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
+                depositSourceEntryId: e.depositSourceEntryId ?? null,
                 fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
                 fundProductType: entryFundProductType,
                 fundSubtype: e.fundSubtype,
@@ -252,12 +268,9 @@ export function DetailViewClient({
             <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">
               <span className="text-xs">{bal !== null ? formatMoney(bal) : ""}</span>
             </td>
-            <td
-              className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[240px]"
-              title={e.note ?? ""}
-            >
+            <td className="px-3 py-1 border-b border-slate-100">
               {e.entryTags && e.entryTags.length > 0 && (
-                <span className="inline-flex flex-wrap gap-0.5 mr-1">
+                <span className="inline-flex flex-wrap gap-0.5">
                   {e.entryTags.map((et) => {
                     const c = et.Tag?.color || "#3B82F6";
                     return (
@@ -272,6 +285,11 @@ export function DetailViewClient({
                   })}
                 </span>
               )}
+            </td>
+            <td
+              className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[180px]"
+              title={e.note ?? ""}
+            >
               <span className="text-xs text-slate-500">{e.note ?? ""}</span>
             </td>
             <td className="px-3 py-1 border-b border-slate-100 text-slate-400"></td>

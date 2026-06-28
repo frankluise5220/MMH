@@ -5,6 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 
 /**
  * 批量更新交易记录
@@ -298,7 +299,8 @@ export async function POST(req: NextRequest) {
           const fee = Number((amountAbs * feeRate).toFixed(2));
           const principal = amountAbs - fee;
           const nav = Number(r.fundNav);
-          const units = nav > 0 ? Number((principal / nav).toFixed(6)) : null;
+          const fundUnitsDecimals = await getAccountFundUnitsDecimals(investIdForFee);
+          const units = nav > 0 ? roundFundUnits(principal / nav, fundUnitsDecimals) : null;
           await prisma.txRecord.update({
             where: { id: r.id },
             data: { fundFee: fee, ...(units != null ? { fundUnits: units } : {}) },

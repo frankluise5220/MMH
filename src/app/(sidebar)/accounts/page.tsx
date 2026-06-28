@@ -1,9 +1,9 @@
 ﻿import { AccountKind } from "@prisma/client";
-import { Banknote, Coins, CreditCard, HandCoins, Landmark, Plus, Wallet } from "lucide-react";
+import { Banknote, Coins, CreditCard, HandCoins, Landmark, PiggyBank, Plus, Wallet } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
@@ -17,6 +17,7 @@ const MONEY_KINDS: AccountKind[] = [
   AccountKind.bank_debit,
   AccountKind.ewallet,
   AccountKind.cash,
+  "deposit" as AccountKind,
   AccountKind.loan,
   AccountKind.other,
 ];
@@ -25,6 +26,7 @@ const KIND_LABEL: Record<string, string> = {
   bank_debit: "借记卡",
   ewallet: "电子钱包",
   cash: "现金",
+  deposit: "存款",
   bank_credit: "信用卡",
   loan: "债务/债权",
   other: "其他",
@@ -33,6 +35,7 @@ const KIND_ICON = {
   bank_debit: Landmark,
   ewallet: Coins,
   cash: Banknote,
+  deposit: PiggyBank,
   bank_credit: CreditCard,
   loan: HandCoins,
   other: Wallet,
@@ -50,6 +53,12 @@ function neutralMoneyClass(value: number) {
   return value < 0 ? "text-slate-700" : "text-slate-900";
 }
 
+function liabilityMoneyClass(value: number, isRedUp: boolean) {
+  if (value > 0) return isRedUp ? "text-emerald-700" : "text-red-700";
+  if (value < 0) return isRedUp ? "text-red-700" : "text-emerald-700";
+  return "text-slate-900";
+}
+
 export default async function AccountsPage({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const tab = typeof params.tab === "string" && params.tab === "credit" ? "credit" : "assets";
@@ -57,6 +66,12 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const { hidFilter } = ctx;
   const cookieStore = await cookies();
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    cookieStore.get("mmh_credit_card_label_template")?.value,
+    creditCardLabelMode,
+  );
+  const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
+  const isRedUp = colorScheme === "red_up_green_down";
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: [...MONEY_KINDS, ...CREDIT_KINDS] }, ...hidFilter },
@@ -92,7 +107,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
-      }, creditCardLabelMode);
+      }, creditCardLabelTemplate);
       return {
         id: account.id,
         name: display.label,
@@ -114,7 +129,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
-      }, creditCardLabelMode);
+      }, creditCardLabelTemplate);
       const cycle = cycleByAccountId.get(account.id);
       const balance = toNumber(account.balance);
       const creditLimit = toNumber(account.creditLimit);
@@ -236,7 +251,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                         </div>
                         <div className="text-left md:text-right">
                           <div className="text-xs text-slate-400">已用额度</div>
-                          <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                          <div className={`mt-1 text-sm font-semibold tabular-nums ${liabilityMoneyClass(account.balance, isRedUp)}`}>
                             {formatMoney(account.balance)}
                           </div>
                         </div>
@@ -244,8 +259,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
                         <MiniMetric label="额度" value={formatMoney(account.creditLimit)} />
                         <MiniMetric label="可用" value={formatMoney(account.availableLimit)} />
-                        <MiniMetric label="本期账单" value={formatMoney(account.currentBill)} />
-                        <MiniMetric label="待还" value={formatMoney(account.remain)} />
+                        <MiniMetric label="本期账单" value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClass(account.currentBill, isRedUp)} />
+                        <MiniMetric label="待还" value={formatMoney(account.remain)} valueClass={liabilityMoneyClass(account.remain, isRedUp)} />
                       </div>
                     </Link>
                   ))
@@ -299,8 +314,14 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                 {moneyAccounts.length > 0 ? (
                   moneyAccounts.map((account) => {
                     const Icon = KIND_ICON[account.kind] ?? Wallet;
+                    const detailView =
+                      String(account.kind) === "deposit"
+                        ? "deposit"
+                        : account.kind === "loan"
+                          ? "debt"
+                          : "detail";
                     return (
-                      <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+                      <Link key={account.id} href={`/?accountId=${account.id}&view=${detailView}`} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                           <Icon className="h-4 w-4" />
                         </div>
@@ -353,11 +374,11 @@ function SummaryCard({ label, value, compact = false }: { label: string; value: 
   );
 }
 
-function MiniMetric({ label, value }: { label: string; value: string }) {
+function MiniMetric({ label, value, valueClass = "text-slate-800" }: { label: string; value: string; valueClass?: string }) {
   return (
     <div className="rounded-lg bg-slate-50 px-3 py-2">
       <div className="text-[11px] text-slate-400">{label}</div>
-      <div className="mt-1 font-medium tabular-nums text-slate-800">{value}</div>
+      <div className={`mt-1 font-medium tabular-nums ${valueClass}`}>{value}</div>
     </div>
   );
 }

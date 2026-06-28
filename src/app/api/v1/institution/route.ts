@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: `往来机构/人员“${name}”已存在` }, { status: 409 });
   }
 
-  const validTypes = ["bank", "brokerage", "payment", "ewallet", "debt", "other"];
+  const validTypes = ["bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"];
   const safeType = validTypes.includes(type) ? type : "bank";
 
   const created = await prisma.institution.create({

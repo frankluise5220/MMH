@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { Pencil } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
+import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
-export type BatchReplaceInputKind = "date" | "text" | "number" | "select";
+export type BatchReplaceInputKind = "date" | "text" | "number" | "select" | "smartSelect";
 
 export type BatchReplaceOption = {
   value: string;
@@ -79,14 +80,14 @@ export function BatchReplacePopoverButton<Field extends string>({
         type="button"
         onClick={() => setOpen((current) => !current)}
         disabled={disabled}
-        className={buttonClassName ?? "h-8 w-8 rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"}
+        className={buttonClassName ?? "flex h-8 w-8 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"}
         title={disabled ? disabledTitle : (buttonTitle ?? `批量修改${targetLabel} ${targetCount} 条记录`)}
         aria-label={disabled ? disabledTitle : (buttonTitle ?? `批量修改${targetLabel} ${targetCount} 条记录`)}
       >
-        <Pencil className="w-4 h-4" />
+        <Pencil className="h-4 w-4" />
       </button>
       {open ? (
-        <div className={`absolute ${panelAlign === "right" ? "right-0" : "left-0"} top-full z-30 mt-2 w-[360px] rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg`}>
+        <div className={`absolute top-full z-30 mt-2 w-[360px] rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg ${panelAlign === "right" ? "right-0" : "left-0"}`}>
           <div className="mb-2 flex items-center justify-between">
             <span className="font-medium text-slate-700">修改{targetLabel} {targetCount} 条</span>
             <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600">关闭</button>
@@ -107,12 +108,17 @@ export function BatchReplacePopoverButton<Field extends string>({
               <select value={value} onChange={(event) => setValue(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400">
                 {(fieldConfig.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
-            ) : fieldConfig?.kind === "number" ? (
-              <CalcInput
+            ) : fieldConfig?.kind === "smartSelect" ? (
+              <SmartSelect
+                mode="single"
                 value={value}
                 onChange={setValue}
-                placeholder={fieldConfig?.placeholder ?? "输入数值"}
+                options={(fieldConfig.options ?? []).map((option) => ({ id: option.value, label: option.label } satisfies SmartSelectOption))}
+                placeholder={fieldConfig.placeholder ?? "请选择"}
+                searchable
               />
+            ) : fieldConfig?.kind === "number" ? (
+              <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? "输入数值"} precision={2} />
             ) : (
               <input
                 type={fieldConfig?.kind === "date" ? "date" : "text"}
@@ -124,8 +130,8 @@ export function BatchReplacePopoverButton<Field extends string>({
             )}
           </div>
           <div className="mt-3 flex justify-end gap-2">
-            <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 px-3 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50">取消</button>
-            <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 px-3 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+            <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">取消</button>
+            <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
               {submitting ? "修改中…" : "应用修改"}
             </button>
           </div>

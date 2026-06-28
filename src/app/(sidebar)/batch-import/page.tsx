@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import type { WorkBook } from "xlsx";
 import { useRouter } from "next/navigation";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 
 type ParsedItem = {
@@ -17,6 +18,7 @@ type ParsedItem = {
   fromAccount?: string;
   toAccount?: string;
   category?: string;
+  tags?: string;
   remark?: string;
   counterparty?: string;
   transferDirection?: "in" | "out";
@@ -38,11 +40,12 @@ type AccountOption = {
   name: string;
   kind: "cash" | "bank_debit" | "bank_credit" | string;
   isActive?: boolean;
-  Institution?: { id?: string; name?: string } | null;
+  Institution?: { id?: string; name?: string; shortName?: string | null } | null;
+  AccountAlias?: Array<{ alias: string }> | null;
 };
 
 type FilterColumn = "date" | "type" | "account" | "counterAccount" | "remark";
-type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "remark";
+type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
 
@@ -57,6 +60,8 @@ const replaceFieldLabels: Record<ReplaceField, string> = {
   inflow: "流入",
   account: "账户",
   counterAccount: "对向账户",
+  category: "分类",
+  tags: "标签",
   remark: "备注",
 };
 
@@ -80,24 +85,25 @@ const templates: ImportTemplate[] = [
   {
     key: "normal",
     title: "账单记录模板",
-    description: "用于现金、借记卡、电子钱包等普通账单。模板用中文字段：日期、类型、流出、流入、账户、对向账户、备注；上传后先按类型/备注/流入/流出做初级判断。",
+    description: "用于现金、借记卡、电子钱包等普通账单。模板按库字段语义组织：收支大类决定写入哪种记录，金额写入金额字段，分类、标签、备注分别写入对应字段。",
     status: "可上传导入",
     filename: "账单记录导入模板.csv",
-    headers: ["日期", "类型", "流出", "流入", "账户", "对向账户", "备注"],
+    headers: ["日期", "收支大类", "金额", "账户", "对向账户", "分类", "标签", "备注"],
     rows: [
-      ["2026-06-08", "消费", "32.50", "", "招商银行2758", "", "午餐"],
-      ["2026-06-08", "结息", "", "1.28", "招商银行2758", "", "活期利息"],
-      ["2026-06-08", "转出", "1000.00", "", "招商银行2758", "现金", "取现"],
-      ["2026-06-08", "转账", "500.00", "", "招商银行2758", "", "账单未注明对方账户，待补"],
+      ["2026-06-08", "支出", "32.50", "招商银行2758", "", "餐饮", "午餐", "午餐"],
+      ["2026-06-08", "收入", "1.28", "招商银行2758", "", "利息收入", "利息", "活期利息"],
+      ["2026-06-08", "支出", "2.00", "招商银行2758", "", "利息支出", "手续费", "账户管理费"],
+      ["2026-06-08", "转账", "1000.00", "招商银行2758", "现金", "", "现金", "取现"],
     ],
     fields: [
-      { name: "日期", required: true, note: "交易日期，格式 YYYY-MM-DD。" },
-      { name: "类型", required: false, note: "账单原始类型，如消费、转入、转出、转账、结息、退款；用于初级识别。" },
-      { name: "流出", required: false, note: "账户流出金额；类型为转账/转出或有流向账户时判断为转账，否则通常判断为支出。" },
-      { name: "流入", required: false, note: "账户流入金额；类型为转入时判断为转账流入，类型为结息/收入/退款时判断为收入。" },
-      { name: "账户", required: true, note: "账单所属账户；支出/收入为发生账户，转账时先按账单视角显示，入库前会统一转换为资金发出方。" },
-      { name: "对向账户", required: false, note: "转账另一方账户；账单没写清时可留空，上传后在确认表补。" },
-      { name: "备注", required: false, note: "账单备注；会与类型一起参与识别，例如转入、转出、转账、结息、退款等。" },
+      { name: "日期", required: true, note: "写入交易日期，格式 YYYY-MM-DD，对应库里的 date。" },
+      { name: "收支大类", required: true, note: "写入记录大类，对应库里的 type；填写 支出、收入、转账、投资。" },
+      { name: "金额", required: true, note: "写入记录金额，对应库里的 amount；填正数即可，不用再区分正负。" },
+      { name: "账户", required: true, note: "对应主账户。支出/收入写发生账户；转账时写转出账户。" },
+      { name: "对向账户", required: false, note: "对应转账对方账户。仅转账时建议填写，写入 toAccount。" },
+      { name: "分类", required: false, note: "对应分类字段。支出、收入建议填写，例如餐饮、利息收入、利息支出、工资。" },
+      { name: "标签", required: false, note: "对应标签关联。可填一个或多个标签，使用中文逗号或英文逗号分隔。" },
+      { name: "备注", required: false, note: "对应备注字段，写入 note。" },
     ],
   },
   {
@@ -203,6 +209,13 @@ function parseMoney(value: string) {
   return Number.isFinite(amount) ? Math.abs(amount) : 0;
 }
 
+function normalizeAccountMatchKey(value?: string) {
+  return String(value ?? "")
+    .trim()
+    .replace(/[·•\-—\s]/g, "")
+    .toLowerCase();
+}
+
 function pad2(value: number) {
   return String(value).padStart(2, "0");
 }
@@ -250,6 +263,16 @@ function inferBillType(source: string, inflow: number, outflow: number, counterA
   return "expense";
 }
 
+function parseMajorType(value: string): ParsedItem["type"] | null {
+  const raw = value.trim();
+  if (!raw) return null;
+  if (/^(支出|expense|outflow)$/.test(raw)) return "expense";
+  if (/^(收入|income|inflow)$/.test(raw)) return "income";
+  if (/^(转账|transfer)$/.test(raw)) return "transfer";
+  if (/^(投资|investment)$/.test(raw)) return "investment";
+  return null;
+}
+
 function inferTransferDirection(source: string, inflow: number, outflow: number): "in" | "out" {
   if (/转入|转进|他行转入|账户转入|收款/.test(source)) return "in";
   if (/转出|转账|转给|转到|汇款|跨行转账|取现|还款/.test(source)) return "out";
@@ -294,14 +317,22 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
     const counterAccount = readAny(row, ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount", "fromAccount"]);
     const remark = readAny(row, ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途"]);
     const category = readAny(row, ["分类", "category"]);
-    const explicitType = readAny(row, ["类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type"]);
-    const source = `${explicitType} ${remark}`;
+    const tags = readAny(row, ["标签", "tags"]);
+    const majorType = parseMajorType(readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]));
+    const explicitType = readAny(row, ["类型", "原始类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type"]);
+    const source = `${majorType ?? ""} ${explicitType} ${category} ${remark}`;
     const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
     const amountLooksExpense = /支出|消费|扣款|付款|转出|借方|借记|取现/.test(source);
-    const inflow = rawInflow || (!rawOutflow && rawAmount && amountLooksIncome ? rawAmount : 0);
-    const outflow = rawOutflow || (!rawInflow && rawAmount && amountLooksExpense ? rawAmount : 0);
-    const fallbackInflow = !inflow && !outflow && rawAmount && !amountLooksExpense ? rawAmount : inflow;
-    const type = inferBillType(source, fallbackInflow, outflow, counterAccount);
+    const amountByType =
+      rawAmount > 0
+        ? (majorType === "income" ? { inflow: rawAmount, outflow: 0 }
+          : majorType === "transfer" ? { inflow: 0, outflow: rawAmount }
+          : { inflow: 0, outflow: rawAmount })
+        : { inflow: 0, outflow: 0 };
+    const inflow = rawInflow || (!rawOutflow && amountByType.inflow) || (!rawOutflow && rawAmount && amountLooksIncome ? rawAmount : 0);
+    const outflow = rawOutflow || (!rawInflow && amountByType.outflow) || (!rawInflow && rawAmount && amountLooksExpense ? rawAmount : 0);
+    const fallbackInflow = !inflow && !outflow && rawAmount && (majorType === "income" || (!majorType && !amountLooksExpense)) ? rawAmount : inflow;
+    const type = majorType ?? inferBillType(source, fallbackInflow, outflow, counterAccount);
     const transferDirection = type === "transfer" ? inferTransferDirection(source, fallbackInflow, outflow) : undefined;
     const amount = fallbackInflow > 0 ? fallbackInflow : outflow || rawAmount;
 
@@ -313,11 +344,12 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
       outflow,
       inflow: fallbackInflow,
       account: type === "transfer" ? "" : account,
-      fromAccount: type === "transfer" ? (transferDirection === "in" ? counterAccount : account) : "",
-      toAccount: type === "transfer" ? (transferDirection === "in" ? account : counterAccount) : "",
+      fromAccount: type === "transfer" ? (majorType === "transfer" ? account : (transferDirection === "in" ? counterAccount : account)) : "",
+      toAccount: type === "transfer" ? (majorType === "transfer" ? counterAccount : (transferDirection === "in" ? account : counterAccount)) : "",
       category,
+      tags,
       remark,
-      transferDirection,
+      transferDirection: type === "transfer" && majorType === "transfer" ? "out" : transferDirection,
     };
   }).filter((item) => item.date && item.amount > 0);
 }
@@ -391,8 +423,7 @@ export default function BatchImportPage() {
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok || !Array.isArray(data.accounts)) return;
-        const allowedKinds = new Set(["cash", "bank_debit", "bank_credit"]);
-        setAccountOptions(data.accounts.filter((account: AccountOption) => allowedKinds.has(account.kind)));
+        setAccountOptions(data.accounts);
       })
       .catch((error) => {
         if (!cancelled) setUploadDebug(`账户列表加载失败：${error instanceof Error ? error.message : String(error)}`);
@@ -401,23 +432,85 @@ export default function BatchImportPage() {
   }, []);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    const institutionName = account.Institution?.name?.trim();
+    const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim();
     return institutionName ? `${institutionName}·${account.name}` : account.name;
   }, []);
 
-  const renderAccountOptions = useCallback((currentValue: string) => {
+  const accountMatchKeys = useCallback((account: AccountOption): string[] => {
+    const keys = new Set<string>();
+    keys.add(normalizeAccountMatchKey(account.name));
+    keys.add(normalizeAccountMatchKey(accountDisplayLabel(account)));
+    // Full institution name variant
+    const fullInst = account.Institution?.name?.trim();
+    if (fullInst) {
+      keys.add(normalizeAccountMatchKey(`${fullInst}·${account.name}`));
+      keys.add(normalizeAccountMatchKey(`${fullInst}${account.name}`));
+    }
+    // Short institution name variant
+    const shortInst = account.Institution?.shortName?.trim();
+    if (shortInst) {
+      keys.add(normalizeAccountMatchKey(`${shortInst}·${account.name}`));
+      keys.add(normalizeAccountMatchKey(`${shortInst}${account.name}`));
+    }
+    // Aliases
+    if (account.AccountAlias) {
+      for (const al of account.AccountAlias) {
+        keys.add(normalizeAccountMatchKey(al.alias));
+      }
+    }
+    return Array.from(keys).filter(Boolean);
+  }, [accountDisplayLabel]);
+
+  const findMatchedAccountId = useCallback((value: string): string | null => {
+    const targetKey = normalizeAccountMatchKey(value);
+    if (!targetKey) return null;
+    // Exact match first
+    for (const account of accountOptions) {
+      for (const key of accountMatchKeys(account)) {
+        if (key === targetKey) return account.id;
+      }
+    }
+    // Partial match: target contains account key or vice versa
+    for (const account of accountOptions) {
+      for (const key of accountMatchKeys(account)) {
+        if (key && (targetKey.includes(key) || key.includes(targetKey))) {
+          // Avoid false positive on very short keys (e.g. "9447" matching "9447" is fine, but "卡" is too short)
+          if (key.length >= 3 || targetKey.length >= 3) return account.id;
+        }
+      }
+    }
+    return null;
+  }, [accountOptions, accountMatchKeys]);
+
+  const accountSmartSelectOptions = useMemo<SmartSelectOption[]>(
+    () =>
+      accountOptions.map((account) => ({
+        id: account.id,
+        label: accountDisplayLabel(account),
+        subLabel: [account.kind, account.Institution?.name].filter(Boolean).join(" · "),
+      })),
+    [accountOptions, accountDisplayLabel],
+  );
+  const accountById = useMemo(() => new Map(accountOptions.map((account) => [account.id, account])), [accountOptions]);
+
+  const accountSelectValue = useCallback((currentValue: string) => {
     const current = currentValue.trim();
-    const hasCurrent = current && accountOptions.some((account) => account.name === current);
-    return (
-      <>
-        <option value="">未选择</option>
-        {current && !hasCurrent && <option value={current}>{current}（未匹配）</option>}
-        {accountOptions.map((account) => (
-          <option key={account.id} value={account.name}>{accountDisplayLabel(account)}</option>
-        ))}
-      </>
-    );
-  }, [accountOptions, accountDisplayLabel]);
+    return current ? (findMatchedAccountId(current) ?? `unmatched:${current}`) : "";
+  }, [findMatchedAccountId]);
+
+  const accountSmartSelectOptionsFor = useCallback((currentValue: string) => {
+    const current = currentValue.trim();
+    const matchedId = findMatchedAccountId(current);
+    if (!current || matchedId) return accountSmartSelectOptions;
+    return [{ id: `unmatched:${current}`, label: `${current}（未匹配）`, subLabel: "原始导入值" }, ...accountSmartSelectOptions];
+  }, [accountSmartSelectOptions, findMatchedAccountId]);
+
+  const accountSelectTextById = useCallback((selectedId: string) => {
+    if (!selectedId) return "";
+    if (selectedId.startsWith("unmatched:")) return selectedId.slice("unmatched:".length);
+    const account = accountById.get(selectedId);
+    return account ? accountDisplayLabel(account) : "";
+  }, [accountById, accountDisplayLabel]);
 
   const downloadTemplate = useCallback((template: ImportTemplate) => {
     const csv = `\uFEFF${buildCsv(template)}`;
@@ -453,7 +546,7 @@ export default function BatchImportPage() {
         setDrafts({});
         setSelected(new Set());
         setUploadDebug(`读取成功但未识别到记录。表头：${headers}。${fileInfo}`);
-        setMessage(`已读取文件 ${file.name}，但未识别到可导入的账单记录。当前读取到的表头是：${headers}。请确认首行表头包含“日期、流出、流入、账户”等字段，并且明细行填写了日期以及流出或流入金额。支持 CSV、XLSX、XLS 文件。`);
+        setMessage(`已读取文件 ${file.name}，但未识别到可导入的账单记录。当前读取到的表头是：${headers}。请确认首行表头包含"日期、收支大类、金额、账户"等字段，并且明细行填写了日期与金额。支持 CSV、XLSX、XLS 文件。`);
         return;
       }
       sessionStorage.setItem("batchImportItems", JSON.stringify(parsed));
@@ -462,7 +555,7 @@ export default function BatchImportPage() {
       setSelected(new Set());
       setEditingCell(null);
       setUploadDebug(`识别完成，共 ${parsed.length} 条可预览记录。${fileInfo}`);
-      setMessage(`已读取 ${parsed.length} 条账单记录，并已按类型/备注/流入流出做初级判断。请先在弹窗预览确认并勾选需要导入的记录。`);
+      setMessage(`已读取 ${parsed.length} 条账单记录，并已按收支大类、金额和表头字段完成初步识别。请先在弹窗预览确认并勾选需要导入的记录。`);
     } catch (error) {
       setItems([]);
       setDrafts({});
@@ -513,6 +606,8 @@ export default function BatchImportPage() {
       amount: draft.amount ?? item.amount ?? 0,
       outflow: draft.outflow ?? item.outflow ?? 0,
       inflow: draft.inflow ?? item.inflow ?? 0,
+      category: draft.category ?? item.category ?? "",
+      tags: draft.tags ?? item.tags ?? "",
       remark: draft.remark ?? item.remark ?? "",
       counterparty: draft.counterparty ?? item.counterparty ?? "",
       transferDirection: draft.transferDirection ?? item.transferDirection,
@@ -566,7 +661,15 @@ export default function BatchImportPage() {
 
   const batchTargetIndexes = useMemo(() => Array.from(selected).filter((idx) => filteredIndexes.includes(idx)), [selected, filteredIndexes]);
 
-  const accountNameSet = useMemo(() => new Set(accountOptions.map((account) => account.name)), [accountOptions]);
+  const accountNameSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const account of accountOptions) {
+      for (const key of accountMatchKeys(account)) {
+        set.add(key);
+      }
+    }
+    return set;
+  }, [accountOptions, accountMatchKeys]);
 
   const importIssues = useMemo(() => {
     const issues: ImportIssue[] = [];
@@ -580,16 +683,22 @@ export default function BatchImportPage() {
         ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
         : "";
       if (!account.trim()) issues.push({ idx, level: "error", message: "本账户未识别，不能导入" });
-      else if (!accountNameSet.has(account.trim())) issues.push({ idx, level: "error", message: `本账户“${account.trim()}”未匹配到账户库` });
+      else {
+        const matchedId = findMatchedAccountId(account);
+        if (!matchedId) issues.push({ idx, level: "error", message: `本账户"${account.trim()}"未匹配到账户库` });
+      }
       if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: "金额为空或无效" });
-      if (item.type === "transfer" && counterAccount.trim() && !accountNameSet.has(counterAccount.trim())) {
-        issues.push({ idx, level: "warning", message: `对向账户“${counterAccount.trim()}”未匹配，将按空值写库` });
+      if (item.type === "transfer" && counterAccount.trim()) {
+        const counterMatchedId = findMatchedAccountId(counterAccount);
+        if (!counterMatchedId) {
+          issues.push({ idx, level: "warning", message: `对向账户"${counterAccount.trim()}"未匹配，将按空值写库` });
+        }
       } else if (item.type === "transfer" && !counterAccount.trim()) {
         issues.push({ idx, level: "warning", message: "转账缺少对方账户，将空值写库" });
       }
     }
     return issues;
-  }, [selected, getItem, accountNameSet]);
+  }, [selected, getItem, accountNameSet, findMatchedAccountId]);
 
   const importErrorIssues = useMemo(() => importIssues.filter((issue) => issue.level === "error"), [importIssues]);
   const importWarningIssues = useMemo(() => importIssues.filter((issue) => issue.level === "warning"), [importIssues]);
@@ -738,7 +847,10 @@ export default function BatchImportPage() {
 
   const accountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
     { value: "", label: "未选择" },
-    ...accountOptions.map((account) => ({ value: account.name, label: accountDisplayLabel(account) })),
+    ...accountOptions.map((account) => {
+      const label = accountDisplayLabel(account);
+      return { value: label, label };
+    }),
   ], [accountOptions, accountDisplayLabel]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
@@ -756,8 +868,8 @@ export default function BatchImportPage() {
     },
     { value: "outflow", label: replaceFieldLabels.outflow, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
     { value: "inflow", label: replaceFieldLabels.inflow, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
-    { value: "account", label: replaceFieldLabels.account, kind: "select", options: accountReplaceOptions },
-    { value: "counterAccount", label: replaceFieldLabels.counterAccount, kind: "select", options: accountReplaceOptions, allowEmpty: true },
+    { value: "account", label: replaceFieldLabels.account, kind: "smartSelect", options: accountReplaceOptions },
+    { value: "counterAccount", label: replaceFieldLabels.counterAccount, kind: "smartSelect", options: accountReplaceOptions, allowEmpty: true },
     { value: "remark", label: replaceFieldLabels.remark, kind: "text", placeholder: "输入替换内容" },
   ], [accountReplaceOptions]);
 
@@ -881,8 +993,8 @@ export default function BatchImportPage() {
 
         <section className="bg-white rounded-lg border border-slate-200 p-6 text-sm text-slate-600 leading-7">
           <h2 className="text-base font-semibold text-slate-800 mb-2">导入说明</h2>
-          <p>当前入口先支持“账单记录模板”的 CSV、XLSX、XLS 上传、弹窗预览确认和导入；基金记录、信用卡账单已给出模板字段，但需要后续专用校验流程，暂不直接写库。</p>
-          <p>账单记录按中文字段导入：类型/备注出现转入、转出、转账、汇款、取现、还款等会初判为转账；出现结息、利息、收入、工资、退款等会初判为收入；没有类型线索时再按流入/流出金额判断。转账只有“转账”一个库类型，转入/转出只作为识别方向；写库前按金额列归一：流出时模板账户写入资金发出方，流入时模板账户写入转入账户。</p>
+          <p>当前入口先支持"账单记录模板"的 CSV、XLSX、XLS 上传、弹窗预览确认和导入；基金记录、信用卡账单已给出模板字段，但需要后续专用校验流程，暂不直接写库。</p>
+          <p>账单记录按中文字段导入：模板列尽量直接对应入库字段语义。`收支大类` 对应记录类型，`金额` 对应金额，`分类` 对应分类，`标签` 对应标签关联，`备注` 对应备注。转账时，`账户` 视为转出账户，`对向账户` 视为转入账户。旧文件如果仍使用"流出/流入"或"类型/原始类型"列，系统也继续兼容识别。</p>
         </section>
       </div>
 
@@ -968,19 +1080,21 @@ export default function BatchImportPage() {
                   <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">流入</th>
                   <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("account", "账户")}</th>
                   <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("counterAccount", "对向账户")}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">分类</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">标签</th>
                   <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("remark", "备注")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {uploading ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-blue-600">
+                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-blue-600">
                       正在解析文件，预览会在完成后显示...
                     </td>
                   </tr>
                 ) : filteredIndexes.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-500">
+                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
                       没有符合筛选条件的记录。
                     </td>
                   </tr>
@@ -999,6 +1113,8 @@ export default function BatchImportPage() {
                   const counterAccount = type === "transfer"
                     ? (direction === "in" ? (draft.fromAccount ?? item.fromAccount ?? "") : (draft.toAccount ?? item.toAccount ?? ""))
                     : "";
+                  const category = draft.category ?? item.category ?? "";
+                  const tags = draft.tags ?? item.tags ?? "";
                   const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
                   const isSelected = selected.has(idx);
                   const editingField = editingCell?.idx === idx ? editingCell.field : null;
@@ -1103,42 +1219,73 @@ export default function BatchImportPage() {
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title="双击修改">
                         {editingField === "account" ? (
-                          <select
-                            value={account}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => {
-                              updateDraft(idx, "account", e.target.value);
-                              if (type === "transfer") {
-                                if (direction === "in") updateDraft(idx, "toAccount", e.target.value);
-                                else updateDraft(idx, "fromAccount", e.target.value);
-                              }
-                            }}
-                            className="h-6 w-36 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          >
-                            {renderAccountOptions(account)}
-                          </select>
+                          <div className="w-44">
+                            <SmartSelect
+                              mode="single"
+                              value={accountSelectValue(account)}
+                              onChange={(selectedId) => {
+                                const value = accountSelectTextById(selectedId);
+                                updateDraft(idx, "account", value);
+                                if (type === "transfer") {
+                                  if (direction === "in") updateDraft(idx, "toAccount", value);
+                                  else updateDraft(idx, "fromAccount", value);
+                                }
+                                closeCellEdit();
+                              }}
+                              options={accountSmartSelectOptionsFor(account)}
+                              placeholder="未选择"
+                              behavior={{ hierarchy: false, search: true, clearable: true }}
+                            />
+                          </div>
                         ) : (account || <span className="text-red-500">未识别</span>)}
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title="双击修改">
                         {editingField === "counterAccount" ? (
-                          <select
-                            value={counterAccount}
+                          <div className="w-44">
+                            <SmartSelect
+                              mode="single"
+                              value={accountSelectValue(counterAccount)}
+                              onChange={(selectedId) => {
+                                const value = accountSelectTextById(selectedId);
+                                if (direction === "in") updateDraft(idx, "fromAccount", value);
+                                else updateDraft(idx, "toAccount", value);
+                                if (value.trim()) updateDraft(idx, "type", "transfer");
+                                closeCellEdit();
+                              }}
+                              options={accountSmartSelectOptionsFor(counterAccount)}
+                              placeholder="未选择"
+                              behavior={{ hierarchy: false, search: true, clearable: true }}
+                            />
+                          </div>
+                        ) : (counterAccount || <span className="text-slate-400">-</span>)}
+                      </td>
+                      <td className="max-w-[180px] truncate px-2 py-1 text-xs text-slate-700" title={category || "双击修改"} onDoubleClick={() => openCellEdit(idx, "category")}>
+                        {editingField === "category" ? (
+                          <input
+                            type="text"
+                            value={category}
                             autoFocus
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              if (direction === "in") updateDraft(idx, "fromAccount", value);
-                              else updateDraft(idx, "toAccount", value);
-                              if (value.trim()) updateDraft(idx, "type", "transfer");
-                            }}
+                            onChange={(e) => updateDraft(idx, "category", e.target.value)}
+                            placeholder="分类"
                             className="h-6 w-36 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          >
-                            {renderAccountOptions(counterAccount)}
-                          </select>
-                        ) : (counterAccount || <span className="text-slate-400">-</span>)}
+                          />
+                        ) : (category || <span className="text-slate-400">-</span>)}
+                      </td>
+                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={tags || "双击修改"} onDoubleClick={() => openCellEdit(idx, "tags")}>
+                        {editingField === "tags" ? (
+                          <input
+                            type="text"
+                            value={tags}
+                            autoFocus
+                            onBlur={closeCellEdit}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
+                            onChange={(e) => updateDraft(idx, "tags", e.target.value)}
+                            placeholder="标签"
+                            className="h-6 w-44 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
+                          />
+                        ) : (tags || <span className="text-slate-400">-</span>)}
                       </td>
                       <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={remark || "双击修改"} onDoubleClick={() => openCellEdit(idx, "remark")}>
                         {editingField === "remark" ? (

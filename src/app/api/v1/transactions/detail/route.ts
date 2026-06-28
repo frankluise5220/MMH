@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API: /api/v1/transactions/detail
  *
  * 交易详情的增删改查接口
@@ -26,6 +26,9 @@ import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
+import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 
 export const runtime = "nodejs";
 
@@ -102,11 +105,16 @@ export async function GET(req: Request) {
         toAccountName: record.toAccountName,
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
+        toNote: record.toNote,
         fundSubtype: record.fundSubtype,
         fundCode: record.fundCode,
         fundName: record.fundName,
+        insuranceProductId: record.insuranceProductId ?? null,
         fundProductType: record.fundProductType,
         fundNav: record.fundNav ? toNumber(record.fundNav) : null,
+        depositAnnualRate: record.depositAnnualRate ? toNumber(record.depositAnnualRate) : null,
+        depositInterest: record.depositInterest ? toNumber(record.depositInterest) : null,
+        depositSourceEntryId: record.depositSourceEntryId ?? null,
         fundUnits: record.fundUnits ? toNumber(record.fundUnits) : null,
         fundFee: record.fundFee ? toNumber(record.fundFee) : null,
         fundConfirmDate: record.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
@@ -176,11 +184,15 @@ export async function GET(req: Request) {
       toAccountName: e.toAccountName,
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
+      toNote: e.toNote,
       fundSubtype: e.fundSubtype,
       fundCode: e.fundCode,
       fundName: e.fundName,
       fundProductType: e.fundProductType,
       fundNav: e.fundNav ? toNumber(e.fundNav) : null,
+      depositAnnualRate: e.depositAnnualRate ? toNumber(e.depositAnnualRate) : null,
+      depositInterest: e.depositInterest ? toNumber(e.depositInterest) : null,
+      depositSourceEntryId: e.depositSourceEntryId ?? null,
       fundUnits: e.fundUnits ? toNumber(e.fundUnits) : null,
       fundFee: e.fundFee ? toNumber(e.fundFee) : null,
       fundConfirmDate: e.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
@@ -252,6 +264,7 @@ export async function POST(req: Request) {
     const dateStr = String(body.date ?? "").trim();
     const amountAbs = Math.abs(parseMoney(body.amount));
     const note = String(body.note ?? "").trim();
+    const toNote = String(body.toNote ?? "").trim();
     const tagIdsRaw = body.tagIds;
     const tagIds: string[] = Array.isArray(tagIdsRaw)
       ? tagIdsRaw.filter((id): id is string => typeof id === "string" && id.length > 0)
@@ -298,6 +311,7 @@ export async function POST(req: Request) {
             type: TransactionType.transfer,
             date,
             note: note || null,
+            toNote: toNote || null,
             statementMonth: toStatementMonthValue,
             householdId,
           },
@@ -314,9 +328,6 @@ export async function POST(req: Request) {
     } else if (type === "expense") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
-      if (!accountId) {
-        return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
-      }
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -324,7 +335,7 @@ export async function POST(req: Request) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error("账户不存在");
-        if (acc.kind === AccountKind.investment) throw new Error("基金/理财账户不参与收支记账");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -397,10 +408,13 @@ export async function POST(req: Request) {
       const fundProductType = String(body.fundProductType ?? "").trim() || null;
       const fundUnitsRaw = parseMoney(body.fundUnits);
       const fundNavRaw = parseMoney(body.fundNav);
+      const depositAnnualRateRaw = parseMoney(body.depositAnnualRate);
+      const depositInterestRaw = parseMoney(body.depositInterest);
       const fundFeeRaw = parseMoney(body.fundFee);
       const fundConfirmDateStr = String(body.fundConfirmDate ?? "").trim();
       const fundArrivalDateStr = String(body.fundArrivalDate ?? "").trim();
       const fundArrivalAmountRaw = parseMoney(body.fundArrivalAmount);
+      const depositSourceEntryId = String(body.depositSourceEntryId ?? "").trim() || null;
       const cashAccountIdInput = String(body.cashAccountId ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
@@ -408,15 +422,17 @@ export async function POST(req: Request) {
       const fundUnits = fundUnitsRaw > 0 ? fundUnitsRaw : null;
       const fundNav = fundNavRaw > 0 ? fundNavRaw : null;
       const fundFee = fundFeeRaw > 0 ? fundFeeRaw : null;
+      const depositAnnualRate = depositAnnualRateRaw > 0 ? depositAnnualRateRaw : null;
+      const depositInterest = depositInterestRaw >= 0 ? depositInterestRaw : null;
 
       if (!fundCode && note) {
         const codeMatch = note.match(/\b(\d{6})\b/);
         if (codeMatch) fundCode = codeMatch[1];
       }
 
-      if (!accountId) {
-        return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
-      }
+      const fundNameInput = String(body.fundName ?? "").trim();
+      const insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
+      const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
       const validSubtypes = Object.values(FundSubtype);
@@ -427,22 +443,72 @@ export async function POST(req: Request) {
       const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
       const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
 
-      const sourceValue = isDividendReinvest
-        ? "dividend"
-        : (String(body.source ?? "manual").trim() || "manual");
+      const sourceValue =
+        fundProductType === "deposit"
+          ? "deposit"
+          : isDividendReinvest
+            ? "dividend"
+            : (String(body.source ?? "manual").trim() || "manual");
       const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
+      const isInsurance = sourceValue === "insurance";
+      if (!accountId && fundProductType !== "deposit" && !isInsurance) {
+        return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
+      }
+      if (isInsurance && !insuranceProductId && !ownerGroupId) {
+        return NextResponse.json({ ok: false, error: "请选择投保人" }, { status: 400 });
+      }
 
+      let finalInvestmentAccId = "";
       await prisma.$transaction(async (tx) => {
-        const investAcc = await tx.account.findUnique({ where: { id: accountId } });
+        let resolvedInsuranceProductName: string | null = null;
+        let investAcc =
+          fundProductType === "deposit"
+            ? await resolveOrCreateDepositAccount(tx, {
+                householdId,
+                requestedAccountId: accountId || null,
+                cashAccountId: cashAccountIdInput,
+                fundName: fundNameInput || note || null,
+              })
+            : accountId
+              ? await tx.account.findUnique({ where: { id: accountId } })
+              : null;
+
+        if (isInsurance) {
+          if (!insuranceProductId) throw new Error("请选择保险产品");
+          const insuranceProduct = await tx.insuranceProduct.findFirst({
+            where: { id: insuranceProductId, householdId },
+          });
+          if (!insuranceProduct) throw new Error("保险产品不存在");
+          if (!insuranceProduct.ownerGroupId) throw new Error("该保险产品缺少投保人");
+          if (ownerGroupId && ownerGroupId !== insuranceProduct.ownerGroupId) throw new Error("投保人与保险产品不一致");
+          resolvedInsuranceProductName = insuranceProduct.name;
+          if (!investAcc) {
+            investAcc = await tx.account.findUnique({ where: { id: insuranceProduct.accountId } });
+          }
+          if (!investAcc || !isInsuranceAccount(investAcc)) {
+            if (!insuranceProduct.ownerGroupId) throw new Error("该保险产品缺少投保人");
+            investAcc = await getOrCreateInsuranceAccount(tx, insuranceProduct.ownerGroupId, householdId);
+            await tx.insuranceProduct.update({
+              where: { id: insuranceProduct.id },
+              data: { accountId: investAcc.id },
+            });
+          }
+        }
+
         if (!investAcc) throw new Error("账户不存在");
-        if (investAcc.kind !== AccountKind.investment) throw new Error("请选择投资账户");
+        if (isInsurance) {
+          if (!isInsuranceAccount(investAcc)) throw new Error("保险产品未关联保险账户");
+        } else if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) {
+          throw new Error("请选择投资/存款账户");
+        }
+        finalInvestmentAccId = investAcc.id;
 
         const cashAcc = cashAccountIdInput
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true } })
           : null;
 
         const entryFundCode = fundCode || null;
-        const entryFundName = note || fundCode || null;
+        const entryFundName = resolvedInsuranceProductName || fundNameInput || fundCode || null;
 
         let recordAccountId: string;
         let recordAccountName: string;
@@ -455,7 +521,7 @@ export async function POST(req: Request) {
           recordAccountName = investAcc.name;
           recordToAccountId = cashAcc?.id ?? investAcc.id;
           recordToAccountName = cashAcc?.name ?? investAcc.name;
-          signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs - (fundFee ?? 0));
+          signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0));
         } else if (isDividendReinvest) {
           recordAccountId = investAcc.id;
           recordAccountName = investAcc.name;
@@ -504,11 +570,15 @@ export async function POST(req: Request) {
             amount: signedAmount,
             fundCode: entryFundCode,
             fundName: entryFundName,
+            insuranceProductId: insuranceProductId ?? undefined,
             fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
             fundUnits: fundUnits ?? undefined,
-            fundNav: fundNav ?? undefined,
+            fundNav: fundProductType === "deposit" ? undefined : fundNav ?? undefined,
+            depositAnnualRate: depositAnnualRate ?? undefined,
+            depositInterest: depositInterest ?? undefined,
+            depositSourceEntryId: depositSourceEntryId ?? undefined,
             fundFee: fundFee ?? undefined,
             fundConfirmDate: computedConfirmDate ?? undefined,
             fundArrivalDate: computedArrivalDate ?? undefined,
@@ -524,9 +594,13 @@ export async function POST(req: Request) {
         }
       });
 
-      await recalcFundPositions(accountId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
-      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
-      if (cashAccountIdInput && cashAccountIdInput !== accountId) {
+      if (fundProductType !== "deposit" && finalInvestmentAccId) {
+        await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
+      }
+      if (finalInvestmentAccId) {
+        await recalcAndSaveAccountBalance(finalInvestmentAccId).catch(logger.catchLog("操作失败", "route.ts"));
+      }
+      if (cashAccountIdInput && cashAccountIdInput !== finalInvestmentAccId) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(logger.catchLog("操作失败", "route.ts"));
       }
     } else {
@@ -563,8 +637,12 @@ export async function POST(req: Request) {
             fundSubtype: created.fundSubtype,
             fundCode: created.fundCode,
             fundName: created.fundName,
+            insuranceProductId: created.insuranceProductId ?? null,
             fundProductType: created.fundProductType,
             fundNav: created.fundNav ? toNumber(created.fundNav) : null,
+            depositAnnualRate: created.depositAnnualRate ? toNumber(created.depositAnnualRate) : null,
+            depositInterest: created.depositInterest ? toNumber(created.depositInterest) : null,
+            depositSourceEntryId: created.depositSourceEntryId ?? null,
             fundUnits: created.fundUnits ? toNumber(created.fundUnits) : null,
             fundFee: created.fundFee ? toNumber(created.fundFee) : null,
             fundConfirmDate: created.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
@@ -605,6 +683,7 @@ export async function POST(req: Request) {
  *   --- investment fields ---
  *   fundCode?: string
  *   fundName?: string
+ *   insuranceProductId?: string
  *   fundProductType?: string
  *   fundSubtype?: string
  *   fundNav?: number
@@ -636,6 +715,7 @@ export async function PUT(req: Request) {
     const amountRaw = parseMoney(body.amount);
     const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
     const note = String(body.note ?? "").trim();
+    const toNote = String(body.toNote ?? "").trim();
     const tagIdsRaw = body.tagIds;
     const tagIds: string[] = Array.isArray(tagIdsRaw)
       ? tagIdsRaw.filter((id): id is string => typeof id === "string" && id.length > 0)
@@ -697,27 +777,61 @@ export async function PUT(req: Request) {
             categoryId: null,
             categoryName: null,
             statementMonth: toStatementMonthValue,
+            date,
+            type: TransactionType.transfer,
+            note: note || null,
+            toNote: toNote || null,
           },
-        });
-        await tx.txRecord.update({
-          where: { id: entry.id },
-          data: { date, type: TransactionType.transfer, note: note || null },
         });
         return;
       }
 
-      if (type === "investment") {
-        const accountIdFormData = String(body.accountId ?? body.investAccountId ?? "").trim();
-        const cashAccountIdFormData = String(body.cashAccountId ?? "").trim();
-        const fundCode = String(body.fundCode ?? "").trim() || null;
-        const productType = String(body.fundProductType ?? "fund").trim();
-        const subtype = String(body.fundSubtype ?? "buy").trim();
-        const redeemLike = subtype === "redeem" || subtype === "switch_out";
-        const cashReceivingLike = redeemLike || subtype === "dividend_cash";
+  if (type === "investment") {
+    const accountIdFormData = String(body.accountId ?? body.investAccountId ?? "").trim();
+    const cashAccountIdFormData = String(body.cashAccountId ?? "").trim();
+    const fundCode = String(body.fundCode ?? "").trim() || null;
+    const insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
+    const ownerGroupIdFromBody = String(body.ownerGroupId ?? "").trim() || null;
+    const productType = String(body.fundProductType ?? "fund").trim();
+    const subtype = String(body.fundSubtype ?? "buy").trim();
+    const redeemLike = subtype === "redeem" || subtype === "switch_out";
+    const cashReceivingLike = redeemLike || subtype === "dividend_cash";
 
-        const investAcc = accountIdFormData ? await tx.account.findUnique({ where: { id: accountIdFormData } }) : null;
-        if (!investAcc) throw new Error("请选择投资账户");
-        investmentAccId = investAcc.id;
+    const sourceValue = String(body.source ?? entry.source ?? "manual").trim();
+    const isInsuranceEdit = sourceValue === "insurance";
+
+    let investAcc = isInsuranceEdit && !accountIdFormData
+      ? null
+      : accountIdFormData
+        ? await tx.account.findUnique({ where: { id: accountIdFormData } })
+        : null;
+    let resolvedInsuranceProductName: string | null = null;
+
+    if (isInsuranceEdit) {
+      if (!insuranceProductId) throw new Error("请选择保险产品");
+      const insuranceProduct = await tx.insuranceProduct.findFirst({
+        where: { id: insuranceProductId, householdId },
+      });
+      if (!insuranceProduct) throw new Error("保险产品不存在");
+      if (!insuranceProduct.ownerGroupId) throw new Error("该保险产品缺少投保人");
+      if (ownerGroupIdFromBody && ownerGroupIdFromBody !== insuranceProduct.ownerGroupId) throw new Error("投保人与保险产品不一致");
+      resolvedInsuranceProductName = insuranceProduct.name;
+      if (!investAcc) {
+        investAcc = await tx.account.findUnique({ where: { id: insuranceProduct.accountId } });
+      }
+      if (!investAcc || !isInsuranceAccount(investAcc)) {
+        const effectiveOwnerId = insuranceProduct.ownerGroupId || ownerGroupIdFromBody;
+        if (!effectiveOwnerId) throw new Error("该保险产品缺少投保人");
+        investAcc = await getOrCreateInsuranceAccount(tx, effectiveOwnerId, householdId);
+        await tx.insuranceProduct.update({
+          where: { id: insuranceProduct.id },
+          data: { accountId: investAcc.id },
+        });
+      }
+    }
+
+    if (!investAcc) throw new Error("请选择投资账户");
+    investmentAccId = investAcc.id;
 
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
@@ -746,6 +860,7 @@ export async function PUT(req: Request) {
         let signedAmount: number;
 
         const fundArrivalAmount = parseMoney(body.fundArrivalAmount);
+        const depositSourceEntryId = String(body.depositSourceEntryId ?? "").trim() || null;
         const fundFee = parseMoney(body.fundFee);
 
         if (cashReceivingLike) {
@@ -777,19 +892,27 @@ export async function PUT(req: Request) {
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: fundCode || null,
+            fundName: resolvedInsuranceProductName ?? entry.fundName,
+            insuranceProductId,
             fundProductType: (productType as any) || null,
             fundSubtype: (subtype as any) || null,
+            depositSourceEntryId,
             note: note || null,
           },
         });
 
-        await tx.txRecord.update({
-          where: { id: entry.id },
-          data: { date, type: TransactionType.investment, note: note || null },
-        });
+await tx.txRecord.update({
+  where: { id: entry.id },
+  data: { date, type: TransactionType.investment, note: note || null },
+});
 
-        await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
-        return;
+if (!isInsuranceEdit) {
+  await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
+}
+if (!isInsuranceEdit || isInsuranceAccount(investAcc)) {
+  await recalcAndSaveAccountBalance(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+}
+return;
       }
 
       if (type !== "expense" && type !== "income") throw new Error("类型不正确");
@@ -803,7 +926,7 @@ export async function PUT(req: Request) {
         categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
       ]);
       if (!acc) throw new Error("请选择账户");
-      if (acc.kind === AccountKind.investment) throw new Error("基金/理财账户不参与收支记账");
+      if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
 
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
 
@@ -924,8 +1047,12 @@ export async function PUT(req: Request) {
         fundSubtype: updated.fundSubtype,
         fundCode: updated.fundCode,
         fundName: updated.fundName,
+        insuranceProductId: updated.insuranceProductId ?? null,
         fundProductType: updated.fundProductType,
         fundNav: updated.fundNav ? toNumber(updated.fundNav) : null,
+        depositAnnualRate: updated.depositAnnualRate ? toNumber(updated.depositAnnualRate) : null,
+        depositInterest: updated.depositInterest ? toNumber(updated.depositInterest) : null,
+        depositSourceEntryId: updated.depositSourceEntryId ?? null,
         fundUnits: updated.fundUnits ? toNumber(updated.fundUnits) : null,
         fundFee: updated.fundFee ? toNumber(updated.fundFee) : null,
         fundConfirmDate: updated.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
@@ -1006,3 +1133,5 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
+
+

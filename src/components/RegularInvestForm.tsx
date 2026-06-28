@@ -5,6 +5,7 @@ import { useState, useEffect, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 
@@ -158,6 +159,9 @@ export function RegularInvestForm({
   const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts ?? []);
   const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
+
+  const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOptions);
+  const { ownerFilterLabel: ifLabel, cycleOwnerFilter: ifCycle, filteredOptions: investFiltered } = useAccountSSFilter(localInvestmentSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
 
   const actualOpen = showTriggerButton ? internalOpen : open ?? false;
@@ -469,10 +473,10 @@ export function RegularInvestForm({
 
   // edit 模式下的账户显示标签
   const displayAccountLabel = stripDefaultGroupLabel(mode === "edit" ? (editAccountLabel ?? accountLabel) : accountLabel);
-  const investmentOptions = localInvestmentSSOptions
-    ? stripDefaultGroupOptions(localInvestmentSSOptions)
+  const investmentOptions = investFiltered
+    ? stripDefaultGroupOptions(investFiltered)
     : investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel }));
-  const cashOptions = localCashSSOptions ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const cashOptions = cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
 
   function handleNestedAccountCreated(id: string, name: string, extra?: { kind?: string }) {
     const kind = extra?.kind ?? (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
@@ -529,7 +533,8 @@ export function RegularInvestForm({
                       options={investmentOptions}
                       placeholder="选择账户"
                       onCreateClick={() => setNestedEntityType("invest-account")}
-                      createLabel="新增账户" />
+                      createLabel="新增账户"
+                      onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -547,7 +552,8 @@ export function RegularInvestForm({
                       options={cashOptions}
                       placeholder="选择账户"
                       onCreateClick={() => setNestedEntityType("cash-account")}
-                      createLabel="新增账户" />
+                      createLabel="新增账户"
+                      onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
                   </div>
                 )}
               </div>

@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
+import { compareDetailEntriesAsc } from "@/lib/detail-entry-order";
 
 type AccountBalanceLike = {
   id: string;
   kind: AccountKind;
+  investProductType?: string | null;
   billingDay?: number | null;
 };
 
@@ -15,49 +17,125 @@ export async function computeAccountDisplayBalances(
   const accountIds = accounts.map((account) => account.id).filter(Boolean);
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
+  const depositAccountIds = accounts
+    .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
+    .map((account) => account.id);
+  const depositAccountIdSet = new Set(depositAccountIds);
 
   const txWhere = {
     deletedAt: null,
     ...(hidFilter ?? {}),
   };
 
-  const [fromAgg, toAgg] = await Promise.all([
-    prisma.txRecord.groupBy({
-      by: ["accountId"],
+  if (depositAccountIds.length > 0) {
+    const depositEntries = await prisma.txRecord.findMany({
       where: {
         ...txWhere,
-        accountId: { in: accountIds },
+        fundProductType: "deposit",
+        OR: [
+          { accountId: { in: depositAccountIds } },
+          { toAccountId: { in: depositAccountIds } },
+        ],
       },
-      _sum: { amount: true },
-    }),
-    prisma.txRecord.groupBy({
-      by: ["toAccountId"],
+      select: {
+        id: true,
+        accountId: true,
+        toAccountId: true,
+        amount: true,
+        fundArrivalAmount: true,
+        fundSubtype: true,
+        depositSourceEntryId: true,
+      },
+      orderBy: [{ date: "asc" }, { id: "asc" }],
+    });
+
+    const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
+    for (const entry of depositEntries) {
+      const isRedeem = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      const depositAccountId = isRedeem ? entry.accountId : entry.toAccountId;
+      if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
+
+      if (!isRedeem) {
+        remainingByLotId.set(entry.id, {
+          depositAccountId,
+          amount: Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)),
+        });
+        continue;
+      }
+
+      if (entry.depositSourceEntryId) {
+        const lot = remainingByLotId.get(entry.depositSourceEntryId);
+        if (lot) lot.amount = 0;
+      }
+    }
+
+    for (const id of depositAccountIds) result.set(id, 0);
+    for (const lot of remainingByLotId.values()) {
+      result.set(lot.depositAccountId, (result.get(lot.depositAccountId) ?? 0) + lot.amount);
+    }
+  }
+
+  const nonDepositAccounts = accounts.filter(
+    (account) => account.kind !== AccountKind.deposit && account.investProductType !== "deposit",
+  );
+  const nonDepositAccountIds = nonDepositAccounts.map((account) => account.id);
+
+  if (nonDepositAccountIds.length > 0) {
+    const txRows = await prisma.txRecord.findMany({
       where: {
         ...txWhere,
-        toAccountId: { in: accountIds },
+        OR: [
+          { accountId: { in: nonDepositAccountIds } },
+          { toAccountId: { in: nonDepositAccountIds } },
+        ],
       },
-      _sum: { amount: true },
-    }),
-  ]);
+      select: {
+        id: true,
+        date: true,
+        createdAt: true,
+        type: true,
+        amount: true,
+        accountId: true,
+        toAccountId: true,
+        source: true,
+        fundSubtype: true,
+        fundConfirmDate: true,
+        fundArrivalDate: true,
+      },
+    });
 
-  const fromById = new Map<string, number>();
-  for (const row of fromAgg) {
-    fromById.set(row.accountId, toNumber(row._sum.amount));
-  }
+    const txByAccountId = new Map<string, typeof txRows>();
+    for (const accountId of nonDepositAccountIds) {
+      txByAccountId.set(accountId, []);
+    }
+    for (const entry of txRows) {
+      if (entry.accountId && txByAccountId.has(entry.accountId)) {
+        txByAccountId.get(entry.accountId)?.push(entry);
+      }
+      if (entry.toAccountId && txByAccountId.has(entry.toAccountId)) {
+        txByAccountId.get(entry.toAccountId)?.push(entry);
+      }
+    }
 
-  const toById = new Map<string, number>();
-  for (const row of toAgg) {
-    const key = row.toAccountId ?? "";
-    if (!key) continue;
-    toById.set(key, Math.abs(toNumber(row._sum.amount)));
-  }
+    for (const account of nonDepositAccounts) {
+      const isBill =
+        (account.kind === AccountKind.bank_credit || account.kind === AccountKind.loan) &&
+        !!account.billingDay;
+      if (isBill) {
+        result.set(account.id, 0);
+        continue;
+      }
 
-  for (const account of accounts) {
-    const txSum = (fromById.get(account.id) ?? 0) + (toById.get(account.id) ?? 0);
-    const isBill =
-      (account.kind === AccountKind.bank_credit || account.kind === AccountKind.loan) &&
-      !!account.billingDay;
-    result.set(account.id, isBill ? 0 : txSum);
+      const rows = txByAccountId.get(account.id) ?? [];
+      const orderedRows = [...rows].sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+      let runningBalance = 0;
+      for (const entry of orderedRows) {
+        runningBalance += entry.toAccountId === account.id
+          ? Math.abs(toNumber(entry.amount))
+          : toNumber(entry.amount);
+      }
+      result.set(account.id, runningBalance);
+    }
   }
 
   return result;
@@ -70,12 +148,12 @@ export async function computeAccountDisplayBalances(
 export async function recalcAndSaveAccountBalance(accountId: string) {
   const acc = await prisma.account.findUnique({
     where: { id: accountId },
-    select: { kind: true, billingDay: true },
+    select: { kind: true, investProductType: true, billingDay: true },
   });
   if (!acc) return;
 
   const balanceMap = await computeAccountDisplayBalances([
-    { id: accountId, kind: acc.kind, billingDay: acc.billingDay },
+    { id: accountId, kind: acc.kind, investProductType: acc.investProductType, billingDay: acc.billingDay },
   ]);
   const newBalance = String(balanceMap.get(accountId) ?? 0);
 

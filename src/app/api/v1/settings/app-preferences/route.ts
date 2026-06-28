@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE,
+  normalizeCreditCardLabelTemplate,
+} from "@/lib/account-display";
 
 const SESSION_DAYS_KEY = "mmh_session_days";
 const FUND_UNITS_DECIMALS_KEY = "mmh_fund_units_decimals";
@@ -6,6 +11,7 @@ const AI_PANEL_ENABLED_KEY = "mmh_ai_panel_enabled";
 const TIME_ZONE_MODE_KEY = "mmh_time_zone_mode";
 const TIME_ZONE_KEY = "mmh_time_zone";
 const CREDIT_CARD_LABEL_MODE_KEY = "mmh_credit_card_label_mode";
+const CREDIT_CARD_LABEL_TEMPLATE_KEY = "mmh_credit_card_label_template";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USERNAME_KEY = "mmh_username";
 const HOUSEHOLD_KEY = "householdId";
@@ -57,7 +63,11 @@ export async function GET(req: NextRequest) {
   const timeZoneMode = normalizeTimeZoneMode(req.cookies.get(TIME_ZONE_MODE_KEY)?.value);
   const timeZone = normalizeTimeZone(req.cookies.get(TIME_ZONE_KEY)?.value);
   const creditCardLabelMode = normalizeCreditCardLabelMode(req.cookies.get(CREDIT_CARD_LABEL_MODE_KEY)?.value);
-  return NextResponse.json({ ok: true, sessionDays, fundUnitsDecimals, aiPanelEnabled, timeZoneMode, timeZone, creditCardLabelMode });
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    req.cookies.get(CREDIT_CARD_LABEL_TEMPLATE_KEY)?.value,
+    creditCardLabelMode,
+  );
+  return NextResponse.json({ ok: true, sessionDays, fundUnitsDecimals, aiPanelEnabled, timeZoneMode, timeZone, creditCardLabelMode, creditCardLabelTemplate });
 }
 
 export async function PUT(req: NextRequest) {
@@ -69,6 +79,7 @@ export async function PUT(req: NextRequest) {
     timeZoneMode?: unknown;
     timeZone?: unknown;
     creditCardLabelMode?: unknown;
+    creditCardLabelTemplate?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -76,15 +87,20 @@ export async function PUT(req: NextRequest) {
   const hasTimeZoneMode = Object.prototype.hasOwnProperty.call(prefs, "timeZoneMode");
   const hasTimeZone = Object.prototype.hasOwnProperty.call(prefs, "timeZone");
   const hasCreditCardLabelMode = Object.prototype.hasOwnProperty.call(prefs, "creditCardLabelMode");
+  const hasCreditCardLabelTemplate = Object.prototype.hasOwnProperty.call(prefs, "creditCardLabelTemplate");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
   const timeZoneMode = normalizeTimeZoneMode(hasTimeZoneMode ? prefs.timeZoneMode : req.cookies.get(TIME_ZONE_MODE_KEY)?.value);
   const timeZone = normalizeTimeZone(hasTimeZone ? prefs.timeZone : req.cookies.get(TIME_ZONE_KEY)?.value);
   const creditCardLabelMode = normalizeCreditCardLabelMode(hasCreditCardLabelMode ? prefs.creditCardLabelMode : req.cookies.get(CREDIT_CARD_LABEL_MODE_KEY)?.value);
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    hasCreditCardLabelTemplate ? prefs.creditCardLabelTemplate : req.cookies.get(CREDIT_CARD_LABEL_TEMPLATE_KEY)?.value,
+    creditCardLabelMode,
+  );
   const maxAge = sessionDays * 24 * 60 * 60;
 
-  const response = NextResponse.json({ ok: true, sessionDays, fundUnitsDecimals, aiPanelEnabled, timeZoneMode, timeZone, creditCardLabelMode });
+  const response = NextResponse.json({ ok: true, sessionDays, fundUnitsDecimals, aiPanelEnabled, timeZoneMode, timeZone, creditCardLabelMode, creditCardLabelTemplate });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
@@ -116,6 +132,12 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(CREDIT_CARD_LABEL_MODE_KEY, creditCardLabelMode, {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(CREDIT_CARD_LABEL_TEMPLATE_KEY, creditCardLabelTemplate, {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

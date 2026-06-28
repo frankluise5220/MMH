@@ -6,9 +6,9 @@
     "postinstall": "prisma generate",
     "predev": "prisma generate",
     "dev": "next dev -H 0.0.0.0 -p 7777 --webpack",
-    "start:clean": "powershell -File start.ps1",
+    "start:clean": "powershell -ExecutionPolicy Bypass -File start.ps1",
     "build": "next build",
-    "start": "next start -H 0.0.0.0 -p 7777",
+    "start": "node scripts/start-standalone.cjs",
     "lint": "eslint"
   },
   "dependencies": {

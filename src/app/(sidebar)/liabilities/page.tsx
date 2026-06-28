@@ -3,7 +3,7 @@ import { ArrowLeftRight, Building2, CreditCard, HandCoins, Landmark } from "luci
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
@@ -42,6 +42,10 @@ function dayLabel(day: number | null) {
 export default async function LiabilitiesPage() {
   const cookieStore = await cookies();
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    cookieStore.get("mmh_credit_card_label_template")?.value,
+    creditCardLabelMode,
+  );
   const { hidFilter } = await getHouseholdScope();
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: DEBT_KINDS }, ...hidFilter },
@@ -61,7 +65,7 @@ export default async function LiabilitiesPage() {
       groupId: account.groupId,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelMode);
+    }, creditCardLabelTemplate);
     const institutionName = display.institutionName || "未设置往来机构/人员";
     const debtPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`

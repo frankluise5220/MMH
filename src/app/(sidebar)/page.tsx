@@ -10,10 +10,13 @@ import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
+import { InsuranceFormModal } from "@/components/InsuranceFormModal";
+import { DepositCreateButton } from "@/components/DepositCreateButton";
 import { FillNavButton } from "@/components/FillNavButton";
 import { DebtShell } from "@/components/DebtShell";
 import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { FundShell } from "@/components/FundShell";
+import { DepositShell } from "@/components/DepositShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
@@ -36,8 +39,11 @@ import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/househo
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { buildFlatAccountOptions } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildFlatAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { debtActionLabel } from "@/lib/debt";
+import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
+import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import {
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
@@ -88,8 +94,17 @@ function detailFilterSort(a: string, b: string) {
   return a.localeCompare(b, "zh-CN");
 }
 
-function fundSubtypeInfo(subtype: string | null | undefined, source: string | null | undefined, _amount: number) {
+function fundSubtypeInfo(
+  subtype: string | null | undefined,
+  source: string | null | undefined,
+  _amount: number,
+  fundProductType?: string | null,
+) {
   const base = subtypeDisplay(subtype, source);
+  if (fundProductType === "deposit") {
+    if (subtype === "buy") return { label: "存入", cls: "bg-blue-50 text-blue-600" };
+    if (subtype === "redeem") return { label: "取出", cls: "bg-orange-50 text-orange-600" };
+  }
   // source-based overrides for buy subtype (定投/红利转投/转入)
   if (subtype === "buy" && source) {
     const srcLabels: Record<string, { label: string; cls: string; textCls?: string }> = {
@@ -107,6 +122,16 @@ function ymdUtc(d: Date) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function ymdUtcDots(d: Date) {
+  return ymdUtc(d).replace(/-/g, ".");
+}
+
+function mdUtcDots(d: Date) {
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${m}.${day}`;
 }
 
 function toValidDate(value: unknown): Date | null {
@@ -323,6 +348,7 @@ async function createTransaction(formData: FormData) {
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
   const note = String(formData.get("note") ?? "").trim();
+  const toNote = String(formData.get("toNote") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
   const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
 
@@ -361,6 +387,7 @@ async function createTransaction(formData: FormData) {
             type: TransactionType.transfer,
             date,
             note: note || null,
+            toNote: toNote || null,
             statementMonth: toStatementMonthValue,
             ...{ householdId },
           },
@@ -375,7 +402,6 @@ async function createTransaction(formData: FormData) {
     } else if (type === "expense") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
-      if (!accountId) return { ok: false as const, error: "请选择账户" };
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -383,7 +409,7 @@ async function createTransaction(formData: FormData) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error("账户不存在");
-        if (acc.kind === AccountKind.investment) throw new Error("基金/理财账户不参与收支记账");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -450,16 +476,24 @@ async function createTransaction(formData: FormData) {
       const fundProductType = String(formData.get("fundProductType") ?? "").trim() || null;
       const fundUnitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
   const fundNavRaw = parseFloat(String(formData.get("fundNav") ?? ""));
+  const depositAnnualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
+  const depositInterestRaw = parseFloat(String(formData.get("depositInterest") ?? ""));
   const fundFeeRaw = parseFloat(String(formData.get("fundFee") ?? ""));
       const fundConfirmDateStr = String(formData.get("fundConfirmDate") ?? "").trim();
       const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
       const fundArrivalAmountRaw = parseFloat(String(formData.get("fundArrivalAmount") ?? ""));
+      const depositPrincipalAmountRaw = parseFloat(String(formData.get("depositPrincipalAmount") ?? ""));
+      const recordCurrency = String(formData.get("currency") ?? "").trim().toUpperCase() || null;
+      const depositSourceEntryId = String(formData.get("depositSourceEntryId") ?? "").trim() || null;
       const cashAccountIdInput = String(formData.get("cashAccountId") ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
       const fundArrivalAmount = Number.isFinite(fundArrivalAmountRaw) && fundArrivalAmountRaw > 0 ? fundArrivalAmountRaw : null;
+      const depositPrincipalAmount = Number.isFinite(depositPrincipalAmountRaw) && depositPrincipalAmountRaw > 0 ? depositPrincipalAmountRaw : null;
       const fundUnits = Number.isFinite(fundUnitsRaw) && fundUnitsRaw > 0 ? fundUnitsRaw : null;
       const fundNav = Number.isFinite(fundNavRaw) && fundNavRaw > 0 ? fundNavRaw : null;
+      const depositAnnualRate = Number.isFinite(depositAnnualRateRaw) && depositAnnualRateRaw > 0 ? depositAnnualRateRaw : null;
+      const depositInterest = Number.isFinite(depositInterestRaw) && depositInterestRaw >= 0 ? depositInterestRaw : null;
       const fundFee = Number.isFinite(fundFeeRaw) && fundFeeRaw > 0 ? fundFeeRaw : null;
 
       if (!fundCode && note) {
@@ -467,7 +501,9 @@ async function createTransaction(formData: FormData) {
         if (codeMatch) fundCode = codeMatch[1];
       }
 
-      if (!accountId) return { ok: false as const, error: "请选择账户" };
+      const fundNameInput = String(formData.get("fundName") ?? "").trim();
+      const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : "");
+      if (!effectiveAccountId) return { ok: false as const, error: "请选择账户" };
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
       const validSubtypes = Object.values(FundSubtype);
@@ -477,24 +513,38 @@ async function createTransaction(formData: FormData) {
       const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
 
       // Map source field: dividend_reinvest → source='dividend', otherwise use form source or 'manual'
-      const sourceValue = isDividendReinvest ? "dividend" : (String(formData.get("source") ?? "manual").trim() || "manual");
+      const sourceValue = fundProductType === "deposit"
+        ? "deposit"
+        : isDividendReinvest
+          ? "dividend"
+          : (String(formData.get("source") ?? "manual").trim() || "manual");
       // dividend_reinvest → fundSubtype='buy'
       const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
 
+      let finalInvestmentAccId = "";
       await prisma.$transaction(async (tx) => {
         // accountId 统一为投资账户（基金账户）
-        const investAcc = await tx.account.findUnique({ where: { id: accountId } });
+        const investAcc =
+          fundProductType === "deposit"
+            ? await resolveOrCreateDepositAccount(tx, {
+                householdId,
+                requestedAccountId: accountId || null,
+                cashAccountId: cashAccountIdInput,
+                fundName: fundNameInput || note || null,
+                currency: recordCurrency,
+              })
+            : await tx.account.findUnique({ where: { id: accountId } });
         if (!investAcc) throw new Error("账户不存在");
-        if (investAcc.kind !== AccountKind.investment) throw new Error("请选择投资账户");
+        if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error("请选择投资/存款账户");
+        finalInvestmentAccId = investAcc.id;
 
         const cashAcc = cashAccountIdInput
-          ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true } })
+          ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true, currency: true } })
           : null;
 
         const entryFundCode = fundCode || null;
         // fundCode 字段只存真正的基金代码（6位数字），不存账户名
         // fundName 只存基金名称，不用备注兜底，避免“红利转投”等备注污染基金名称显示
-        const fundNameInput = String(formData.get("fundName") ?? "").trim();
         const entryFundName = fundNameInput || fundCode || null;
 
 
@@ -514,7 +564,7 @@ async function createTransaction(formData: FormData) {
           recordAccountName = investAcc.name;
           recordToAccountId = cashAcc?.id ?? investAcc.id;
           recordToAccountName = cashAcc?.name ?? investAcc.name;
-          signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs - (fundFee ?? 0));
+          signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0));
         } else if (isDividendReinvest) {
           recordAccountId = investAcc.id;
           recordAccountName = investAcc.name;
@@ -535,6 +585,10 @@ async function createTransaction(formData: FormData) {
           recordToAccountName = investAcc.name;
           signedAmount = -amountAbs;
         }
+        const entryArrivalAmount =
+          fundProductType === "deposit" && !redeemLike && !isDividendCash && !isDividendReinvest
+            ? (depositPrincipalAmount ?? amountAbs)
+            : fundArrivalAmount;
 
         const applyDateStr = date.toISOString().slice(0, 10);
         const shouldComputeArrival = finalFundSubtype === FundSubtype.buy && !redeemLike && !isDividendCash && !isDividendReinvest;
@@ -563,26 +617,35 @@ async function createTransaction(formData: FormData) {
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             amount: signedAmount,
+            currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
             fundCode: entryFundCode,
             fundName: entryFundName,
             fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
             fundUnits: fundUnits ?? undefined,
-            fundNav: fundNav ?? undefined,
+            fundNav: fundProductType === "deposit" ? undefined : fundNav ?? undefined,
+            depositAnnualRate: depositAnnualRate ?? undefined,
+            depositInterest: depositInterest ?? undefined,
+            depositSourceEntryId: depositSourceEntryId ?? undefined,
             fundFee: fundFee ?? undefined,
             fundConfirmDate: computedConfirmDate ?? undefined,
             fundArrivalDate: computedArrivalDate ?? undefined,
-            fundArrivalAmount: fundArrivalAmount ?? undefined,
+            fundArrivalAmount: entryArrivalAmount ?? undefined,
             note: note || undefined,
             ...{ householdId },
           },
         });
       });
 
-      await recalcFundPositions(accountId, fundCode ? [fundCode] : undefined).catch(() => {});
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
-      if (cashAccountIdInput && cashAccountIdInput !== accountId) {
+      if (fundProductType !== "deposit" && finalInvestmentAccId) {
+        await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(() => {});
+      }
+      const balanceAccountId = finalInvestmentAccId;
+      if (balanceAccountId) {
+        await recalcAndSaveAccountBalance(balanceAccountId).catch(() => {});
+      }
+      if (cashAccountIdInput && cashAccountIdInput !== balanceAccountId) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(() => {});
       }
     } else {
@@ -638,7 +701,7 @@ async function createDebtTransaction(formData: FormData) {
       if (!debtAccount || debtAccount.kind !== AccountKind.loan) {
         throw new Error("往来对象账户不存在");
       }
-      if (!cashAccount || cashAccount.kind === AccountKind.investment || cashAccount.kind === AccountKind.loan) {
+      if (!cashAccount || isPureInvestmentAccount(cashAccount) || cashAccount.kind === AccountKind.loan) {
         throw new Error("资金账户不正确");
       }
 
@@ -719,11 +782,14 @@ async function editInvestment(formData: FormData) {
   // 检测字段是否被传递（用于区分"不更新"vs"清空")
   const hasFundUnits = formData.has("fundUnits");
   const hasFundNav = formData.has("fundNav");
+  const hasDepositAnnualRate = formData.has("depositAnnualRate");
+  const hasDepositInterest = formData.has("depositInterest");
   const hasFundFee = formData.has("fundFee");
   const hasFundConfirmDate = formData.has("fundConfirmDate");
   const hasCashAccountId = formData.has("cashAccountId");
   const hasFundArrivalDate = formData.has("fundArrivalDate");
   const hasFundArrivalAmount = formData.has("fundArrivalAmount");
+  const hasDepositSourceEntryId = formData.has("depositSourceEntryId");
   const hasConfirmDays = formData.has("confirmDays");
   const hasFeeRate = formData.has("feeRate");
   const hasArrivalDays = formData.has("arrivalDays");
@@ -731,10 +797,13 @@ async function editInvestment(formData: FormData) {
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
   const fundNavStr = String(formData.get("fundNav") ?? "").trim();
   const fundFeeStr = String(formData.get("fundFee") ?? "").trim();
+  const depositAnnualRateStr = String(formData.get("depositAnnualRate") ?? "").trim();
+  const depositInterestStr = String(formData.get("depositInterest") ?? "").trim();
   const fundConfirmDateStr = String(formData.get("fundConfirmDate") ?? "").trim();
   const cashAccountIdStr = String(formData.get("cashAccountId") ?? "").trim();
   const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
   const fundArrivalAmountStr = String(formData.get("fundArrivalAmount") ?? "").trim();
+  const depositSourceEntryIdStr = String(formData.get("depositSourceEntryId") ?? "").trim();
   const confirmDaysStr = String(formData.get("confirmDays") ?? "").trim();
   const arrivalDaysStr = String(formData.get("arrivalDays") ?? "").trim();
   const feeRateStr = String(formData.get("feeRate") ?? "").trim();
@@ -744,6 +813,8 @@ async function editInvestment(formData: FormData) {
   const fundNavRaw = fundNavStr ? parseFloat(fundNavStr) : NaN;
   const fundFeeRaw = fundFeeStr ? parseFloat(fundFeeStr) : NaN;
   const fundArrivalAmountRaw = fundArrivalAmountStr ? parseFloat(fundArrivalAmountStr) : NaN;
+  const depositAnnualRateRaw = depositAnnualRateStr ? parseFloat(depositAnnualRateStr) : NaN;
+  const depositInterestRaw = depositInterestStr ? parseFloat(depositInterestStr) : NaN;
   const confirmDaysRaw = confirmDaysStr ? parseInt(confirmDaysStr, 10) : NaN;
   const arrivalDaysRaw = arrivalDaysStr ? parseInt(arrivalDaysStr, 10) : NaN;
   const feeRateRaw = feeRateStr ? parseFloat(feeRateStr) : NaN;
@@ -753,6 +824,12 @@ async function editInvestment(formData: FormData) {
     : undefined; // undefined 表示不更新
   const fundNav: number | null | undefined = hasFundNav
     ? (Number.isFinite(fundNavRaw) && fundNavRaw > 0 ? fundNavRaw : null)
+    : undefined;
+  const depositAnnualRate: number | null | undefined = hasDepositAnnualRate
+    ? (Number.isFinite(depositAnnualRateRaw) && depositAnnualRateRaw > 0 ? depositAnnualRateRaw : null)
+    : undefined;
+  const depositInterest: number | null | undefined = hasDepositInterest
+    ? (Number.isFinite(depositInterestRaw) && depositInterestRaw >= 0 ? depositInterestRaw : null)
     : undefined;
   const fundFee: number | null | undefined = hasFundFee
     ? (Number.isFinite(fundFeeRaw) && fundFeeRaw >= 0 ? fundFeeRaw : null)
@@ -768,6 +845,9 @@ async function editInvestment(formData: FormData) {
     : undefined;
   const fundArrivalAmount: number | null | undefined = hasFundArrivalAmount
     ? (Number.isFinite(fundArrivalAmountRaw) && fundArrivalAmountRaw > 0 ? fundArrivalAmountRaw : null)
+    : undefined;
+  const depositSourceEntryId: string | null | undefined = hasDepositSourceEntryId
+    ? (depositSourceEntryIdStr || null)
     : undefined;
   const confirmDays: number | null | undefined = hasConfirmDays
     ? (Number.isFinite(confirmDaysRaw) && confirmDaysRaw >= 0 ? confirmDaysRaw : null)
@@ -789,7 +869,9 @@ async function editInvestment(formData: FormData) {
   const fundSubtypeValue: FundSubtype = validSubtypes.includes(subtype as FundSubtype) ? (subtype as FundSubtype) : FundSubtype.buy;
   const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
   const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
-  const signedAmount = redeemLike ? (fundArrivalAmount ?? Math.max(0, amountAbs - (fundFee ?? 0))) : (isDividendCash ? amountAbs : -amountAbs);
+  const signedAmount = redeemLike
+    ? (fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0)))
+    : (isDividendCash ? amountAbs : -amountAbs);
 
   try {
     // 直接查询 TxRecord
@@ -825,7 +907,11 @@ async function editInvestment(formData: FormData) {
         : null;
 
       // 构建 TxRecord 更新数据
-      const sourceValue = isDividendReinvest ? "dividend" : (String(formData.get("source") ?? txRecord.source ?? "manual").trim() || "manual");
+      const sourceValue = fundProductType === "deposit"
+        ? "deposit"
+        : isDividendReinvest
+          ? "dividend"
+          : (String(formData.get("source") ?? txRecord.source ?? "manual").trim() || "manual");
       const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
       const updateData: any = {
         date,
@@ -835,7 +921,10 @@ async function editInvestment(formData: FormData) {
         fundSubtype: finalFundSubtype,
         source: sourceValue,
         fundUnits: fundUnits ?? null,
-        fundNav: fundNav ?? null,
+        fundNav: fundProductType === "deposit" ? null : fundNav ?? null,
+        depositAnnualRate: depositAnnualRate ?? null,
+        depositInterest: depositInterest ?? null,
+        depositSourceEntryId: depositSourceEntryId ?? null,
         fundFee: fundFee ?? null,
         fundConfirmDate: fundConfirmDate ?? null,
         fundArrivalDate: fundArrivalDate ?? null,
@@ -1350,6 +1439,7 @@ async function updateTransactionFromDialog(formData: FormData) {
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
   const note = String(formData.get("note") ?? "").trim();
+  const toNote = String(formData.get("toNote") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
   const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
 
@@ -1403,6 +1493,7 @@ async function updateTransactionFromDialog(formData: FormData) {
             date,
             type: TransactionType.transfer,
             note: note || null,
+            toNote: toNote || null,
           },
         });
         return;
@@ -1505,7 +1596,7 @@ async function updateTransactionFromDialog(formData: FormData) {
         categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
       ]);
       if (!acc) throw new Error("请选择账户");
-      if (acc.kind === AccountKind.investment) throw new Error("基金/理财账户不参与收支记账");
+      if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
 
       // 检查是否是基金交易（通过 toAccountId + fundProductType）
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
@@ -1655,7 +1746,22 @@ export default async function Home({
   if (!accountId && !accountName && params?.view !== "debt") {
     redirect("/overview");
   }
-  const viewParam = params?.view === "bill" ? "bill" : params?.view === "detail" ? "detail" : params?.view === "investfund" ? "investfund" : params?.view === "investmoney" ? "investmoney" : params?.view === "regularinvest" ? "regularinvest" : params?.view === "debt" ? "debt" : "";
+  const viewParam =
+    params?.view === "bill"
+      ? "bill"
+      : params?.view === "detail"
+        ? "detail"
+        : params?.view === "investfund"
+          ? "investfund"
+          : params?.view === "investmoney"
+            ? "investmoney"
+            : params?.view === "regularinvest"
+              ? "regularinvest"
+              : params?.view === "debt"
+                ? "debt"
+                : params?.view === "deposit"
+                  ? "deposit"
+                  : "";
   const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const hideZeroBills = params?.hideZeroBills === "1";
@@ -1697,9 +1803,12 @@ export default async function Home({
   // 读取涨跌颜色方案
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
+  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
+  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
+    cookieStore.get("mmh_credit_card_label_template")?.value,
+    creditCardLabelMode,
+  );
   const isRedUp = colorScheme === "red_up_green_down";
-  const fundUnitsDecimalsRaw = Number(cookieStore.get("mmh_fund_units_decimals")?.value ?? 2);
-  const fundUnitsDecimals = Number.isFinite(fundUnitsDecimalsRaw) ? Math.min(Math.max(Math.round(fundUnitsDecimalsRaw), 0), 6) : 2;
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
   // 颜色辅助函数
@@ -1713,25 +1822,33 @@ export default async function Home({
   const { categories, accounts, tags, groups, institutions } = common;
   // selectedAccount: per-account，请求级缓存去重
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 3);
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
   const isDebtAccount = selectedAccount?.kind === AccountKind.loan;
-  const isInvestAccount = selectedAccount?.kind === AccountKind.investment;
+  const isInvestAccount = selectedAccount ? isPureInvestmentAccount(selectedAccount) : false;
+  const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
+  const missingBillingDayForBill =
+    viewParam === "bill" &&
+    selectedAccount?.kind === AccountKind.bank_credit &&
+    !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" =
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" | "deposit" =
     isDebtAccount
       ? "debt"
       : viewParam
         ? viewParam
         : isBillAccount
           ? "bill"
+          : isDepositView
+            ? "deposit"
           : isInvestAccount
             ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund")
             : isOverview
               ? "overview"
               : "detail";
-  const needsDetailEntries = view === "detail";
+  const needsDetailEntries = view === "detail" || view === "deposit";
 
   const legacyNames = (() => {
     if (!selectedAccount) return [];
@@ -1751,7 +1868,16 @@ export default async function Home({
       }
     : accountName
       ? { accountName: accountName, deletedAt: null, ...hid }
-      : { deletedAt: null, account: { kind: { not: AccountKind.investment }, ...hidFilter } };
+      : {
+          deletedAt: null,
+          account: {
+            OR: [
+              { kind: { not: AccountKind.investment } },
+              { kind: AccountKind.investment, investProductType: "deposit" as any },
+            ],
+            ...hidFilter,
+          },
+        };
 
   const rawEntries = needsDetailEntries
     ? accountId
@@ -1768,17 +1894,23 @@ export default async function Home({
   };
   const entryDisplayDate = (e: (typeof rawEntries)[number]) => getDetailEntryDisplayDate(e, accountId);
   const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const getEntryDisplayNote = (e: (typeof entries)[number]) => {
+    const fromNote = (e.note ?? "").trim();
+    const receiverNote = (e.toNote ?? "").trim();
+    if (!accountId) return fromNote;
+    return e.toAccountId === accountId ? (receiverNote || fromNote) : fromNote;
+  };
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
     const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
     if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
-    if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount)?.label ?? formatType(e.type)) : formatType(e.type);
+    if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
     if (column === "related") {
       const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
       return related.trim() || DETAIL_EMPTY_VALUE;
     }
-    return (e.note ?? "").trim() || DETAIL_EMPTY_VALUE;
+    return getEntryDisplayNote(e) || DETAIL_EMPTY_VALUE;
   };
   const detailFilterOptions: Record<DetailFilterColumn, string[]> = {
     date: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "date")))).sort(detailFilterSort),
@@ -1864,7 +1996,7 @@ export default async function Home({
         inflow,
         accountLabel,
         counterAccountLabel,
-        e.note ?? "",
+        getEntryDisplayNote(e),
       ]);
     }
     return rows;
@@ -1884,8 +2016,13 @@ export default async function Home({
 
   const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
     accounts
-      .filter((account) => account.kind !== AccountKind.investment)
-      .map((account) => ({ id: account.id, kind: account.kind, billingDay: account.billingDay })),
+      .filter((account) => !isPureInvestmentAccount(account))
+      .map((account) => ({
+        id: account.id,
+        kind: account.kind,
+        investProductType: account.investProductType,
+        billingDay: account.billingDay,
+      })),
     hidFilter,
   );
   const investBalByAccountId = new Map(Object.entries(await loadInvestBalances(JSON.stringify(hidFilter))));
@@ -1909,7 +2046,7 @@ export default async function Home({
   );
 
   const totalNetWorthValue = accounts.reduce((sum, account) => {
-    if (account.kind === AccountKind.investment) {
+    if (isPureInvestmentAccount(account)) {
       return sum + (investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance));
     }
     return sum + (cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
@@ -1923,7 +2060,8 @@ export default async function Home({
     for (const e of asc) {
       const amount = toNumber(e.amount);
       const isToAccount = accountId && e.toAccountId === accountId;
-      running += isToAccount ? Math.abs(amount) : amount;
+      const displayAmount = isToAccount ? Math.abs(toNumber(e.fundArrivalAmount ?? amount)) : amount;
+      running += displayAmount;
       balanceByEntryId.set(e.id, running);
     }
   }
@@ -1931,24 +2069,51 @@ export default async function Home({
   const selectedAccountLabel = (() => {
     if (view === "debt") return "借入/借出";
     if (selectedAccount) {
-      const inst = (selectedAccount.Institution?.name ?? "").trim();
-      const accountLabel = inst ? `${inst}·${selectedAccount.name}` : selectedAccount.name;
-      if (selectedAccount.kind === AccountKind.investment) return accountLabel;
+      const display = buildAccountDisplayOption({
+        id: selectedAccount.id,
+        name: selectedAccount.name,
+        kind: selectedAccount.kind,
+        numberMasked: selectedAccount.numberMasked,
+        groupId: selectedAccount.groupId,
+        investProductType: selectedAccount.investProductType,
+        Institution: selectedAccount.Institution,
+        AccountGroup: selectedAccount.AccountGroup,
+      }, creditCardLabelTemplate);
+      const accountLabel = display.label;
+      if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
+      if (isDepositAccount(selectedAccount)) return `存款 / ${accountLabel}`;
       const group = (selectedAccount.AccountGroup?.name ?? "").trim();
       return [group, accountLabel].filter(Boolean).join(" / ");
     }
     return accountName || "";
   })();
 
-  const accountOptions = accounts.map((a) => ({
-    id: a.id,
-    kind: a.kind,
-    label: a.Institution?.name ? `${a.Institution?.name}·${a.name}` : a.name,
-    groupId: a.groupId ?? "",
-    groupName: a.AccountGroup?.name ?? "",
-    investProductType: a.investProductType,
-    subLabel: kindLabel(a.kind),
-  }));
+  const accountOptions = accounts
+    .filter(a => a.name !== "未指定账户")
+    .map((a) => {
+    const display = buildAccountDisplayOption({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      numberMasked: a.numberMasked,
+      groupId: a.groupId,
+      investProductType: a.investProductType,
+      Institution: a.Institution,
+      AccountGroup: a.AccountGroup,
+    }, creditCardLabelTemplate);
+    return {
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      label: display.selectorLabel,
+      groupId: a.groupId ?? "",
+      groupName: a.AccountGroup?.name ?? "",
+      institutionId: a.institutionId ?? "",
+      investProductType: a.investProductType,
+      subLabel: kindLabel(a.kind),
+      currency: a.currency ?? "CNY",
+    };
+  });
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
@@ -1958,18 +2123,23 @@ export default async function Home({
     const grouped = filtered.filter(a => a.groupId);
     const ungrouped = filtered.filter(a => !a.groupId);
 
-    // Build group header entries
+    // Build group header entries — exclude "未指定" group
     const groupHeaders: SSOpt[] = groups
+      .filter(g => g.name !== "未指定")
       .filter(g => grouped.some(a => a.groupId === g.id))
       .map(g => ({ id: `group:${g.id}`, label: g.name, isHeader: true }));
 
     // Build grouped account entries (parentId → group header)
-    const groupedItems: SSOpt[] = grouped.map(a => ({
-      id: a.id,
-      label: a.label,
-      subLabel: a.subLabel,
-      parentId: `group:${a.groupId}`,
-    }));
+    // Also exclude accounts belonging to excluded groups
+    const excludedGroupIds = new Set(groups.filter(g => g.name === "未指定").map(g => g.id));
+    const groupedItems: SSOpt[] = grouped
+      .filter(a => !excludedGroupIds.has(a.groupId))
+      .map(a => ({
+        id: a.id,
+        label: a.label,
+        subLabel: a.subLabel ? `${a.groupName} · ${a.subLabel}` : a.groupName,
+        parentId: `group:${a.groupId}`,
+      }));
 
     // Build ungrouped account entries (no parentId)
     const ungroupedItems: SSOpt[] = ungrouped.map(a => ({
@@ -1982,25 +2152,56 @@ export default async function Home({
   }
 
   const spendingAccountOptions = accounts
-    .filter((a) => a.kind !== AccountKind.investment)
-    .map((a) => ({
-      id: a.id,
-      label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
-      groupId: a.groupId ?? "",
-      groupName: a.AccountGroup?.name ?? "",
-      subLabel: kindLabel(a.kind),
-    }));
+    .filter((a) => a.name !== "未指定账户" && !isPureInvestmentAccount(a))
+    .map((a) => {
+      const display = buildAccountDisplayOption({
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        numberMasked: a.numberMasked,
+        groupId: a.groupId,
+        investProductType: a.investProductType,
+        Institution: a.Institution,
+        AccountGroup: a.AccountGroup,
+      }, creditCardLabelTemplate);
+      return {
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        label: display.selectorLabel,
+        groupId: a.groupId ?? "",
+        groupName: a.AccountGroup?.name ?? "",
+        institutionId: a.institutionId ?? "",
+        subLabel: kindLabel(a.kind),
+        currency: a.currency ?? "CNY",
+      };
+    });
   const investmentAccountOptions = accounts
-    .filter((a) => a.kind === AccountKind.investment)
-    .map((a) => ({
-      id: a.id,
-      name: a.name,
-      label: a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name,
-      groupId: a.groupId ?? "",
-      groupName: a.AccountGroup?.name ?? "",
-      investProductType: a.investProductType,
-      subLabel: kindLabel(a.kind),
-    }));
+    .filter((a) => isPureInvestmentAccount(a) || isDepositAccount(a))
+    .map((a) => {
+      const display = buildAccountDisplayOption({
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        numberMasked: a.numberMasked,
+        groupId: a.groupId,
+        investProductType: a.investProductType,
+        Institution: a.Institution,
+        AccountGroup: a.AccountGroup,
+      }, creditCardLabelTemplate);
+      return {
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        label: display.selectorLabel,
+        groupId: a.groupId ?? "",
+        groupName: a.AccountGroup?.name ?? "",
+        institutionId: a.institutionId ?? "",
+        investProductType: a.investProductType,
+        subLabel: kindLabel(a.kind),
+        currency: a.currency ?? "CNY",
+      };
+    });
   const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.label]));
   const investmentProductTypeByAccountId = new Map(investmentAccountOptions.map((a) => [a.id, a.investProductType]));
   const investmentProductTypeByAccountIdObj = Object.fromEntries(investmentProductTypeByAccountId);
@@ -2008,15 +2209,36 @@ export default async function Home({
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
-  const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment");
-  const investmentAccountSSOptions = buildFlatAccountOptions(accountOptions.filter(a => a.kind === "investment"));
+  const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment" || a.investProductType === "deposit");
+  const investmentAccountSSOptions = buildFlatAccountOptions(accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)));
   // Flat lists for components that don't use SS hierarchy (backward compat)
-  const cashAccountList = accountOptions.filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
-  const investmentAccountList = accountOptions.filter(a => a.kind === "investment").map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const cashAccountList = accountOptions
+    .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet")
+    .map(a => ({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      institutionId: a.institutionId || null,
+      label: a.label,
+      subLabel: a.subLabel,
+      currency: a.currency,
+    }));
+  const investmentAccountList = accountOptions
+    .filter(a => isPureInvestmentAccount(a) || isDepositAccount(a))
+    .map(a => ({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      institutionId: a.institutionId || null,
+      investProductType: a.investProductType ?? null,
+      label: a.label,
+      subLabel: a.subLabel,
+      currency: a.currency,
+    }));
 
   // NestedAddModal fieldData for groups & institutions
   const nestedFieldData = {
-    groupId: groups.map(g => ({ id: g.id, name: g.name })),
+    groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
   };
 
@@ -2592,9 +2814,13 @@ export default async function Home({
   })();
 
   const selectedAccountBalanceValue = selectedAccount
-    ? selectedAccount.kind === AccountKind.investment
+    ? isPureInvestmentAccount(selectedAccount)
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
-      : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
+      : selectedAccount.kind === AccountKind.bank_credit
+        ? (currentStatementMonth
+            ? (effectiveBillByMonth.get(currentStatementMonth) ?? cumulativeRemainValue)
+            : cumulativeRemainValue)
+        : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
     : 0;
 
   const creditCardBillDetails =
@@ -2675,13 +2901,6 @@ export default async function Home({
     mutate?.(q);
     return `/?${q.toString()}`;
   };
-  const hrefDetail = (() => {
-    const q = new URLSearchParams(baseQuery);
-    q.set("view", "detail");
-    if (hideZeroBills) q.set("hideZeroBills", "1");
-    if (hideSettledBills) q.set("hideSettledBills", "1");
-    return `/?${q.toString()}`;
-  })();
   const hrefAllDetails = withDetailParams((q) => {
     q.set("detailAll", "1");
     q.delete("detailPage");
@@ -2690,14 +2909,6 @@ export default async function Home({
     q.delete("detailAll");
     q.set("detailPage", "1");
   });
-  const hrefBill = (() => {
-    const q = new URLSearchParams(baseQuery);
-    q.set("view", "bill");
-    if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
-    if (hideZeroBills) q.set("hideZeroBills", "1");
-    if (hideSettledBills) q.set("hideSettledBills", "1");
-    return `/?${q.toString()}`;
-  })();
 
   const renderDetailFilterHeader = (column: DetailFilterColumn, label: string, className: string) => {
     const activeValues = detailColumnFilters[column];
@@ -2799,10 +3010,13 @@ export default async function Home({
     toAccountId: e.toAccountId,
     toAccountName: e.toAccountName,
     note: e.note,
+    toNote: e.toNote,
     fundSubtype: e.fundSubtype,
     fundCode: e.fundCode,
     fundName: e.fundName,
     source: e.source,
+    depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
+    depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
     fundProductType: e.fundProductType,
     fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
     fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
@@ -2815,6 +3029,212 @@ export default async function Home({
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
     })),
   }));
+
+  const depositEntries =
+    view === "deposit"
+      ? (pagedDetailEntries || []).map((entry) => {
+          const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+          const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+          return {
+            id: entry.id,
+            date: entry.date,
+            typeLabel: entry.fundSubtype === "redeem" ? "取出" : "存入",
+            fundName: entry.fundName ?? entry.fundCode ?? "",
+            maturityDate: entry.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : null,
+            cashAccountLabel,
+            note: entry.note ?? "",
+            amount: entry.toAccountId === accountId ? Math.abs(entry.fundArrivalAmount ?? entry.amount) : entry.amount,
+            edit: {
+              type: "investment" as const,
+              date: entry.date,
+              amount: Math.abs(entry.amount),
+              note: entry.note ?? "",
+              accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
+              cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
+              fundName: entry.fundName ?? undefined,
+              fundNav: entry.fundNav ?? undefined,
+              depositAnnualRate:
+                entry.depositAnnualRate != null
+                  ? toNumber(entry.depositAnnualRate)
+                  : entry.fundNav ?? undefined,
+              depositInterest:
+                entry.depositInterest != null
+                  ? toNumber(entry.depositInterest)
+                  : undefined,
+              depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
+              fundArrivalDate: entry.fundArrivalDate ?? undefined,
+              fundProductType: "deposit",
+              fundSubtype: entry.fundSubtype ?? "buy",
+            },
+          };
+        })
+      : [];
+
+  const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
+  const depositLots = (() => {
+    const activeDepositAccountIds = new Set<string>();
+    if (selectedAccount) {
+      if (isDepositAccount(selectedAccount)) {
+        activeDepositAccountIds.add(selectedAccount.id);
+      }
+      if (selectedAccount.institutionId) {
+        for (const account of allDepositAccounts) {
+          if (account.institutionId === selectedAccount.institutionId) {
+            activeDepositAccountIds.add(account.id);
+          }
+        }
+      }
+    }
+    if (activeDepositAccountIds.size === 0) return [];
+
+    const sourceEntries = entries.filter(
+      (entry) =>
+        entry.fundProductType === "deposit" &&
+        !entry.deletedAt &&
+        ((entry.accountId && activeDepositAccountIds.has(entry.accountId)) ||
+          (entry.toAccountId && activeDepositAccountIds.has(entry.toAccountId))),
+    );
+    if (sourceEntries.length === 0) return [];
+
+    const accountNameById = new Map(allDepositAccounts.map((account) => [account.id, account.name]));
+    const depositSourceEntries = [...sourceEntries].sort((a, b) =>
+      compareDetailEntriesAsc(
+        a,
+        b,
+        selectedAccount && isDepositAccount(selectedAccount) ? selectedAccount.id : undefined,
+      ),
+    );
+
+    const lotBuckets = new Map<
+      string,
+      Array<{
+        id: string;
+        fundName: string;
+        maturityDate: string | null;
+        remainingAmount: number;
+        depositAccountId: string;
+        depositAccountName: string;
+        relatedEntryIds: string[];
+      }>
+    >();
+
+    const allLots: Array<{
+      id: string;
+      fundName: string;
+      maturityDate: string | null;
+      remainingAmount: number;
+      depositAccountId: string;
+      depositAccountName: string;
+      relatedEntryIds: string[];
+    }> = [];
+
+    for (const entry of depositSourceEntries) {
+      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || "未命名存款";
+      const maturityDate = toYmdOrNull(entry.fundArrivalDate);
+      const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      const amountValue = isRedeemEntry
+        ? Math.max(
+            0,
+            Math.abs(toNumber(entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
+          )
+        : Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
+      const depositAccountId = (
+        isRedeemEntry ? entry.accountId : entry.toAccountId
+      ) ?? "";
+      const depositAccountName = accountNameById.get(depositAccountId) ?? entry.toAccountName ?? entry.accountName ?? "定期存款";
+      const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
+
+      if (!isRedeemEntry) {
+        const lot = {
+          id: entry.id,
+          fundName,
+          maturityDate,
+          remainingAmount: amountValue,
+          depositAccountId,
+          depositAccountName,
+          relatedEntryIds: [entry.id],
+        };
+        const bucket = lotBuckets.get(lotKey);
+        if (bucket) bucket.push(lot);
+        else lotBuckets.set(lotKey, [lot]);
+        allLots.push(lot);
+        continue;
+      }
+
+      const linkedBucket = entry.depositSourceEntryId
+        ? allLots.filter((lot) => lot.id === entry.depositSourceEntryId)
+        : [];
+      const bucket = linkedBucket.length > 0 ? linkedBucket : (lotBuckets.get(lotKey) ?? []);
+      for (const lot of bucket) {
+        if (lot.remainingAmount <= 0) continue;
+        lot.relatedEntryIds.push(entry.id);
+        lot.remainingAmount = 0;
+        break;
+      }
+    }
+
+    return allLots
+      .map((lot) => ({
+        id: lot.id,
+        label: lot.fundName,
+        originalAmount: Number((entries.find((entry) => entry.id === lot.id) ? Math.abs(toNumber(entries.find((entry) => entry.id === lot.id)!.fundArrivalAmount ?? entries.find((entry) => entry.id === lot.id)!.amount)) : lot.remainingAmount).toFixed(2)),
+        subLabel: [
+          lot.depositAccountName,
+          lot.maturityDate ? `到期 ${lot.maturityDate}` : "",
+          lot.remainingAmount > 0.0001 ? `可取 ${formatMoney(lot.remainingAmount)}` : "已结清",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        fundName: lot.fundName,
+        startDate: toYmdOrNull(entries.find((entry) => entry.id === lot.id)?.date),
+        maturityDate: lot.maturityDate,
+        remainingAmount: Number(lot.remainingAmount.toFixed(2)),
+        status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
+        annualRate: (() => {
+          const sourceEntry = entries.find((entry) => entry.id === lot.id);
+          if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
+          return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
+        })(),
+        depositAccountId: lot.depositAccountId,
+        depositAccountLabel: lot.depositAccountName,
+        relatedEntryIds: lot.relatedEntryIds,
+      }))
+      .sort((a, b) => {
+        if (a.status !== b.status) return a.status === "open" ? -1 : 1;
+        const dateA = a.maturityDate ?? "9999-12-31";
+        const dateB = b.maturityDate ?? "9999-12-31";
+        if (dateA !== dateB) return dateA.localeCompare(dateB);
+        return a.label.localeCompare(b.label, "zh-Hans-CN");
+      });
+  })();
+  const redeemLotOptions = depositLots
+    .filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001)
+    .map((lot) => ({
+      id: lot.id,
+      label: lot.label,
+      subLabel: lot.subLabel,
+      fundName: lot.fundName,
+      startDate: lot.startDate,
+      maturityDate: lot.maturityDate,
+      remainingAmount: lot.remainingAmount,
+      annualRate: lot.annualRate,
+      depositAccountId: lot.depositAccountId,
+      depositAccountLabel: lot.depositAccountLabel,
+    }));
+  const depositViewBalance = depositLots.reduce((sum, lot) => sum + lot.remainingAmount, 0);
+  const defaultDepositAccountForSelectedInstitution =
+    selectedAccount && isDepositAccount(selectedAccount)
+      ? selectedAccount.id
+      : selectedAccount?.institutionId
+        ? allDepositAccounts.find((account) => account.institutionId === selectedAccount.institutionId)?.id ?? ""
+        : "";
+  const defaultCashAccountForSelectedInstitution =
+    selectedAccount?.institutionId
+      ? cashAccountList.find((account) => account.kind === "bank_debit" && account.institutionId === selectedAccount.institutionId)?.id
+        ?? cashAccountList.find((account) => account.institutionId === selectedAccount.institutionId)?.id
+        ?? cashAccountList[0]?.id
+        ?? ""
+      : cashAccountList[0]?.id ?? "";
 
   return (
     <div className="flex h-full w-full bg-transparent">
@@ -2833,18 +3253,42 @@ export default async function Home({
                 <span className={`tabular-nums font-semibold ${pnlCls(investmoneyData.totalMarketValue)}`}>{formatMoney(investmoneyData.totalMarketValue)}</span>
               ) : view === "investfund" && investfundData ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(investfundData.totalMarketValue)}`}>{formatMoney(investfundData.totalMarketValue)}</span>
+              ) : view === "deposit" && selectedAccount ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(depositViewBalance)}`}>{formatMoney(depositViewBalance)}</span>
               ) : (
-                <LiveAccountBalance mode="account" accountId={selectedAccount.id} initialValue={selectedAccountBalanceValue} isRedUp={isRedUp} />
-              )}
-              {isBillAccount && view !== "debt" && (
-                <div className="flex items-center gap-2">
-                  <a href={hrefBill} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "bill" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>账单</a>
-                  <a href={hrefDetail} className={`h-8 px-3 rounded-[10px] border text-xs flex items-center ${view === "detail" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>明细</a>
-                </div>
+                <LiveAccountBalance
+                  mode="account"
+                  accountId={selectedAccount.id}
+                  initialValue={selectedAccountBalanceValue}
+                  isRedUp={isRedUp}
+                  semantic={selectedAccount.kind === AccountKind.bank_credit ? "liability" : "default"}
+                  displayMultiplier={selectedAccount.kind === AccountKind.bank_credit ? -1 : 1}
+                />
               )}
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {((view === "investfund" || view === "investmoney") && selectedAccount) ? (
+            {isDepositView && selectedAccount ? (
+              <>
+                <DepositCreateButton
+                  defaultCashAccountId={defaultCashAccountForSelectedInstitution}
+                  defaultDepositAccountId={defaultDepositAccountForSelectedInstitution}
+                  defaultSubtype="redeem"
+                />
+                <DepositFormModal
+                  mode="create"
+                  accountId={selectedAccount.id}
+                  cashAccounts={cashAccountList}
+                  investmentAccounts={investmentAccountOptions}
+                  cashAccountSSOptions={cashAccountSSOptions}
+                  investmentAccountSSOptions={investmentAccountSSOptions}
+                  redeemLotOptions={redeemLotOptions}
+                  allRedeemLotOptions={depositLots}
+                  nestedFieldData={nestedFieldData}
+                  createAction={createTransaction}
+                  editAction={editInvestment}
+                />
+              </>
+            ) : ((view === "investfund" || view === "investmoney") && selectedAccount) ? (
               <InvestmentFormModal
                 mode="create"
                 accountId={selectedAccount.id}
@@ -2856,6 +3300,8 @@ export default async function Home({
                 }}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
                 holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
                 allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
                   date: toYmdOrNull(e.date) ?? "",
@@ -2878,6 +3324,7 @@ export default async function Home({
                   subLabel: "借入/借出",
                 }))}
                 cashAccounts={cashAccountList}
+                cashAccountSSOptions={cashAccountSSOptions}
                 defaultDebtAccountId={selectedDebtRow?.accountIds?.[0] ?? ""}
                 defaultCashAccountId={cashAccountList[0]?.id ?? ""}
                 action={createDebtTransaction}
@@ -2901,6 +3348,8 @@ export default async function Home({
                 accountProductType={selectedAccount?.investProductType ?? null}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
@@ -2922,11 +3371,20 @@ export default async function Home({
                 investmentAccounts={investmentAccountOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
+                redeemLotOptions={redeemLotOptions}
+                allRedeemLotOptions={depositLots}
                 nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
-              {isBillAccount && !isInvestAccount ? <a href="/invest" className="h-8 px-3 rounded-[10px] border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 flex items-center">投资</a> : null}
+              <InsuranceFormModal
+                mode="create"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={cashAccountList}
+                cashAccountSSOptions={cashAccountSSOptions}
+                insuranceAccountSSOptions={investmentAccountSSOptions}
+                nestedFieldData={nestedFieldData}
+              />
               </>
             )}
             </div>
@@ -2944,12 +3402,25 @@ export default async function Home({
           ) : view === "bill" && isBillAccount ? (
             <div className="flex-1 overflow-auto bg-transparent">
               <div className="space-y-4 p-4 md:p-5">
+                {missingBillingDayForBill ? (
+                  <div className="panel-surface border-amber-200 bg-amber-50/70">
+                    <div className="px-4 py-4">
+                      <div className="text-sm font-semibold text-amber-900">这张信用卡还没设置账单日</div>
+                      <div className="mt-1 text-xs leading-5 text-amber-800">
+                        这不是“所有人”筛选的问题。信用卡账单明细要先按账单日划分周期；当前账户还没有账单日，所以系统暂时无法计算账单，也不会显示对应明细。
+                      </div>
+                      <div className="mt-2 text-xs text-amber-700">
+                        请先到“账户管理”里补上这张卡的账单日，保存后再回到这里查看。
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
                 {billSummariesWithCumulative.length > 0 ? (
                   <div className="panel-surface overflow-hidden">
                     <div className="panel-header">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-slate-800">账单列表</span>
-                        <a
+                        <Link
                           href={(() => {
                             const q = new URLSearchParams(baseQuery);
                             q.set("view", "bill");
@@ -2959,30 +3430,32 @@ export default async function Home({
                             if (hideSettledBills) q.set("hideSettledBills", "1");
                             return `/?${q.toString()}`;
                           })()}
+                          prefetch={false}
+                          scroll={false}
                           className="h-6 px-1.5 rounded border text-xs flex items-center border-blue-300 bg-blue-50 text-blue-700"
                         >
                           全部
-                        </a>
+                        </Link>
                         {totalPages > 1 && (
                           <div className="flex items-center gap-0.5 ml-1">
                             {currentPage > 1 ? (
                               <>
-                                <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", "1"); return `/?${q.toString()}`; })()} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsLeft className="h-3.5 w-3.5" /></a>
-                                <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage - 1)); return `/?${q.toString()}`; })()} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronLeft className="h-3 w-3" /></a>
+                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", "1"); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsLeft className="h-3.5 w-3.5" /></Link>
+                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage - 1)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronLeft className="h-3 w-3" /></Link>
                               </>
                             ) : null}
                             <span className="text-xs text-slate-500 px-1">{currentPage}/{totalPages}</span>
                             {currentPage < totalPages ? (
                               <>
-                                <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage + 1)); return `/?${q.toString()}`; })()} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronRight className="h-3 w-3" /></a>
-                                <a href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(totalPages)); return `/?${q.toString()}`; })()} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsRight className="h-3 w-3" /></a>
+                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage + 1)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronRight className="h-3 w-3" /></Link>
+                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(totalPages)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsRight className="h-3 w-3" /></Link>
                               </>
                             ) : null}
                           </div>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <a
+                        <Link
                           href={(() => {
                             const q = new URLSearchParams(baseQuery);
                             q.set("view", "bill");
@@ -2993,14 +3466,16 @@ export default async function Home({
                             if (hideSettledBills) q.set("hideSettledBills", "1");
                             return `/?${q.toString()}`;
                           })()}
+                          prefetch={false}
+                          scroll={false}
                           className={`h-7 px-2 rounded-md border text-xs flex items-center ${
                             hideZeroBills
                               ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                           }`}
                         >
                           隐藏 0 收支
-                        </a>
-                        <a
+                        </Link>
+                        <Link
                           href={(() => {
                             const q = new URLSearchParams(baseQuery);
                             q.set("view", "bill");
@@ -3010,17 +3485,19 @@ export default async function Home({
                             else q.set("hideSettledBills", "1");
                             return `/?${q.toString()}`;
                           })()}
+                          prefetch={false}
+                          scroll={false}
                           className={`h-7 px-2 rounded-md border text-xs flex items-center ${
                             hideSettledBills
                               ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                           }`}
                         >
                           隐藏已还
-                        </a>
+                        </Link>
                       </div>
                     </div>
                     <div className="overflow-auto">
-                      <table className="min-w-[980px] w-full border-separate border-spacing-0">
+                      <table className="w-full table-fixed border-separate border-spacing-0">
                         <thead className="sticky top-0 z-10">
                           <tr className="bg-white">
                             <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">账单</th>
@@ -3048,36 +3525,36 @@ export default async function Home({
                                 className={`hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`}
                               >
                                 <td className="px-4 py-2 border-b border-slate-100">
-                                  <a href={href} className="block">
-                                    <span className={`text-xs font-semibold ${s.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
+                                  <Link href={href} prefetch={false} scroll={false} className="block">
+                                    <span className={`text-xs font-semibold whitespace-nowrap ${s.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
                                       {s.month}{s.isCurrentCycle ? "（未出账单）" : s.month === settledBillMonth ? "（本期账单）" : ""}
                                     </span>
-                                  </a>
+                                  </Link>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100">
-                                  <a href={href} className="block">
-                                    <span className="text-xs text-slate-700 tabular-nums">
-                                      {ymdUtc(s.start)} ~ {ymdUtc(s.end)}
+                                  <Link href={href} prefetch={false} scroll={false} className="block">
+                                    <span className="text-xs text-slate-700 tabular-nums whitespace-nowrap">
+                                      {mdUtcDots(s.start)} ~ {mdUtcDots(s.end)}
                                     </span>
-                                  </a>
+                                  </Link>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <a href={href} className="block">
+                                  <Link href={href} prefetch={false} scroll={false} className="block">
                                     <span className="text-xs text-red-600">{formatMoney(s.expenseAbs)}</span>
-                                  </a>
+                                  </Link>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <a href={href} className="block">
+                                  <Link href={href} prefetch={false} scroll={false} className="block">
                                     <span className="text-xs text-emerald-700">{formatMoney(s.income)}</span>
-                                  </a>
+                                  </Link>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={s.month} currentAmount={s.effectiveBill} hasOverride={billOverrides.some((o) => o.statementMonth === s.month)} />
+                                  <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={s.month} currentAmount={s.effectiveBill} hasOverride={billOverrides.some((o) => o.statementMonth === s.month)} displayMultiplier={-1} />
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100">
-                                  <a href={href} className="block">
+                                  <Link href={href} prefetch={false} scroll={false} className="block">
                                     <span className="text-xs text-slate-700 tabular-nums">{s.due ? ymdUtc(s.due) : "-"}</span>
-                                  </a>
+                                  </Link>
                                 </td>
                               </tr>
                             );
@@ -3094,20 +3571,22 @@ export default async function Home({
                       {creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
                     </div>
                     {creditCardBill ? (
-                      <div className="mt-1 text-xs text-slate-500 tabular-nums">
-                        周期：{ymdUtc(creditCardBill.start)} ~ {ymdUtc(creditCardBill.end)} 共 {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
-                        <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={creditBillMonth ?? ""} currentAmount={effectiveBillByMonth.get(creditBillMonth ?? "") ?? creditCardBill.bill} hasOverride={billOverrides.some((o) => o.statementMonth === creditBillMonth)} />
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 tabular-nums">
+                        <span className="whitespace-nowrap">
+                          周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} 共 {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
+                        </span>
+                        <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={creditBillMonth ?? ""} currentAmount={effectiveBillByMonth.get(creditBillMonth ?? "") ?? creditCardBill.bill} hasOverride={billOverrides.some((o) => o.statementMonth === creditBillMonth)} displayMultiplier={-1} />
                       </div>
                     ) : null}
                   </div>
                   <div className="overflow-auto">
-                    <table className="min-w-[900px] w-full border-separate border-spacing-0">
+                    <table className="w-full table-fixed border-separate border-spacing-0">
                       <thead className="sticky top-0 z-10">
                         <tr className="bg-white">
                           <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">日期</th>
                           <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">类别</th>
+                          <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">标签</th>
                           <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">备注</th>
-                          <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">资金来源</th>
                           <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">金额</th>
                           <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">操作</th>
                         </tr>
@@ -3119,8 +3598,14 @@ export default async function Home({
                             const amount = toNumber(e.amount);
                             const isTransferToCurrentBillAccount =
                               e.type === "transfer" && !!selectedAccount?.id && e.toAccountId === selectedAccount.id;
+                            const resolvedBillAccountId =
+                              e.accountId ??
+                              ((e.type === "expense" || e.type === "income") ? (selectedAccount?.id ?? "") : "");
+                            const resolvedFromAccountId =
+                              e.accountId ?? (!isTransferToCurrentBillAccount ? (selectedAccount?.id ?? "") : "");
+                            const resolvedToAccountId =
+                              e.toAccountId ?? (isTransferToCurrentBillAccount ? (selectedAccount?.id ?? "") : "");
                             const displayAmount = isTransferToCurrentBillAccount ? Math.abs(amount) : amount;
-                            const sourceAccountLabel = isTransferToCurrentBillAccount ? (e.accountName ?? "") : "";
                             const categoryLabel =
                               e.type === "expense" || e.type === "income"
                                 ? e.categoryId
@@ -3150,6 +3635,9 @@ export default async function Home({
                                       ? e.toAccountId ?? ""   // 赎回：toAccountId 是资金账户（接收方）
                                       : e.accountId ?? "",    // 买入：accountId 是资金账户（发起方）
                                     fundCode: e.fundCode ?? undefined,
+                                    fundName: e.fundName ?? undefined,
+                                    insuranceProductId: e.insuranceProductId ?? undefined,
+                                    fundProductType: e.fundProductType ?? undefined,
                                     fundSubtype: e.fundSubtype ?? "buy",
                                     categoryId: "",
                                     entryId: e.id,
@@ -3161,8 +3649,9 @@ export default async function Home({
                                       date,
                                       amount: Math.abs(amount),
                                       note: e.note ?? "",
-                                      fromAccountId: e.accountId ?? "",
-                                      toAccountId: e.toAccountId ?? "",
+                                      toNote: e.toNote ?? "",
+                                      fromAccountId: resolvedFromAccountId,
+                                      toAccountId: resolvedToAccountId,
                                       fromAccountLabel: e.accountName ?? "",
                                       toAccountLabel: e.toAccountName ?? "",
                                       categoryId: "",
@@ -3174,7 +3663,8 @@ export default async function Home({
                                       date,
                                       amount: Math.abs(amount),
                                       note: e.note ?? "",
-                                      accountId: e.accountId ?? "",
+                                      accountId: resolvedBillAccountId,
+                                      accountLabel: e.accountName ?? selectedAccount?.name ?? "",
                                       categoryId: e.categoryId ?? "",
                                       categoryLabel: categoryLabel,
                                       entryId: e.id,
@@ -3188,19 +3678,20 @@ export default async function Home({
                                 <td className="px-3 py-2 border-b border-slate-100">
                                   <span className="text-xs text-slate-700">{categoryLabel}</span>
                                 </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-slate-600 truncate max-w-[520px]" title={e.note ?? ""}>
-                                  {e.EntryTag && e.EntryTag.length > 0 && (
-                                    <span className="inline-flex flex-wrap gap-1 mr-1">
+                                <td className="px-3 py-2 border-b border-slate-100">
+                                  {e.EntryTag && e.EntryTag.length > 0 ? (
+                                    <span className="inline-flex flex-wrap gap-1">
                                       {e.EntryTag.map((et: any) => {
                                         const c = et.Tag?.color || "#3B82F6";
                                         return <span key={et.tagId} className="text-[10px] px-1 py-0.5 rounded-full border" style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}>{et.Tag?.name}</span>;
                                       })}
                                     </span>
+                                  ) : (
+                                    <span className="text-xs text-slate-300">-</span>
                                   )}
-                                  <span className="text-xs text-slate-600">{e.note ?? ""}</span>
                                 </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-slate-600">
-                                  <span className="text-xs text-slate-700">{sourceAccountLabel}</span>
+                                <td className="px-3 py-2 border-b border-slate-100 text-slate-600 truncate max-w-[520px]" title={getEntryDisplayNote(e)}>
+                                  <span className="text-xs text-slate-600">{getEntryDisplayNote(e)}</span>
                                 </td>
                                 <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
                                   <span className={`text-xs font-medium ${pnlCls(displayAmount)}`}>
@@ -3242,6 +3733,13 @@ export default async function Home({
               entries={debtDetailEntries}
               totalPayable={totalDebtPayable}
               totalReceivable={totalDebtReceivable}
+            />
+          ) : view === "deposit" && selectedAccount ? (
+            <DepositShell
+              accountLabel={selectedAccountLabel}
+              institutionName={selectedAccount.Institution?.name ?? ""}
+              entries={depositEntries}
+              lots={depositLots}
             />
           ) : view === "investmoney" && investmoneyData ? (
             <FundShell
@@ -3358,18 +3856,19 @@ export default async function Home({
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-auto">
-                  <table className="min-w-[1240px] w-full table-fixed border-separate border-spacing-0">
+                  <table className="min-w-[1050px] w-full table-fixed border-separate border-spacing-0">
                     <colgroup>
-                      <col className="w-[44px]" />
-                      <col className="w-[112px]" />
-                      <col className="w-[112px]" />
-                      <col className="w-[112px]" />
-                      <col className="w-[104px]" />
-                      <col className="w-[180px]" />
-                      <col className="w-[124px]" />
-                      <col className="w-[280px]" />
-                      <col className="w-[72px]" />
-                      <col className="w-[100px]" />
+                      <col className="w-[36px]" />
+                      <col className="w-[90px]" />
+                      <col className="w-[90px]" />
+                      <col className="w-[90px]" />
+                      <col className="w-[78px]" />
+                      <col className="w-[140px]" />
+                      <col className="w-[96px]" />
+                      <col className="w-[96px]" />
+                      <col className="w-[140px]" />
+                      <col className="w-[60px]" />
+                      <col className="w-[80px]" />
                     </colgroup>
                     <thead className="sticky top-0 z-10 bg-white">
                       <tr>
@@ -3435,9 +3934,10 @@ export default async function Home({
                             );
                           })()}
                         </th>
-                        {renderDetailFilterHeader("type", "活动类型", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
+                        {renderDetailFilterHeader("type", view === "deposit" ? "存款类型" : "活动类型", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         {renderDetailFilterHeader("related", "关联账户", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">余额</th>
+                        <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">标签</th>
                         {renderDetailFilterHeader("remark", "备注", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
                         <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">附件</th>
                         <th className="w-24 px-2 py-2 border-b border-slate-200 text-right">

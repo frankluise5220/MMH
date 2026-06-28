@@ -7,10 +7,11 @@ import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
+import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 
 export const runtime = "nodejs";
 
-const fundProductTypes = ["fund", "money", "wealth", "deposit"] as const;
+const fundProductTypes = ["fund", "money", "wealth"] as const;
 const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
-    const isCreditLike = kind === "bank_credit" || kind === "loan";
+    const isCreditLike = kind === "bank_credit";
 
     if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
 
@@ -87,6 +88,7 @@ export async function POST(req: NextRequest) {
         investProductType: isInvestment ? normalizeFundProductType(body.investProductType) as any : null,
         costBasisMethod: isInvestment ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
         defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
+        fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals) : 3,
       },
       include: {
         AccountGroup: { select: { id: true, name: true } },
@@ -121,13 +123,23 @@ export async function PUT(req: NextRequest) {
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
 
-    if (body.billingDay !== undefined) data.billingDay = parseDay(body.billingDay);
-    if (body.repaymentDay !== undefined) data.repaymentDay = parseDay(body.repaymentDay);
-    if (body.creditLimit !== undefined) data.creditLimit = String(body.creditLimit ?? "").trim() || null;
-    if (body.numberMasked !== undefined) data.numberMasked = String(body.numberMasked ?? "").trim() || null;
+    if (body.fundUnitsDecimals !== undefined) {
+      data.fundUnitsDecimals = normalizeFundUnitsDecimals(body.fundUnitsDecimals ?? existing.fundUnitsDecimals);
+    }
 
     const nextKind = String(data.kind ?? existing.kind);
     data.debtDirection = nextKind === "bank_credit" ? "payable" : null;
+    if (nextKind === "bank_credit") {
+      data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
+      data.repaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
+      data.creditLimit = body.creditLimit !== undefined ? (String(body.creditLimit ?? "").trim() || null) : existing.creditLimit;
+      data.numberMasked = body.numberMasked !== undefined ? (String(body.numberMasked ?? "").trim() || null) : existing.numberMasked;
+    } else {
+      data.billingDay = null;
+      data.repaymentDay = null;
+      data.creditLimit = null;
+      data.numberMasked = null;
+    }
     if (nextKind === "investment") {
       if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
       if (body.costBasisMethod !== undefined || existing.kind !== "investment") data.costBasisMethod = normalizeCostBasisMethod(body.costBasisMethod ?? existing.costBasisMethod) as any;
