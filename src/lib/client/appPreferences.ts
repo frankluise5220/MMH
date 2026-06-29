@@ -17,6 +17,7 @@ export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
+export const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 
 export type SidebarGroupMode = "kind" | "institution";
@@ -46,6 +47,11 @@ function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function setCookieValue(name: string, value: string) {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
 }
 
 function emitPreferencesChanged() {
@@ -138,11 +144,11 @@ export function setCreditCardLabelTemplatePreference(template: string) {
 
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
-    const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY);
+    const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY) ?? parseCookieValue(SIDEBAR_GROUP_BY_KEY);
     if (value === "institution") return "institution";
     return "kind";
   } catch {
-    return "kind";
+    return parseCookieValue(SIDEBAR_GROUP_BY_KEY) === "institution" ? "institution" : "kind";
   }
 }
 
@@ -150,14 +156,15 @@ export function setSidebarGroupPreference(mode: SidebarGroupMode) {
   try {
     localStorage.setItem(SIDEBAR_GROUP_BY_KEY, mode);
   } catch {}
+  setCookieValue(SIDEBAR_GROUP_BY_KEY, mode);
   emitPreferencesChanged();
 }
 
 export function getSidebarOwnerFilterPreference(): string {
   try {
-    return localStorage.getItem(SIDEBAR_OWNER_FILTER_KEY) ?? "";
+    return localStorage.getItem(SIDEBAR_OWNER_FILTER_KEY) ?? parseCookieValue(SIDEBAR_OWNER_FILTER_KEY) ?? "";
   } catch {
-    return "";
+    return parseCookieValue(SIDEBAR_OWNER_FILTER_KEY) ?? "";
   }
 }
 
@@ -165,14 +172,16 @@ export function setSidebarOwnerFilterPreference(value: string) {
   try {
     localStorage.setItem(SIDEBAR_OWNER_FILTER_KEY, value);
   } catch {}
+  setCookieValue(SIDEBAR_OWNER_FILTER_KEY, value);
   emitPreferencesChanged();
 }
 
 export function getSidebarHideZeroPreference(): boolean {
   try {
-    return localStorage.getItem(SIDEBAR_HIDE_ZERO_KEY) === "true";
+    const value = localStorage.getItem(SIDEBAR_HIDE_ZERO_KEY) ?? parseCookieValue(SIDEBAR_HIDE_ZERO_KEY);
+    return value === "true";
   } catch {
-    return false;
+    return parseCookieValue(SIDEBAR_HIDE_ZERO_KEY) === "true";
   }
 }
 
@@ -180,14 +189,16 @@ export function setSidebarHideZeroPreference(value: boolean) {
   try {
     localStorage.setItem(SIDEBAR_HIDE_ZERO_KEY, String(value));
   } catch {}
+  setCookieValue(SIDEBAR_HIDE_ZERO_KEY, String(value));
   emitPreferencesChanged();
 }
 
 export function getSidebarCollapsedPreference(): boolean {
   try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    const value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) ?? parseCookieValue(SIDEBAR_COLLAPSED_KEY);
+    return value === "true";
   } catch {
-    return false;
+    return parseCookieValue(SIDEBAR_COLLAPSED_KEY) === "true";
   }
 }
 
@@ -195,7 +206,25 @@ export function setSidebarCollapsedPreference(value: boolean) {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(value));
   } catch {}
+  setCookieValue(SIDEBAR_COLLAPSED_KEY, String(value));
   emitPreferencesChanged();
+}
+
+export function getAiPanelCollapsedPreference(): boolean {
+  try {
+    const value = localStorage.getItem(AI_PANEL_COLLAPSED_KEY) ?? parseCookieValue(AI_PANEL_COLLAPSED_KEY);
+    return value === "1" || value === "true";
+  } catch {
+    const value = parseCookieValue(AI_PANEL_COLLAPSED_KEY);
+    return value === "1" || value === "true";
+  }
+}
+
+export function setAiPanelCollapsedPreference(value: boolean) {
+  try {
+    localStorage.setItem(AI_PANEL_COLLAPSED_KEY, value ? "1" : "0");
+  } catch {}
+  setCookieValue(AI_PANEL_COLLAPSED_KEY, value ? "1" : "0");
 }
 
 export function getAppPreferences(): AppPreferencesSnapshot {

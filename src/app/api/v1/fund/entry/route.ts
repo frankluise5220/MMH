@@ -6,6 +6,7 @@ import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 
 /**
  * 修改交易明细
@@ -91,6 +92,7 @@ export async function PUT(req: NextRequest) {
     for (const acctId of accountsToRecalc) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+    revalidateAfterInvestChange();
 
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, entry: updated });
@@ -143,6 +145,7 @@ export async function DELETE(req: NextRequest) {
     for (const acctId of accountsToRecalc) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+    revalidateAfterInvestChange();
 
     // Client-side handles page refresh
     return NextResponse.json({ ok: true });

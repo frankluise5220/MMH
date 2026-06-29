@@ -334,6 +334,7 @@ model Household {
   EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
   ImportBatch       ImportBatch[]
+  InsuranceProductMaster InsuranceProductMaster[]
   InsuranceProduct  InsuranceProduct[]
   Institution       Institution[]
   RegularInvestPlan RegularInvestPlan[]
@@ -360,10 +361,32 @@ model Institution {
   type        String?
   householdId String?
   Account     Account[]
+  InsuranceProductMaster InsuranceProductMaster[]
   InsuranceProduct InsuranceProduct[]
   Household   Household? @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
+}
+
+model InsuranceProductMaster {
+  id             String                 @id @default(cuid())
+  name           String
+  shortName      String?
+  productType    InsuranceProductType   @default(other)
+  accountingType InsuranceAccountingType @default(asset)
+  currency       String                 @default("CNY")
+  householdId    String
+  institutionId  String
+  note           String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @default(now()) @updatedAt
+  Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution    Institution            @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  InsuranceProduct InsuranceProduct[]
+
+  @@unique([householdId, institutionId, name, productType])
+  @@index([householdId, productType])
+  @@index([institutionId])
 }
 
 model RegularInvestPlan {
@@ -513,6 +536,7 @@ model InsuranceProduct {
   id             String                 @id @default(cuid())
   name           String
   shortName      String?
+  productMasterId String?
   productType    InsuranceProductType   @default(other)
   accountingType InsuranceAccountingType @default(asset)
   policyNo       String?
@@ -528,12 +552,16 @@ model InsuranceProduct {
   effectiveDate  DateTime?
   maturityDate   DateTime?
   premiumMode    String?
+  premiumFrequencyMonths Int?
   premiumAmount  Decimal?               @db.Decimal(18, 2)
+  paymentTermYears Decimal?             @db.Decimal(10, 2)
+  coverageTermYears Decimal?            @db.Decimal(10, 2)
   coverageAmount Decimal?               @db.Decimal(18, 2)
   cashValueEnabled Boolean              @default(true)
   note           String?
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @default(now()) @updatedAt
+  ProductMaster  InsuranceProductMaster? @relation(fields: [productMasterId], references: [id], onDelete: SetNull)
   Account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
   Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
   Institution    Institution?           @relation(fields: [institutionId], references: [id], onDelete: SetNull)
@@ -541,6 +569,7 @@ model InsuranceProduct {
   InsuredUser    User?                  @relation("InsuranceProduct_insuredUserIdToUser", fields: [insuredUserId], references: [id], onDelete: SetNull)
   TxRecord       TxRecord[]
 
+  @@index([productMasterId])
   @@index([householdId, productType])
   @@index([householdId, accountingType])
   @@index([accountId])
@@ -575,6 +604,8 @@ model TxRecord {
   currency            String            @default("CNY")
   paymentChannelId    String?
   paymentChannelName  String?
+  counterpartyInstitutionId   String?
+  counterpartyInstitutionName String?
   status              TransactionStatus @default(posted)
   fundArrivalAmount   Decimal?          @db.Decimal(18, 2)
   fundArrivalDate     DateTime?
@@ -602,6 +633,7 @@ model TxRecord {
 
   @@index([accountId, date])
   @@index([accountId, statementMonth])
+  @@index([counterpartyInstitutionId])
   @@index([deletedAt])
   @@index([depositSourceEntryId])
   @@index([insuranceProductId])

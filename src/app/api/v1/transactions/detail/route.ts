@@ -101,6 +101,8 @@ export async function GET(req: Request) {
         accountId: record.accountId,
         accountName: record.accountName,
         accountInstitutionName: record.account?.Institution?.name ?? "",
+        counterpartyInstitutionId: record.counterpartyInstitutionId ?? null,
+        counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
         toAccountId: record.toAccountId,
         toAccountName: record.toAccountName,
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
@@ -180,6 +182,8 @@ export async function GET(req: Request) {
       accountId: e.accountId,
       accountName: e.accountName,
       accountInstitutionName: e.account?.Institution?.name ?? "",
+      counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
+      counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
       toAccountId: e.toAccountId,
       toAccountName: e.toAccountName,
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
@@ -265,6 +269,7 @@ export async function POST(req: Request) {
     const amountAbs = Math.abs(parseMoney(body.amount));
     const note = String(body.note ?? "").trim();
     const toNote = String(body.toNote ?? "").trim();
+    const counterpartyInstitutionId = String(body.counterpartyInstitutionId ?? "").trim();
     const tagIdsRaw = body.tagIds;
     const tagIds: string[] = Array.isArray(tagIdsRaw)
       ? tagIdsRaw.filter((id): id is string => typeof id === "string" && id.length > 0)
@@ -328,6 +333,9 @@ export async function POST(req: Request) {
     } else if (type === "expense") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const counterpartyInstitution = counterpartyInstitutionId
+        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        : null;
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -348,6 +356,8 @@ export async function POST(req: Request) {
             accountName: acc.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
+            counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
+            counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
             amount: -amountAbs,
             type: TransactionType.expense,
             date,
@@ -367,6 +377,9 @@ export async function POST(req: Request) {
     } else if (type === "income") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const counterpartyInstitution = counterpartyInstitutionId
+        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        : null;
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -385,6 +398,8 @@ export async function POST(req: Request) {
             accountName: acc?.name ?? "未知账户",
             categoryId: cat?.id ?? undefined,
             categoryName: cat?.name ?? undefined,
+            counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
+            counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
             amount: amountAbs,
             type: TransactionType.income,
             date,
@@ -487,7 +502,8 @@ export async function POST(req: Request) {
           }
           if (!investAcc || !isInsuranceAccount(investAcc)) {
             if (!insuranceProduct.ownerGroupId) throw new Error("该保险产品缺少投保人");
-            investAcc = await getOrCreateInsuranceAccount(tx, insuranceProduct.ownerGroupId, householdId);
+            if (!insuranceProduct.institutionId) throw new Error("该保险产品缺少承保机构");
+            investAcc = await getOrCreateInsuranceAccount(tx, insuranceProduct.ownerGroupId, householdId, insuranceProduct.institutionId);
             await tx.insuranceProduct.update({
               where: { id: insuranceProduct.id },
               data: { accountId: investAcc.id },
@@ -716,6 +732,7 @@ export async function PUT(req: Request) {
     const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
     const note = String(body.note ?? "").trim();
     const toNote = String(body.toNote ?? "").trim();
+    const counterpartyInstitutionId = String(body.counterpartyInstitutionId ?? "").trim();
     const tagIdsRaw = body.tagIds;
     const tagIds: string[] = Array.isArray(tagIdsRaw)
       ? tagIdsRaw.filter((id): id is string => typeof id === "string" && id.length > 0)
@@ -822,7 +839,8 @@ export async function PUT(req: Request) {
       if (!investAcc || !isInsuranceAccount(investAcc)) {
         const effectiveOwnerId = insuranceProduct.ownerGroupId || ownerGroupIdFromBody;
         if (!effectiveOwnerId) throw new Error("该保险产品缺少投保人");
-        investAcc = await getOrCreateInsuranceAccount(tx, effectiveOwnerId, householdId);
+        if (!insuranceProduct.institutionId) throw new Error("该保险产品缺少承保机构");
+        investAcc = await getOrCreateInsuranceAccount(tx, effectiveOwnerId, householdId, insuranceProduct.institutionId);
         await tx.insuranceProduct.update({
           where: { id: insuranceProduct.id },
           data: { accountId: investAcc.id },
@@ -919,6 +937,9 @@ return;
 
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const counterpartyInstitution = counterpartyInstitutionId
+        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        : null;
       const keepFundDetail = body.keepFundDetail === true;
 
       const [acc, cat] = await Promise.all([
@@ -973,6 +994,8 @@ return;
           accountName: acc.name,
           categoryId: cat ? cat.id : null,
           categoryName: cat?.name ?? null,
+          counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
+          counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
           statementMonth,
           toAccountId: null,
           toAccountName: null,
@@ -1040,6 +1063,8 @@ return;
         accountId: updated.accountId,
         accountName: updated.accountName,
         accountInstitutionName: updated.account?.Institution?.name ?? "",
+        counterpartyInstitutionId: updated.counterpartyInstitutionId ?? null,
+        counterpartyInstitutionName: updated.counterpartyInstitutionName ?? null,
         toAccountId: updated.toAccountId,
         toAccountName: updated.toAccountName,
         toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",

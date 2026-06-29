@@ -165,13 +165,100 @@
 - `/api/v1/fund/refresh`
 - `/api/v1/fund/sync-position`
 
-### Regular Invest
+### Insurance
 
 范围：
 
-- 定投计划。
-- 定投执行记录。
-- 批量执行和自动执行。
+- 保险产品列表、创建和更新。
+- 按保险产品名称查询公开参考资料。
+- 保险投保、赎回记录仍通过交易明细接口保存，并关联 `insuranceProductId`。
+- Web 设置页 `/settings/insurance-products` 用于维护保险产品库；保险持仓页只显示有交易记录的持仓。
+
+相关路径示例：
+
+- `/api/v1/insurance-products`
+- `/api/v1/insurance-products/lookup`
+
+#### 保险产品资料查询
+
+- Method: `GET`
+- Path: `/api/v1/insurance-products/lookup`
+- Auth: required
+- Context: server/book/user/role
+
+Query:
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| name | string | yes | 保险产品名称，建议使用保单或条款上的正式名称 |
+| institutionName | string | no | 承保机构名称，用于缩小官方产品库和搜索范围 |
+
+Success:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "query": "产品名称",
+    "institutionName": "保险公司名称",
+    "candidates": [
+      {
+        "name": "产品正式名称",
+        "institutionName": "保险公司名称",
+        "productType": "critical_illness",
+        "status": "在售",
+        "saleDate": "2026-06-29",
+        "termsNo": "条款编号",
+        "source": "中国保险行业协会产品信息库",
+        "sourceType": "official",
+        "url": "https://tiaokuan.iachina.cn/",
+        "confidence": "high",
+        "reason": "来自中国保险行业协会公开产品库。"
+      }
+    ],
+    "officialSources": [],
+    "officialProducts": [],
+    "webResults": [],
+    "crawledPages": [],
+    "suggestion": {
+      "productType": "critical_illness",
+      "institutionName": "保险公司名称",
+      "confidence": "medium",
+      "reason": "根据标题/摘要轻量推断"
+    },
+    "searchedAt": "2026-06-29T00:00:00.000Z"
+  }
+}
+```
+
+Error:
+
+```json
+{
+  "ok": false,
+  "error": "错误说明"
+}
+```
+
+Notes:
+
+- 外部资料只作为录入辅助和官方核对入口，不是数据库事实来源。
+- 客户端应优先展示 `candidates` 作为可选择产品列表；不要把 `webResults` 或 `crawledPages` 原始摘要直接铺到表单里。
+- `officialProducts`、`webResults`、`crawledPages` 只作为参考/调试材料，展示给用户时必须先整理成结构化候选项。
+- 查询会先尝试公开行业产品库接口；如果不可用、限频或缺少必要条件，再爬取公开搜索结果页面并抽取产品名称、承保机构、条款号、状态、日期等结构化字段。
+- 爬虫只访问公开页面，不绕过验证码、登录、robots 防护或非公开数据控制。
+- 客户端不能把搜索摘要当作精算、保障责任、费率或销售资格依据。
+
+### Scheduled Tasks
+
+范围：
+
+- 定期计划任务。
+- 当前支持基金定投、还房贷、转账、保险缴费四类任务。
+- 任务共用计划字段：资金账户、任务类型、周期、下次执行、已执行次数、开始日期、停止日期。
+- 任务内容按类型保存不同目标：基金代码/基金账户、贷款账户、转入账户、保险产品。
+- 执行时调用现有交易、基金、保险业务语义，不新增独立交易类型。
+- 每日自动执行扫描所有执行中计划，未到执行日的计划直接跳过。
 
 相关路径示例：
 

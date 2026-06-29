@@ -7,9 +7,11 @@ import { SidebarClient } from "@/components/layout/SidebarClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 
 async function getSidebarData() {
   await connection();
@@ -61,12 +63,20 @@ async function getSidebarData() {
   const currentCreditBalanceByAccountId = new Map(
     currentCreditCycles.map((cycle) => [cycle.accountId, Number(cycle.effectiveBill ?? 0)]),
   );
-
+  const insuranceAccountIds = accounts
+    .filter((account) => account.kind === AccountKind.insurance)
+    .map((account) => account.id);
+  const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
+    insuranceAccountIds,
+    hidFilter,
+  );
   const items = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
     const balance = isInvest
       ? (investDetail?.marketValue ?? 0)
+      : account.kind === AccountKind.insurance
+        ? (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0)
       : isDepositAccount(account)
         ? (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
       : account.kind === AccountKind.bank_credit && account.billingDay
@@ -101,10 +111,17 @@ async function getSidebarData() {
 
 export async function Sidebar() {
   const { items, household, isRedUp, user } = await getSidebarData();
+  const cookieStore = await cookies();
+  const initialPreferences = {
+    sidebarOwnerFilter: cookieStore.get("sidebar_owner_filter")?.value ?? "",
+    sidebarHideZero: cookieStore.get("sidebar_hide_zero")?.value === "true",
+    sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
+    sidebarGroupBy: (cookieStore.get("sidebar_group_by")?.value === "institution" ? "institution" : "kind") as SidebarGroupMode,
+  };
 
   return (
     <Suspense fallback={<div className="h-screen w-72 flex-shrink-0 border-r border-foreground/5 bg-background" />}>
-      <SidebarClient items={items} household={household} isRedUp={isRedUp} user={user} />
+      <SidebarClient items={items} household={household} isRedUp={isRedUp} user={user} initialPreferences={initialPreferences} />
     </Suspense>
   );
 }

@@ -71,6 +71,52 @@ function sheetRows<T extends Record<string, unknown>>(records: T[]) {
   return records.map((record) => toPlainRecord(record));
 }
 
+const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
+  id: "记录ID",
+  date: "日期",
+  createdAt: "创建时间",
+  updatedAt: "更新时间",
+  type: "类型",
+  amount: "金额",
+  accountId: "账户ID",
+  accountName: "账户名称",
+  toAccountId: "对向账户ID",
+  toAccountName: "对向账户名称",
+  categoryId: "分类ID",
+  categoryName: "分类",
+  note: "备注",
+  toNote: "第二备注",
+  counterpartyInstitutionId: "收支机构ID",
+  counterpartyInstitutionName: "收支机构",
+  statementMonth: "账单月份",
+  source: "来源",
+  fundCode: "基金代码",
+  fundName: "基金名称",
+  fundProductType: "产品类型",
+  fundSubtype: "产品动作",
+  fundUnits: "份额",
+  fundNav: "净值",
+  fundFee: "手续费",
+  fundConfirmDate: "确认日期",
+  fundArrivalDate: "到账日期",
+  fundArrivalAmount: "到账金额",
+  depositAnnualRate: "年化利率",
+  depositInterest: "利息",
+  depositSourceEntryId: "关联存单ID",
+  insuranceProductId: "保险产品ID",
+  householdId: "账簿ID",
+  deletedAt: "删除时间",
+};
+
+function labelTransactionRows(records: Record<string, unknown>[]) {
+  return records.map((record) => {
+    const plain = toPlainRecord(record);
+    return Object.fromEntries(
+      Object.entries(plain).map(([key, value]) => [TRANSACTION_EXPORT_LABELS[key] ?? key, value]),
+    );
+  });
+}
+
 function restoreError(message: string): never {
   throw new Error(message);
 }
@@ -247,7 +293,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
-    ["Transactions", sheetRows(payload.data.transactions)],
+    ["Transactions", labelTransactionRows(payload.data.transactions as Record<string, unknown>[])],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
     ["EmailAccounts", sheetRows(payload.data.emailAccounts)],

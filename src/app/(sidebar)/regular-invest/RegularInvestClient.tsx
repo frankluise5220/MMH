@@ -4,9 +4,11 @@ import { Fragment, useEffect, useState } from "react";
 import { Pause, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
+import { TransactionFormModal } from "@/components/TransactionFormModal";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
+import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
 
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
@@ -34,6 +36,12 @@ type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "
 
 type RegularInvestPlanView = {
   id: string;
+  taskType?: ScheduledTaskType;
+  taskTypeLabel?: string | null;
+  taskTitle?: string | null;
+  taskFromAccountId?: string | null;
+  taskToAccountId?: string | null;
+  taskInsuranceProductId?: string | null;
   accountId: string;
   accountName?: string | null;
   accountLabel?: string | null;
@@ -65,6 +73,14 @@ type RegularInvestPlanView = {
   executedAmount?: number;
   confirmedCount?: number;
   confirmedAmount?: number;
+};
+
+type InsuranceProductOption = {
+  id: string;
+  label: string;
+  accountId: string;
+  accountLabel?: string | null;
+  subLabel?: string | null;
 };
 
 function formatInterval(p: RegularInvestPlanView): string {
@@ -101,8 +117,31 @@ function planCashAccountLabel(p: RegularInvestPlanView): string {
   return p.cashAccountLabel || p.cashAccountName || "-";
 }
 
+function getPlanTaskType(plan: RegularInvestPlanView): ScheduledTaskType {
+  return plan.taskType ?? "fund_regular_invest";
+}
+
+function getPlanTaskLabel(plan: RegularInvestPlanView): string {
+  return plan.taskTypeLabel || scheduledTaskTypeLabel(getPlanTaskType(plan));
+}
+
+function getPlanTargetLabel(plan: RegularInvestPlanView): string {
+  if (getPlanTaskType(plan) === "transfer") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
+  if (getPlanTaskType(plan) === "loan_repayment") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
+  if (getPlanTaskType(plan) === "insurance_premium") return plan.fundName || planAccountLabel(plan);
+  if (plan.taskTitle) return plan.taskTitle;
+  return [plan.fundCode, plan.fundName && plan.fundName !== plan.fundCode ? plan.fundName : ""].filter(Boolean).join(" ");
+}
+
+function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: string | null }) {
+  const taskType = getPlanTaskType(plan);
+  if (taskType === "fund_regular_invest") return record.source === "regular_invest";
+  if (taskType === "insurance_premium") return record.source === "insurance";
+  return record.source === "scheduled_task";
+}
+
 function groupLabel(p: RegularInvestPlanView, mode: GroupByMode): string {
-  if (mode === "fundGroup") return p.accountGroupName || "基金账户未设置所有人";
+  if (mode === "fundGroup") return p.accountGroupName || "目标账户未设置所有人";
   if (mode === "fundAccount") return p.accountFullLabel || planAccountLabel(p);
   if (mode === "cashGroup") return p.cashAccountGroupName || "资金账户未设置所有人";
   if (mode === "cashAccount") return p.cashAccountFullLabel || planCashAccountLabel(p);
@@ -144,16 +183,30 @@ export function RegularInvestClient({
   initialPlans,
   investmentAccounts,
   cashAccounts,
+  loanAccounts,
+  transferTargetAccounts,
+  insuranceProductOptions,
   investmentAccountSSOptions,
   cashAccountSSOptions,
+  transferTargetAccountSSOptions,
   nestedFieldData,
+  allAccountSSOptions,
+  transactionCreateAction,
+  transactionEditAction,
 }: {
   initialPlans: RegularInvestPlanView[];
   investmentAccounts: AccountDisplayOption[];
   cashAccounts: AccountDisplayOption[];
+  loanAccounts: AccountDisplayOption[];
+  transferTargetAccounts: AccountDisplayOption[];
+  insuranceProductOptions: InsuranceProductOption[];
   investmentAccountSSOptions: SmartSelectOption[];
   cashAccountSSOptions: SmartSelectOption[];
+  transferTargetAccountSSOptions: SmartSelectOption[];
+  allAccountSSOptions: SmartSelectOption[];
   nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
+  transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const router = useRouter();
   const [plans, setPlans] = useState(initialPlans);
@@ -172,6 +225,15 @@ export function RegularInvestClient({
     setPlans(initialPlans);
   }, [initialPlans]);
 
+  useEffect(() => {
+    async function handleEditSuccess() {
+      await refreshRecords();
+      router.refresh();
+    }
+    window.addEventListener("mmh:transaction:edit:success", handleEditSuccess);
+    return () => window.removeEventListener("mmh:transaction:edit:success", handleEditSuccess);
+  });
+
   async function apiCreateAction(payload: any) {
     const res = await fetch("/api/v1/regular-invest", {
       method: "POST",
@@ -187,7 +249,7 @@ export function RegularInvestClient({
       const res = await fetch(`/api/v1/regular-invest/records?planId=${encodeURIComponent(plan.id)}`);
       const data = await res.json();
       if (data.ok) {
-        const records = data.records || [];
+        const records = (data.records || []).filter((record: any) => recordMatchesPlan(plan, record));
         records.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
         setPlanRecords(records);
       } else {
@@ -234,10 +296,12 @@ export function RegularInvestClient({
   }
 
   async function handleBatchExecute(planId: string) {
-    if (!window.confirm("确认从开始日期批量执行该定投计划吗？\n\n系统会自动生成所有到期但未执行的交易明细。")) return;
+    const plan = plans.find((item) => item.id === planId);
+    if (!plan) return;
+    const taskType = getPlanTaskType(plan);
+    if (!window.confirm(`确认执行该${getPlanTaskLabel(plan)}计划吗？\n\n系统会生成所有到期但未执行的交易明细。`)) return;
     try {
-      const plan = plans.find((item) => item.id === planId);
-      if (plan?.fundCode) {
+      if (taskType === "fund_regular_invest" && plan?.fundCode) {
         const startDate = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -253,7 +317,7 @@ export function RegularInvestClient({
         }
       }
 
-      const res = await fetch("/api/v1/regular-invest/batch-execute", {
+      const res = await fetch(taskType === "fund_regular_invest" ? "/api/v1/regular-invest/batch-execute" : "/api/v1/regular-invest/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ planId }),
@@ -288,14 +352,14 @@ export function RegularInvestClient({
   async function handleBatchExecuteAll() {
     const activePlans = plans.filter((plan) => plan.status === "active");
     if (activePlans.length === 0) {
-      window.alert("没有执行中的定投计划");
+      window.alert("没有执行中的计划任务");
       return;
     }
-    if (!window.confirm(`确认批量执行所有 ${activePlans.length} 个执行中的定投计划吗？`)) return;
+    if (!window.confirm(`确认批量执行所有 ${activePlans.length} 个执行中的计划任务吗？`)) return;
     try {
       const endDate = todayInput();
       for (const plan of activePlans) {
-        if (!plan.fundCode) continue;
+        if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
         const preloadStart = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -313,7 +377,7 @@ export function RegularInvestClient({
       let fail = 0;
       for (const plan of activePlans) {
         try {
-          const res = await fetch("/api/v1/regular-invest/batch-execute", {
+          const res = await fetch(getPlanTaskType(plan) === "fund_regular_invest" ? "/api/v1/regular-invest/batch-execute" : "/api/v1/regular-invest/execute", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ planId: plan.id }),
@@ -366,7 +430,7 @@ export function RegularInvestClient({
 
   function handleDelete(planId: string) {
     const plan = plans.find((item) => item.id === planId);
-    setDeleteConfirm({ planId, planName: plan ? `${plan.fundCode} ${plan.fundName || ""}` : "定投计划" });
+    setDeleteConfirm({ planId, planName: plan ? getPlanTargetLabel(plan) : "计划任务" });
   }
 
   async function handleDeleteRecord(recordId: string) {
@@ -382,6 +446,27 @@ export function RegularInvestClient({
   }
 
   function openEditRecord(record: any) {
+    if (selectedPlan && getPlanTaskType(selectedPlan) !== "fund_regular_invest") {
+      if (record.type !== "transfer") {
+        window.alert("这类计划生成的记录暂时请到对应业务页面编辑");
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("mmh:transaction:edit", {
+        detail: {
+          requestId: `scheduled-edit-${record.id}-${Date.now()}`,
+          entryId: record.id,
+          type: "transfer",
+          date: toDateInput(record.date),
+          amount: Math.abs(Number(record.amount)) || 0,
+          note: record.note ?? "",
+          toNote: record.toNote ?? "",
+          fromAccountId: record.accountId ?? "",
+          toAccountId: record.toAccountId ?? "",
+        },
+      }));
+      return;
+    }
+
     setEditingRecord({
       id: record.id,
       date: toDateInput(record.date),
@@ -427,9 +512,9 @@ export function RegularInvestClient({
         onClick={() => handleSelectPlan(plan)}
       >
         <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <span className="font-medium text-slate-800">{plan.fundCode}</span>
-          {plan.fundName && plan.fundName !== plan.fundCode && <span className="ml-1 text-slate-400">{plan.fundName}</span>}
+          <span className="font-medium text-slate-800">{getPlanTargetLabel(plan)}</span>
         </td>
+        <td className="border-b border-slate-100 px-3 py-1 text-xs text-slate-500">{getPlanTaskLabel(plan)}</td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">{formatDate(plan.startDate)}</td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs">
           <AccountCell label={planAccountLabel(plan)} />
@@ -444,9 +529,6 @@ export function RegularInvestClient({
         <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">{formatDate(plan.nextRunDate)}</td>
         <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">
           {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
-        </td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">
-          {plan.confirmedCount || 0}笔({(plan.confirmedAmount || 0).toFixed(2)})
         </td>
         <td className="border-b border-slate-100 px-2 py-1">
           <div className="flex items-center justify-end gap-1">
@@ -490,15 +572,19 @@ export function RegularInvestClient({
                 accountId={investmentAccounts[0]?.id ?? ""}
                 investmentAccounts={investmentAccounts}
                 cashAccounts={cashAccounts}
+                loanAccounts={loanAccounts}
+                transferTargetAccounts={transferTargetAccounts}
+                insuranceProductOptions={insuranceProductOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
+                transferTargetAccountSSOptions={transferTargetAccountSSOptions}
                 nestedFieldData={nestedFieldData}
                 showTriggerButton={false}
                 open={showCreateForm}
                 onOpenChange={setShowCreateForm}
                 apiAction={apiCreateAction}
               />
-              <button onClick={handleBatchExecuteAll} title="批量执行所有定投计划" className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50">
+              <button onClick={handleBatchExecuteAll} title="批量执行所有计划任务" className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50">
                 <RefreshCw className="h-4 w-4" />执行全部
               </button>
               <button onClick={() => setShowCreateForm(true)} className="flex h-8 items-center gap-1 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
@@ -507,7 +593,7 @@ export function RegularInvestClient({
             </div>
             <div className="flex h-11 items-center justify-between bg-slate-50 px-4">
               <div className="flex items-center gap-3 text-sm">
-                <span className="font-semibold text-slate-800">定投计划</span>
+                <span className="font-semibold text-slate-800">计划任务</span>
                 <span className="text-slate-500">
                   共 {filteredPlans.length} 个计划，{filteredPlans.filter((plan) => plan.status === "active").length} 个执行中
                 </span>
@@ -516,8 +602,8 @@ export function RegularInvestClient({
                   onChange={(e) => setGroupBy(e.target.value as GroupByMode)}
                   className="ml-4 h-7 rounded border border-slate-200 bg-white px-2 text-xs outline-none"
                 >
-                  <option value="fundGroup">按基金账户所有人</option>
-                  <option value="fundAccount">按基金账户</option>
+                  <option value="fundGroup">按目标账户所有人</option>
+                  <option value="fundAccount">按目标账户</option>
                   <option value="cashGroup">按资金账户所有人</option>
                   <option value="cashAccount">按资金账户</option>
                   <option value="none">不按所有人</option>
@@ -530,26 +616,26 @@ export function RegularInvestClient({
             </div>
           </header>
 
-          <div className={`min-h-0 flex-1 ${selectedPlan ? "grid grid-rows-2" : ""}`}>
-            <div className={`${selectedPlan ? "min-h-0 overflow-auto border-b border-slate-200 bg-white" : "flex-1 overflow-auto bg-white"}`}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className={`${selectedPlan ? "min-h-[240px] flex-1 overflow-auto border-b border-slate-200 bg-white" : "min-h-0 flex-1 overflow-auto bg-white"}`}>
               <table className="w-full min-w-[1040px] border-separate border-spacing-0">
                 <thead className="sticky top-0 z-10 bg-white">
                   <tr>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">基金</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">任务内容</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">类型</th>
                     <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">开始日期</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">基金账户</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">目标账户</th>
                     <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">资金账户</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">间隔</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">周期</th>
                     <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">状态</th>
                     <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">下次执行</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">已执行</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">已确认</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">已执行次数</th>
                     <th className="border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">操作</th>
                   </tr>
                 </thead>
                 <tbody className="text-sm">
                   {groupedPlans.length === 0 || groupedPlans[0].items.length === 0 ? (
-                    <tr><td className="px-3 py-6 text-xs text-slate-500" colSpan={10}>暂无定投计划</td></tr>
+                    <tr><td className="px-3 py-6 text-xs text-slate-500" colSpan={10}>暂无计划任务</td></tr>
                   ) : (
                     groupedPlans.map((group, index) => (
                       group.label ? (
@@ -571,9 +657,9 @@ export function RegularInvestClient({
             </div>
 
             {selectedPlan && (
-              <div className="flex min-h-0 flex-col bg-slate-50">
+              <div className="flex h-80 shrink-0 flex-col bg-slate-50">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4">
-                  <div className="text-xs font-semibold text-slate-700">{selectedPlan.fundCode} {selectedPlan.fundName} - 交易明细</div>
+                  <div className="text-xs font-semibold text-slate-700">{getPlanTargetLabel(selectedPlan)} - 执行记录</div>
                   <button onClick={() => { setSelectedPlan(null); setPlanRecords([]); }} className="text-xs text-slate-400 hover:text-slate-600">关闭</button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
@@ -585,10 +671,14 @@ export function RegularInvestClient({
                     <table className="min-w-full text-xs">
                       <thead className="sticky top-0 bg-slate-100">
                         <tr>
-                          <th className="px-3 py-1.5 text-left font-medium text-slate-600">申请日期</th>
-                          <th className="px-3 py-1.5 text-left font-medium text-slate-600">确认日期</th>
+                          <th className="px-3 py-1.5 text-left font-medium text-slate-600">执行日期</th>
+                          {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
+                            <th className="px-3 py-1.5 text-left font-medium text-slate-600">确认日期</th>
+                          )}
                           <th className="px-3 py-1.5 text-right font-medium text-slate-600">金额</th>
-                          <th className="px-3 py-1.5 text-right font-medium text-slate-600">份额</th>
+                          {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
+                            <th className="px-3 py-1.5 text-right font-medium text-slate-600">份额</th>
+                          )}
                           <th className="px-3 py-1.5 text-center font-medium text-slate-600">状态</th>
                           <th className="px-3 py-1.5 text-center font-medium text-slate-600">操作</th>
                         </tr>
@@ -599,11 +689,17 @@ export function RegularInvestClient({
                           return (
                             <tr key={record.id} className="border-b border-slate-100 bg-white">
                               <td className="px-3 py-1.5 tabular-nums text-slate-700">{formatDate(record.date)}</td>
-                              <td className="px-3 py-1.5 tabular-nums text-slate-500">{formatDate(record.fundConfirmDate)}</td>
+                              {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
+                                <td className="px-3 py-1.5 tabular-nums text-slate-500">{formatDate(record.fundConfirmDate)}</td>
+                              )}
                               <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{(Math.abs(Number(record.amount)) || 0).toFixed(2)}</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{isConfirmed ? Number(record.fundUnits).toFixed(2) : "-"}</td>
+                              {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
+                                <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{isConfirmed ? Number(record.fundUnits).toFixed(2) : "-"}</td>
+                              )}
                               <td className="px-3 py-1.5 text-center">
-                                {isConfirmed ? <span className="text-emerald-600">已确认</span> : <span className="text-amber-600">待确认</span>}
+                                {getPlanTaskType(selectedPlan) === "fund_regular_invest"
+                                  ? (isConfirmed ? <span className="text-emerald-600">已确认</span> : <span className="text-amber-600">待确认</span>)
+                                  : <span className="text-emerald-600">已执行</span>}
                               </td>
                               <td className="px-3 py-1.5 text-center">
                                 <div className="flex items-center justify-center gap-1">
@@ -632,6 +728,8 @@ export function RegularInvestClient({
         mode="edit"
         editData={editPlan ? {
           id: editPlan.id,
+          taskType: getPlanTaskType(editPlan),
+          taskInsuranceProductId: editPlan.taskInsuranceProductId ?? null,
           accountId: editPlan.accountId || "",
           fundCode: editPlan.fundCode || "",
           fundName: editPlan.fundName || null,
@@ -651,8 +749,12 @@ export function RegularInvestClient({
         accountId={editPlan?.accountId ?? investmentAccounts[0]?.id ?? ""}
         investmentAccounts={investmentAccounts}
         cashAccounts={cashAccounts}
+        loanAccounts={loanAccounts}
+        transferTargetAccounts={transferTargetAccounts}
+        insuranceProductOptions={insuranceProductOptions}
         investmentAccountSSOptions={investmentAccountSSOptions}
         cashAccountSSOptions={cashAccountSSOptions}
+        transferTargetAccountSSOptions={transferTargetAccountSSOptions}
         nestedFieldData={nestedFieldData}
         showTriggerButton={false}
         open={editOpen}
@@ -661,11 +763,26 @@ export function RegularInvestClient({
         onSuccess={() => { setEditPlan(null); }}
       />
 
+      <div className="hidden">
+        <TransactionFormModal
+          accounts={cashAccounts}
+          transferAccounts={transferTargetAccounts}
+          accountSSOptions={cashAccountSSOptions}
+          transferAccountSSOptions={allAccountSSOptions}
+          nestedFieldData={nestedFieldData}
+          expenseCategories={[]}
+          incomeCategories={[]}
+          defaultAccountId={cashAccounts[0]?.id}
+          action={transactionCreateAction}
+          editAction={transactionEditAction}
+        />
+      </div>
+
       {deleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">删除定投计划</div>
+              <div className="text-sm font-semibold text-slate-800">删除计划任务</div>
             </div>
             <div className="space-y-3 p-4">
               <div className="text-sm text-slate-700">确认对「{deleteConfirm.planName}」的操作？</div>

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { TransactionType, RegularInvestStatus } from "@prisma/client";
-import { isWeekend, nextMonday, addDays, addWeeks, addMonths, getDay, setDate } from "date-fns";
+import { TransactionType, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -9,90 +8,20 @@ import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 
 function utcDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-function skipWeekend(date: Date): Date {
-  if (isWeekend(date)) return nextMonday(date);
-  return date;
-}
-
-/**
- * 调整日期到指定的星期几（用于周/双周模式）
- * @param date 基准日期
- * @param targetDay 目标星期几（1=周一，5=周五）
- * @returns 调整后的日期
- */
-function adjustToWeekday(date: Date, targetDay: number): Date {
-  const currentDay = getDay(date); // 0=周日，1=周一，..., 6=周六
-  // JavaScript的getDay返回0-6，我们需要转换为1-5（周一到周五）
-  const adjustedCurrentDay = currentDay === 0 ? 7 : currentDay; // 转换为1-7（周一到周日）
-  const diff = targetDay - adjustedCurrentDay;
-  return addDays(date, diff);
-}
-
-/**
- * 调整日期到每月的指定日期（用于月模式）
- * @param date 基准日期
- * @param targetDayOfMonth 目标日期（1-31）
- * @returns 调整后的日期
- */
-function adjustToDayOfMonth(date: Date, targetDayOfMonth: number): Date {
-  // 使用date-fns的setDate函数设置日期到指定日期
-  return setDate(date, targetDayOfMonth);
-}
-
-/**
- * 根据executionDay计算实际执行日期
- * @param fromDate 起始日期
- * @param intervalUnit 间隔单位
- * @param intervalValue 间隔值
- * @param executionDay 执行日（可选）
- * @returns 计算后的执行日期
- */
 function calcNextRunDate(
   fromDate: Date,
   intervalUnit: string,
   intervalValue: number,
   executionDay?: number | null
 ): Date {
-  let nextDate: Date;
-
-  switch (intervalUnit) {
-    case "day":
-      nextDate = addDays(fromDate, intervalValue);
-      break;
-    case "week":
-      nextDate = addWeeks(fromDate, intervalValue);
-      if (executionDay && executionDay >= 1 && executionDay <= 5) {
-        nextDate = adjustToWeekday(nextDate, executionDay);
-      }
-      break;
-    case "biweek":
-      nextDate = addWeeks(fromDate, intervalValue * 2);
-      if (executionDay && executionDay >= 1 && executionDay <= 5) {
-        nextDate = adjustToWeekday(nextDate, executionDay);
-      }
-      break;
-    case "month":
-      nextDate = addMonths(fromDate, intervalValue);
-      if (executionDay && executionDay >= 1 && executionDay <= 31) {
-        nextDate = adjustToDayOfMonth(nextDate, executionDay);
-      }
-      break;
-    default:
-      nextDate = addMonths(fromDate, intervalValue);
-  }
-
-  // 如果没有指定executionDay，则跳过周末
-  if (!executionDay) {
-    nextDate = skipWeekend(nextDate);
-  }
-
-  return nextDate;
+  return calcNextScheduledRunDate(fromDate, intervalUnit as IntervalUnit, intervalValue, executionDay, true);
 }
 
 /**
@@ -201,7 +130,13 @@ export async function POST(req: NextRequest) {
       const latestDate = existingTxRecords.reduce((max, r) => (r.date > max ? r.date : max), new Date(0));
       currentDate = calcNextRunDate(latestDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
     } else {
-      currentDate = skipWeekend(new Date(plan.startDate));
+      currentDate = calcInitialScheduledRunDate(
+        new Date(plan.startDate),
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        true,
+      );
     }
 
     // 生成范围上限：endDate（如果已过期）或 now，取较早者
@@ -466,7 +401,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: `已执行定投 ${plan.fundCode}，生成 ${newRecordsCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount > 0 ? `（跳过 ${skippedCount} 个无净值间隙日期）` : ""}`,
+      message: `已执行基金定投 ${plan.fundCode}，生成 ${newRecordsCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount > 0 ? `（跳过 ${skippedCount} 个无净值间隙日期）` : ""}`,
       executedCount: newRecordsCount,
       skippedCount,
       completed: plan.totalRuns && plan.executedRuns + newRecordsCount >= plan.totalRuns,

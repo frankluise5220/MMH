@@ -1,30 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
-import { isWeekend, nextMonday, addDays, addWeeks, addMonths } from "date-fns";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
-import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-
-function skipWeekend(date: Date): Date {
-  if (isWeekend(date)) return nextMonday(date);
-  return date;
-}
-
-function calcNextRunDate(fromDate: Date, unit: IntervalUnit, value: number): Date {
-  switch (unit) {
-    case "day": return addDays(fromDate, value);
-    case "week": return addWeeks(fromDate, value);
-    case "biweek": return addWeeks(fromDate, value * 2);
-    case "month": return addMonths(fromDate, value);
-    default: return addMonths(fromDate, value);
-  }
-}
+import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 
 export async function POST(req: NextRequest) {
   try {
@@ -86,18 +73,185 @@ export async function POST(req: NextRequest) {
       ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
       : null;
 
-    const runDate = skipWeekend(overrideDate ? new Date(overrideDate) : new Date());
+    const task = decodeScheduledTaskMemo(plan.memo);
+    const runDateBase = overrideDate
+      ? startOfDayUtc(new Date(overrideDate))
+      : task.type === "fund_regular_invest"
+        ? startOfDayUtc(new Date())
+        : startOfDayUtc(new Date(plan.nextRunDate));
+    const runDate = task.type === "fund_regular_invest" ? skipWeekend(runDateBase) : runDateBase;
     const amountNum = overrideAmount ? parseFloat(overrideAmount) : parseFloat(String(plan.amount));
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
 
+    const usesBusinessDays = task.type === "fund_regular_invest";
+
+    if (task.type !== "fund_regular_invest") {
+      if (!cashAcc?.id) {
+        return NextResponse.json({ ok: false, error: "计划缺少资金账户" }, { status: 400 });
+      }
+
+      const today = startOfDayUtc(now);
+      const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
+      const sourceFilter = task.type === "insurance_premium" ? ["insurance"] : ["scheduled_task"];
+      const existingTxRecords = await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          regularInvestPlanId: planId,
+          source: { in: sourceFilter },
+          deletedAt: null,
+        },
+        select: { date: true },
+      });
+      const existingDates = new Set(existingTxRecords.map((record) => formatDateUtc(record.date)));
+      const remainingRuns = plan.totalRuns ? Math.max(0, plan.totalRuns - plan.executedRuns) : Number.POSITIVE_INFINITY;
+      const datesToProcess: Date[] = [];
+
+      if (overrideDate) {
+        const dateStr = formatDateUtc(runDate);
+        if (!existingDates.has(dateStr) && remainingRuns > 0) datesToProcess.push(runDate);
+      } else {
+        let currentDate = calcInitialRunDate(
+          plan.nextRunDate,
+          plan.intervalUnit as IntervalUnit,
+          plan.intervalValue,
+          plan.executionDay,
+          false,
+        );
+        let guard = 0;
+        while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
+          const dateStr = formatDateUtc(currentDate);
+          if (!existingDates.has(dateStr)) datesToProcess.push(currentDate);
+          currentDate = calcNextRunDate(
+            currentDate,
+            plan.intervalUnit as IntervalUnit,
+            plan.intervalValue,
+            plan.executionDay,
+            false,
+          );
+          guard++;
+          if (guard > 1200) throw new Error("计划周期异常，已停止生成以避免无限循环");
+        }
+      }
+
+      if (datesToProcess.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          message: "所有到期的计划记录已存在，无需重复生成",
+          executedCount: 0,
+          date: formatDateUtc(runDate),
+          executedRuns: plan.executedRuns,
+          completed: false,
+        });
+      }
+
+      const insuranceProduct = task.type === "insurance_premium"
+        ? await prisma.insuranceProduct.findFirst({
+            where: { id: task.insuranceProductId || "", householdId },
+          })
+        : null;
+      if (task.type === "insurance_premium" && !task.insuranceProductId) {
+        return NextResponse.json({ ok: false, error: "计划缺少保险产品" }, { status: 400 });
+      }
+      if (task.type === "insurance_premium" && !insuranceProduct) {
+        return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 400 });
+      }
+
+      const finalLastRunDate = datesToProcess[datesToProcess.length - 1]!;
+      const finalExecutedRuns = plan.executedRuns + datesToProcess.length;
+      const nextRun = calcNextRunDate(
+        finalLastRunDate,
+        plan.intervalUnit as IntervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        false,
+      );
+      const willComplete = !!(
+        (plan.totalRuns && finalExecutedRuns >= plan.totalRuns) ||
+        (plan.endDate && startOfDayUtc(plan.endDate) < nextRun)
+      );
+
+      await prisma.$transaction(async (tx) => {
+        for (const scheduledRunDate of datesToProcess) {
+          if (task.type === "transfer" || task.type === "loan_repayment") {
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.transfer,
+                date: scheduledRunDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                toAccountId: fundAcc.id,
+                toAccountName: fundAcc.name,
+                amount: -amountNum,
+                source: "scheduled_task",
+                regularInvestPlanId: planId,
+                note: task.type === "loan_repayment" ? "计划任务：还贷款" : "计划任务：转账",
+              },
+            });
+          } else if (task.type === "insurance_premium" && insuranceProduct) {
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.investment,
+                date: scheduledRunDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                toAccountId: insuranceProduct.accountId,
+                toAccountName: fundAcc.name,
+                amount: -amountNum,
+                fundName: insuranceProduct.name,
+                fundProductType: "wealth",
+                fundSubtype: "buy",
+                source: "insurance",
+                insuranceProductId: insuranceProduct.id,
+                regularInvestPlanId: planId,
+                note: "计划任务：保险缴费",
+              },
+            });
+          }
+        }
+
+        await tx.regularInvestPlan.update({
+          where: { id: planId },
+          data: {
+            lastRunDate: finalLastRunDate,
+            nextRunDate: nextRun,
+            executedRuns: finalExecutedRuns,
+            status: willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active,
+          },
+        });
+      });
+
+      await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+      await recalcAndSaveAccountBalance(fundAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+      if (task.type === "insurance_premium") revalidateAfterInvestChange();
+      else revalidateAfterTxChange();
+
+      return NextResponse.json({
+        ok: true,
+        message: `已执行${scheduledTaskTypeLabel(task.type)}，生成 ${datesToProcess.length} 条交易明细，金额 ${amountNum.toFixed(2)}，累计第 ${finalExecutedRuns} 次`,
+        date: formatDateUtc(finalLastRunDate),
+        executedCount: datesToProcess.length,
+        executedRuns: finalExecutedRuns,
+        completed: willComplete,
+      });
+    }
+
     const newExecutedRuns = plan.executedRuns + 1;
+    const nextRun = calcNextRunDate(
+      runDate,
+      plan.intervalUnit as IntervalUnit,
+      plan.intervalValue,
+      plan.executionDay,
+      usesBusinessDays,
+    );
 
     // 判断执行后是否达到结束条件
     const willComplete =
       (plan.totalRuns && newExecutedRuns >= plan.totalRuns) ||
-      (plan.endDate && plan.endDate < calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue));
+      (plan.endDate && plan.endDate < nextRun);
 
     const result = await prisma.$transaction(async (tx) => {
       // 计算 T+N 确认日期
@@ -182,7 +336,6 @@ export async function POST(req: NextRequest) {
         });
 
         // 更新定投计划（暂停申购也算一次执行）
-        const nextRun = calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue);
         await tx.regularInvestPlan.update({
           where: { id: planId },
           data: {
@@ -242,7 +395,6 @@ export async function POST(req: NextRequest) {
       });
 
       // 更新定投计划
-      const nextRun = calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue);
       await tx.regularInvestPlan.update({
         where: { id: planId },
         data: {
@@ -260,6 +412,7 @@ export async function POST(req: NextRequest) {
     // 刷新涉及的账户余额（资金账户和投资账户）
     if (cashAcc?.id) await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
     await recalcAndSaveAccountBalance(fundAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+    revalidateAfterInvestChange();
 
     // Client-side handles page refresh via mmh:fund:refresh
 
@@ -276,7 +429,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: `已执行定投 ${plan.fundCode}，金额 ${amountNum.toFixed(2)}，第 ${newExecutedRuns} 次`,
+      message: `已执行基金定投 ${plan.fundCode}，金额 ${amountNum.toFixed(2)}，第 ${newExecutedRuns} 次`,
       date: formatDateUtc(runDate),
       executedRuns: newExecutedRuns,
       completed: willComplete,

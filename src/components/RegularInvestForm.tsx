@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CalendarPlus } from "lucide-react";
 import { useState, useEffect, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -8,6 +8,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
 
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
@@ -15,6 +16,13 @@ const INTERVAL_LABELS: Record<string, string> = {
   biweek: "每两周",
   month: "每月",
 };
+
+const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; label: string }> = [
+  { value: "fund_regular_invest", label: "基金定投" },
+  { value: "loan_repayment", label: "还贷款" },
+  { value: "transfer", label: "转账" },
+  { value: "insurance_premium", label: "缴费" },
+];
 
 type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string }>;
@@ -50,9 +58,11 @@ function stripDefaultGroupOptions(options: SmartSelectOption[]) {
 }
 
 interface RegularInvestFormData {
+  taskType: ScheduledTaskType;
   accountId: string;
   fundCode: string;
   fundName: string;
+  insuranceProductId: string;
   amount: string;
   intervalUnit: string;
   intervalValue: string;
@@ -69,6 +79,8 @@ interface RegularInvestFormData {
 
 interface EditData {
   id: string;
+  taskType?: ScheduledTaskType;
+  taskInsuranceProductId?: string | null;
   accountId: string;
   fundCode: string;
   fundName: string | null;
@@ -102,8 +114,12 @@ export function RegularInvestForm({
   accountLabel,
   investmentAccounts,
   cashAccounts,
+  loanAccounts,
+  transferTargetAccounts,
+  insuranceProductOptions,
   investmentAccountSSOptions,
   cashAccountSSOptions,
+  transferTargetAccountSSOptions,
   nestedFieldData,
   prefilledFundCode,
   prefilledFundName,
@@ -127,10 +143,15 @@ export function RegularInvestForm({
   accountLabel?: string;
   investmentAccounts?: { id: string; name: string; label: string }[];
   cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  loanAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  transferTargetAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  insuranceProductOptions?: { id: string; label: string; accountId: string; accountLabel?: string | null; subLabel?: string | null }[];
   /** Hierarchical SmartSelect options for investment account dropdown (grouped by AccountGroup) */
   investmentAccountSSOptions?: SmartSelectOption[];
   /** Hierarchical SmartSelect options for cash account dropdown (grouped by AccountGroup) */
   cashAccountSSOptions?: SmartSelectOption[];
+  /** Hierarchical SmartSelect options for transfer target account dropdown (grouped by AccountGroup) */
+  transferTargetAccountSSOptions?: SmartSelectOption[];
   /** Groups & institutions data for nested account creation inside SmartSelect. */
   nestedFieldData?: NestedFieldData;
   prefilledFundCode?: string;
@@ -157,11 +178,15 @@ export function RegularInvestForm({
   const [nameLoading, setNameLoading] = useState(false);
   const [cashAccountList, setCashAccountList] = useState(cashAccounts ?? []);
   const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts ?? []);
+  const [loanAccountList, setLoanAccountList] = useState(loanAccounts ?? []);
+  const [transferTargetAccountList, setTransferTargetAccountList] = useState(transferTargetAccounts ?? []);
   const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
+  const [localTransferTargetSSOptions, setLocalTransferTargetSSOptions] = useState(transferTargetAccountSSOptions);
 
-  const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOptions);
+  const { ownerFilter: cfOwnerFilter, ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOptions);
   const { ownerFilterLabel: ifLabel, cycleOwnerFilter: ifCycle, filteredOptions: investFiltered } = useAccountSSFilter(localInvestmentSSOptions);
+  const { filteredOptions: transferTargetFiltered } = useAccountSSFilter(localTransferTargetSSOptions, cfOwnerFilter);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
 
   const actualOpen = showTriggerButton ? internalOpen : open ?? false;
@@ -170,9 +195,11 @@ export function RegularInvestForm({
   function getDefaultFormData(): RegularInvestFormData {
     if (mode === "edit" && editData) {
       return {
+        taskType: editData.taskType ?? "fund_regular_invest",
         accountId: editData.accountId || "",
         fundCode: editData.fundCode || "",
         fundName: editData.fundName || editData.fundCode || "",
+        insuranceProductId: editData.taskInsuranceProductId || "",
         amount: String(editData.amount || ""),
         intervalUnit: editData.intervalUnit || "day",
         intervalValue: String(editData.intervalValue || 1),
@@ -188,9 +215,11 @@ export function RegularInvestForm({
       };
     }
     return {
+      taskType: "fund_regular_invest",
       accountId: investmentAccounts && investmentAccounts.length > 0 ? "" : accountId,
       fundCode: prefilledFundCode ?? "",
       fundName: prefilledFundName ?? "",
+      insuranceProductId: "",
       amount: "",
       intervalUnit: "day",
       intervalValue: "1",
@@ -214,8 +243,11 @@ export function RegularInvestForm({
 
   useEffect(() => { setCashAccountList(cashAccounts ?? []); }, [cashAccounts]);
   useEffect(() => { setInvestmentAccountList(investmentAccounts ?? []); }, [investmentAccounts]);
+  useEffect(() => { setLoanAccountList(loanAccounts ?? []); }, [loanAccounts]);
+  useEffect(() => { setTransferTargetAccountList(transferTargetAccounts ?? []); }, [transferTargetAccounts]);
   useEffect(() => { setLocalCashSSOptions(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestmentSSOptions(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
+  useEffect(() => { setLocalTransferTargetSSOptions(transferTargetAccountSSOptions); }, [transferTargetAccountSSOptions]);
 
   useEffect(() => {
     if (!actualOpen || mode !== "create") return;
@@ -334,7 +366,19 @@ export function RegularInvestForm({
     }
 
     if (!formData.accountId) {
-      window.alert("请选择基金账户");
+      window.alert(`请选择${formData.taskType === "fund_regular_invest" ? "基金账户" : formData.taskType === "loan_repayment" ? "贷款账户" : formData.taskType === "insurance_premium" ? "保险产品" : "目标账户"}`);
+      return;
+    }
+    if (formData.taskType === "fund_regular_invest" && !formData.fundCode.trim()) {
+      window.alert("请输入基金代码");
+      return;
+    }
+    if (formData.taskType === "insurance_premium" && !formData.insuranceProductId) {
+      window.alert("请选择保险产品");
+      return;
+    }
+    if ((formData.taskType === "transfer" || formData.taskType === "loan_repayment" || formData.taskType === "insurance_premium") && !formData.cashAccountId) {
+      window.alert("请选择资金账户");
       return;
     }
 
@@ -369,8 +413,11 @@ export function RegularInvestForm({
           // API 方式（定投计划页面）— 直接调 PUT
           const payload = {
             id: editData.id,
+            taskType: formData.taskType,
+            insuranceProductId: formData.insuranceProductId || null,
             accountId: formData.accountId,
-            fundName: formData.fundName || formData.fundCode,
+            fundCode: formData.taskType === "fund_regular_invest" ? formData.fundCode : formData.taskType,
+            fundName: formData.fundName || formData.fundCode || scheduledTaskTypeLabel(formData.taskType),
             amount: finalAmount,
             intervalUnit: formData.intervalUnit,
             intervalValue: parseInt(formData.intervalValue) || 1,
@@ -434,8 +481,10 @@ export function RegularInvestForm({
         } else if (apiAction) {
           const payload = {
             accountId: formData.accountId,
-            fundCode: formData.fundCode,
-            fundName: formData.fundName || formData.fundCode,
+            taskType: formData.taskType,
+            insuranceProductId: formData.insuranceProductId || null,
+            fundCode: formData.taskType === "fund_regular_invest" ? formData.fundCode : formData.taskType,
+            fundName: formData.fundName || formData.fundCode || scheduledTaskTypeLabel(formData.taskType),
             amount: finalAmount,
             intervalUnit: formData.intervalUnit,
             intervalValue: parseInt(formData.intervalValue) || 1,
@@ -469,7 +518,7 @@ export function RegularInvestForm({
     }
   }
 
-  const title = mode === "edit" ? "修改定投计划" : "新增定投计划";
+  const title = mode === "edit" ? "修改计划任务" : "新增计划任务";
 
   // edit 模式下的账户显示标签
   const displayAccountLabel = stripDefaultGroupLabel(mode === "edit" ? (editAccountLabel ?? accountLabel) : accountLabel);
@@ -477,6 +526,29 @@ export function RegularInvestForm({
     ? stripDefaultGroupOptions(investFiltered)
     : investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel }));
   const cashOptions = cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const loanOptions = loanAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const transferTargetOptions = transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const insuranceOptions = (insuranceProductOptions ?? []).map(item => ({ id: item.id, label: item.label, subLabel: item.subLabel ?? item.accountLabel ?? undefined }));
+  const selectedInsuranceProduct = (insuranceProductOptions ?? []).find((item) => item.id === formData.insuranceProductId) ?? null;
+  const isFundTask = formData.taskType === "fund_regular_invest";
+  const isLoanTask = formData.taskType === "loan_repayment";
+  const isTransferTask = formData.taskType === "transfer";
+  const isInsuranceTask = formData.taskType === "insurance_premium";
+
+  function handleTaskTypeChange(taskType: ScheduledTaskType) {
+    setFormData((prev) => ({
+      ...prev,
+      taskType,
+      accountId: taskType === "fund_regular_invest" ? "" : taskType === "loan_repayment" ? "" : taskType === "transfer" ? "" : selectedInsuranceProduct?.accountId ?? "",
+      fundCode: taskType === "fund_regular_invest" ? prev.fundCode : taskType,
+      fundName: taskType === "fund_regular_invest" ? prev.fundName : scheduledTaskTypeLabel(taskType),
+      insuranceProductId: taskType === "insurance_premium" ? prev.insuranceProductId : "",
+      feeRate: taskType === "fund_regular_invest" ? prev.feeRate : "0",
+      confirmDays: taskType === "fund_regular_invest" ? prev.confirmDays : "0",
+      arrivalDays: taskType === "fund_regular_invest" ? prev.arrivalDays : "0",
+      skipPendingPreceding: taskType === "fund_regular_invest" ? prev.skipPendingPreceding : false,
+    }));
+  }
 
   function handleNestedAccountCreated(id: string, name: string, extra?: { kind?: string }) {
     const kind = extra?.kind ?? (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
@@ -504,7 +576,7 @@ export function RegularInvestForm({
           className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
         >
           <CalendarPlus className="w-3.5 h-3.5" />
-          定投
+          计划
         </button>
       )}
 
@@ -523,85 +595,170 @@ export function RegularInvestForm({
             </div>
 
             <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
-              {/* 基金账户和资金来源账户 */}
-              <div className="grid grid-cols-2 gap-3">
-                {investmentAccountList.length > 0 ? (
+              <div className="grid grid-cols-4 gap-2">
+                {TASK_TYPE_OPTIONS.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => mode === "create" ? handleTaskTypeChange(item.value) : undefined}
+                    disabled={mode === "edit"}
+                    className={`rounded-lg border px-2 py-2 text-center transition-colors ${
+                      formData.taskType === item.value
+                        ? "border-blue-200 bg-blue-50 text-blue-700"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    } disabled:cursor-not-allowed disabled:opacity-70`}
+                  >
+                    <div className="text-xs font-semibold">{item.label}</div>
+                  </button>
+                ))}
+              </div>
+
+              {isTransferTask ? (
+                <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    <SmartSelect mode="single" value={formData.accountId}
-                      onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
-                      options={investmentOptions}
-                      placeholder="选择账户"
-                      onCreateClick={() => setNestedEntityType("invest-account")}
-                      createLabel="新增账户"
-                      onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
-                      {displayAccountLabel}
-                    </div>
-                  </div>
-                )}
-                {cashAccountList.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">资金来源账户</div>
+                    <div className="text-xs font-medium text-slate-600">转出账户</div>
                     <SmartSelect mode="single" value={formData.cashAccountId}
                       onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
                       options={cashOptions}
-                      placeholder="选择账户"
+                      placeholder="选择转出账户"
                       onCreateClick={() => setNestedEntityType("cash-account")}
                       createLabel="新增账户"
                       onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
                   </div>
-                )}
-              </div>
 
-              {/* 基金代码和名称 */}
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">基金代码</div>
-                  {mode === "edit" ? (
-                    <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">{formData.fundCode}</div>
-                  ) : (
-                    <input
-                      value={formData.fundCode}
-                      onChange={(e) => setFormData(d => ({ ...d, fundCode: e.target.value }))}
-                      onBlur={handleFundCodeBlur}
-                      placeholder="6位代码"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    />
+                  <div className="flex flex-col items-center gap-1 pb-0.5">
+                    <div className="flex h-6 items-center justify-center text-emerald-600" title="资金方向">
+                      <ArrowRight className="h-4 w-4" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const fromId = formData.cashAccountId;
+                        const toId = formData.accountId;
+                        const nextTarget = transferTargetOptions.find((item) => item.id === fromId);
+                        setFormData(d => ({
+                          ...d,
+                          cashAccountId: toId,
+                          accountId: fromId,
+                          fundName: nextTarget?.label ?? d.fundName,
+                        }));
+                      }}
+                      disabled={!formData.cashAccountId && !formData.accountId}
+                      className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="互换转出/转入账户"
+                    >
+                      <ArrowLeftRight className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">转入账户</div>
+                    <SmartSelect mode="single" value={formData.accountId}
+                      onChange={(id) => setFormData(d => ({ ...d, accountId: id, fundName: transferTargetOptions.find((item) => item.id === id)?.label ?? "转账" }))}
+                      options={transferTargetOptions}
+                      placeholder="选择转入账户" />
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">
+                      {isFundTask ? "基金账户" : isLoanTask ? "贷款账户" : isInsuranceTask ? "保险产品" : "目标账户"}
+                    </div>
+                    {isFundTask ? (
+                      investmentAccountList.length > 0 ? (
+                        <SmartSelect mode="single" value={formData.accountId}
+                          onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                          options={investmentOptions}
+                          placeholder="选择基金账户"
+                          onCreateClick={() => setNestedEntityType("invest-account")}
+                          createLabel="新增账户"
+                          onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
+                      ) : (
+                        <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
+                          {displayAccountLabel}
+                        </div>
+                      )
+                    ) : isLoanTask ? (
+                      <SmartSelect mode="single" value={formData.accountId}
+                        onChange={(id) => setFormData(d => ({ ...d, accountId: id, fundName: loanOptions.find((item) => item.id === id)?.label ?? "还贷款" }))}
+                        options={loanOptions}
+                        placeholder="选择贷款账户" />
+                    ) : (
+                      <SmartSelect mode="single" value={formData.insuranceProductId}
+                        onChange={(id) => {
+                          const product = (insuranceProductOptions ?? []).find((item) => item.id === id);
+                          setFormData(d => ({
+                            ...d,
+                            insuranceProductId: id,
+                            accountId: product?.accountId ?? "",
+                            fundName: product?.label ?? "保险缴费",
+                          }));
+                        }}
+                        options={insuranceOptions}
+                        placeholder="选择保险产品" />
+                    )}
+                  </div>
+
+                  {cashAccountList.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">资金账户</div>
+                      <SmartSelect mode="single" value={formData.cashAccountId}
+                        onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                        options={cashOptions}
+                        placeholder="选择账户"
+                        onCreateClick={() => setNestedEntityType("cash-account")}
+                        createLabel="新增账户"
+                        onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
+                    </div>
                   )}
                 </div>
-                {mode === "create" && (
-                  <button
-                    type="button"
-                    onClick={() => fetchFundName(formData.fundCode)}
-                    disabled={nameLoading || !formData.fundCode}
-                    className="h-9 px-2 rounded-md border border-slate-200 bg-white text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 shrink-0"
-                  >
-                    {nameLoading ? "…" : "获取"}
-                  </button>
-                )}
-                {mode === "edit" && <div />}
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">
-                    基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
-                  </div>
-                  <input
-                    value={formData.fundName}
-                    onChange={(e) => setFormData(d => ({ ...d, fundName: e.target.value }))}
-                    placeholder={formData.fundCode?.length === 6 && !formData.fundName && !nameLoading ? "获取失败" : ""}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  />
-                </div>
-              </div>
+              )}
 
-              {/* 定投金额 + 手续费率 */}
-              <div className="grid grid-cols-2 gap-3">
+              {isFundTask && (
+                <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">基金代码</div>
+                    {mode === "edit" ? (
+                      <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">{formData.fundCode}</div>
+                    ) : (
+                      <input
+                        value={formData.fundCode}
+                        onChange={(e) => setFormData(d => ({ ...d, fundCode: e.target.value }))}
+                        onBlur={handleFundCodeBlur}
+                        placeholder="6位代码"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      />
+                    )}
+                  </div>
+                  {mode === "create" && (
+                    <button
+                      type="button"
+                      onClick={() => fetchFundName(formData.fundCode)}
+                      disabled={nameLoading || !formData.fundCode}
+                      className="h-9 px-2 rounded-md border border-slate-200 bg-white text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 shrink-0"
+                    >
+                      {nameLoading ? "…" : "获取"}
+                    </button>
+                  )}
+                  {mode === "edit" && <div />}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">
+                      基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
+                    </div>
+                    <input
+                      value={formData.fundName}
+                      onChange={(e) => setFormData(d => ({ ...d, fundName: e.target.value }))}
+                      placeholder={formData.fundCode?.length === 6 && !formData.fundName && !nameLoading ? "获取失败" : ""}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className={`grid gap-3 ${isFundTask ? "grid-cols-2" : "grid-cols-1"}`}>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">定投金额</div>
+                  <div className="text-xs font-medium text-slate-600">{isFundTask ? "基金定投金额" : "计划金额"}</div>
                   <input
                     inputMode="decimal"
                     value={formData.amount}
@@ -610,49 +767,52 @@ export function RegularInvestForm({
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   />
                 </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">手续费率 (%)</div>
-                  <input
-                    inputMode="decimal"
-                    step="0.001"
-                    value={formData.feeRate}
-                    onChange={(e) => setFormData(d => ({ ...d, feeRate: e.target.value }))}
-                    placeholder="默认0"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  />
-                </div>
+                {isFundTask && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">手续费率 (%)</div>
+                    <input
+                      inputMode="decimal"
+                      step="0.001"
+                      value={formData.feeRate}
+                      onChange={(e) => setFormData(d => ({ ...d, feeRate: e.target.value }))}
+                      placeholder="默认0"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                )}
               </div>
 
-              {/* 确认天数 + 入账天数 */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">确认天数 (T+N)</div>
-                  <input
-                    inputMode="numeric"
-                    min="0"
-                    value={formData.confirmDays}
-                    onChange={(e) => setFormData(d => ({ ...d, confirmDays: e.target.value }))}
-                    placeholder="1"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  />
+              {isFundTask && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">确认天数 (T+N)</div>
+                    <input
+                      inputMode="numeric"
+                      min="0"
+                      value={formData.confirmDays}
+                      onChange={(e) => setFormData(d => ({ ...d, confirmDays: e.target.value }))}
+                      placeholder="1"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">入账天数 (确认日+N日后入账)</div>
+                    <input
+                      inputMode="numeric"
+                      min="0"
+                      value={formData.arrivalDays}
+                      onChange={(e) => setFormData(d => ({ ...d, arrivalDays: e.target.value }))}
+                      placeholder="2"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">入账天数 (确认日+N日后入账)</div>
-                  <input
-                    inputMode="numeric"
-                    min="0"
-                    value={formData.arrivalDays}
-                    onChange={(e) => setFormData(d => ({ ...d, arrivalDays: e.target.value }))}
-                    placeholder="2"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  />
-                </div>
-              </div>
+              )}
 
-              {/* 定投间隔 + 周期数 + 执行日 */}
+              {/* 周期 + 周期数 + 执行日 */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">定投间隔</div>
+                  <div className="text-xs font-medium text-slate-600">周期</div>
                   <select
                     value={formData.intervalUnit}
                     onChange={(e) => setFormData(d => ({ ...d, intervalUnit: e.target.value }))}
@@ -745,13 +905,14 @@ export function RegularInvestForm({
                 />
               </div>
 
-              {/* 跳过间隙选项 */}
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input type="checkbox" checked={formData.skipPendingPreceding}
-                  onChange={(e) => setFormData(d => ({ ...d, skipPendingPreceding: e.target.checked }))}
-                  className="w-3.5 h-3.5 accent-blue-600" />
-                跳过暂停申购与无净值间隙
-              </label>
+              {isFundTask && (
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={formData.skipPendingPreceding}
+                    onChange={(e) => setFormData(d => ({ ...d, skipPendingPreceding: e.target.checked }))}
+                    className="w-3.5 h-3.5 accent-blue-600" />
+                  跳过暂停申购与无净值间隙
+                </label>
+              )}
 
               {/* 保存按钮 */}
               <div className="flex justify-end pt-1 gap-2">

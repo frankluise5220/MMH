@@ -7,6 +7,7 @@ import { defaultModel, localProvider } from "@/lib/ai/config";
 import { formatAccountDisplayName, formatDisplayInstitutionName } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,7 @@ type ImportContext = {
   accountMetaById: Map<string, { kind: AccountKind; billingDay: number | null }>;
   categoryIdByName: Map<string, string>;
   tagIdByName: Map<string, string>;
+  institutionIdByName: Map<string, string>;
   defaultAccountGroupId: string | null;
 };
 
@@ -65,8 +67,10 @@ const ParsedItemSchema = z.object({
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
   category: z.string().optional(),
+  institution: z.string().optional(),
   tags: z.string().optional(),
   remark: z.string().optional(),
+  secondRemark: z.string().optional(),
   counterparty: z.string().optional(),
 });
 
@@ -240,6 +244,7 @@ async function ensureDefaultAccountGroupId(ctx: ImportContext, tx: Db) {
 async function ensureAccountId(ctx: ImportContext, tx: Db, accountName?: string) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  if (name === "未指定账户" || name === "空白") return null;
   const existingId = await resolveAccountId(ctx, tx, name);
   if (existingId) return existingId;
   const groupId = await ensureDefaultAccountGroupId(ctx, tx);
@@ -285,6 +290,19 @@ function resolveTagIds(ctx: ImportContext, tags?: string) {
   return names.map((name) => ctx.tagIdByName.get(name)).filter((id): id is string => Boolean(id));
 }
 
+function normalizeInstitutionMatchKey(value?: string) {
+  return String(value ?? "")
+    .trim()
+    .replace(/[?.?\-?_\s]/g, "")
+    .toLowerCase();
+}
+
+function resolveInstitutionId(ctx: ImportContext, institutionName?: string) {
+  const raw = String(institutionName ?? "").trim();
+  if (!raw) return null;
+  return ctx.institutionIdByName.get(normalizeInstitutionMatchKey(raw)) ?? null;
+}
+
 async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: string) {
   const tagIds = resolveTagIds(ctx, tags);
   if (tagIds.length === 0) return;
@@ -305,7 +323,7 @@ function statementMonthForAccountMeta(ctx: ImportContext, accountId: string | nu
 
 async function buildImportContext(): Promise<ImportContext> {
   const { householdId } = await getHouseholdScope();
-  const [accounts, categories, tags, defaultGroup] = await Promise.all([
+  const [accounts, categories, tags, institutions, defaultGroup] = await Promise.all([
     prisma.account.findMany({
       where: { householdId },
       select: {
@@ -332,6 +350,10 @@ async function buildImportContext(): Promise<ImportContext> {
       where: { householdId },
       select: { id: true, name: true },
     }),
+    prisma.institution.findMany({
+      where: { householdId },
+      select: { id: true, name: true, shortName: true },
+    }),
     prisma.accountGroup.findFirst({
       where: { householdId, name: "未指定" },
       select: { id: true },
@@ -344,6 +366,7 @@ async function buildImportContext(): Promise<ImportContext> {
     accountMetaById: new Map(),
     categoryIdByName: new Map(),
     tagIdByName: new Map(),
+    institutionIdByName: new Map(),
     defaultAccountGroupId: defaultGroup?.id ?? null,
   };
 
@@ -357,12 +380,22 @@ async function buildImportContext(): Promise<ImportContext> {
   for (const tag of tags) {
     ctx.tagIdByName.set(tag.name, tag.id);
   }
+  for (const institution of institutions) {
+    const fullName = String(institution.name ?? "").trim();
+    const shortName = String(institution.shortName ?? "").trim();
+    if (fullName) ctx.institutionIdByName.set(normalizeInstitutionMatchKey(fullName), institution.id);
+    if (shortName) ctx.institutionIdByName.set(normalizeInstitutionMatchKey(shortName), institution.id);
+  }
 
   return ctx;
 }
 
 async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: ParsedItem, defaultAccountName?: string) {
   const date = parseDate(item.date);
+  const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
+  const counterpartyInstitutionName = String(item.institution ?? "").trim() || null;
+  const rawSecondNote = String(item.secondRemark ?? "").trim();
+  const secondNote = rawSecondNote || counterpartyInstitutionName || null;
 
   const shouldUseDoubleEntry =
     item.type === "transfer" ||
@@ -405,6 +438,9 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         toAccountId,
         toAccountName: toAccountName || null,
         note: item.remark ?? item.rawText,
+        toNote: secondNote,
+        counterpartyInstitutionId,
+        counterpartyInstitutionName,
         statementMonth: fromStatementMonth,
         householdId: ctx.householdId,
         // Add fund fields for investment type
@@ -453,6 +489,9 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
       categoryId,
       categoryName: item.category ?? null,
       note: item.remark ?? item.rawText,
+      toNote: secondNote,
+      counterpartyInstitutionId,
+      counterpartyInstitutionName,
       statementMonth,
       householdId: ctx.householdId,
       // Add fund fields for investment type

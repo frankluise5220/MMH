@@ -384,6 +384,7 @@ export function TransactionFormModal({
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const [categoryId, setCategoryId] = useState("");
+  const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
   const [note, setNote] = useState("");
   const [toNote, setToNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
@@ -568,6 +569,7 @@ export function TransactionFormModal({
         accountId?: string;
         accountLabel?: string;
         categoryId?: string;
+        counterpartyInstitutionId?: string;
         fromAccountId?: string;
         toAccountId?: string;
         fundSubtype?: string;
@@ -593,6 +595,7 @@ export function TransactionFormModal({
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setNote(detail.note ?? "");
       setToNote(detail.toNote ?? "");
+      setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
       setSelectedTagIds(detail.tagIds ?? []);
       if (detail.type === "transfer") {
         const nextToAccountId = detail.toAccountId ?? "";
@@ -693,6 +696,7 @@ export function TransactionFormModal({
       formData.set("amount", amount);
       formData.set("note", note);
       formData.set("toNote", toNote);
+      formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
       if (editEntryId) formData.set("entryId", editEntryId);
     } else {
       formData = new FormData();
@@ -701,6 +705,7 @@ export function TransactionFormModal({
       formData.set("amount", amount);
       formData.set("note", note);
       formData.set("toNote", toNote);
+      formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
       if (editEntryId) formData.set("entryId", editEntryId);
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
@@ -834,7 +839,7 @@ export function TransactionFormModal({
 
       {open ? createPortal(
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
-          <div className="flex min-h-full items-start justify-center p-4 py-8">
+          <div className="flex min-h-full items-center justify-center p-4 py-8">
           <div className="modal-surface flex max-h-[90vh] w-full max-w-xl flex-col">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
@@ -1046,11 +1051,17 @@ export function TransactionFormModal({
                       <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">附件</div>
-                      <button type="button" className="secondary-button h-9 w-full justify-start gap-1.5 px-3 text-slate-400">
-                        <Paperclip className="w-3.5 h-3.5" />
-                        添加票据附件
-                      </button>
+                      <div className="form-label">收支机构</div>
+                      <SmartSelect
+                        mode="single"
+                        value={counterpartyInstitutionId}
+                        onChange={setCounterpartyInstitutionId}
+                        options={(nestedFieldData?.institutionId ?? [])
+                          .filter((item) => (item.type ?? "") !== "insurance")
+                          .map((item) => ({ id: item.id, label: item.name }))}
+                        placeholder="可选"
+                        searchable
+                      />
                     </div>
                   </div>
 
@@ -1243,5 +1254,3 @@ export function TransactionFormModal({
     </>
   );
 }
-
-

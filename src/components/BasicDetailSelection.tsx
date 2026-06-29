@@ -9,6 +9,7 @@ type SelectionContextValue = {
   selectedIds: Set<string>;
   toggleOne: (id: string) => void;
   toggleAll: (ids: string[]) => void;
+  setSelection: (ids: Set<string>) => void;
   clear: () => void;
   deleteMessage: string;
   setDeleteMessage: (msg: string) => void;
@@ -34,7 +35,7 @@ const typeOptions = [
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
 
-function useSelection() {
+export function useBasicDetailSelection() {
   const ctx = useContext(SelectionContext);
   if (!ctx) throw new Error("BasicDetailSelection components must be used inside BasicDetailSelectionProvider");
   return ctx;
@@ -66,6 +67,7 @@ export function BasicDetailSelectionProvider({ children }: { children: ReactNode
         return next;
       });
     },
+    setSelection: (ids: Set<string>) => setSelectedIds(new Set(ids)),
     clear: () => {
       setSelectedIds(new Set());
       setDeleteMessage("");
@@ -77,7 +79,7 @@ export function BasicDetailSelectionProvider({ children }: { children: ReactNode
 }
 
 export function BasicDetailSelectAll({ ids }: { ids: string[] }) {
-  const { selectedIds, toggleAll } = useSelection();
+  const { selectedIds, toggleAll } = useBasicDetailSelection();
   const checked = ids.length > 0 && ids.every((id) => selectedIds.has(id));
   const indeterminate = !checked && ids.some((id) => selectedIds.has(id));
 
@@ -96,7 +98,7 @@ export function BasicDetailSelectAll({ ids }: { ids: string[] }) {
 }
 
 export function BasicDetailRowCheckbox({ id }: { id: string }) {
-  const { selectedIds, toggleOne } = useSelection();
+  const { selectedIds, toggleOne } = useBasicDetailSelection();
 
   return (
     <input
@@ -110,7 +112,7 @@ export function BasicDetailRowCheckbox({ id }: { id: string }) {
 }
 
 export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptions: AccountOption[] }) {
-  const { selectedIds, clear } = useSelection();
+  const { selectedIds, clear } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
   const fields = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => [
     { value: "date", label: fieldLabels.date, kind: "date" },
@@ -149,7 +151,7 @@ export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptio
 }
 
 export function BasicDetailBatchDeleteButton() {
-  const { selectedIds, clear, setDeleteMessage } = useSelection();
+  const { selectedIds, clear, setDeleteMessage } = useBasicDetailSelection();
   const [submitting, setSubmitting] = useState(false);
   const selectedCount = selectedIds.size;
   const disabled = selectedCount === 0 || submitting;
@@ -198,7 +200,7 @@ export function BasicDetailBatchDeleteButton() {
 
 
 export function BasicDetailBatchDeleteMessage() {
-  const { deleteMessage } = useSelection();
+  const { deleteMessage } = useBasicDetailSelection();
   if (!deleteMessage) return null;
   return (
     <div className="px-4 py-2 bg-rose-50 border-b border-rose-100 text-xs text-rose-600">

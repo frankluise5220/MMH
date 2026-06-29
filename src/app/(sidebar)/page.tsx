@@ -5,7 +5,6 @@ import { cookies } from "next/headers";
 import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { kindLabel } from "@/lib/account-kinds";
 import { EntryRowActions } from "@/components/EntryRowActions";
-import { BasicDetailBatchDeleteButton, BasicDetailBatchReplaceButton, BasicDetailRowCheckbox, BasicDetailSelectAll, BasicDetailSelectionProvider, BasicDetailBatchDeleteMessage } from "@/components/BasicDetailSelection";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
@@ -17,16 +16,18 @@ import { DebtShell } from "@/components/DebtShell";
 import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { FundShell } from "@/components/FundShell";
 import { DepositShell } from "@/components/DepositShell";
+import { InsuranceShell } from "@/components/InsuranceShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
-import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
+import { type DetailEntry } from "@/components/DetailViewClient";
+import { BasicDetailPanel } from "@/components/BasicDetailPanel";
+import { CreditBillSummaryTable, type CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 import EditBillAmount from "@/components/EditBillAmount";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload } from "lucide-react";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
@@ -44,6 +45,7 @@ import { debtActionLabel } from "@/lib/debt";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import {
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
@@ -67,7 +69,7 @@ function formatType(type: string) {
 import { subtypeDisplay } from "@/lib/investment-config";
 import { LinkDateRangeFilter, LinkNumberRangeFilter, LinkTableColumnFilter } from "@/components/TableColumnFilter";
 
-type DetailFilterColumn = "date" | "flow" | "type" | "related" | "remark";
+type DetailFilterColumn = "date" | "flow" | "type" | "category" | "related" | "remark";
 
 const DETAIL_EMPTY_VALUE = "(空)";
 const DETAIL_FILTER_SEPARATOR = "\u001F";
@@ -75,6 +77,7 @@ const DETAIL_FILTER_PARAM_BY_COLUMN: Record<DetailFilterColumn, string> = {
   date: "detailFilterDate",
   flow: "detailFilterFlow",
   type: "detailFilterType",
+  category: "detailFilterCategory",
   related: "detailFilterRelated",
   remark: "detailFilterRemark",
 };
@@ -1728,6 +1731,7 @@ export default async function Home({
     detailFilterDate?: string;
     detailFilterFlow?: string;
     detailFilterType?: string;
+    detailFilterCategory?: string;
     detailFilterRelated?: string;
     detailFilterRemark?: string;
     detailDateFrom?: string;
@@ -1766,8 +1770,8 @@ export default async function Home({
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const hideZeroBills = params?.hideZeroBills === "1";
   const hideSettledBills = params?.hideSettledBills === "1";
-  const billMonthsLimitParam = typeof params?.billMonthsLimit === "string" ? parseInt(params.billMonthsLimit, 10) : 999;
-  const billMonthsLimit = Number.isFinite(billMonthsLimitParam) && billMonthsLimitParam > 0 ? billMonthsLimitParam : 999;
+  const showRecentBillCycles = params?.billMonthsLimit !== "all";
+  const billMonthsLimit = showRecentBillCycles ? 10 : 9999;
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
   const billPage = Number.isFinite(billPageParam) && billPageParam >= 1 ? billPageParam : 1;
   const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 20;
@@ -1785,6 +1789,7 @@ export default async function Home({
     date: parseDetailFilterParam(params?.detailFilterDate),
     flow: parseDetailFilterParam(params?.detailFilterFlow),
     type: parseDetailFilterParam(params?.detailFilterType),
+    category: parseDetailFilterParam(params?.detailFilterCategory),
     related: parseDetailFilterParam(params?.detailFilterRelated),
     remark: parseDetailFilterParam(params?.detailFilterRemark),
   };
@@ -1834,7 +1839,8 @@ export default async function Home({
     selectedAccount?.kind === AccountKind.bank_credit &&
     !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" | "deposit" =
+  const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
       : viewParam
@@ -1843,12 +1849,14 @@ export default async function Home({
           ? "bill"
           : isDepositView
             ? "deposit"
+          : isInsuranceView
+            ? "insurance"
           : isInvestAccount
             ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund")
             : isOverview
               ? "overview"
               : "detail";
-  const needsDetailEntries = view === "detail" || view === "deposit";
+  const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance";
 
   const legacyNames = (() => {
     if (!selectedAccount) return [];
@@ -1879,9 +1887,38 @@ export default async function Home({
           },
         };
 
+  const insuranceProductsForAccount =
+    view === "insurance" && selectedAccount
+      ? await prisma.insuranceProduct.findMany({
+          where: { ...hidFilter, accountId: selectedAccount.id },
+          include: { InsuredUser: true },
+          orderBy: [{ name: "asc" }],
+        })
+      : [];
+  const insuranceProductIdsForAccount = insuranceProductsForAccount.map((product) => product.id);
+
   const rawEntries = needsDetailEntries
     ? accountId
-      ? await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
+      ? view === "insurance" && selectedAccount
+        ? await prisma.txRecord.findMany({
+            where: {
+              ...hid,
+              deletedAt: null,
+              type: "investment",
+              source: "insurance",
+              OR: [
+                { accountId },
+                { toAccountId: accountId },
+                ...(insuranceProductIdsForAccount.length > 0
+                  ? [{ insuranceProductId: { in: insuranceProductIdsForAccount } }]
+                  : []),
+              ],
+            },
+            include: { EntryTag: { include: { Tag: true } } },
+            orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+            take: 5000,
+          })
+        : await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
       : await prisma.txRecord.findMany({
           where,
           include: { EntryTag: { include: { Tag: true } } },
@@ -1906,6 +1943,7 @@ export default async function Home({
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
     if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
     if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
+    if (column === "category") return (e.categoryName ?? "").trim() || DETAIL_EMPTY_VALUE;
     if (column === "related") {
       const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
       return related.trim() || DETAIL_EMPTY_VALUE;
@@ -1916,6 +1954,7 @@ export default async function Home({
     date: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "date")))).sort(detailFilterSort),
     flow: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "flow")))).sort(detailFilterSort),
     type: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "type")))).sort(detailFilterSort),
+    category: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "category")))).sort(detailFilterSort),
     related: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "related")))).sort(detailFilterSort),
     remark: Array.from(new Set(entries.map((e) => getDetailFilterColumnValue(e, "remark")))).sort(detailFilterSort),
   };
@@ -1977,7 +2016,6 @@ export default async function Home({
   });
   const detailTotalPages = Math.max(1, Math.ceil(filteredEntries2.length / pageSize));
   const safeDetailPage = detailAll ? 1 : Math.min(detailPage, detailTotalPages);
-  const pagedEntries = detailAll ? filteredEntries2 : filteredEntries2.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
   const normalExportRows = (() => {
     const rows = [["日期", "类型", "流出", "流入", "账户", "对向账户", "备注"]];
     for (const e of filteredEntries2) {
@@ -2082,6 +2120,7 @@ export default async function Home({
       const accountLabel = display.label;
       if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
       if (isDepositAccount(selectedAccount)) return `存款 / ${accountLabel}`;
+      if (selectedAccount.kind === AccountKind.insurance) return `保险 / ${accountLabel}`;
       const group = (selectedAccount.AccountGroup?.name ?? "").trim();
       return [group, accountLabel].filter(Boolean).join(" / ");
     }
@@ -2405,9 +2444,53 @@ export default async function Home({
       }
     : undefined;
 
+  const creditBillNow = new Date();
+  const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+  const persistedCyclesInitial = isBillAccount && selectedAccount
+    ? await prisma.creditCardCycle.findMany({
+        where: { accountId: selectedAccount.id },
+        orderBy: { statementMonth: "desc" },
+      })
+    : [];
+  const billOverrides = isBillAccount && selectedAccount
+    ? await prisma.billOverride.findMany({
+        where: { accountId: selectedAccount.id },
+        orderBy: { statementMonth: "desc" },
+      })
+    : [];
+  const latestBillTxUpdatedAt = isBillAccount && selectedAccount && billScope
+    ? await prisma.txRecord.findFirst({
+        where: { AND: [billScope] },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      })
+    : null;
+  const latestCycleUpdatedAt = persistedCyclesInitial.reduce<Date | null>(
+    (latest, cycle) => (!latest || cycle.updatedAt > latest ? cycle.updatedAt : latest),
+    null,
+  );
+  const latestOverrideUpdatedAt = billOverrides.reduce<Date | null>(
+    (latest, override) => (!latest || override.updatedAt > latest ? override.updatedAt : latest),
+    null,
+  );
+  const creditCycleCacheStale = !!(
+    isBillAccount &&
+    selectedAccount &&
+    (
+      persistedCyclesInitial.length === 0 ||
+      !showRecentBillCycles ||
+      !latestCycleUpdatedAt ||
+      latestCycleUpdatedAt < todayUtcStart ||
+      (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
+      (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)
+    )
+  );
+
   const availableBillMonths =
     isBillAccount && selectedAccount
-      ? await prisma.txRecord
+      ? (!creditCycleCacheStale && persistedCyclesInitial.length > 0
+          ? persistedCyclesInitial.map((cycle) => cycle.statementMonth)
+          : await prisma.txRecord
           .groupBy({
             by: ["statementMonth"],
             where: {
@@ -2418,7 +2501,7 @@ export default async function Home({
             _count: { _all: true },
             orderBy: { statementMonth: "desc" },
           })
-          .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m))
+          .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m)))
       : [];
 
   const selectedBillMonth = /^(\d{4})-(\d{2})$/.test(billMonthParam) ? billMonthParam : "";
@@ -2427,13 +2510,30 @@ export default async function Home({
     isBillAccount && selectedAccount?.billingDay
       ? await (async () => {
           const base = selectedBillMonth
-            ? cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, new Date())
-            : creditCardCycle(new Date(), selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
+            ? cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow)
+            : creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
           if (!base) return null;
 
           const { start, end, due, today, isCurrentCycle } = base;
           const repayEnd = due && due.getTime() < today.getTime() ? due : today;
           const statementMonth = selectedBillMonth || toStatementMonth(end, selectedAccount.billingDay ?? 1);
+          const cachedCycle = !creditCycleCacheStale
+            ? persistedCyclesInitial.find((cycle) => cycle.statementMonth === statementMonth)
+            : null;
+          if (cachedCycle) {
+            return {
+              start: cachedCycle.periodStart,
+              end: cachedCycle.periodEnd,
+              due: cachedCycle.dueDate,
+              repayEnd,
+              bill: Number(cachedCycle.rawBill),
+              paid: Number(cachedCycle.paid),
+              remain: Number(cachedCycle.cumulativeRemain),
+              overpaid: Number(cachedCycle.cumulativeOverpaid),
+              statementMonth,
+              isCurrentCycle: cachedCycle.isCurrentCycle,
+            };
+          }
 
           const cycleMatch = {
             OR: statementMonth
@@ -2500,7 +2600,7 @@ export default async function Home({
 
   const currentStatementMonth = (() => {
     if (!isBillAccount || !selectedAccount?.billingDay) return "";
-    const base = creditCardCycle(new Date(), selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
+    const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
     if (!base) return "";
     return toStatementMonth(base.end, selectedAccount.billingDay ?? 1);
   })();
@@ -2566,9 +2666,12 @@ export default async function Home({
       }
     }
 
-    return Array.from(months)
-      .sort((a, b) => b.localeCompare(a))
-      .slice(0, billMonthsLimit);
+    const sortedMonths = Array.from(months).sort((a, b) => b.localeCompare(a));
+    const limitedMonths = sortedMonths.slice(0, billMonthsLimit);
+    if (showRecentBillCycles && selectedBillMonth && !limitedMonths.includes(selectedBillMonth)) {
+      limitedMonths.push(selectedBillMonth);
+    }
+    return limitedMonths;
   })();
 
   const billMonthsForCumulative = (() => {
@@ -2592,11 +2695,27 @@ export default async function Home({
     return full;
   })();
 
+  const persistedBillSummariesAll = persistedCyclesInitial.map((cycle) => ({
+    month: cycle.statementMonth,
+    start: cycle.periodStart,
+    end: cycle.periodEnd,
+    due: cycle.dueDate,
+    bill: Number(cycle.rawBill),
+    paid: Number(cycle.paid),
+    remain: Number(cycle.cumulativeRemain),
+    overpaid: Number(cycle.cumulativeOverpaid),
+    expenseAbs: Number(cycle.expenseAbs),
+    income: Number(cycle.income),
+    isCurrentCycle: cycle.isCurrentCycle,
+  }));
+
   const billSummariesAll =
-    isBillAccount && selectedAccount?.billingDay && billMonthsForCumulative.length
+    !creditCycleCacheStale
+      ? persistedBillSummariesAll.filter((summary) => billMonthsForCumulative.includes(summary.month))
+      : isBillAccount && selectedAccount?.billingDay && billMonthsForCumulative.length
       ? await Promise.all(
           billMonthsForCumulative.map(async (m) => {
-            const base = cycleForStatementMonth(m, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, new Date());
+            const base = cycleForStatementMonth(m, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
             if (!base) return null;
 
             const { start, end, due, today, isCurrentCycle } = base;
@@ -2678,33 +2797,59 @@ export default async function Home({
 
   const billSummaryByMonth = new Map(billSummariesAll.map((s) => [s.month, s]));
 
-  const billOverrides = isBillAccount && selectedAccount
-    ? await prisma.billOverride.findMany({
-        where: { accountId: selectedAccount.id },
-        orderBy: { statementMonth: "desc" },
-      })
-    : [];
   const billSummaries = fillMissingCreditBillSummaries({
     months: billMonthsForList,
     summaryByMonth: billSummaryByMonth,
     billingDay: selectedAccount?.billingDay ?? 1,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
-    now: new Date(),
+    now: creditBillNow,
   });
 
+  const cachedOverrideByMonth = new Map<string, number>(
+    billOverrides
+      .filter((override) => !!override.statementMonth)
+      .map((override) => [override.statementMonth, Number(override.amount)]),
+  );
+  const cachedEffectiveBillByMonth = new Map<string, number>(
+    persistedCyclesInitial.map((cycle) => [cycle.statementMonth, Number(cycle.effectiveBill)]),
+  );
+  const cachedCumulativeByMonth = new Map<string, { cumulativeRemain: number; cumulativeOverpaid: number }>(
+    persistedCyclesInitial.map((cycle) => [
+      cycle.statementMonth,
+      {
+        cumulativeRemain: Number(cycle.cumulativeRemain),
+        cumulativeOverpaid: Number(cycle.cumulativeOverpaid),
+      },
+    ]),
+  );
+  const creditCascade = !creditCycleCacheStale
+    ? {
+        overrideByMonth: cachedOverrideByMonth,
+        allMonthsForCascade: persistedCyclesInitial
+          .filter((cycle) => billMonthsForCumulative.includes(cycle.statementMonth))
+          .sort((a, b) => a.statementMonth.localeCompare(b.statementMonth))
+          .map((cycle) => ({
+            month: cycle.statementMonth,
+            bill: Number(cycle.rawBill),
+            paid: Number(cycle.paid),
+          })),
+        effectiveBillByMonth: cachedEffectiveBillByMonth,
+        cumulativeByMonth: cachedCumulativeByMonth,
+      }
+    : computeCreditBillCascade({
+        monthsForCascade: billMonthsForCumulative,
+        summaryByMonth: billSummaryByMonth,
+        overrides: billOverrides.map((override) => ({
+          statementMonth: override.statementMonth,
+          amount: Number(override.amount),
+        })),
+      });
   const {
     overrideByMonth,
     allMonthsForCascade,
     effectiveBillByMonth,
     cumulativeByMonth,
-  } = computeCreditBillCascade({
-    monthsForCascade: billMonthsForCumulative,
-    summaryByMonth: billSummaryByMonth,
-    overrides: billOverrides.map((override) => ({
-      statementMonth: override.statementMonth,
-      amount: Number(override.amount),
-    })),
-  });
+  } = creditCascade;
   const creditCardCyclePersistRows = buildCreditCardCyclePersistRows({
     billingDay: selectedAccount?.billingDay ?? 1,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
@@ -2713,10 +2858,10 @@ export default async function Home({
     effectiveBillByMonth,
     cumulativeByMonth,
     overrideByMonth,
-    now: new Date(),
+    now: creditBillNow,
   });
 
-  if (isBillAccount && selectedAccount) {
+  if (creditCycleCacheStale && isBillAccount && selectedAccount) {
     await Promise.all(
       creditCardCyclePersistRows.map(async (row) => {
         await prisma.creditCardCycle.upsert({
@@ -2764,12 +2909,12 @@ export default async function Home({
     cumulativeByMonth,
   );
 
-  const persistedCycles = isBillAccount && selectedAccount
+  const persistedCycles = creditCycleCacheStale && isBillAccount && selectedAccount
     ? await prisma.creditCardCycle.findMany({
         where: { accountId: selectedAccount.id },
         orderBy: { statementMonth: "desc" },
       })
-    : [];
+    : persistedCyclesInitial;
 
   const displayBillRows = (() => {
     if (isBillAccount) {
@@ -2801,7 +2946,16 @@ export default async function Home({
   const billListPageSize = 12;
   const totalPages = Math.ceil(displayBillRows.length / billListPageSize);
   const currentPage = Math.min(billPage, totalPages || 1);
-  const pagedBillSummaries = displayBillRows.slice((currentPage - 1) * billListPageSize, currentPage * billListPageSize);
+  const creditBillSummaryRows: CreditBillSummaryRow[] = displayBillRows.map((s) => ({
+    month: s.month,
+    periodLabel: `${mdUtcDots(s.start)} ~ ${mdUtcDots(s.end)}`,
+    dueLabel: s.due ? ymdUtc(s.due) : "-",
+    expenseAbs: s.expenseAbs,
+    income: s.income,
+    effectiveBill: s.effectiveBill,
+    isCurrentCycle: s.isCurrentCycle,
+    hasOverride: billOverrides.some((o) => o.statementMonth === s.month),
+  }));
 
   const creditBillMonth = creditCardBill?.statementMonth ?? "";
 
@@ -2901,15 +3055,6 @@ export default async function Home({
     mutate?.(q);
     return `/?${q.toString()}`;
   };
-  const hrefAllDetails = withDetailParams((q) => {
-    q.set("detailAll", "1");
-    q.delete("detailPage");
-  });
-  const hrefPagedDetails = withDetailParams((q) => {
-    q.delete("detailAll");
-    q.set("detailPage", "1");
-  });
-
   const renderDetailFilterHeader = (column: DetailFilterColumn, label: string, className: string) => {
     const activeValues = detailColumnFilters[column];
     const options = detailFilterOptions[column];
@@ -2995,8 +3140,8 @@ export default async function Home({
     );
   };
 
-  // Convert pagedEntries to serializable format for DetailViewClient
-  const pagedDetailEntries: DetailEntry[] = (pagedEntries || []).map((e) => ({
+  // Convert filtered entries to serializable format for client-side detail paging.
+  const allDetailEntries: DetailEntry[] = (filteredEntries2 || []).map((e) => ({
     id: e.id,
     date: entryDisplayDate(e).toISOString().slice(0, 10),
     createdAt: toIsoOrNull(e.createdAt),
@@ -3007,6 +3152,8 @@ export default async function Home({
     categoryName: e.categoryName,
     accountId: e.accountId,
     accountName: e.accountName,
+    counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
+    counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
     toAccountId: e.toAccountId,
     toAccountName: e.toAccountName,
     note: e.note,
@@ -3015,6 +3162,7 @@ export default async function Home({
     fundCode: e.fundCode,
     fundName: e.fundName,
     source: e.source,
+    insuranceProductId: e.insuranceProductId ?? null,
     depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
     fundProductType: e.fundProductType,
@@ -3029,6 +3177,9 @@ export default async function Home({
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
     })),
   }));
+  const pagedDetailEntries: DetailEntry[] = detailAll
+    ? allDetailEntries
+    : allDetailEntries.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
 
   const depositEntries =
     view === "deposit"
@@ -3068,6 +3219,90 @@ export default async function Home({
             },
           };
         })
+      : [];
+
+  const insuranceEntries =
+    view === "insurance"
+      ? (pagedDetailEntries || [])
+          .filter((entry) => entry.source === "insurance")
+          .map((entry) => {
+            const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+            const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const amount = isRedeemEntry ? Math.abs(toNumber(entry.amount)) : -Math.abs(toNumber(entry.amount));
+            return {
+              id: entry.id,
+              date: entry.date,
+              typeLabel: isRedeemEntry ? "赎回" : "投保",
+              productName: entry.fundName ?? "",
+              cashAccountLabel,
+              note: entry.note ?? "",
+              amount,
+              edit: {
+                type: "investment" as const,
+                date: entry.date,
+                amount: Math.abs(toNumber(entry.amount)),
+                note: entry.note ?? "",
+                accountId: entry.accountId ?? "",
+                cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
+                insuranceProductId: (entry as { insuranceProductId?: string | null }).insuranceProductId ?? null,
+                fundName: entry.fundName ?? undefined,
+                fundProductType: "wealth",
+                fundSubtype: entry.fundSubtype ?? undefined,
+                source: "insurance",
+              },
+            };
+          })
+      : [];
+
+  const insuranceHoldings =
+    view === "insurance" && selectedAccount
+      ? insuranceProductsForAccount.map((product) => {
+          const relatedEntries = insuranceEntries.filter(
+            (entry) => entry.edit?.insuranceProductId === product.id,
+          );
+          const sortedEntries = [...relatedEntries].sort((a, b) => a.date.localeCompare(b.date));
+          const metricMode = getInsuranceMetricMode(product.productType, product.accountingType, product.cashValueEnabled);
+          const balance = relatedEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          const totalPremium = relatedEntries
+            .filter((entry) => entry.amount < 0)
+            .reduce((sum, entry) => sum + Math.abs(entry.amount), 0);
+          const coverageAmount = Number(product.coverageAmount ?? 0);
+          return {
+            id: product.id,
+            label: product.name,
+            startDate: sortedEntries[0]?.date ?? null,
+            insuredUserName: product.InsuredUser?.name ?? "",
+            displayTypeLabel: getInsuranceDisplayTypeLabel(metricMode),
+            cashValueLabel: getInsuranceMetricLabel(metricMode),
+            cashValue: metricMode === "coverage" ? null : balance,
+            coverageAmount,
+            totalPremium,
+            statusLabel:
+              product.status === "matured"
+                ? "已满期"
+                : product.status === "surrendered"
+                  ? "已退保"
+                  : product.status === "lapsed"
+                    ? "已失效"
+                    : "保障中",
+            status: product.status,
+            frequencyLabel:
+              product.premiumFrequencyMonths === 1
+                ? "每月"
+                : product.premiumFrequencyMonths === 3
+                  ? "每季"
+                  : product.premiumFrequencyMonths === 6
+                    ? "每半年"
+                    : product.premiumFrequencyMonths === 12
+                      ? "每年"
+                      : product.premiumFrequencyMonths === 999999
+                        ? "趸交"
+                        : "-",
+            paymentTermYears: product.paymentTermYears ? Number(product.paymentTermYears) : null,
+            coverageTermYears: product.coverageTermYears ? Number(product.coverageTermYears) : null,
+            relatedEntryIds: relatedEntries.map((entry) => entry.id),
+          };
+        }).filter((holding) => holding.relatedEntryIds.length > 0)
       : [];
 
   const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
@@ -3416,153 +3651,18 @@ export default async function Home({
                   </div>
                 ) : null}
                 {billSummariesWithCumulative.length > 0 ? (
-                  <div className="panel-surface overflow-hidden">
-                    <div className="panel-header">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-800">账单列表</span>
-                        <Link
-                          href={(() => {
-                            const q = new URLSearchParams(baseQuery);
-                            q.set("view", "bill");
-                            if (selectedAccount?.id) q.set("accountId", selectedAccount.id);
-                            if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
-                            if (hideZeroBills) q.set("hideZeroBills", "1");
-                            if (hideSettledBills) q.set("hideSettledBills", "1");
-                            return `/?${q.toString()}`;
-                          })()}
-                          prefetch={false}
-                          scroll={false}
-                          className="h-6 px-1.5 rounded border text-xs flex items-center border-blue-300 bg-blue-50 text-blue-700"
-                        >
-                          全部
-                        </Link>
-                        {totalPages > 1 && (
-                          <div className="flex items-center gap-0.5 ml-1">
-                            {currentPage > 1 ? (
-                              <>
-                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", "1"); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsLeft className="h-3.5 w-3.5" /></Link>
-                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage - 1)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronLeft className="h-3 w-3" /></Link>
-                              </>
-                            ) : null}
-                            <span className="text-xs text-slate-500 px-1">{currentPage}/{totalPages}</span>
-                            {currentPage < totalPages ? (
-                              <>
-                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(currentPage + 1)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-600 text-xs hover:bg-slate-50"><ChevronRight className="h-3 w-3" /></Link>
-                                <Link href={(() => { const q = new URLSearchParams(baseQuery); q.set("view", "bill"); if (selectedAccount?.id) q.set("accountId", selectedAccount.id); if (selectedBillMonth) q.set("billMonth", selectedBillMonth); if (hideZeroBills) q.set("hideZeroBills", "1"); if (hideSettledBills) q.set("hideSettledBills", "1"); q.set("billPage", String(totalPages)); return `/?${q.toString()}`; })()} prefetch={false} scroll={false} className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs hover:bg-slate-50"><ChevronsRight className="h-3 w-3" /></Link>
-                              </>
-                            ) : null}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Link
-                          href={(() => {
-                            const q = new URLSearchParams(baseQuery);
-                            q.set("view", "bill");
-                            if (selectedAccount?.id) q.set("accountId", selectedAccount.id);
-                            if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
-                            if (hideZeroBills) q.delete("hideZeroBills");
-                            else q.set("hideZeroBills", "1");
-                            if (hideSettledBills) q.set("hideSettledBills", "1");
-                            return `/?${q.toString()}`;
-                          })()}
-                          prefetch={false}
-                          scroll={false}
-                          className={`h-7 px-2 rounded-md border text-xs flex items-center ${
-                            hideZeroBills
-                              ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          隐藏 0 收支
-                        </Link>
-                        <Link
-                          href={(() => {
-                            const q = new URLSearchParams(baseQuery);
-                            q.set("view", "bill");
-                            if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
-                            if (hideZeroBills) q.set("hideZeroBills", "1");
-                            if (hideSettledBills) q.delete("hideSettledBills");
-                            else q.set("hideSettledBills", "1");
-                            return `/?${q.toString()}`;
-                          })()}
-                          prefetch={false}
-                          scroll={false}
-                          className={`h-7 px-2 rounded-md border text-xs flex items-center ${
-                            hideSettledBills
-                              ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          隐藏已还
-                        </Link>
-                      </div>
-                    </div>
-                    <div className="overflow-auto">
-                      <table className="w-full table-fixed border-separate border-spacing-0">
-                        <thead className="sticky top-0 z-10">
-                          <tr className="bg-white">
-                            <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">账单</th>
-                            <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">周期</th>
-                            <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">支出</th>
-                            <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">退/收入</th>
-                            <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">账单金额</th>
-                            <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">还款</th>
-                          </tr>
-                        </thead>
-                        <tbody className="text-sm">
-                          {pagedBillSummaries.map((s) => {
-                            const q = new URLSearchParams(baseQuery);
-                            q.set("view", "bill");
-                            q.set("billMonth", s.month);
-                            q.set("billPage", String(currentPage));
-                            if (selectedAccount?.id) q.set("accountId", selectedAccount.id);
-                            if (hideZeroBills) q.set("hideZeroBills", "1");
-                            if (hideSettledBills) q.set("hideSettledBills", "1");
-                            const href = `/?${q.toString()}`;
-                            const active = selectedBillMonth === s.month || creditCardBill?.statementMonth === s.month;
-                            return (
-                              <tr
-                                key={s.month}
-                                className={`hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`}
-                              >
-                                <td className="px-4 py-2 border-b border-slate-100">
-                                  <Link href={href} prefetch={false} scroll={false} className="block">
-                                    <span className={`text-xs font-semibold whitespace-nowrap ${s.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
-                                      {s.month}{s.isCurrentCycle ? "（未出账单）" : s.month === settledBillMonth ? "（本期账单）" : ""}
-                                    </span>
-                                  </Link>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100">
-                                  <Link href={href} prefetch={false} scroll={false} className="block">
-                                    <span className="text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                                      {mdUtcDots(s.start)} ~ {mdUtcDots(s.end)}
-                                    </span>
-                                  </Link>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <Link href={href} prefetch={false} scroll={false} className="block">
-                                    <span className="text-xs text-red-600">{formatMoney(s.expenseAbs)}</span>
-                                  </Link>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <Link href={href} prefetch={false} scroll={false} className="block">
-                                    <span className="text-xs text-emerald-700">{formatMoney(s.income)}</span>
-                                  </Link>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={s.month} currentAmount={s.effectiveBill} hasOverride={billOverrides.some((o) => o.statementMonth === s.month)} displayMultiplier={-1} />
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100">
-                                  <Link href={href} prefetch={false} scroll={false} className="block">
-                                    <span className="text-xs text-slate-700 tabular-nums">{s.due ? ymdUtc(s.due) : "-"}</span>
-                                  </Link>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+                  <CreditBillSummaryTable
+                    accountId={selectedAccount?.id ?? ""}
+                    rows={creditBillSummaryRows}
+                    initialPage={currentPage}
+                    pageSize={billListPageSize}
+                    selectedBillMonth={selectedBillMonth}
+                    activeStatementMonth={creditCardBill?.statementMonth ?? ""}
+                    settledBillMonth={settledBillMonth}
+                    hideZeroBills={hideZeroBills}
+                    hideSettledBills={hideSettledBills}
+                    showRecentBillCycles={showRecentBillCycles}
+                  />
                 ) : null}
 
                 <div className="panel-surface overflow-hidden">
@@ -3741,6 +3841,13 @@ export default async function Home({
               entries={depositEntries}
               lots={depositLots}
             />
+          ) : view === "insurance" && selectedAccount ? (
+            <InsuranceShell
+              accountLabel={selectedAccountLabel}
+              institutionName={selectedAccount.Institution?.name ?? ""}
+              holdings={insuranceHoldings}
+              entries={insuranceEntries}
+            />
           ) : view === "investmoney" && investmoneyData ? (
             <FundShell
               key={`investmoney-${accountId}`}
@@ -3808,156 +3915,21 @@ export default async function Home({
           ) : (
             <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
               <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
-                <BasicDetailSelectionProvider>
-                <BasicDetailBatchDeleteMessage />
-                <div className="panel-header shrink-0">
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-semibold text-slate-800">资金明细</div>
-                    <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
-                      <Upload className="w-3 h-3" />导入
-                    </Link>
-                    <a href={normalExportHref} download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
-                      <Download className="w-3 h-3" />导出
-                    </a>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-xs text-slate-600">共 {filteredEntries2.length} 条{hasDetailFilters ? ` / 原 ${entries.length} 条` : ""}</span>
-                    <span className="text-xs text-slate-400 mx-1">|</span>
-                    <span className="text-xs text-slate-600">每页</span>
-                    {[10, 20, 40].map((n) => {
-                      const href = withDetailParams((q) => { q.set("pageSize", String(n)); q.set("detailPage", "1"); q.delete("detailAll"); });
-                      const active = !detailAll && pageSize === n;
-                      return <a key={n} href={href} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${active ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>{n}</a>;
-                    })}
-                    <a href={hrefAllDetails} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${detailAll ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`} title="当前账户全部记录不分页显示">全部</a>
-                    <span className="text-xs text-slate-600">条</span>
-                    <span className="text-slate-400">|</span>
-                    {!detailAll && safeDetailPage > 1 ? (
-                      <a href={withDetailParams((q) => { q.set("detailPage", "1"); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="第一页"><ChevronsLeft className="h-3.5 w-3.5"/></a>
-                    ) : (
-                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是第一页"}><ChevronsLeft className="h-3.5 w-3.5"/></span>
-                    )}
-                    {!detailAll && safeDetailPage > 1 ? (
-                      <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage - 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="上一页"><ChevronLeft className="h-3.5 w-3.5"/></a>
-                    ) : (
-                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是第一页"}><ChevronLeft className="h-3.5 w-3.5"/></span>
-                    )}
-                    <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? "全部" : `${safeDetailPage}/${detailTotalPages}`}</span>
-                    {!detailAll && safeDetailPage < detailTotalPages ? (
-                      <a href={withDetailParams((q) => { q.set("detailPage", String(safeDetailPage + 1)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50" title="下一页"><ChevronRight className="h-3.5 w-3.5"/></a>
-                    ) : (
-                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是最后一页"}><ChevronRight className="h-3.5 w-3.5"/></span>
-                    )}
-                    {!detailAll && safeDetailPage < detailTotalPages ? (
-                      <a href={withDetailParams((q) => { q.set("detailPage", String(detailTotalPages)); q.delete("detailAll"); })} className="h-7 w-7 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50" title="最后一页"><ChevronsRight className="h-3.5 w-3.5"/></a>
-                    ) : (
-                      <span className="h-7 w-7 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300 cursor-not-allowed" title={detailAll ? "全部模式" : "已是最后一页"}><ChevronsRight className="h-3.5 w-3.5"/></span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex-1 min-h-0 overflow-auto">
-                  <table className="min-w-[1050px] w-full table-fixed border-separate border-spacing-0">
-                    <colgroup>
-                      <col className="w-[36px]" />
-                      <col className="w-[90px]" />
-                      <col className="w-[90px]" />
-                      <col className="w-[90px]" />
-                      <col className="w-[78px]" />
-                      <col className="w-[140px]" />
-                      <col className="w-[96px]" />
-                      <col className="w-[96px]" />
-                      <col className="w-[140px]" />
-                      <col className="w-[60px]" />
-                      <col className="w-[80px]" />
-                    </colgroup>
-                    <thead className="sticky top-0 z-10 bg-white">
-                      <tr>
-                        <th className="w-9 px-3 py-2 border-b border-slate-200 text-left">
-                          <BasicDetailSelectAll ids={pagedEntries.map((e) => e.id)} />
-                        </th>
-                        {renderDetailFilterHeader("date", "日期", "text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200")}
-                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                          {(() => {
-                            const active = !!(detailInFrom || detailInTo);
-                            const clearHref = active ? withDetailParams((q) => {
-                              q.delete("detailInFrom");
-                              q.delete("detailInTo");
-                              q.set("detailPage", "1");
-                            }) : null;
-                            const current = new URLSearchParams(withDetailParams().slice(2));
-                            current.delete("detailInFrom");
-                            current.delete("detailInTo");
-                            current.set("detailPage", "1");
-                            const hiddenInputs = Array.from(current.entries()).map(([k, v]) => ({ name: k, value: v }));
-                            return (
-                              <LinkNumberRangeFilter
-                                label="流入"
-                                fromName="detailInFrom"
-                                toName="detailInTo"
-                                from={detailInFrom}
-                                to={detailInTo}
-                                badgeText={active ? "范围" : null}
-                                clearHref={clearHref}
-                                hiddenInputs={hiddenInputs}
-                                fromPlaceholder="例如 100"
-                                toPlaceholder="例如 1000"
-                              />
-                            );
-                          })()}
-                        </th>
-                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                          {(() => {
-                            const active = !!(detailOutFrom || detailOutTo);
-                            const clearHref = active ? withDetailParams((q) => {
-                              q.delete("detailOutFrom");
-                              q.delete("detailOutTo");
-                              q.set("detailPage", "1");
-                            }) : null;
-                            const current = new URLSearchParams(withDetailParams().slice(2));
-                            current.delete("detailOutFrom");
-                            current.delete("detailOutTo");
-                            current.set("detailPage", "1");
-                            const hiddenInputs = Array.from(current.entries()).map(([k, v]) => ({ name: k, value: v }));
-                            return (
-                              <LinkNumberRangeFilter
-                                label="流出"
-                                fromName="detailOutFrom"
-                                toName="detailOutTo"
-                                from={detailOutFrom}
-                                to={detailOutTo}
-                                badgeText={active ? "范围" : null}
-                                clearHref={clearHref}
-                                hiddenInputs={hiddenInputs}
-                                fromPlaceholder="例如 100"
-                                toPlaceholder="例如 1000"
-                              />
-                            );
-                          })()}
-                        </th>
-                        {renderDetailFilterHeader("type", view === "deposit" ? "存款类型" : "活动类型", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
-                        {renderDetailFilterHeader("related", "关联账户", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
-                        <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">余额</th>
-                        <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">标签</th>
-                        {renderDetailFilterHeader("remark", "备注", "text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200")}
-                        <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">附件</th>
-                        <th className="w-24 px-2 py-2 border-b border-slate-200 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <BasicDetailBatchReplaceButton accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))} />
-                            <BasicDetailBatchDeleteButton />
-                          </div>
-                        </th>
-                      </tr>
-                    </thead>
-                    <DetailViewClient
-                      accountId={accountId}
-                      isInvestAccount={isInvestAccount}
-                      initialEntries={pagedDetailEntries}
-                      accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))}
-                      investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
-                    />
-                  </table>
-                </div>
-                </BasicDetailSelectionProvider>
+                <BasicDetailPanel
+                  accountId={accountId}
+                  isInvestAccount={isInvestAccount}
+                  entries={allDetailEntries}
+                  originalCount={entries.length}
+                  hasDetailFilters={hasDetailFilters}
+                  initialPage={safeDetailPage}
+                  initialPageSize={pageSize}
+                  initialDetailAll={detailAll}
+                  normalExportHref={normalExportHref}
+                  normalExportFilename={normalExportFilename}
+                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))}
+                  investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
+                  compactRows={selectedAccount?.kind === AccountKind.bank_debit}
+                />
               </div>
             </div>
           )}

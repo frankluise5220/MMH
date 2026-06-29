@@ -82,7 +82,7 @@ export function RegularInvestCheckModal({ isOpen, onClose }: RegularInvestCheckM
       if (data.ok) {
         loadPlans();
       }
-    } catch (e) {
+    } catch {
       setExecResult({ ok: false, message: "执行失败", executedCount: 0, skippedCount: 0, details: [] });
     } finally {
       setExecuting(false);
@@ -99,7 +99,7 @@ export function RegularInvestCheckModal({ isOpen, onClose }: RegularInvestCheckM
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
       <div className="bg-white rounded-xl shadow-lg w-full max-w-lg mx-4 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-700">定投计划检查</h2>
+          <h2 className="text-sm font-semibold text-slate-700">计划任务检查</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
             ✕
           </button>
@@ -125,7 +125,7 @@ export function RegularInvestCheckModal({ isOpen, onClose }: RegularInvestCheckM
                           : "bg-orange-500 text-white hover:bg-orange-600"
                       }`}
                     >
-                      {executing ? "执行中..." : "执行定投"}
+                      {executing ? "执行中..." : "执行计划"}
                     </button>
                   </div>
                   <div className="bg-orange-50 border border-orange-100 rounded-lg p-2">
@@ -170,7 +170,7 @@ export function RegularInvestCheckModal({ isOpen, onClose }: RegularInvestCheckM
 
               {pendingPlans.length === 0 && !execResult && (
                 <div className="text-center py-4 text-slate-500 text-xs">
-                  当前没有待执行的定投计划
+                  当前没有待执行的计划任务
                 </div>
               )}
 
@@ -221,7 +221,7 @@ export function RegularInvestCheckModal({ isOpen, onClose }: RegularInvestCheckM
             onClick={() => window.location.href = "/regular-invest"}
             className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
           >
-            管理定投
+            管理计划
           </button>
         </div>
       </div>

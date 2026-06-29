@@ -1,11 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { EntryRowActions } from "./EntryRowActions";
-import { BasicDetailRowCheckbox } from "./BasicDetailSelection";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
+import {
+  BasicDetailBatchDeleteButton,
+  BasicDetailBatchReplaceButton,
+  useBasicDetailSelection,
+} from "./BasicDetailSelection";
 
 /* Types */
 
@@ -20,8 +25,12 @@ export type DetailEntry = {
   categoryName: string | null;
   accountId: string | null;
   accountName: string | null;
+  accountInstitutionName?: string | null;
+  counterpartyInstitutionId?: string | null;
+  counterpartyInstitutionName?: string | null;
   toAccountId: string | null;
   toAccountName: string | null;
+  toAccountInstitutionName?: string | null;
   note: string | null;
   toNote?: string | null;
   fundSubtype: string | null;
@@ -29,6 +38,7 @@ export type DetailEntry = {
   fundName: string | null;
   source: string | null;
   fundProductType: string | null;
+  insuranceProductId?: string | null;
   fundUnits: number | null;
   fundNav: number | null;
   depositAnnualRate?: number | null;
@@ -46,15 +56,15 @@ export type DetailEntry = {
 
 /* Helpers */
 
-function activityLabel(type: string, fundSubtype: string | null, source: string | null, amount: number): string {
+function activityLabel(type: string, fundSubtype: string | null, source: string | null): string {
   if (type === "investment" && fundSubtype) {
-    const info = subtypeLabelInfo(fundSubtype, source, amount);
+    const info = subtypeLabelInfo(fundSubtype, source);
     return info?.label ?? formatType(type);
   }
   return formatType(type);
 }
 
-function subtypeLabelInfo(subtype: string | null | undefined, source: string | null | undefined, _amount: number): { label: string; cls: string; textCls?: string } | { label: string } | null {
+function subtypeLabelInfo(subtype: string | null | undefined, source: string | null | undefined): { label: string; cls: string; textCls?: string } | { label: string } | null {
   if (!subtype) return null;
   if (source === "deposit" || source === "deposit_manual") {
     const depositLabels: Record<string, { label: string; cls: string }> = {
@@ -97,31 +107,31 @@ function formatType(type: string) {
 
 export function DetailViewClient({
   accountId,
-  isInvestAccount: _isInvestAccount,
   initialEntries,
   accountOptions,
   investmentProductTypeByAccountId,
+  compactRows = false,
 }: {
   accountId: string;
   isInvestAccount: boolean;
   initialEntries: DetailEntry[];
   accountOptions: Array<{ id: string; label: string }>;
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
+  compactRows?: boolean;
 }) {
-  const [entries, setEntries] = useState<DetailEntry[]>(() => []);
-  const [entriesKey, setEntriesKey] = useState(0);
+  const initialEntriesKey = useMemo(() => initialEntries.map((entry) => entry.id).join("|"), [initialEntries]);
+  const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; baseKey: string; entries: DetailEntry[] } | null>(null);
+  const entries =
+    refreshedEntries?.accountId === accountId && refreshedEntries.baseKey === initialEntriesKey
+      ? refreshedEntries.entries
+      : initialEntries;
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
       : getColorSchemeFromCookie(document.cookie ?? null);
   const inflowCls = pnlColor(1, colorScheme);
   const outflowCls = pnlColor(-1, colorScheme);
-
-  // When initialEntries change (account switch), reset entries
-  useEffect(() => {
-    setEntries(initialEntries);
-    setEntriesKey(k => k + 1);
-  }, [initialEntries]);
+  const { selectedIds, setSelection } = useBasicDetailSelection();
 
   // Listen for mmh:fund:refresh → re-fetch from detail API
   useEffect(() => {
@@ -130,40 +140,56 @@ export function DetailViewClient({
         .then((r) => r.json())
         .then((data) => {
           if (data?.ok && Array.isArray(data?.data?.entries)) {
-            setEntries(data.data.entries);
+            setRefreshedEntries({ accountId, baseKey: initialEntriesKey, entries: data.data.entries });
           }
         })
         .catch(() => {});
     };
     window.addEventListener("mmh:fund:refresh", handler);
     return () => window.removeEventListener("mmh:fund:refresh", handler);
-  }, [accountId]);
+  }, [accountId, initialEntriesKey]);
 
-  if (!entries.length) {
-    return (
-      <tbody className="text-sm">
-        <tr>
-          <td
-            className="px-4 py-6 text-xs text-slate-500"
-            colSpan={10}
-          >
-            暂无记录
-          </td>
-        </tr>
-      </tbody>
-    );
-  }
-
-  return (
-    <tbody className="text-sm">
-      {entries.map((e) => {
-        const dateStr = (e.date ?? "").slice(0, 10);
+  const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
+    {
+      key: "date",
+      label: "日期",
+      width: 96,
+      minWidth: 78,
+      filterText: (e) => (e.date ?? "").slice(0, 10),
+      render: (e) => <span className="tabular-nums text-slate-600">{(e.date ?? "").slice(0, 10)}</span>,
+    },
+    {
+      key: "inflow",
+      label: "流入",
+      width: 96,
+      minWidth: 76,
+      align: "right",
+      render: (e) => {
         const amount = toNumber(e.amount);
-        const effectiveAmount =
-          !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+        const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
+        return <span className={`tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>{inflow !== null ? formatMoney(inflow) : ""}</span>;
+      },
+    },
+    {
+      key: "outflow",
+      label: "流出",
+      width: 96,
+      minWidth: 76,
+      align: "right",
+      render: (e) => {
+        const amount = toNumber(e.amount);
+        const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
-        const bal = e.runningBalance != null ? toNumber(e.runningBalance) : null;
+        return <span className={`tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>{outflow !== null ? formatMoney(outflow) : ""}</span>;
+      },
+    },
+    {
+      key: "type",
+      label: "活动类型",
+      width: 96,
+      minWidth: 74,
+      filterText: (e) => {
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -171,15 +197,133 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const subtypeLabel = e.type === "investment" && e.fundSubtype
-          ? subtypeLabelInfo(e.fundSubtype, displaySource, amount)
+          ? subtypeLabelInfo(e.fundSubtype, displaySource)
+          : null;
+        return e.type === "investment" && e.fundSubtype
+          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource))
+          : activityLabel(e.type, e.fundSubtype, displaySource);
+      },
+      render: (e) => {
+        const dateStr = (e.date ?? "").slice(0, 10);
+        const entryFundProductType =
+          e.fundProductType ??
+          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
+          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
+          null;
+        const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
+        const subtypeLabel = e.type === "investment" && e.fundSubtype
+          ? subtypeLabelInfo(e.fundSubtype, displaySource)
           : null;
         const actLabel = e.type === "investment" && e.fundSubtype
-          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource, amount))
-          : activityLabel(e.type, e.fundSubtype, displaySource, amount);
-        const isRedeemEditEntry =
-          e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
-
-        // Edit payload for EntryRowActions
+          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource))
+          : activityLabel(e.type, e.fundSubtype, displaySource);
+        return (
+          <>
+            <span className="sr-only">{dateStr}</span>
+              {e.type === "investment" && subtypeLabel && "cls" in subtypeLabel ? (
+                <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${subtypeLabel.cls}`}>
+                  {subtypeLabel.label}
+                </span>
+              ) : (
+                <span className="text-xs text-slate-700">{actLabel}</span>
+              )}
+          </>
+        );
+      },
+    },
+    { key: "category", label: "分类", width: 140, minWidth: 90, filterText: (e) => e.categoryName ?? "", render: (e) => <span className="block truncate text-slate-500" title={e.categoryName ?? ""}>{e.categoryName ?? <span className="text-slate-300">-</span>}</span> },
+    {
+      key: "counterpartyInstitution",
+      label: "收支机构",
+      width: 140,
+      minWidth: 96,
+      hideable: true,
+      defaultHidden: true,
+      filterText: (e) => e.counterpartyInstitutionName ?? "",
+      render: (e) => <span className="block truncate text-slate-500" title={e.counterpartyInstitutionName ?? ""}>{e.counterpartyInstitutionName || <span className="text-slate-300">-</span>}</span>,
+    },
+    {
+      key: "related",
+      label: "关联账户",
+      width: 150,
+      minWidth: 100,
+      filterText: (e) => {
+        const isToAccount = !!accountId && e.toAccountId === accountId;
+        const sourceAccountLabel = accountOptions.find((a) => a.id === e.accountId)?.label ?? e.accountName;
+        const targetAccountLabel = e.toAccountId ? accountOptions.find((a) => a.id === e.toAccountId)?.label ?? e.toAccountName : null;
+        return isToAccount ? sourceAccountLabel ?? "" : targetAccountLabel ?? "";
+      },
+      render: (e) => {
+        const isToAccount = !!accountId && e.toAccountId === accountId;
+        const sourceAccountLabel = accountOptions.find((a) => a.id === e.accountId)?.label ?? e.accountName;
+        const targetAccountLabel = e.toAccountId ? accountOptions.find((a) => a.id === e.toAccountId)?.label ?? e.toAccountName : null;
+        const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
+        return <span className="block truncate text-slate-500" title={relatedAccountLabel ?? ""}>{relatedAccountLabel ?? <span className="text-slate-300">-</span>}</span>;
+      },
+    },
+    { key: "balance", label: "余额", width: 110, minWidth: 82, align: "right", render: (e) => <span className="text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatMoney(toNumber(e.runningBalance)) : ""}</span> },
+    {
+      key: "tags",
+      label: "标签",
+      width: 150,
+      minWidth: 90,
+      hideable: true,
+      filterText: (e) => e.entryTags?.map((et) => et.Tag?.name ?? "").join(" ") ?? "",
+      render: (e) => e.entryTags && e.entryTags.length > 0 ? (
+        <span className="inline-flex flex-wrap gap-0.5">
+          {e.entryTags.map((et) => {
+            const c = et.Tag?.color || "#3B82F6";
+            return (
+              <span
+                key={et.tagId}
+                className="rounded-full border px-1 py-0.5 text-[10px] leading-none"
+                style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}
+              >
+                {et.Tag?.name}
+              </span>
+            );
+          })}
+        </span>
+      ) : null,
+    },
+    {
+      key: "remark",
+      label: "备注",
+      width: 220,
+      minWidth: 120,
+      hideable: true,
+      filterText: (e) => e.note ?? "",
+      render: (e) => {
+        const text = e.note ?? "";
+        return <span className="block truncate text-slate-500" title={text}>{text}</span>;
+      },
+    },
+    {
+      key: "secondRemark",
+      label: "第二备注",
+      width: 180,
+      minWidth: 110,
+      hideable: true,
+      defaultHidden: true,
+      filterText: (e) => e.toNote ?? "",
+      render: (e) => <span className="block truncate text-slate-500" title={e.toNote ?? ""}>{e.toNote || <span className="text-slate-300">-</span>}</span>,
+    },
+    { key: "attachment", label: "附件", width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
+    {
+      key: "actions",
+      label: "操作",
+      width: 92,
+      minWidth: 76,
+      align: "right",
+      render: (e) => {
+        const dateStr = (e.date ?? "").slice(0, 10);
+        const amount = toNumber(e.amount);
+        const entryFundProductType =
+          e.fundProductType ??
+          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
+          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
+          null;
+        const isRedeemEditEntry = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
         const editPayload =
           e.type !== "investment"
             ? undefined
@@ -208,8 +352,7 @@ export function DetailViewClient({
                 cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId,
                 toAccountName: e.toAccountName,
                 fundArrivalDate: e.fundArrivalDate?.slice(0, 10),
-                fundArrivalAmount:
-                  e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+                fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
               };
         const otherEditPayload =
           e.type === "investment"
@@ -221,89 +364,51 @@ export function DetailViewClient({
                 type: e.type,
                 amount,
                 note: e.note ?? "",
+                toNote: e.toNote ?? "",
                 categoryId: e.categoryId,
                 categoryName: e.categoryName,
                 accountId: e.accountId,
                 accountName: e.accountName,
+                counterpartyInstitutionId: e.counterpartyInstitutionId,
+                counterpartyInstitutionName: e.counterpartyInstitutionName,
                 fromAccountId: e.type === "transfer" ? e.accountId : undefined,
                 toAccountId: e.toAccountId,
                 toAccountName: e.toAccountName,
                 tagIds: e.entryTags?.map((et) => et.tagId) ?? [],
               };
 
-        const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccountLabel =
-          accountOptions.find((a) => a.id === e.accountId)?.label ?? e.accountName;
-        const targetAccountLabel = e.toAccountId
-          ? accountOptions.find((a) => a.id === e.toAccountId)?.label ?? e.toAccountName
-          : null;
-        const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
-
         return (
-          <tr key={e.id} className="hover:bg-blue-50/40">
-            <td className="px-3 py-1 border-b border-slate-100">
-              <BasicDetailRowCheckbox id={e.id} />
-            </td>
-            <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">
-              {dateStr}
-            </td>
-            <td className={`px-3 py-1 border-b border-slate-100 text-right tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
-              {inflow !== null ? formatMoney(inflow) : ""}
-            </td>
-            <td className={`px-3 py-1 border-b border-slate-100 text-right tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
-              {outflow !== null ? formatMoney(outflow) : ""}
-            </td>
-            <td className="px-3 py-1 border-b border-slate-100">
-              {e.type === "investment" && subtypeLabel && "cls" in subtypeLabel ? (
-                <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${subtypeLabel.cls}`}>
-                  {subtypeLabel.label}
-                </span>
-              ) : (
-                <span className="text-xs text-slate-700">{actLabel}</span>
-              )}
-            </td>
-            <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500 truncate" title={relatedAccountLabel ?? ""}>
-              {relatedAccountLabel ?? <span className="text-slate-300">-</span>}
-            </td>
-            <td className="px-3 py-1 border-b border-slate-100 text-right tabular-nums text-slate-700">
-              <span className="text-xs">{bal !== null ? formatMoney(bal) : ""}</span>
-            </td>
-            <td className="px-3 py-1 border-b border-slate-100">
-              {e.entryTags && e.entryTags.length > 0 && (
-                <span className="inline-flex flex-wrap gap-0.5">
-                  {e.entryTags.map((et) => {
-                    const c = et.Tag?.color || "#3B82F6";
-                    return (
-                      <span
-                        key={et.tagId}
-                        className="text-[10px] px-1 py-0.5 rounded-full border leading-none"
-                        style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}
-                      >
-                        {et.Tag?.name}
-                      </span>
-                    );
-                  })}
-                </span>
-              )}
-            </td>
-            <td
-              className="px-3 py-1 border-b border-slate-100 text-slate-500 truncate max-w-[180px]"
-              title={e.note ?? ""}
-            >
-              <span className="text-xs text-slate-500">{e.note ?? ""}</span>
-            </td>
-            <td className="px-3 py-1 border-b border-slate-100 text-slate-400"></td>
-            <td className="w-24 px-2 py-1 border-b border-slate-100">
-              <div className="flex justify-end">
-                <EntryRowActions
-                  entryId={e.id}
-                  edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any}
-                />
-              </div>
-            </td>
-          </tr>
+          <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
+            <EntryRowActions
+              entryId={e.id}
+              edit={(e.type !== "investment" ? otherEditPayload : editPayload) as any}
+            />
+          </div>
         );
-      })}
-    </tbody>
+      },
+    },
+  ], [accountId, accountOptions, inflowCls, investmentProductTypeByAccountId, outflowCls]);
+
+  return (
+    <AdvancedDataTable
+      storageKey="mmh_basic_detail_table_v1"
+      columns={columns}
+      rows={entries}
+      rowKey={(entry) => entry.id}
+      minTableWidth={1160}
+      emptyText="暂无记录"
+      selectable
+      selectedKeys={selectedIds}
+      onSelectionChange={setSelection}
+      batchActionSlot={
+        <>
+          <BasicDetailBatchReplaceButton accountOptions={accountOptions} />
+          <BasicDetailBatchDeleteButton />
+        </>
+      }
+      rowClassName={() => "hover:bg-blue-50/40"}
+      fillHeight
+      compactRows={compactRows}
+    />
   );
 }

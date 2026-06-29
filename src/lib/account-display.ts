@@ -145,6 +145,8 @@ export function buildAccountDisplayOption(
           numberMasked: account.numberMasked,
           template: creditCardLabelTemplate,
         })
+      : account.kind === "insurance"
+        ? account.name.trim()
       : formatAccountDisplayName(account.name, institutionName);
 
   const selectorLabel = formatAccountSelectorLabel({

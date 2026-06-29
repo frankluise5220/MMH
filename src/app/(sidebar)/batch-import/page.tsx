@@ -18,8 +18,10 @@ type ParsedItem = {
   fromAccount?: string;
   toAccount?: string;
   category?: string;
+  institution?: string;
   tags?: string;
   remark?: string;
+  secondRemark?: string;
   counterparty?: string;
   transferDirection?: "in" | "out";
 };
@@ -45,7 +47,7 @@ type AccountOption = {
 };
 
 type FilterColumn = "date" | "type" | "account" | "counterAccount" | "remark";
-type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "tags" | "remark";
+type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark" | "secondRemark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
 
@@ -61,8 +63,10 @@ const replaceFieldLabels: Record<ReplaceField, string> = {
   account: "账户",
   counterAccount: "对向账户",
   category: "分类",
+  institution: "收支机构",
   tags: "标签",
   remark: "备注",
+  secondRemark: "第二备注",
 };
 
 function applyNumberExpression(currentValue: number, expression: string) {
@@ -88,12 +92,12 @@ const templates: ImportTemplate[] = [
     description: "用于现金、借记卡、电子钱包等普通账单。模板按库字段语义组织：收支大类决定写入哪种记录，金额写入金额字段，分类、标签、备注分别写入对应字段。",
     status: "可上传导入",
     filename: "账单记录导入模板.csv",
-    headers: ["日期", "收支大类", "金额", "账户", "对向账户", "分类", "标签", "备注"],
+    headers: ["日期", "收支大类", "金额", "账户", "对向账户", "分类", "收支机构", "标签", "备注", "第二备注"],
     rows: [
-      ["2026-06-08", "支出", "32.50", "招商银行2758", "", "餐饮", "午餐", "午餐"],
-      ["2026-06-08", "收入", "1.28", "招商银行2758", "", "利息收入", "利息", "活期利息"],
-      ["2026-06-08", "支出", "2.00", "招商银行2758", "", "利息支出", "手续费", "账户管理费"],
-      ["2026-06-08", "转账", "1000.00", "招商银行2758", "现金", "", "现金", "取现"],
+      ["2026-06-08", "支出", "32.50", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐", "门店消费"],
+      ["2026-06-08", "收入", "1.28", "招商银行2758", "", "利息收入", "招商银行", "利息", "活期利息", "季度结息"],
+      ["2026-06-08", "支出", "2.00", "招商银行2758", "", "利息支出", "招商银行", "手续费", "账户管理费", "月服务费"],
+      ["2026-06-08", "转账", "1000.00", "招商银行2758", "现金", "", "", "现金", "取现", "ATM"],
     ],
     fields: [
       { name: "日期", required: true, note: "写入交易日期，格式 YYYY-MM-DD，对应库里的 date。" },
@@ -102,8 +106,10 @@ const templates: ImportTemplate[] = [
       { name: "账户", required: true, note: "对应主账户。支出/收入写发生账户；转账时写转出账户。" },
       { name: "对向账户", required: false, note: "对应转账对方账户。仅转账时建议填写，写入 toAccount。" },
       { name: "分类", required: false, note: "对应分类字段。支出、收入建议填写，例如餐饮、利息收入、利息支出、工资。" },
+      { name: "收支机构", required: false, note: "对应收支机构。主要用于支出、收入的机构或商户描述。" },
       { name: "标签", required: false, note: "对应标签关联。可填一个或多个标签，使用中文逗号或英文逗号分隔。" },
-      { name: "备注", required: false, note: "对应备注字段，写入 note。" },
+      { name: "备注", required: false, note: "对应主备注，写入 note。" },
+      { name: "第二备注", required: false, note: "对应第二备注，写入 toNote；转账时用于转入备注，收支时用于机构备注或补充说明。" },
     ],
   },
   {
@@ -317,9 +323,11 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
     const counterAccount = readAny(row, ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount", "fromAccount"]);
     const remark = readAny(row, ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途"]);
     const category = readAny(row, ["分类", "category"]);
+    const institution = readAny(row, ["收支机构", "机构", "商户", "merchant", "institution"]);
     const tags = readAny(row, ["标签", "tags"]);
     const majorType = parseMajorType(readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]));
     const explicitType = readAny(row, ["类型", "原始类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type"]);
+    const secondRemark = readAny(row, ["第二备注", "对方备注", "转入备注", "toNote", "secondRemark"]);
     const source = `${majorType ?? ""} ${explicitType} ${category} ${remark}`;
     const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
     const amountLooksExpense = /支出|消费|扣款|付款|转出|借方|借记|取现/.test(source);
@@ -347,8 +355,10 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
       fromAccount: type === "transfer" ? (majorType === "transfer" ? account : (transferDirection === "in" ? counterAccount : account)) : "",
       toAccount: type === "transfer" ? (majorType === "transfer" ? counterAccount : (transferDirection === "in" ? account : counterAccount)) : "",
       category,
+      institution,
       tags,
       remark,
+      secondRemark,
       transferDirection: type === "transfer" && majorType === "transfer" ? "out" : transferDirection,
     };
   }).filter((item) => item.date && item.amount > 0);
@@ -607,8 +617,10 @@ export default function BatchImportPage() {
       outflow: draft.outflow ?? item.outflow ?? 0,
       inflow: draft.inflow ?? item.inflow ?? 0,
       category: draft.category ?? item.category ?? "",
+      institution: draft.institution ?? item.institution ?? "",
       tags: draft.tags ?? item.tags ?? "",
       remark: draft.remark ?? item.remark ?? "",
+      secondRemark: draft.secondRemark ?? item.secondRemark ?? "",
       counterparty: draft.counterparty ?? item.counterparty ?? "",
       transferDirection: draft.transferDirection ?? item.transferDirection,
     };
@@ -755,7 +767,9 @@ export default function BatchImportPage() {
           patch.fromAccount = item.account || value;
           patch.toAccount = value;
         }
-      } else if (replaceField === "remark") patch.remark = value;
+      } else if (replaceField === "institution") patch.institution = value;
+      else if (replaceField === "remark") patch.remark = value;
+      else if (replaceField === "secondRemark") patch.secondRemark = value;
       nextDrafts[idx] = { ...(nextDrafts[idx] ?? {}), ...patch };
       changed++;
     }
@@ -870,7 +884,9 @@ export default function BatchImportPage() {
     { value: "inflow", label: replaceFieldLabels.inflow, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
     { value: "account", label: replaceFieldLabels.account, kind: "smartSelect", options: accountReplaceOptions },
     { value: "counterAccount", label: replaceFieldLabels.counterAccount, kind: "smartSelect", options: accountReplaceOptions, allowEmpty: true },
+    { value: "institution", label: replaceFieldLabels.institution, kind: "text", placeholder: "输入机构名称" },
     { value: "remark", label: replaceFieldLabels.remark, kind: "text", placeholder: "输入替换内容" },
+    { value: "secondRemark", label: replaceFieldLabels.secondRemark, kind: "text", placeholder: "输入第二备注" },
   ], [accountReplaceOptions]);
 
   return (
@@ -1114,8 +1130,10 @@ export default function BatchImportPage() {
                     ? (direction === "in" ? (draft.fromAccount ?? item.fromAccount ?? "") : (draft.toAccount ?? item.toAccount ?? ""))
                     : "";
                   const category = draft.category ?? item.category ?? "";
+                  const institution = draft.institution ?? item.institution ?? "";
                   const tags = draft.tags ?? item.tags ?? "";
                   const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
+                  const secondRemark = draft.secondRemark ?? item.secondRemark ?? "";
                   const isSelected = selected.has(idx);
                   const editingField = editingCell?.idx === idx ? editingCell.field : null;
                   const typeLabel = type === "income" ? "收入" : type === "transfer" ? "转账" : "支出";
@@ -1306,7 +1324,7 @@ export default function BatchImportPage() {
                 })}
                 {!uploading && filteredIndexes.length > visibleIndexes.length && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-2 text-center text-xs text-slate-500">
+                    <td colSpan={12} className="px-4 py-2 text-center text-xs text-slate-500">
                       当前显示 {visibleIndexes.length} / {filteredIndexes.length} 条。
                       <button
                         type="button"

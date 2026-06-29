@@ -43,6 +43,7 @@ export function EntryRowActions({
   edit?: Omit<EditPayload, "entryId">;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
     if (!edit) return;
@@ -50,7 +51,7 @@ export function EntryRowActions({
     const detail = { requestId, entryId, ...edit } satisfies EditPayload;
 
     const pt = edit.fundProductType;
-    if (edit.type === "investment" && edit.source === "insurance") {
+    if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
       window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
     } else if (edit.type === "investment" && pt === "wealth") {
       window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
@@ -101,25 +102,25 @@ export function EntryRowActions({
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1">
       {edit ? (
         <button
-          className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 flex items-center justify-center"
+          className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
           type="button"
           onClick={onEdit}
           title="编辑"
         >
-          <Pencil className="w-4 h-4" />
+          <Pencil className="h-3.5 w-3.5" />
         </button>
       ) : null}
       <button
-        className="h-8 w-8 rounded-md border border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:opacity-50 flex items-center justify-center"
+        className={`${actionButtonClass} border-red-200 text-red-700 hover:bg-red-50`}
         disabled={deleting}
         type="button"
         onClick={onDelete}
         title={deleting ? "删除中…" : "删除"}
       >
-        <Trash2 className="w-4 h-4" />
+        <Trash2 className="h-3.5 w-3.5" />
       </button>
     </div>
   );

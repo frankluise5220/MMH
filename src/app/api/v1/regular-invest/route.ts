@@ -1,75 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { IntervalUnit, TransactionType, RegularInvestStatus } from "@prisma/client";
-import { addDays, addWeeks, addMonths, isWeekend, nextMonday } from "date-fns";
+import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
-import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-
-function skipWeekend(date: Date): Date {
-  if (isWeekend(date)) return nextMonday(date);
-  return date;
-}
-
-function calcNextRunDate(
-  fromDate: Date,
-  unit: IntervalUnit,
-  value: number,
-  executionDay?: number | null
-): Date {
-  let nextDate: Date;
-
-  switch (unit) {
-    case "day":
-      nextDate = addDays(fromDate, value);
-      break;
-    case "week":
-      nextDate = addWeeks(fromDate, value);
-      break;
-    case "biweek":
-      nextDate = addWeeks(fromDate, value * 2);
-      break;
-    case "month":
-      nextDate = addMonths(fromDate, value);
-      break;
-    default:
-      nextDate = addMonths(fromDate, value);
-  }
-
-  // 如果指定了执行日，调整到指定日期
-  if (executionDay != null) {
-    if (unit === "month" && executionDay >= 1 && executionDay <= 31) {
-      // 月模式：调整到每月指定号数
-      const daysInMonth = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
-      const targetDay = Math.min(executionDay, daysInMonth);
-      nextDate = new Date(nextDate.getFullYear(), nextDate.getMonth(), targetDay);
-    } else if ((unit === "week" || unit === "biweek") && executionDay >= 1 && executionDay <= 5) {
-      // 周/双周模式：调整到指定星期几（1=周一，5=周五）
-      const currentDay = nextDate.getDay(); // 0=周日，6=周六
-      const adjustedCurrentDay = currentDay === 0 ? 7 : currentDay; // 转换为1-7
-      const diff = executionDay - adjustedCurrentDay;
-      nextDate = addDays(nextDate, diff);
-    }
-  }
-
-  // 跳过周末
-  if (isWeekend(nextDate)) {
-    nextDate = nextMonday(nextDate);
-  }
-
-  return nextDate;
-}
-
-function formatDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 
 export async function GET(req: NextRequest) {
   try {
-    const { householdId, hidFilter } = await getHouseholdScope();
+    const { hidFilter } = await getHouseholdScope();
     const accountId = req.nextUrl.searchParams.get("accountId");
     const status = req.nextUrl.searchParams.get("status") as RegularInvestStatus | null;
 
@@ -111,6 +54,8 @@ export async function POST(req: NextRequest) {
     const {
       accountId,
       cashAccountId,
+      taskType = "fund_regular_invest",
+      insuranceProductId,
       fundCode,
       fundName,
       fundProductType,
@@ -124,11 +69,13 @@ export async function POST(req: NextRequest) {
       feeRate,
       confirmDays,
       arrivalDays,
-      memo,
       skipPendingPreceding,
     } = body;
 
-    if (!accountId || !fundCode || !amount || !startDate) {
+    const scheduledTaskType = normalizeScheduledTaskType(taskType);
+    const isFundTask = scheduledTaskType === "fund_regular_invest";
+
+    if (!accountId || !amount || !startDate || (isFundTask && !fundCode)) {
       return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
     }
 
@@ -137,20 +84,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
 
-    const fundAcc = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!fundAcc) return NextResponse.json({ ok: false, error: "基金账户不存在" }, { status: 400 });
-    if (fundAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "基金账户不属于当前账簿" }, { status: 403 });
+    const targetAcc = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!targetAcc) return NextResponse.json({ ok: false, error: "目标账户不存在" }, { status: 400 });
+    if (targetAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "目标账户不属于当前账簿" }, { status: 403 });
 
     const cashAcc = cashAccountId
       ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
       : null;
     if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "资金账户不属于当前账簿" }, { status: 403 });
 
-    const start = skipWeekend(new Date(startDate));
     const unitVal = parseInt(intervalValue) || 1;
-    const now = new Date();
     const totalRunsInt = totalRuns ? parseInt(totalRuns) : null;
     const executionDayInt = executionDay ? parseInt(executionDay) : null;
+    const intervalUnitValue = intervalUnit as IntervalUnit;
+    const start = isFundTask ? skipWeekend(new Date(startDate)) : new Date(startDate);
+    const initialRunDate = calcInitialRunDate(new Date(startDate), intervalUnitValue, unitVal, executionDayInt, isFundTask);
 
     const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
     const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
@@ -160,45 +108,51 @@ export async function POST(req: NextRequest) {
         data: {
           householdId,
           accountId,
-          accountName: fundAcc.name,
+          accountName: targetAcc.name,
           cashAccountId: cashAccountId || null,
           cashAccountName: cashAcc?.name || null,
-          fundCode,
-          fundName: fundName || fundCode,
-          fundProductType: fundProductType || fundAcc.investProductType || null,
+          fundCode: isFundTask ? fundCode : scheduledTaskType,
+          fundName: fundName || (isFundTask ? fundCode : scheduledTaskTypeLabel(scheduledTaskType)),
+          fundProductType: isFundTask ? (fundProductType || targetAcc.investProductType || null) : null,
           amount: amountNum,
-          intervalUnit,
+          intervalUnit: intervalUnitValue,
           intervalValue: unitVal,
           executionDay: executionDayInt,
           startDate: start,
           endDate: endDate ? new Date(endDate) : null,
           totalRuns: totalRunsInt,
           executedRuns: 0,
-          nextRunDate: start,
+          nextRunDate: initialRunDate,
           status: RegularInvestStatus.active,
           feeRate: feeRate != null ? parseFloat(feeRate) : null,
           confirmDays: safeConfirmDays,
           arrivalDays: safeArrivalDays,
-          memo: memo || null,
-          skipPendingPreceding: skipPendingPreceding !== false,
+          memo: encodeScheduledTaskMemo({
+            type: scheduledTaskType,
+            title: fundName || (isFundTask ? fundCode : scheduledTaskTypeLabel(scheduledTaskType)),
+            fromAccountId: cashAccountId || null,
+            toAccountId: accountId,
+            insuranceProductId: insuranceProductId || null,
+          }),
+          skipPendingPreceding: isFundTask ? skipPendingPreceding !== false : false,
         },
       });
 
       // 更新确认天数表
       const newDays = safeConfirmDays ?? 0;
-      if (accountId && fundCode) {
+      if (isFundTask && accountId && fundCode) {
         await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
       }
 
       // 更新手续费率表
       const newRate = feeRate != null ? parseFloat(feeRate) : 0;
-      if (accountId && fundCode) {
+      if (isFundTask && accountId && fundCode) {
         await setFundFeeRateInTx(tx, accountId, fundCode, newRate);
       }
 
       // 更新入账天数表
       const newArrivalDays = safeArrivalDays ?? 2;
-      if (accountId && fundCode) {
+      if (isFundTask && accountId && fundCode) {
         await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
       }
 
@@ -209,7 +163,7 @@ export async function POST(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
-      message: "定投计划已创建，请点击批量生成按钮生成交易明细",
+      message: "计划任务已创建，请点击执行按钮生成到期交易明细",
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
@@ -224,6 +178,9 @@ export async function PUT(req: NextRequest) {
     const {
       id,
       action,
+      taskType,
+      insuranceProductId,
+      fundCode,
       fundName,
       accountId,
       amount,
@@ -247,6 +204,8 @@ export async function PUT(req: NextRequest) {
     const existing = await prisma.regularInvestPlan.findUnique({ where: { id } });
     if (!existing) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
     if (existing.householdId && existing.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+    const existingTaskForAction = decodeScheduledTaskMemo(existing.memo);
+    const actionUsesBusinessDays = existingTaskForAction.type === "fund_regular_invest";
 
     // 状态操作
     if (action === "pause") {
@@ -258,7 +217,7 @@ export async function PUT(req: NextRequest) {
         data: { status: RegularInvestStatus.paused },
       });
       // Client-side handles page refresh
-      return NextResponse.json({ ok: true, plan, message: "定投计划已暂停" });
+      return NextResponse.json({ ok: true, plan, message: "计划任务已暂停" });
     }
 
     if (action === "resume") {
@@ -268,19 +227,21 @@ export async function PUT(req: NextRequest) {
       // 恢复时重新计算下次执行日期（从当前日期或上次执行日期开始）
       const now = new Date();
       const nextRun = existing.lastRunDate
-        ? calcNextRunDate(existing.lastRunDate, existing.intervalUnit, existing.intervalValue)
-        : existing.nextRunDate;
-      const actualNextRun = nextRun < now ? calcNextRunDate(now, existing.intervalUnit, existing.intervalValue) : nextRun;
+        ? calcNextRunDate(existing.lastRunDate, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays)
+        : calcInitialRunDate(existing.startDate, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays);
+      const actualNextRun = nextRun < now
+        ? calcInitialRunDate(now, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays)
+        : nextRun;
 
       const plan = await prisma.regularInvestPlan.update({
         where: { id },
         data: {
           status: RegularInvestStatus.active,
-          nextRunDate: skipWeekend(actualNextRun),
+          nextRunDate: actualNextRun,
         },
       });
       // Client-side handles page refresh
-      return NextResponse.json({ ok: true, plan, message: "定投计划已恢复" });
+      return NextResponse.json({ ok: true, plan, message: "计划任务已恢复" });
     }
 
     if (action === "stop") {
@@ -292,24 +253,45 @@ export async function PUT(req: NextRequest) {
         data: { status: RegularInvestStatus.stopped },
       });
       // Client-side handles page refresh
-      return NextResponse.json({ ok: true, plan, message: "定投计划已终止" });
+      return NextResponse.json({ ok: true, plan, message: "计划任务已终止" });
     }
 
     // 普通更新
     const updateData: any = {};
+    const existingTask = decodeScheduledTaskMemo(existing.memo);
+    const nextTaskType = normalizeScheduledTaskType(taskType || existingTask.type);
+    const isFundTask = nextTaskType === "fund_regular_invest";
 
     if (accountId != null) {
       updateData.accountId = accountId;
       const fundAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true } });
       updateData.accountName = fundAcc?.name || null;
     }
-    if (startDate != null) updateData.startDate = skipWeekend(new Date(startDate));
+    const effectiveStartDate = startDate != null ? new Date(startDate) : existing.startDate;
+    const effectiveIntervalUnit = (intervalUnit || existing.intervalUnit) as IntervalUnit;
+    const effectiveIntervalValue = intervalValue != null ? parseInt(intervalValue) || 1 : existing.intervalValue;
+    const effectiveExecutionDay = executionDay != null
+      ? (executionDay ? parseInt(executionDay) : null)
+      : existing.executionDay;
+
+    if (startDate != null) updateData.startDate = isFundTask ? skipWeekend(new Date(startDate)) : new Date(startDate);
+    if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
     if (fundName != null) updateData.fundName = fundName;
     if (amount != null) updateData.amount = parseFloat(amount);
     if (intervalUnit) updateData.intervalUnit = intervalUnit;
     if (intervalValue != null) updateData.intervalValue = parseInt(intervalValue);
     if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
-    if (nextRunDate) updateData.nextRunDate = new Date(nextRunDate);
+    if (nextRunDate) {
+      updateData.nextRunDate = new Date(nextRunDate);
+    } else if (startDate != null || intervalUnit || intervalValue != null || executionDay != null || taskType) {
+      updateData.nextRunDate = calcInitialRunDate(
+        effectiveStartDate,
+        effectiveIntervalUnit,
+        effectiveIntervalValue,
+        effectiveExecutionDay,
+        isFundTask,
+      );
+    }
     if (endDate != null) updateData.endDate = endDate ? new Date(endDate) : null;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
     if (feeRate != null) updateData.feeRate = parseFloat(feeRate);
@@ -327,6 +309,21 @@ export async function PUT(req: NextRequest) {
     }
     if (memo != null) updateData.memo = memo || null;
     if (skipPendingPreceding !== undefined) (updateData as any).skipPendingPreceding = skipPendingPreceding;
+    updateData.memo = encodeScheduledTaskMemo({
+      type: nextTaskType,
+      title: fundName || existing.fundName || scheduledTaskTypeLabel(nextTaskType),
+      fromAccountId: cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
+      toAccountId: accountId || existing.accountId,
+      insuranceProductId: insuranceProductId || existingTask.insuranceProductId || null,
+    });
+    if (!isFundTask) {
+      updateData.fundCode = nextTaskType;
+      updateData.fundProductType = null;
+      updateData.confirmDays = 0;
+      updateData.arrivalDays = 0;
+      updateData.feeRate = 0;
+      updateData.skipPendingPreceding = false;
+    }
 
     const plan = await prisma.regularInvestPlan.update({
       where: { id },
@@ -335,14 +332,14 @@ export async function PUT(req: NextRequest) {
 
     // 同步确认天数和费率到统一库
     const effectiveAccountId = accountId || existing.accountId;
-    const effectiveFundCode = existing.fundCode;
-    if (confirmDays != null && effectiveAccountId && effectiveFundCode) {
+    const effectiveFundCode = fundCode || existing.fundCode;
+    if (isFundTask && confirmDays != null && effectiveAccountId && effectiveFundCode) {
       await setFundConfirmDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(confirmDays, 0));
     }
-    if (arrivalDays != null && effectiveAccountId && effectiveFundCode) {
+    if (isFundTask && arrivalDays != null && effectiveAccountId && effectiveFundCode) {
       await setFundArrivalDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(arrivalDays, 2));
     }
-    if (feeRate != null && effectiveAccountId && effectiveFundCode) {
+    if (isFundTask && feeRate != null && effectiveAccountId && effectiveFundCode) {
       await setFundFeeRate(effectiveAccountId, effectiveFundCode, parseFloat(feeRate));
     }
 
@@ -375,6 +372,14 @@ export async function DELETE(req: NextRequest) {
         where: { regularInvestPlanId: id, householdId },
         select: { accountId: true, toAccountId: true },
       });
+      const task = decodeScheduledTaskMemo(plan.memo);
+      const resetNextRunDate = calcInitialRunDate(
+        plan.startDate,
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        task.type === "fund_regular_invest",
+      );
       const resetPlan = await prisma.$transaction(async (tx) => {
         await tx.txRecord.deleteMany({ where: { regularInvestPlanId: id, householdId } });
         return tx.regularInvestPlan.update({
@@ -383,7 +388,7 @@ export async function DELETE(req: NextRequest) {
             status: RegularInvestStatus.active,
             executedRuns: 0,
             lastRunDate: null,
-            nextRunDate: plan.startDate,
+            nextRunDate: resetNextRunDate,
           },
           select: {
             id: true,
@@ -408,6 +413,8 @@ export async function DELETE(req: NextRequest) {
       for (const acctId of accountsToRecalc) {
         if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
       }
+      if (task.type === "fund_regular_invest" || task.type === "insurance_premium") revalidateAfterInvestChange();
+      else revalidateAfterTxChange();
       // Client-side handles page refresh
       return NextResponse.json({
         ok: true,
@@ -466,6 +473,11 @@ export async function DELETE(req: NextRequest) {
     // 刷新涉及的账户余额
     for (const acctId of accountsToRecalc) {
       if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
+    }
+    const task = decodeScheduledTaskMemo(plan.memo);
+    if (deleteEntries) {
+      if (task.type === "fund_regular_invest" || task.type === "insurance_premium") revalidateAfterInvestChange();
+      else revalidateAfterTxChange();
     }
 
     // Client-side handles page refresh

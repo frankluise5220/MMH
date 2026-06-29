@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation";
 import { ChevronRight, ChevronLeft, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
-import { APP_PREFS_EVENT, getAiPanelEnabledPreference } from "@/lib/client/appPreferences";
+import {
+  APP_PREFS_EVENT,
+  getAiPanelCollapsedPreference,
+  getAiPanelEnabledPreference,
+  setAiPanelCollapsedPreference,
+} from "@/lib/client/appPreferences";
 
 /* ---- Types ---- */
 
@@ -79,7 +84,6 @@ type CorrectionSkill = {
 /* ---- Constants & Helpers ---- */
 
 const SKILLS_KEY = "mmh_ai_skills";
-const PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
 
 function loadSkills(): CorrectionSkill[] {
   try {
@@ -155,19 +159,25 @@ function normalizeItemForImport(item: ParsedItem): ParsedItem {
 
 /* ---- Component ---- */
 
-export function AIPanel({ defaultAccountName }: { defaultAccountName?: string }) {
+export function AIPanel({
+  defaultAccountName,
+  initialCollapsed = false,
+}: {
+  defaultAccountName?: string;
+  initialCollapsed?: boolean;
+}) {
   const router = useRouter();
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   /* State */
   const [mounted, setMounted] = useState(false);
-  const [enabled, setEnabled] = useState(true);
+  const [enabled, setEnabled] = useState(() => getAiPanelEnabledPreference());
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", text: "粘贴账单文本或输入指令，我会帮你解析、导入、查询或修改记录。" },
   ]);
   const [loading, setLoading] = useState(false);
-  const [collapsed, setCollapsedState] = useState(false);
+  const [collapsed, setCollapsedState] = useState(() => initialCollapsed || getAiPanelCollapsedPreference());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [importConfirmDialog, setImportConfirmDialog] = useState<ImportConfirmDialog | null>(null);
 
@@ -184,11 +194,8 @@ export function AIPanel({ defaultAccountName }: { defaultAccountName?: string })
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  /* Init: load collapsed state + models */
+  /* Init: load models */
   useEffect(() => {
-    try {
-      if (localStorage.getItem(PANEL_COLLAPSED_KEY) === "1") setCollapsedState(true);
-    } catch { /* ignore */ }
     setEnabled(getAiPanelEnabledPreference());
     setMounted(true);
   }, []);
@@ -215,7 +222,7 @@ export function AIPanel({ defaultAccountName }: { defaultAccountName?: string })
 
   function setCollapsedPersist(next: boolean) {
     setCollapsedState(next);
-    try { localStorage.setItem(PANEL_COLLAPSED_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+    setAiPanelCollapsedPreference(next);
   }
 
   /* ---- Models ---- */

@@ -1,44 +1,32 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
-import { isWeekend, nextMonday, addDays, addWeeks, addMonths } from "date-fns";
+import { TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
+import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 
-function skipWeekend(date: Date): Date {
-  if (isWeekend(date)) return nextMonday(date);
-  return date;
-}
-
-function calcNextRunDate(fromDate: Date, unit: IntervalUnit, value: number): Date {
-  switch (unit) {
-    case "day": return addDays(fromDate, value);
-    case "week": return addWeeks(fromDate, value);
-    case "biweek": return addWeeks(fromDate, value * 2);
-    case "month": return addMonths(fromDate, value);
-    default: return addMonths(fromDate, value);
-  }
-}
-
-export async function POST(req: NextRequest) {
+export async function POST() {
   try {
     const { householdId } = await getHouseholdScope();
 
     const now = new Date();
+    const today = startOfDayUtc(now);
     const todayStr = formatDateUtc(now);
 
     const allPlans = await prisma.regularInvestPlan.findMany({
-      where: { householdId, status: RegularInvestStatus.active, nextRunDate: { lte: now } },
+      where: { householdId, status: RegularInvestStatus.active },
     });
 
     if (allPlans.length === 0) {
-      return NextResponse.json({ ok: true, message: "没有需要执行的定投计划", executedCount: 0, skippedCount: 0 });
+      return NextResponse.json({ ok: true, message: "没有执行中的计划任务", executedCount: 0, skippedCount: 0 });
     }
 
     // ── Phase 1: Filter & load all data in batch ──
@@ -61,7 +49,161 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, message: `已完成 ${completed.length} 条到期的计划`, executedCount: 0, skippedCount: 0, completedCount: completed.length, details: [] });
     }
 
+    const generalPlans = plansToRun.filter((plan) => decodeScheduledTaskMemo(plan.memo).type !== "fund_regular_invest");
+    const fundPlans = plansToRun.filter((plan) => decodeScheduledTaskMemo(plan.memo).type === "fund_regular_invest");
+
+    const generalExecuted: string[] = [];
+    const generalSkipped: string[] = [];
+    const generalDetails: Array<{ planId: string; fundCode: string; action: string; reason?: string }> = [];
+    let generalGeneratedCount = 0;
+
+    for (const plan of generalPlans) {
+      const task = decodeScheduledTaskMemo(plan.memo);
+      const firstDueDate = calcInitialRunDate(
+        plan.nextRunDate,
+        plan.intervalUnit as IntervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        false,
+      );
+      if (firstDueDate > today) {
+        generalSkipped.push(plan.id);
+        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "未到执行日" });
+        continue;
+      }
+      const targetAcc = await prisma.account.findUnique({ where: { id: plan.accountId } });
+      const cashAcc = plan.cashAccountId
+        ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
+        : null;
+      const amountNum = Number(plan.amount);
+      if (!targetAcc || !cashAcc || !Number.isFinite(amountNum) || amountNum <= 0) {
+        generalSkipped.push(plan.id);
+        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "计划账户或金额不完整" });
+        continue;
+      }
+
+      const sourceFilter = task.type === "insurance_premium" ? ["insurance"] : ["scheduled_task"];
+      const existingTxRecords = await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          regularInvestPlanId: plan.id,
+          source: { in: sourceFilter },
+          deletedAt: null,
+        },
+        select: { date: true },
+      });
+      const existingDates = new Set(existingTxRecords.map((record) => formatDateUtc(record.date)));
+      const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
+      const remainingRuns = plan.totalRuns ? Math.max(0, plan.totalRuns - plan.executedRuns) : Number.POSITIVE_INFINITY;
+      const datesToProcess: Date[] = [];
+      let currentDate = firstDueDate;
+      let guard = 0;
+      while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
+        const dateStr = formatDateUtc(currentDate);
+        if (!existingDates.has(dateStr)) datesToProcess.push(currentDate);
+        currentDate = calcNextRunDate(currentDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, false);
+        guard++;
+        if (guard > 1200) throw new Error("计划周期异常，已停止生成以避免无限循环");
+      }
+
+      if (datesToProcess.length === 0) {
+        generalSkipped.push(plan.id);
+        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "到期记录已存在" });
+        continue;
+      }
+
+      const insuranceProduct = task.type === "insurance_premium"
+        ? await prisma.insuranceProduct.findFirst({
+            where: { id: task.insuranceProductId || "", householdId },
+          })
+        : null;
+      if (task.type === "insurance_premium" && !insuranceProduct) {
+        generalSkipped.push(plan.id);
+        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "保险产品不存在" });
+        continue;
+      }
+
+      const finalLastRunDate = datesToProcess[datesToProcess.length - 1]!;
+      const nextRun = calcNextRunDate(finalLastRunDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, false);
+      const newExecutedRuns = plan.executedRuns + datesToProcess.length;
+      const willComplete = !!(
+        (plan.totalRuns && newExecutedRuns >= plan.totalRuns) ||
+        (plan.endDate && plan.endDate < nextRun)
+      );
+
+      await prisma.$transaction(async (tx) => {
+        for (const runDate of datesToProcess) {
+          if (task.type === "transfer" || task.type === "loan_repayment") {
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.transfer,
+                date: runDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                toAccountId: targetAcc.id,
+                toAccountName: targetAcc.name,
+                amount: -amountNum,
+                source: "scheduled_task",
+                regularInvestPlanId: plan.id,
+                note: task.type === "loan_repayment" ? "计划任务：还贷款" : "计划任务：转账",
+              },
+            });
+          } else if (task.type === "insurance_premium" && insuranceProduct) {
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.investment,
+                date: runDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                toAccountId: insuranceProduct.accountId,
+                toAccountName: targetAcc.name,
+                amount: -amountNum,
+                fundName: insuranceProduct.name,
+                fundProductType: "wealth",
+                fundSubtype: "buy",
+                source: "insurance",
+                insuranceProductId: insuranceProduct.id,
+                regularInvestPlanId: plan.id,
+                note: "计划任务：保险缴费",
+              },
+            });
+          }
+        }
+
+        await tx.regularInvestPlan.update({
+          where: { id: plan.id },
+          data: {
+            lastRunDate: finalLastRunDate,
+            nextRunDate: nextRun,
+            executedRuns: newExecutedRuns,
+            status: willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active,
+          },
+        });
+      });
+
+      await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("balance", "auto-execute"));
+      await recalcAndSaveAccountBalance(targetAcc.id).catch(logger.catchLog("balance", "auto-execute"));
+      generalExecuted.push(plan.id);
+      generalGeneratedCount += datesToProcess.length;
+      generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "executed", reason: `生成 ${datesToProcess.length} 条` });
+    }
+
+    if (fundPlans.length === 0) {
+      if (generalExecuted.length > 0) revalidateAfterTxChange();
+      return NextResponse.json({
+        ok: true,
+        message: `执行完成：生成 ${generalGeneratedCount} 条记录，${generalSkipped.length} 条计划已跳过，${completed.length} 条已完成`,
+        executedCount: generalGeneratedCount,
+        skippedCount: generalSkipped.length,
+        completedCount: completed.length,
+        details: generalDetails,
+      });
+    }
+
     // Batch-check already-run-today
+    plansToRun.splice(0, plansToRun.length, ...fundPlans);
     const fundCodeSet = new Set(plansToRun.map(p => p.fundCode));
     const alreadyRunToday = await prisma.txRecord.findMany({
       where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", date: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") } },
@@ -106,6 +248,11 @@ export async function POST(req: NextRequest) {
     const execs: PlanExec[] = [];
 
     for (const plan of plansToRun) {
+      if (plan.nextRunDate > now) {
+        skipped.push(plan.id);
+        details.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "未到执行日" });
+        continue;
+      }
       if (runTodaySet.has(`${plan.fundCode}|${plan.accountId}`)) {
         skipped.push(plan.id);
         details.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "今日已执行" });
@@ -133,14 +280,26 @@ export async function POST(req: NextRequest) {
       const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
       const amountNum = parseFloat(String(plan.amount));
       const newExecutedRuns = plan.executedRuns + 1;
+      const nextRun = calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, true);
       const willComplete = !!(
         (plan.totalRuns && newExecutedRuns >= plan.totalRuns) ||
-        (plan.endDate && plan.endDate < calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue)));
-      const nextRun = calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue);
+        (plan.endDate && plan.endDate < nextRun));
 
       execs.push({
         plan, fundAcc, cashAcc, runDate, confirmDate, confirmDateStr, arrivalDate,
         amountNum, feeRate: 0, principal: amountNum, newExecutedRuns, willComplete, nextRun,
+      });
+    }
+
+    if (execs.length === 0) {
+      if (generalExecuted.length > 0) revalidateAfterTxChange();
+      return NextResponse.json({
+        ok: true,
+        message: `执行完成：生成 ${generalGeneratedCount} 条记录，${generalSkipped.length + skipped.length} 条计划已跳过，${completed.length} 条已完成`,
+        executedCount: generalGeneratedCount,
+        skippedCount: generalSkipped.length + skipped.length,
+        completedCount: completed.length,
+        details: [...generalDetails, ...details],
       });
     }
 
@@ -353,17 +512,19 @@ export async function POST(req: NextRequest) {
       if (plan.cashAccountId) await recalcAndSaveAccountBalance(plan.cashAccountId).catch(logger.catchLog("balance", "auto-execute"));
     }
     logger.info(`Phase5 重算持仓完成: 耗时 ${Date.now() - recalcStart}ms`, "auto-execute");
+    if (executed.length > 0 || generatedRecords.length > 0) revalidateAfterInvestChange();
+    else if (generalExecuted.length > 0) revalidateAfterTxChange();
 
     // Client-side handles page refresh
     return NextResponse.json({
       ok: true,
-      message: `执行完成：${executed.length} 条已执行，${skipped.length} 条已跳过${skippedPaused > 0 ? `（暂停申购 ${skippedPaused}` : ""}${skippedGap > 0 ? `${skippedPaused > 0 ? "，" : "（无净值 "}${skippedGap}` : ""}${skippedPaused + skippedGap > 0 ? "）" : ""}，${completed.length} 条已完成`,
-      executedCount: executed.length,
-      skippedCount: skipped.length,
+      message: `执行完成：生成 ${generalGeneratedCount + executed.length} 条记录，${generalSkipped.length + skipped.length} 条计划已跳过${skippedPaused > 0 ? `（暂停申购 ${skippedPaused}` : ""}${skippedGap > 0 ? `${skippedPaused > 0 ? "，" : "（无净值 "}${skippedGap}` : ""}${skippedPaused + skippedGap > 0 ? "）" : ""}，${completed.length} 条已完成`,
+      executedCount: generalGeneratedCount + executed.length,
+      skippedCount: generalSkipped.length + skipped.length,
       completedCount: completed.length,
       skippedPaused,
       skippedGap,
-      details,
+      details: [...generalDetails, ...details],
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });

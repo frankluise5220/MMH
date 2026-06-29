@@ -1,7 +1,9 @@
-import Link from "next/link";
+"use client";
 
 import { ArrowDownLeft, ArrowUpRight, HandCoins, ListTree } from "lucide-react";
+import { useMemo, useState } from "react";
 
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { EntryRowActions } from "./EntryRowActions";
 import { formatMoney } from "@/lib/format";
 
@@ -40,6 +42,10 @@ function amountClass(value: number) {
   return "text-slate-500";
 }
 
+function stopRowClick(event: React.MouseEvent) {
+  event.stopPropagation();
+}
+
 export function DebtShell({
   rows,
   selectedKey,
@@ -53,8 +59,82 @@ export function DebtShell({
   totalPayable: number;
   totalReceivable: number;
 }) {
+  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const selectedRow = rows.find((row) => row.key === selectedKey) ?? rows[0] ?? null;
   const net = totalReceivable - totalPayable;
+
+  async function batchDeleteEntries() {
+    if (selectedEntryIds.size === 0) return;
+    if (!window.confirm(`确认删除选中的 ${selectedEntryIds.size} 条往来明细吗？`)) return;
+    const response = await fetch("/api/v1/entries/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entryIds: Array.from(selectedEntryIds) }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.ok) {
+      window.alert(data?.error || "批量删除失败");
+      return;
+    }
+    setSelectedEntryIds(new Set());
+    window.dispatchEvent(new Event("mmh:fund:refresh"));
+  }
+
+  const rowColumns = useMemo<AdvancedDataTableColumn<DebtRow>[]>(() => [
+    {
+      key: "name",
+      label: "往来方",
+      width: 360,
+      minWidth: 160,
+      filterText: (row) => row.name,
+      render: (row) => (
+        <span className="block truncate text-sm font-semibold text-slate-800" title={row.name}>
+          {row.name}
+        </span>
+      ),
+    },
+    {
+      key: "net",
+      label: "余额",
+      width: 140,
+      minWidth: 96,
+      align: "right",
+      render: (row) => <span className={`text-xs font-semibold tabular-nums ${amountClass(row.net)}`}>{formatMoney(row.net)}</span>,
+    },
+  ], []);
+
+  const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
+    { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
+    { key: "type", label: "类型", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+    { key: "relatedAccount", label: "明细账户", width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
+    { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
+    {
+      key: "amount",
+      label: "变动",
+      width: 120,
+      minWidth: 86,
+      align: "right",
+      render: (entry) => (
+        <span className={`inline-flex items-center justify-end gap-1 font-semibold tabular-nums ${amountClass(entry.amount)}`}>
+          {entry.amount >= 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+          {formatMoney(entry.amount)}
+        </span>
+      ),
+    },
+    { key: "balance", label: "余额", width: 120, minWidth: 86, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance)}`}>{formatMoney(entry.balance)}</span> },
+    {
+      key: "actions",
+      label: "操作",
+      width: 92,
+      minWidth: 76,
+      align: "right",
+      render: (entry) => (
+        <div onClick={stopRowClick}>
+          <EntryRowActions entryId={entry.id} edit={entry.edit} />
+        </div>
+      ),
+    },
+  ], []);
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-transparent p-4 md:p-5">
@@ -68,48 +148,27 @@ export function DebtShell({
             <div className="text-xs text-slate-400">正数表示借出余额，负数表示借入余额</div>
           </div>
 
-          <div className="overflow-auto">
-            <div className="min-w-[640px]">
-              <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-slate-200 px-4 py-2 text-[11px] font-semibold text-slate-500">
-                <div>往来方</div>
-                <div className="text-right">余额</div>
-              </div>
-              <div className="divide-y divide-slate-100">
-                {rows.length > 0 ? (
-                  <>
-                    {rows.map((row) => {
-                      const active = row.key === (selectedRow?.key ?? "");
-                      const href = `/?view=debt&debtPerson=${encodeURIComponent(row.key)}`;
-                      return (
-                        <Link
-                          key={row.key}
-                          href={href}
-                          className={`grid grid-cols-[minmax(0,1fr)_120px] items-center gap-3 px-4 py-3 transition-colors ${
-                            active ? "bg-blue-50" : "hover:bg-slate-50"
-                          }`}
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-slate-800">{row.name}</div>
-                          </div>
-                          <div className={`text-right text-xs font-semibold tabular-nums ${amountClass(row.net)}`}>
-                            {formatMoney(row.net)}
-                          </div>
-                        </Link>
-                      );
-                    })}
-                    <div className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-3 border-t border-slate-200 bg-slate-50 px-4 py-2.5">
-                      <div className="min-w-0 pl-4 text-xs font-medium tracking-[0.08em] text-slate-500">汇总</div>
-                      <div className={`text-right text-sm font-semibold tabular-nums ${amountClass(net)}`}>
-                        {formatMoney(net)}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="px-4 py-10 text-center text-sm text-slate-400">暂无债务/债权余额</div>
-                )}
+          <AdvancedDataTable
+            storageKey="mmh_debt_rows_table_v1"
+            columns={rowColumns}
+            rows={rows}
+            rowKey={(row) => row.key}
+            minTableWidth={520}
+            emptyText="暂无债务/债权余额"
+            showFilters={false}
+            onRowClick={(row) => {
+              window.location.href = `/?view=debt&debtPerson=${encodeURIComponent(row.key)}`;
+            }}
+            rowClassName={(row) => `cursor-pointer ${row.key === (selectedRow?.key ?? "") ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+          />
+          {rows.length > 0 ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_140px] items-center gap-3 border-t border-slate-200 bg-slate-50 px-4 py-2.5">
+              <div className="min-w-0 pl-4 text-xs font-medium tracking-[0.08em] text-slate-500">汇总</div>
+              <div className={`text-right text-sm font-semibold tabular-nums ${amountClass(net)}`}>
+                {formatMoney(net)}
               </div>
             </div>
-          </div>
+          ) : null}
         </section>
 
         <section className="panel-surface overflow-hidden">
@@ -124,56 +183,21 @@ export function DebtShell({
             </div>
           </div>
 
-          <div className="overflow-auto">
-            <table className="min-w-[860px] w-full border-separate border-spacing-0">
-              <thead className="sticky top-0 z-10 bg-white">
-                <tr>
-                  <th className="px-4 py-2 border-b border-slate-200 text-left text-xs font-semibold text-slate-600">日期</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-left text-xs font-semibold text-slate-600">类型</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-left text-xs font-semibold text-slate-600">明细账户</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-left text-xs font-semibold text-slate-600">备注</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-right text-xs font-semibold text-slate-600">变动</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-right text-xs font-semibold text-slate-600">余额</th>
-                  <th className="px-3 py-2 border-b border-slate-200 text-right text-xs font-semibold text-slate-600">操作</th>
-                </tr>
-              </thead>
-              <tbody className="text-sm">
-                {entries.length > 0 ? (
-                  entries.map((entry) => (
-                    <tr key={entry.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-2 border-b border-slate-100 text-xs text-slate-700 tabular-nums">{entry.date}</td>
-                      <td className="px-3 py-2 border-b border-slate-100 text-xs text-slate-700">{entry.typeLabel}</td>
-                      <td className="px-3 py-2 border-b border-slate-100 text-xs text-slate-600">{entry.relatedAccountLabel}</td>
-                      <td
-                        className="max-w-[320px] truncate px-3 py-2 border-b border-slate-100 text-xs text-slate-600"
-                        title={entry.note}
-                      >
-                        {entry.note || "-"}
-                      </td>
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs font-semibold tabular-nums ${amountClass(entry.amount)}`}>
-                        <span className="inline-flex items-center gap-1">
-                          {entry.amount >= 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
-                          {formatMoney(entry.amount)}
-                        </span>
-                      </td>
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs font-semibold tabular-nums ${amountClass(entry.balance)}`}>
-                        {formatMoney(entry.balance)}
-                      </td>
-                      <td className="px-3 py-2 border-b border-slate-100 text-right">
-                        <EntryRowActions entryId={entry.id} edit={entry.edit} />
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td className="px-4 py-10 text-center text-sm text-slate-400" colSpan={7}>
-                      暂无明细
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          <AdvancedDataTable
+            storageKey="mmh_debt_entries_table_v1"
+            columns={entryColumns}
+            rows={entries}
+            rowKey={(entry) => entry.id}
+            minTableWidth={860}
+            emptyText="暂无明细"
+            selectable
+            selectedKeys={selectedEntryIds}
+            onSelectionChange={setSelectedEntryIds}
+            batchActions={[
+              { label: "批量删除", onClick: batchDeleteEntries },
+              { label: "批量修改", onClick: () => window.alert("批量修改入口已接入，下一步会复用统一批量修改弹窗。") },
+            ]}
+          />
         </section>
       </div>
     </div>

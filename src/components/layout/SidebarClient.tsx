@@ -67,7 +67,8 @@ function normalizeSidebarAccountItem(item: AccountItem): AccountItem {
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
 const CREDIT_KINDS = ["bank_credit"];
 const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
-const LIABILITY_KINDS = ["loan_summary", "other"];
+const INSURANCE_KINDS = ["insurance"];
+const LIABILITY_KINDS = ["loan_summary", "loan", "other"];
 const ASSET_SUBGROUPS: Array<{ key: string; label: string; kinds: string[] }> = [
   { key: "cash_like", label: "现金", kinds: ["cash"] },
   { key: "bank_debit_like", label: "借记卡", kinds: ["bank_debit"] },
@@ -78,6 +79,7 @@ const SECTION_ICON: Record<string, React.ElementType> = {
   资产: Landmark,
   信用卡: CreditCard,
   投资: BarChart3,
+  保险: Shield,
   负债: Landmark,
 };
 const KIND_SORT_ORDER = new Map<string, number>([
@@ -89,6 +91,7 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["investment_money", 51],
   ["investment_fund", 52],
   ["investment_wealth", 53],
+  ["insurance", 55],
   ["bank_credit", 60],
   ["loan_summary", 70],
   ["loan", 71],
@@ -103,6 +106,7 @@ const KIND_INLINE_LABEL = new Map<string, string>([
   ["investment_money", "货币基金"],
   ["investment_fund", "开放式基金"],
   ["investment_wealth", "理财"],
+  ["insurance", "保险"],
   ["bank_credit", "信用卡"],
   ["loan_summary", "借入/借出"],
   ["loan", "借入/借出"],
@@ -131,17 +135,34 @@ function normalizeSidebarItems(items: AccountItem[]) {
   ];
 }
 
-export function SidebarClient({ items: initialItems, household, isRedUp, user }: { items: AccountItem[]; household: { id: string; name: string } | null; isRedUp: boolean; user: { id: string; name: string; role: string } | null }) {
+export function SidebarClient({
+  items: initialItems,
+  household,
+  isRedUp,
+  user,
+  initialPreferences,
+}: {
+  items: AccountItem[];
+  household: { id: string; name: string } | null;
+  isRedUp: boolean;
+  user: { id: string; name: string; role: string } | null;
+  initialPreferences?: {
+    sidebarOwnerFilter: string;
+    sidebarHideZero: boolean;
+    sidebarCollapsed: boolean;
+    sidebarGroupBy: "kind" | "institution";
+  };
+}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
   const selectedView = (searchParams.get("view") ?? "").trim();
 
-  const [selectedOwnerFilter, setSelectedOwnerFilter] = useState("");
-  const [hideZero, setHideZero] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">("kind");
+  const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
+  const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
+  const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -187,8 +208,10 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
         sidebarRefreshBusy.current = true;
         try {
           const res = await fetch("/api/v1/accounts/internal", { cache: "no-store" });
-          const data = await res.json();
-          if (data.ok && data.accounts) {
+          const contentType = res.headers.get("content-type") || "";
+          if (!res.ok || !contentType.includes("application/json")) return;
+          const data = await res.json().catch(() => null);
+          if (data?.ok && Array.isArray(data?.accounts)) {
             const creditCardLabelTemplate = getAppPreferences().creditCardLabelTemplate;
             startTransition(() => {
               setItems(prev => {
@@ -303,7 +326,14 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
   }
 
   function openOnlySection(key: string) {
-    setCollapsedSections(new Set(sections.map((section) => section.kind).filter((sectionKey) => sectionKey !== key)));
+    setCollapsedSections(prev => {
+      if (!prev.has(key)) {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      }
+      return new Set(sections.map((section) => section.kind).filter((sectionKey) => sectionKey !== key));
+    });
   }
 
   const navItemCls = (href: string) => 
@@ -376,6 +406,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
       { label: "资产", kinds: ASSET_KINDS },
       { label: "信用卡", kinds: CREDIT_KINDS },
       { label: "投资", kinds: INVEST_KINDS },
+      { label: "保险", kinds: INSURANCE_KINDS },
       { label: "负债", kinds: LIABILITY_KINDS }
     ];
     return groups.map(g => {
@@ -531,16 +562,13 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
           <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
             <BarChart3 size={18} />
           </Link>
-          <Link href="/insurance" className={collapsedNavCls(pathname.startsWith("/insurance"))} title="保险">
-            <Shield size={18} />
-          </Link>
           <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="负债">
             <Landmark size={18} />
           </Link>
         </nav>
 
         <div className="flex shrink-0 flex-col items-center gap-1 border-t border-slate-200 pt-3">
-          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="定投">
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="计划">
             <CalendarClock size={18} />
           </Link>
           <button
@@ -615,10 +643,6 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
               <LayoutDashboard size={18} />
               <span className="font-medium">概览</span>
             </Link>
-            <Link href="/insurance" className={navItemCls("/insurance")}>
-              <Shield size={18} />
-              <span className="font-medium">保险</span>
-            </Link>
           </nav>
         </div>
 
@@ -647,7 +671,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-scroll custom-scrollbar [scrollbar-gutter:stable]">
           <nav className="space-y-1">
             <div className="space-y-2">
               {sections.map((sec) => {
@@ -667,7 +691,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                           <SectionIcon size={14} />
                         </span>
                         <span className="min-w-0 flex-1 truncate">{sec.label}</span>
-                        <span className={`text-[11px] font-semibold tabular-nums ${sectionBalanceCls(sec.kind, sec.total)}`}>
+                        <span className={`text-xs font-semibold tabular-nums ${sectionBalanceCls(sec.kind, sec.total)}`}>
                           {formatMoney(displaySectionTotal(sec.kind, sec.total))}
                         </span>
                       </button>
@@ -693,9 +717,9 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                                 onClick={() => focusAssetSubgroup(group.key, sec.subgroups?.map((subgroup) => subgroup.key) ?? [group.key])}
                                 className="flex w-full items-center gap-1.5 rounded-md px-3 py-0.5 text-left hover:bg-slate-50/80"
                               >
-                                <div className="text-[9px] font-medium text-slate-400">{group.label}</div>
+                                <div className="text-[10px] font-medium text-slate-400">{group.label}</div>
                                 <div className="h-px flex-1 bg-slate-100" />
-                                <div className={`text-[9px] font-medium tabular-nums ${sectionBalanceCls(sec.kind, group.total)}`}>
+                                <div className={`text-[10px] font-medium tabular-nums ${sectionBalanceCls(sec.kind, group.total)}`}>
                                   {formatMoney(displaySectionTotal(sec.kind, group.total))}
                                 </div>
                                 <ChevronDown
@@ -723,7 +747,9 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                                   ? (it.investProductType === "money" ? "investmoney" : "investfund")
                                   : it.kind === "deposit"
                                     ? "deposit"
-                                    : (it.kind === "bank_credit" || it.kind === "loan" ? "bill" : "detail");
+                                    : it.kind === "insurance"
+                                      ? "insurance"
+                                      : (it.kind === "bank_credit" || it.kind === "loan" ? "bill" : "detail");
                                 q.set("view", view);
                                 return `/?${q.toString()}`;
                               })();
@@ -740,7 +766,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
                                       ? `${KIND_INLINE_LABEL.get(it.kind) ?? "账户"}·${it.shortLabel || it.label}`
                                       : it.label}
                                   </span>
-                                  <span className={`text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatMoney(displayBalance(it))}</span>
+                                  <span className={`relative right-7 shrink-0 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatMoney(displayBalance(it))}</span>
                                 </Link>
                               );
                             })}
@@ -758,7 +784,7 @@ export function SidebarClient({ items: initialItems, household, isRedUp, user }:
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
           <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
             <CalendarClock size={18} />
-            <span className="font-medium">定投</span>
+            <span className="font-medium">计划</span>
           </Link>
           <button
             onClick={() => setInitOpen(true)}

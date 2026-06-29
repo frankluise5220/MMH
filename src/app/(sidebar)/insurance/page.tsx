@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+﻿import { cookies } from "next/headers";
 import Link from "next/link";
 import { Shield, Building2, UserRound, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
@@ -7,13 +7,50 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
+import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
 
 export const dynamic = "force-dynamic";
+
+type InsuranceRow = {
+  id: string;
+  name: string;
+  typeLabel: string;
+  displayTypeLabel: string;
+  metricMode: InsuranceMetricMode;
+  cashValueLabel: string;
+  cashValue: number | null;
+  coverageAmount: number | null;
+  totalPremium: number;
+  statusLabel: string;
+  frequencyLabel: string;
+  paymentTermYears: number | null;
+  coverageTermYears: number | null;
+  institutionName: string;
+  ownerName: string;
+  insuredUserName: string;
+  accountId: string;
+  accountLabel: string;
+  buyCount: number;
+  redeemCount: number;
+  entries: Array<{
+    id: string;
+    date: Date;
+    fundSubtype: string | null;
+    accountName: string | null;
+    toAccountName: string | null;
+    note: string | null;
+    amount: unknown;
+  }>;
+};
 
 function amountClass(value: number) {
   if (value > 0) return "text-emerald-700";
   if (value < 0) return "text-rose-700";
   return "text-slate-500";
+}
+
+function metricClass(mode: InsuranceMetricMode, value: number) {
+  return mode === "coverage" ? "text-slate-700" : amountClass(value);
 }
 
 function productTypeLabel(type: string | null) {
@@ -52,22 +89,37 @@ export default async function InsurancePage() {
     orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
   });
 
+  const insuranceAccounts = await prisma.account.findMany({
+    where: { ...hidFilter, kind: "insurance", isActive: true },
+    include: {
+      AccountGroup: true,
+      Institution: true,
+    },
+    orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
+  });
+
   const productIds = products.map((item) => item.id);
-  const entries = productIds.length > 0
+  const insuranceAccountIds = insuranceAccounts.map((item) => item.id);
+  const entries = insuranceAccountIds.length > 0
     ? await prisma.txRecord.findMany({
         where: {
           ...hidFilter,
           deletedAt: null,
           type: "investment",
           source: "insurance",
-          insuranceProductId: { in: productIds },
+          OR: [
+            { accountId: { in: insuranceAccountIds } },
+            { toAccountId: { in: insuranceAccountIds } },
+            ...(productIds.length > 0 ? [{ insuranceProductId: { in: productIds } }] : []),
+          ],
         },
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       })
     : [];
 
-  const rows = products.map((product) => {
-    const account = product.Account;
+  const productById = new Map(products.map((product) => [product.id, product]));
+
+  const rows: InsuranceRow[] = insuranceAccounts.map((account) => {
     const display = buildAccountDisplayOption({
       id: account.id,
       name: account.name,
@@ -79,27 +131,66 @@ export default async function InsurancePage() {
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
 
-    const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
+    const relatedEntries = entries.filter((entry) => entry.accountId === account.id || entry.toAccountId === account.id);
+    const relatedProducts = relatedEntries
+      .map((entry) => (entry.insuranceProductId ? productById.get(entry.insuranceProductId) : null))
+      .filter((product): product is NonNullable<typeof product> => !!product);
+    const primaryProduct = relatedProducts[0] ?? products.find((product) => product.accountId === account.id) ?? null;
     const balance = relatedEntries.reduce((sum, entry) => {
       return sum + (entry.fundSubtype === "redeem" ? -Math.abs(toNumber(entry.amount)) : Math.abs(toNumber(entry.amount)));
     }, 0);
+    const metricMode = getInsuranceMetricMode(
+      primaryProduct?.productType ?? null,
+      primaryProduct?.accountingType ?? null,
+      primaryProduct?.cashValueEnabled ?? null,
+    );
+    const coverageAmount = Number(primaryProduct?.coverageAmount ?? 0);
+    const totalPremium = relatedEntries
+      .filter((entry) => entry.fundSubtype !== "redeem")
+      .reduce((sum, entry) => sum + Math.abs(toNumber(entry.amount)), 0);
 
     return {
-      id: product.id,
-      name: product.name,
-      shortName: product.shortName?.trim() || "",
-      typeLabel: productTypeLabel(product.productType),
-      institutionName: product.Institution?.name?.trim() || account.Institution?.name?.trim() || "未设机构",
-      ownerName: product.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || "未设所有人",
-      insuredUserName: product.InsuredUser?.name?.trim() || "",
+      id: account.id,
+      name: account.name,
+      typeLabel: productTypeLabel(primaryProduct?.productType ?? null),
+      displayTypeLabel: getInsuranceDisplayTypeLabel(metricMode),
+      metricMode,
+      cashValueLabel: getInsuranceMetricLabel(metricMode),
+      cashValue: metricMode === "coverage" ? null : balance,
+      coverageAmount,
+      totalPremium,
+      statusLabel:
+        primaryProduct?.status === "matured"
+          ? "已满期"
+          : primaryProduct?.status === "surrendered"
+            ? "已退保"
+            : primaryProduct?.status === "lapsed"
+              ? "已失效"
+              : "保障中",
+      frequencyLabel:
+        primaryProduct?.premiumFrequencyMonths === 1
+          ? "每月"
+          : primaryProduct?.premiumFrequencyMonths === 3
+            ? "每季"
+            : primaryProduct?.premiumFrequencyMonths === 6
+              ? "每半年"
+              : primaryProduct?.premiumFrequencyMonths === 12
+                ? "每年"
+                : primaryProduct?.premiumFrequencyMonths === 999999
+                  ? "趸交"
+                  : "-",
+      paymentTermYears: primaryProduct?.paymentTermYears ? Number(primaryProduct.paymentTermYears) : null,
+      coverageTermYears: primaryProduct?.coverageTermYears ? Number(primaryProduct.coverageTermYears) : null,
+      institutionName: primaryProduct?.Institution?.name?.trim() || account.Institution?.name?.trim() || "未设机构",
+      ownerName: primaryProduct?.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || "未设所有人",
+      insuredUserName: primaryProduct?.InsuredUser?.name?.trim() || "",
       accountId: account.id,
       accountLabel: display.label,
-      balance,
       buyCount: relatedEntries.filter((entry) => entry.fundSubtype === "buy").length,
       redeemCount: relatedEntries.filter((entry) => entry.fundSubtype === "redeem").length,
       entries: relatedEntries,
     };
-  });
+  }).filter((row) => row.entries.length > 0 || row.cashValue !== 0 || row.coverageAmount !== 0);
 
   const grouped = Array.from(
     rows.reduce((map, row) => {
@@ -108,12 +199,12 @@ export default async function InsurancePage() {
         key,
         institutionName: row.institutionName,
         ownerName: row.ownerName,
-        rows: [] as typeof rows,
+        rows: [] as InsuranceRow[],
       };
       current.rows.push(row);
       map.set(key, current);
       return map;
-    }, new Map<string, { key: string; institutionName: string; ownerName: string; rows: typeof rows }>()),
+    }, new Map<string, { key: string; institutionName: string; ownerName: string; rows: InsuranceRow[] }>()),
   )
     .map(([, value]) => value)
     .sort((a, b) => {
@@ -122,7 +213,7 @@ export default async function InsurancePage() {
       return a.ownerName.localeCompare(b.ownerName, "zh-Hans-CN");
     });
 
-  const totalBalance = rows.reduce((sum, row) => sum + row.balance, 0);
+  const totalBalance = rows.reduce((sum, row) => sum + (row.cashValue ?? 0), 0);
   const totalBuy = rows.reduce((sum, row) => sum + row.buyCount, 0);
   const totalRedeem = rows.reduce((sum, row) => sum + row.redeemCount, 0);
 
@@ -132,7 +223,7 @@ export default async function InsurancePage() {
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">保险</div>
-            <div className="text-xs text-slate-500">按机构与所有人查看保险产品、买入和赎回记录</div>
+            <div className="text-xs text-slate-500">按机构与所有人查看保险产品、投保和赎回记录</div>
           </div>
           <Link href="/" className="primary-button h-8 px-3 text-xs">
             记一笔
@@ -144,8 +235,8 @@ export default async function InsurancePage() {
         <section className="panel-surface overflow-hidden">
           <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
             <SummaryCard label="保险产品" value={String(rows.length)} />
-            <SummaryCard label="当前持仓" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
-            <SummaryCard label="买入记录" value={String(totalBuy)} />
+            <SummaryCard label="金额型持仓" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
+            <SummaryCard label="投保记录" value={String(totalBuy)} />
             <SummaryCard label="赎回记录" value={String(totalRedeem)} />
           </div>
         </section>
@@ -172,11 +263,13 @@ export default async function InsurancePage() {
                       {group.rows.map((row) => (
                         <Link
                           key={row.id}
-                          href={`/?accountId=${row.accountId}&view=investfund`}
+                          href={`/?accountId=${row.accountId}&view=insurance`}
                           className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
                         >
-                          <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                          <span className={`tabular-nums font-medium ${amountClass(row.balance)}`}>{formatMoney(row.balance)}</span>
+                          <span className="min-w-0 flex-1 truncate">{row.accountLabel || row.name}</span>
+                          <span className={`tabular-nums font-medium ${metricClass(row.metricMode, row.cashValue ?? 0)}`}>
+                            {row.cashValue != null ? formatMoney(row.cashValue) : "-"}
+                          </span>
                         </Link>
                       ))}
                     </div>
@@ -192,9 +285,9 @@ export default async function InsurancePage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Shield className="h-4 w-4 text-cyan-500" />
-                保险持仓
+                保险概览
               </div>
-              <div className="text-xs text-slate-400">按保险产品查看买入和赎回记录</div>
+              <div className="text-xs text-slate-400">现金价值/余额与保额分开显示</div>
             </div>
             <div className="divide-y divide-slate-100">
               {rows.length > 0 ? rows.map((row) => (
@@ -203,19 +296,29 @@ export default async function InsurancePage() {
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-slate-800">
                         {row.name}
-                        <span className="ml-2 text-xs font-normal text-slate-500">{row.typeLabel}</span>
+                        <span className="ml-2 text-xs font-normal text-slate-500">{row.displayTypeLabel} · {row.typeLabel}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.institutionName}</span>
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.ownerName}</span>
-                        {row.insuredUserName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">被保人 {row.insuredUserName}</span> : null}
+                        {row.insuredUserName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">被保险人 {row.insuredUserName}</span> : null}
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.statusLabel}</span>
+                        <span>频率 {row.frequencyLabel}</span>
+                        <span>保费 {formatMoney(row.totalPremium)}</span>
                         <span>账户 {row.accountLabel}</span>
-                        <span>买入 {row.buyCount}</span>
+                        <span>投保 {row.buyCount}</span>
                         <span>赎回 {row.redeemCount}</span>
                       </div>
                     </div>
-                    <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${amountClass(row.balance)}`}>
-                      {formatMoney(row.balance)}
+                    <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
+                      <div className={metricClass(row.metricMode, row.cashValue ?? 0)}>
+                        {row.cashValue != null ? formatMoney(row.cashValue) : "-"}
+                      </div>
+                      <div className="text-[10px] font-normal text-slate-400">{row.cashValueLabel}</div>
+                      <div className="mt-1 text-slate-700">
+                        {row.coverageAmount != null ? formatMoney(row.coverageAmount) : "-"}
+                      </div>
+                      <div className="text-[10px] font-normal text-slate-400">保额</div>
                     </div>
                   </div>
 
@@ -246,7 +349,7 @@ export default async function InsurancePage() {
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-700">
                                 <span className="inline-flex items-center gap-1">
                                   {entry.fundSubtype === "redeem" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownLeft className="h-3 w-3" />}
-                                  {entry.fundSubtype === "redeem" ? "赎回" : "买入"}
+                                  {entry.fundSubtype === "redeem" ? "赎回" : "投保"}
                                 </span>
                               </td>
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-600">{cashLabel}</td>
