@@ -1441,8 +1441,6 @@ export function FundShell(props: Props) {
 
             {!showCleared ? (<>
 
-              <RegularInvestForm accountId={accountId} accountLabel={selectedAccountLabel} cashAccounts={cashAccounts} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} apiAction={createRegularPlanViaApi} lastUsedCashAccountId={lastUsedCashAccount?.accountId} showTriggerButton={true} />
-
               {d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
 
             </>) : null}

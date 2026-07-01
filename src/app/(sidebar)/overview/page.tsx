@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { OverviewDashboard } from "@/components/OverviewDashboard";
 import { normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { computeInsuranceOverviewSummary } from "@/lib/server/insurance-overview-summary";
 import { computeOverviewSummary } from "@/lib/server/overview-summary";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ export default async function OverviewPage() {
     creditCardLabelMode,
   );
   const summary = await computeOverviewSummary(ctx, creditCardLabelTemplate);
+  const insuranceOverview = await computeInsuranceOverviewSummary(ctx);
 
   return (
     <OverviewDashboard
@@ -33,6 +35,7 @@ export default async function OverviewPage() {
       investmentCost={summary.investmentCost}
       investmentFloatingPnL={summary.investmentFloatingPnL}
       investmentFloatingPnLRate={summary.investmentFloatingPnLRate}
+      insuranceOverview={insuranceOverview}
       isRedUp={isRedUp}
     />
   );

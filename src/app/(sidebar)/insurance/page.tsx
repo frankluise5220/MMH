@@ -8,12 +8,15 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
+import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 
 export const dynamic = "force-dynamic";
 
 type InsuranceRow = {
   id: string;
   name: string;
+  policyNo: string | null;
+  startDateLabel: string | null;
   typeLabel: string;
   displayTypeLabel: string;
   metricMode: InsuranceMetricMode;
@@ -27,7 +30,8 @@ type InsuranceRow = {
   coverageTermYears: number | null;
   institutionName: string;
   ownerName: string;
-  insuredUserName: string;
+  policyholderName: string;
+  insuredPersonName: string;
   accountId: string;
   accountLabel: string;
   buyCount: number;
@@ -84,22 +88,15 @@ export default async function InsurancePage() {
       Account: { include: { AccountGroup: true, Institution: true } },
       Institution: true,
       OwnerGroup: true,
+      PolicyholderPerson: true,
       InsuredUser: true,
-    },
-    orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
-  });
-
-  const insuranceAccounts = await prisma.account.findMany({
-    where: { ...hidFilter, kind: "insurance", isActive: true },
-    include: {
-      AccountGroup: true,
-      Institution: true,
+      InsuredPerson: true,
     },
     orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
   });
 
   const productIds = products.map((item) => item.id);
-  const insuranceAccountIds = insuranceAccounts.map((item) => item.id);
+  const insuranceAccountIds = Array.from(new Set(products.map((item) => item.accountId)));
   const entries = insuranceAccountIds.length > 0
     ? await prisma.txRecord.findMany({
         where: {
@@ -116,10 +113,10 @@ export default async function InsurancePage() {
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       })
     : [];
+  const accountById = new Map(products.map((product) => [product.Account.id, product.Account]));
 
-  const productById = new Map(products.map((product) => [product.id, product]));
-
-  const rows: InsuranceRow[] = insuranceAccounts.map((account) => {
+  const rows: InsuranceRow[] = products.map((product) => {
+    const account = accountById.get(product.accountId) ?? product.Account;
     const display = buildAccountDisplayOption({
       id: account.id,
       name: account.name,
@@ -131,28 +128,26 @@ export default async function InsurancePage() {
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
 
-    const relatedEntries = entries.filter((entry) => entry.accountId === account.id || entry.toAccountId === account.id);
-    const relatedProducts = relatedEntries
-      .map((entry) => (entry.insuranceProductId ? productById.get(entry.insuranceProductId) : null))
-      .filter((product): product is NonNullable<typeof product> => !!product);
-    const primaryProduct = relatedProducts[0] ?? products.find((product) => product.accountId === account.id) ?? null;
+    const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
     const balance = relatedEntries.reduce((sum, entry) => {
-      return sum + (entry.fundSubtype === "redeem" ? -Math.abs(toNumber(entry.amount)) : Math.abs(toNumber(entry.amount)));
+      return sum + Math.abs(toNumber(entry.amount));
     }, 0);
     const metricMode = getInsuranceMetricMode(
-      primaryProduct?.productType ?? null,
-      primaryProduct?.accountingType ?? null,
-      primaryProduct?.cashValueEnabled ?? null,
+      product.productType ?? null,
+      product.accountingType ?? null,
+      product.cashValueEnabled ?? null,
     );
-    const coverageAmount = Number(primaryProduct?.coverageAmount ?? 0);
+    const coverageAmount = Number(product.coverageAmount ?? 0);
     const totalPremium = relatedEntries
       .filter((entry) => entry.fundSubtype !== "redeem")
       .reduce((sum, entry) => sum + Math.abs(toNumber(entry.amount)), 0);
 
     return {
-      id: account.id,
-      name: account.name,
-      typeLabel: productTypeLabel(primaryProduct?.productType ?? null),
+      id: product.id,
+      name: product.name,
+      policyNo: product.policyNo ?? null,
+      startDateLabel: product.startDate ? product.startDate.toISOString().slice(0, 10) : null,
+      typeLabel: productTypeLabel(product.productType ?? null),
       displayTypeLabel: getInsuranceDisplayTypeLabel(metricMode),
       metricMode,
       cashValueLabel: getInsuranceMetricLabel(metricMode),
@@ -160,37 +155,38 @@ export default async function InsurancePage() {
       coverageAmount,
       totalPremium,
       statusLabel:
-        primaryProduct?.status === "matured"
+        product.status === "matured"
           ? "已满期"
-          : primaryProduct?.status === "surrendered"
+          : product.status === "surrendered"
             ? "已退保"
-            : primaryProduct?.status === "lapsed"
+            : product.status === "lapsed"
               ? "已失效"
               : "保障中",
       frequencyLabel:
-        primaryProduct?.premiumFrequencyMonths === 1
+        product.premiumFrequencyMonths === 1
           ? "每月"
-          : primaryProduct?.premiumFrequencyMonths === 3
+          : product.premiumFrequencyMonths === 3
             ? "每季"
-            : primaryProduct?.premiumFrequencyMonths === 6
+            : product.premiumFrequencyMonths === 6
               ? "每半年"
-              : primaryProduct?.premiumFrequencyMonths === 12
+              : product.premiumFrequencyMonths === 12
                 ? "每年"
-                : primaryProduct?.premiumFrequencyMonths === 999999
+                : product.premiumFrequencyMonths === 999999
                   ? "趸交"
                   : "-",
-      paymentTermYears: primaryProduct?.paymentTermYears ? Number(primaryProduct.paymentTermYears) : null,
-      coverageTermYears: primaryProduct?.coverageTermYears ? Number(primaryProduct.coverageTermYears) : null,
-      institutionName: primaryProduct?.Institution?.name?.trim() || account.Institution?.name?.trim() || "未设机构",
-      ownerName: primaryProduct?.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || "未设所有人",
-      insuredUserName: primaryProduct?.InsuredUser?.name?.trim() || "",
+      paymentTermYears: product.paymentTermYears ? Number(product.paymentTermYears) : null,
+      coverageTermYears: product.coverageTermYears ? Number(product.coverageTermYears) : null,
+      institutionName: product.Institution?.name?.trim() || account.Institution?.name?.trim() || "未设机构",
+      ownerName: product.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || "未设所有人",
+      policyholderName: product.PolicyholderPerson?.name?.trim() || product.OwnerGroup?.name?.trim() || "",
+      insuredPersonName: product.InsuredPerson?.name?.trim() || product.InsuredUser?.name?.trim() || "",
       accountId: account.id,
       accountLabel: display.label,
       buyCount: relatedEntries.filter((entry) => entry.fundSubtype === "buy").length,
       redeemCount: relatedEntries.filter((entry) => entry.fundSubtype === "redeem").length,
       entries: relatedEntries,
     };
-  }).filter((row) => row.entries.length > 0 || row.cashValue !== 0 || row.coverageAmount !== 0);
+  }).filter((row) => row.entries.length > 0 || row.statusLabel !== "已失效" || row.coverageAmount !== 0 || row.cashValue !== 0);
 
   const grouped = Array.from(
     rows.reduce((map, row) => {
@@ -225,9 +221,7 @@ export default async function InsurancePage() {
             <div className="text-sm font-semibold text-slate-900">保险</div>
             <div className="text-xs text-slate-500">按机构与所有人查看保险产品、投保和赎回记录</div>
           </div>
-          <Link href="/" className="primary-button h-8 px-3 text-xs">
-            记一笔
-          </Link>
+          <TopEntryLauncher defaultAction="insurance" />
         </div>
       </header>
 
@@ -235,7 +229,7 @@ export default async function InsurancePage() {
         <section className="panel-surface overflow-hidden">
           <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
             <SummaryCard label="保险产品" value={String(rows.length)} />
-            <SummaryCard label="金额型持仓" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
+            <SummaryCard label="金额型保单" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
             <SummaryCard label="投保记录" value={String(totalBuy)} />
             <SummaryCard label="赎回记录" value={String(totalRedeem)} />
           </div>
@@ -246,7 +240,7 @@ export default async function InsurancePage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Building2 className="h-4 w-4 text-blue-500" />
-                左侧分组
+                保单分组
               </div>
               <div className="text-xs text-slate-400">机构 - 所有人</div>
             </div>
@@ -285,9 +279,9 @@ export default async function InsurancePage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Shield className="h-4 w-4 text-cyan-500" />
-                保险概览
+                保单列表
               </div>
-              <div className="text-xs text-slate-400">现金价值/余额与保额分开显示</div>
+              <div className="text-xs text-slate-400">允许同一产品出现多张保单，按保单分别显示</div>
             </div>
             <div className="divide-y divide-slate-100">
               {rows.length > 0 ? rows.map((row) => (
@@ -299,9 +293,11 @@ export default async function InsurancePage() {
                         <span className="ml-2 text-xs font-normal text-slate-500">{row.displayTypeLabel} · {row.typeLabel}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                        {row.policyNo ? <span className="rounded bg-slate-100 px-1.5 py-0.5">保单号 {row.policyNo}</span> : null}
+                        {row.startDateLabel ? <span className="rounded bg-slate-100 px-1.5 py-0.5">起保 {row.startDateLabel}</span> : null}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.institutionName}</span>
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.ownerName}</span>
-                        {row.insuredUserName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">被保险人 {row.insuredUserName}</span> : null}
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5">投保人 {row.policyholderName || row.ownerName}</span>
+                        {row.insuredPersonName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">被保人 {row.insuredPersonName}</span> : null}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.statusLabel}</span>
                         <span>频率 {row.frequencyLabel}</span>
                         <span>保费 {formatMoney(row.totalPremium)}</span>
@@ -371,7 +367,7 @@ export default async function InsurancePage() {
                   </div>
                 </div>
               )) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无保险持仓</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无保单</div>
               )}
             </div>
           </div>

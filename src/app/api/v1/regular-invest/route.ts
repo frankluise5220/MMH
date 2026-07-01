@@ -10,6 +10,30 @@ import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTas
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 
+function normalizeIntervalUnit(value: unknown): IntervalUnit {
+  if (value === "day" || value === "week" || value === "biweek" || value === "month" || value === "year") {
+    return value;
+  }
+  return IntervalUnit.month;
+}
+
+function parseDateOnlyUtc(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { hidFilter } = await getHouseholdScope();
@@ -74,9 +98,30 @@ export async function POST(req: NextRequest) {
 
     const scheduledTaskType = normalizeScheduledTaskType(taskType);
     const isFundTask = scheduledTaskType === "fund_regular_invest";
+    const isInsuranceTask = scheduledTaskType === "insurance_premium";
 
-    if (!accountId || !amount || !startDate || (isFundTask && !fundCode)) {
+    // 保险任务需要 insuranceProductId 或 accountId
+    if (!amount || !startDate || (isFundTask && (!accountId || !fundCode))) {
       return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    }
+    if (isInsuranceTask && !insuranceProductId && !accountId) {
+      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    }
+    if (!isInsuranceTask && !isFundTask && !accountId) {
+      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    }
+
+    // 为 insurance_premium 解析目标账户
+    let effectiveAccountId = accountId;
+    let effectiveAccountName: string | null = null;
+    if (isInsuranceTask && insuranceProductId && !accountId) {
+      const product = await prisma.insuranceProduct.findFirst({
+        where: { id: insuranceProductId, householdId },
+        include: { Account: { select: { id: true, name: true } } },
+      });
+      if (!product) return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 400 });
+      effectiveAccountId = product.accountId;
+      effectiveAccountName = product.Account.name;
     }
 
     const amountNum = parseFloat(amount);
@@ -84,7 +129,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
 
-    const targetAcc = await prisma.account.findUnique({ where: { id: accountId } });
+    const targetAcc = await prisma.account.findUnique({ where: { id: effectiveAccountId } });
     if (!targetAcc) return NextResponse.json({ ok: false, error: "目标账户不存在" }, { status: 400 });
     if (targetAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "目标账户不属于当前账簿" }, { status: 403 });
 
@@ -96,9 +141,17 @@ export async function POST(req: NextRequest) {
     const unitVal = parseInt(intervalValue) || 1;
     const totalRunsInt = totalRuns ? parseInt(totalRuns) : null;
     const executionDayInt = executionDay ? parseInt(executionDay) : null;
-    const intervalUnitValue = intervalUnit as IntervalUnit;
-    const start = isFundTask ? skipWeekend(new Date(startDate)) : new Date(startDate);
-    const initialRunDate = calcInitialRunDate(new Date(startDate), intervalUnitValue, unitVal, executionDayInt, isFundTask);
+    const intervalUnitValue = normalizeIntervalUnit(intervalUnit);
+    const parsedStartDate = parseDateOnlyUtc(startDate);
+    if (!parsedStartDate) {
+      return NextResponse.json({ ok: false, error: "开始日期不正确" }, { status: 400 });
+    }
+    const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
+    if (endDate && !parsedEndDate) {
+      return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
+    }
+    const start = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
+    const initialRunDate = calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask);
 
     const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
     const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
@@ -107,8 +160,8 @@ export async function POST(req: NextRequest) {
       const plan = await tx.regularInvestPlan.create({
         data: {
           householdId,
-          accountId,
-          accountName: targetAcc.name,
+          accountId: effectiveAccountId,
+          accountName: effectiveAccountName || targetAcc.name,
           cashAccountId: cashAccountId || null,
           cashAccountName: cashAcc?.name || null,
           fundCode: isFundTask ? fundCode : scheduledTaskType,
@@ -119,7 +172,7 @@ export async function POST(req: NextRequest) {
           intervalValue: unitVal,
           executionDay: executionDayInt,
           startDate: start,
-          endDate: endDate ? new Date(endDate) : null,
+          endDate: parsedEndDate,
           totalRuns: totalRunsInt,
           executedRuns: 0,
           nextRunDate: initialRunDate,
@@ -131,7 +184,7 @@ export async function POST(req: NextRequest) {
             type: scheduledTaskType,
             title: fundName || (isFundTask ? fundCode : scheduledTaskTypeLabel(scheduledTaskType)),
             fromAccountId: cashAccountId || null,
-            toAccountId: accountId,
+            toAccountId: effectiveAccountId,
             insuranceProductId: insuranceProductId || null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding !== false : false,
@@ -140,20 +193,20 @@ export async function POST(req: NextRequest) {
 
       // 更新确认天数表
       const newDays = safeConfirmDays ?? 0;
-      if (isFundTask && accountId && fundCode) {
-        await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
+      if (isFundTask && effectiveAccountId && fundCode) {
+        await setFundConfirmDaysInTx(tx, effectiveAccountId, fundCode, newDays);
       }
 
       // 更新手续费率表
       const newRate = feeRate != null ? parseFloat(feeRate) : 0;
-      if (isFundTask && accountId && fundCode) {
-        await setFundFeeRateInTx(tx, accountId, fundCode, newRate);
+      if (isFundTask && effectiveAccountId && fundCode) {
+        await setFundFeeRateInTx(tx, effectiveAccountId, fundCode, newRate);
       }
 
       // 更新入账天数表
       const newArrivalDays = safeArrivalDays ?? 2;
-      if (isFundTask && accountId && fundCode) {
-        await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
+      if (isFundTask && effectiveAccountId && fundCode) {
+        await setFundArrivalDaysInTx(tx, effectiveAccountId, fundCode, newArrivalDays);
       }
 
       // 不预生成交易明细，等用户点击"批量生成"按钮后再生成
@@ -267,22 +320,34 @@ export async function PUT(req: NextRequest) {
       const fundAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true } });
       updateData.accountName = fundAcc?.name || null;
     }
-    const effectiveStartDate = startDate != null ? new Date(startDate) : existing.startDate;
-    const effectiveIntervalUnit = (intervalUnit || existing.intervalUnit) as IntervalUnit;
+    const parsedStartDate = startDate != null ? parseDateOnlyUtc(startDate) : null;
+    if (startDate != null && !parsedStartDate) {
+      return NextResponse.json({ ok: false, error: "开始日期不正确" }, { status: 400 });
+    }
+    const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
+    if (endDate && !parsedEndDate) {
+      return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
+    }
+    const effectiveStartDate = parsedStartDate ?? existing.startDate;
+    const effectiveIntervalUnit = normalizeIntervalUnit(intervalUnit || existing.intervalUnit);
     const effectiveIntervalValue = intervalValue != null ? parseInt(intervalValue) || 1 : existing.intervalValue;
     const effectiveExecutionDay = executionDay != null
       ? (executionDay ? parseInt(executionDay) : null)
       : existing.executionDay;
 
-    if (startDate != null) updateData.startDate = isFundTask ? skipWeekend(new Date(startDate)) : new Date(startDate);
+    if (parsedStartDate) updateData.startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
     if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
     if (fundName != null) updateData.fundName = fundName;
     if (amount != null) updateData.amount = parseFloat(amount);
-    if (intervalUnit) updateData.intervalUnit = intervalUnit;
+    if (intervalUnit) updateData.intervalUnit = normalizeIntervalUnit(intervalUnit);
     if (intervalValue != null) updateData.intervalValue = parseInt(intervalValue);
     if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
     if (nextRunDate) {
-      updateData.nextRunDate = new Date(nextRunDate);
+      const parsedNextRunDate = parseDateOnlyUtc(nextRunDate);
+      if (!parsedNextRunDate) {
+        return NextResponse.json({ ok: false, error: "Invalid nextRunDate" }, { status: 400 });
+      }
+      updateData.nextRunDate = parsedNextRunDate;
     } else if (startDate != null || intervalUnit || intervalValue != null || executionDay != null || taskType) {
       updateData.nextRunDate = calcInitialRunDate(
         effectiveStartDate,
@@ -292,7 +357,7 @@ export async function PUT(req: NextRequest) {
         isFundTask,
       );
     }
-    if (endDate != null) updateData.endDate = endDate ? new Date(endDate) : null;
+    if (endDate != null) updateData.endDate = parsedEndDate;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
     if (feeRate != null) updateData.feeRate = parseFloat(feeRate);
     if (confirmDays != null) updateData.confirmDays = normalizeNonNegativeDays(confirmDays, 0);

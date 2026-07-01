@@ -9,7 +9,8 @@
     "start:clean": "powershell -ExecutionPolicy Bypass -File start.ps1",
     "build": "next build",
     "start": "node scripts/start-standalone.cjs",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:encoding": "node scripts/check-encoding.cjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.64",

@@ -9,6 +9,8 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 
 type Entry = {
   id?: string;
@@ -105,6 +107,7 @@ export function WealthFormModal({
   useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
   useEffect(() => { setLocalCashSSOpts(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestSSOpts(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
+  const recentAccountIds = useRecentAccountIds();
 
   function reset() {
     setSubtype("buy");
@@ -146,6 +149,8 @@ export function WealthFormModal({
 
   // Listen for create event
   useEffect(() => {
+    if (mode !== "create") return;
+
     function onCreate(ev: Event) {
       const detail = (ev as CustomEvent<{ requestId: string; defaultCashAccountId?: string }>).detail;
       setRequestId(detail?.requestId ?? null);
@@ -157,7 +162,7 @@ export function WealthFormModal({
     }
     window.addEventListener("mmh:wealth:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:wealth:create", onCreate as EventListener);
-  }, [defaultAccountId, today]);
+  }, [defaultAccountId, mode, today]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -199,139 +204,200 @@ export function WealthFormModal({
       setSubmitting(false);
     }
   }
+  useCloseOnNavigation(open, () => {
+    setOpen(false);
+    if (mode === "create") reset();
+  });
   if (!open) return null;
 
   const isRedeem = subtype === "redeem";
 
-  return (
+  return createPortal(
     <>
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
-      <div className="modal-surface w-full max-w-md">
-        <div className="modal-header">
-          <div className="text-sm font-semibold text-slate-800">
-            {mode === "edit" ? "编辑理财记录" : "新增理财记录"}
-            <span className="ml-2 text-xs font-normal text-slate-500">银行理财</span>
+      <div className="app-modal-backdrop z-[1000]">
+        <div className="app-modal-panel max-w-md">
+          <div className="modal-header">
+            <div className="text-sm font-semibold text-slate-800">
+              {mode === "edit" ? "编辑理财记录" : "新增理财记录"}
+              <span className="ml-2 text-xs font-normal text-slate-500">银行理财</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                if (mode === "create") reset();
+              }}
+              className="secondary-button h-8 px-2"
+            >
+              关闭
+            </button>
           </div>
-          <button type="button" onClick={() => { setOpen(false); if (mode === "create") reset(); }}
-            className="secondary-button h-8 px-2">关闭</button>
+
+          <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSubtype("buy")}
+                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
+                >
+                  存入
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubtype("redeem")}
+                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
+                >
+                  取出
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="form-label">日期</div>
+                  <DateStepper value={date} onChange={setDate} />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">{isRedeem ? "取出金额" : "存入金额"}</div>
+                  <CalcInput
+                    value={amount}
+                    onChange={setAmount}
+                    placeholder="0.00"
+                    label={isRedeem ? "取出" : "存入"}
+                    precision={2}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="form-label">产品名称</div>
+                <input
+                  value={fundName}
+                  onChange={(e) => setFundName(e.target.value)}
+                  placeholder="例如：招行朝朝宝"
+                  className="form-input"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="form-label">年化收益率（%）</div>
+                  <input
+                    inputMode="decimal"
+                    value={annualRate}
+                    onChange={(e) => setAnnualRate(e.target.value)}
+                    placeholder="如：3.5"
+                    className="form-input"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">期限天数</div>
+                  <select
+                    value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : "__custom__"}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value !== "__custom__") setTermDays(value);
+                    }}
+                    className="form-input"
+                  >
+                    <option value="">请选择常见期限</option>
+                    {TERM_PRESETS.map((preset) => (
+                      <option key={preset.days} value={String(preset.days)}>
+                        {preset.label}
+                      </option>
+                    ))}
+                    <option value="__custom__">自定义天数</option>
+                  </select>
+                  <input
+                    inputMode="numeric"
+                    value={termDays}
+                    onChange={(e) => setTermDays(e.target.value)}
+                    placeholder="可手填，如：30"
+                    className="form-input"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="form-label">{isRedeem ? "到账账户" : "资金来源账户"}</div>
+                  <SmartSelect
+                    mode="single"
+                    value={cashAccountId}
+                    onChange={setCashAccountId}
+                    options={sortOptionsByRecent(cashFiltered ?? cashAccountList, recentAccountIds)}
+                    placeholder="选择账户"
+                    onCreateClick={() => setNestedEntityType("cash-account")}
+                    createLabel="新增账户"
+                    onCycleOwnerFilter={cfCycle}
+                    ownerFilterLabel={cfLabel}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">理财账户</div>
+                  <SmartSelect
+                    mode="single"
+                    value={toAccountId}
+                    onChange={setToAccountId}
+                    options={sortOptionsByRecent(investFiltered ?? investmentAccountList, recentAccountIds)}
+                    placeholder="选择理财账户"
+                    onCreateClick={() => setNestedEntityType("invest-account")}
+                    createLabel="新增账户"
+                    onCycleOwnerFilter={ifCycle}
+                    ownerFilterLabel={ifLabel}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="form-label">备注</div>
+                <input
+                  value={memo}
+                  onChange={(e) => setMemo(e.target.value)}
+                  placeholder="可选"
+                  className="form-input"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
+                >
+                  {submitting ? "保存中…" : mode === "edit" ? "保存修改" : isRedeem ? "记账（取出）" : "记账（存入）"}
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
-
-        <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
-          {/* 交易类型 */}
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setSubtype("buy")}
-              className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}>
-              存入
-            </button>
-            <button type="button" onClick={() => setSubtype("redeem")}
-              className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}>
-              取出
-            </button>
-          </div>
-
-          {/* 日期 + 金额 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <div className="form-label">日期</div>
-              <DateStepper value={date} onChange={setDate} />
-            </div>
-            <div className="space-y-1">
-              <div className="form-label">{isRedeem ? "取出金额" : "存入金额"}</div>
-              <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={isRedeem ? "取出" : "存入"} precision={2} />
-            </div>
-          </div>
-
-          {/* 产品名称 */}
-          <div className="space-y-1">
-            <div className="form-label">产品名称</div>
-            <input value={fundName} onChange={(e) => setFundName(e.target.value)} placeholder="例如：招行朝朝宝"
-              className="form-input" />
-          </div>
-
-          {/* 年化收益率 + 期限天数 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <div className="form-label">年化收益率（%）</div>
-              <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder="如：3.5"
-                className="form-input" />
-            </div>
-            <div className="space-y-1">
-              <div className="form-label">期限天数</div>
-              <select
-                value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : "__custom__"}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  if (value !== "__custom__") setTermDays(value);
-                }}
-                className="form-input"
-              >
-                <option value="">请选择常见期限</option>
-                {TERM_PRESETS.map((preset) => (
-                  <option key={preset.days} value={String(preset.days)}>
-                    {preset.label}
-                  </option>
-                ))}
-                <option value="__custom__">自定义天数</option>
-              </select>
-              <input inputMode="numeric" value={termDays} onChange={(e) => setTermDays(e.target.value)} placeholder="可手填，如：30"
-                className="form-input" />
-            </div>
-          </div>
-
-          {/* 资金账户 + 理财账户 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <div className="form-label">{isRedeem ? "到账账户" : "资金来源账户"}</div>
-              <SmartSelect mode="single" value={cashAccountId} onChange={setCashAccountId}
-                options={cashFiltered ?? cashAccountList} placeholder="选择账户"
-                onCreateClick={() => setNestedEntityType("cash-account")} createLabel="新增账户"
-                onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
-            </div>
-            <div className="space-y-1">
-              <div className="form-label">理财账户</div>
-              <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
-                options={investFiltered ?? investmentAccountList} placeholder="选择理财账户"
-                onCreateClick={() => setNestedEntityType("invest-account")} createLabel="新增账户"
-                onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
-            </div>
-          </div>
-
-          {/* 备注 */}
-          <div className="space-y-1">
-            <div className="form-label">备注</div>
-            <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选"
-              className="form-input" />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-1">
-            <button type="submit" disabled={submitting}
-              className={`h-9 px-4 rounded-[10px] text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}>
-              {submitting ? "保存中…" : mode === "edit" ? "保存修改" : isRedeem ? "记账（取出）" : "记账（存入）"}
-            </button>
-          </div>
-        </form>
       </div>
-    </div>
-    {nestedEntityType && createPortal(
-      <NestedAddModal mode="compact" entityType="account" open={true}
-        onClose={() => setNestedEntityType(null)}
-        onCreated={(id, name, extra) => {
-          const kind = extra?.kind || "investment";
-          setCashAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }]);
-          setInvestmentAccountList(prev => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
-          setLocalCashSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }] : prev);
-          setLocalInvestSSOpts(prev => prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev);
-          if (nestedEntityType === "cash-account") setCashAccountId(id);
-          else setToAccountId(id);
-          setNestedEntityType(null);
-        }}
-        extraFields={{ kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment", investProductType: "wealth" }}
-        hiddenFields={["kind"]}
-        nestedFieldData={nestedFieldData}
-      />,
-      document.body,
-    )}
-    </>
+      {nestedEntityType ? (
+        <NestedAddModal
+          mode="compact"
+          entityType="account"
+          open={true}
+          onClose={() => setNestedEntityType(null)}
+          onCreated={(id, name, extra) => {
+            const kind = extra?.kind || "investment";
+            setCashAccountList((prev) => [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }]);
+            setInvestmentAccountList((prev) => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
+            setLocalCashSSOpts((prev) => (prev ? [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }] : prev));
+            setLocalInvestSSOpts((prev) => (prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev));
+            if (nestedEntityType === "cash-account") setCashAccountId(id);
+            else setToAccountId(id);
+            setNestedEntityType(null);
+          }}
+          extraFields={{
+            kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment",
+            investProductType: "wealth",
+          }}
+          hiddenFields={["kind"]}
+          nestedFieldData={nestedFieldData}
+        />
+      ) : null}
+    </>,
+    document.body,
   );
 }
 

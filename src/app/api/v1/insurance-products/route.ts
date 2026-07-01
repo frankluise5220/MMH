@@ -2,6 +2,7 @@
 import { InsuranceAccountingType, InsuranceProductType, InsuranceStatus } from "@prisma/client";
 
 import { isInsuranceAccount } from "@/lib/account-kind-utils";
+import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -56,6 +57,71 @@ function productMasterIdData(productMaster: { id: string } | null) {
   return productMaster ? { productMasterId: productMaster.id } : {};
 }
 
+function isFamilyMember(item: { type: string | null } | null) {
+  return !!item && item.type === "family_member";
+}
+
+function insurancePlanMemoFilters(productIds: string[]) {
+  return productIds.map((productId) => ({
+    memo: { contains: `"insuranceProductId":"${productId}"` },
+  }));
+}
+
+async function ensureFamilyMemberInstitution(input: {
+  householdId: string;
+  personId: string | null;
+  personName: string | null;
+}) {
+  if (input.personId) {
+    const existing = await prisma.institution.findFirst({
+      where: {
+        id: input.personId,
+        householdId: input.householdId,
+        type: "family_member",
+      },
+    });
+    if (existing) return existing;
+  }
+  const normalizedName = String(input.personName ?? "").trim();
+  if (!normalizedName) return null;
+  const matched = await prisma.institution.findFirst({
+    where: {
+      householdId: input.householdId,
+      type: "family_member",
+      name: normalizedName,
+    },
+  });
+  if (matched) return matched;
+  return prisma.institution.create({
+    data: {
+      householdId: input.householdId,
+      type: "family_member",
+      name: normalizedName,
+      shortName: null,
+    },
+  });
+}
+
+async function resolveInsuranceOwnerGroup(input: {
+  ownerGroupId: string | null;
+  policyholderPerson: { name: string } | null;
+  householdId: string;
+}) {
+  if (input.ownerGroupId) {
+    return prisma.accountGroup.findFirst({ where: { id: input.ownerGroupId, householdId: input.householdId } });
+  }
+  if (input.policyholderPerson?.name?.trim()) {
+    const name = input.policyholderPerson.name.trim();
+    const existing = await prisma.accountGroup.findFirst({ where: { name, householdId: input.householdId } });
+    if (existing) return existing;
+    return prisma.accountGroup.create({ data: { name, householdId: input.householdId } });
+  }
+  return prisma.accountGroup.findFirst({
+    where: { householdId: input.householdId },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
 async function getOrCreateProductMaster(input: {
   householdId: string;
   institutionId: string;
@@ -99,8 +165,35 @@ async function getOrCreateProductMaster(input: {
   });
 }
 
-export async function GET() {
+function serializeProductMaster(item: {
+  id: string;
+  name: string;
+  shortName: string | null;
+  productType: InsuranceProductType;
+  accountingType: InsuranceAccountingType;
+  currency: string;
+  institutionId: string;
+  note: string | null;
+  Institution?: { name: string; shortName: string | null } | null;
+}) {
+  return {
+    id: item.id,
+    name: item.name,
+    shortName: item.shortName,
+    productType: item.productType,
+    accountingType: item.accountingType,
+    currency: item.currency,
+    institutionId: item.institutionId,
+    institutionName: item.Institution?.name ?? "",
+    institutionShortName: item.Institution?.shortName ?? "",
+    note: item.note,
+    status: "active",
+  };
+}
+
+export async function GET(req: NextRequest) {
   const { hidFilter } = await getHouseholdScope();
+  const includeMasters = new URL(req.url).searchParams.get("includeMasters") === "1";
 
   const products = await prisma.insuranceProduct.findMany({
     where: hidFilter,
@@ -108,7 +201,9 @@ export async function GET() {
       Account: { select: { id: true, name: true, institutionId: true, groupId: true } },
       Institution: { select: { id: true, name: true, shortName: true } },
       OwnerGroup: { select: { id: true, name: true } },
+      PolicyholderPerson: { select: { id: true, name: true, shortName: true, type: true } },
       InsuredUser: { select: { id: true, name: true } },
+      InsuredPerson: { select: { id: true, name: true, shortName: true, type: true } },
     },
     orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
   });
@@ -156,12 +251,61 @@ export async function GET() {
       ProductMaster: { select: { id: true, name: true, shortName: true } },
       Institution: { select: { id: true, name: true, shortName: true } },
       OwnerGroup: { select: { id: true, name: true } },
+      PolicyholderPerson: { select: { id: true, name: true, shortName: true, type: true } },
       InsuredUser: { select: { id: true, name: true } },
+      InsuredPerson: { select: { id: true, name: true, shortName: true, type: true } },
     },
     orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
   });
 
-  return NextResponse.json({
+  const productIds = refreshedProducts.map((item) => item.id);
+  const [latestPremiumRows, activePremiumPlans] = await Promise.all([
+    productIds.length > 0
+      ? prisma.txRecord.groupBy({
+          by: ["insuranceProductId"],
+          where: {
+            householdId: hidFilter.householdId ?? undefined,
+            insuranceProductId: { in: productIds },
+            source: "insurance",
+            type: "investment",
+            fundSubtype: "buy",
+            deletedAt: null,
+          },
+          _max: { date: true },
+        })
+      : Promise.resolve([]),
+    productIds.length > 0
+      ? prisma.regularInvestPlan.findMany({
+          where: {
+            householdId: hidFilter.householdId ?? undefined,
+            fundCode: "insurance_premium",
+            status: { in: ["active", "paused"] },
+          },
+          select: { memo: true, nextRunDate: true },
+          orderBy: { createdAt: "desc" },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const latestPremiumDateByProductId = new Map(
+    latestPremiumRows
+      .filter((item) => item.insuranceProductId && item._max.date)
+      .map((item) => [item.insuranceProductId as string, item._max.date!.toISOString().slice(0, 10)]),
+  );
+  const nextPlannedPremiumDateByProductId = new Map<string, string>();
+  for (const plan of activePremiumPlans) {
+    const memo = String(plan.memo ?? "");
+    const match = memo.match(/\"insuranceProductId\":\"([^\"]+)\"/);
+    const productId = match?.[1];
+    if (!productId || nextPlannedPremiumDateByProductId.has(productId) || !plan.nextRunDate) continue;
+    nextPlannedPremiumDateByProductId.set(productId, plan.nextRunDate.toISOString().slice(0, 10));
+  }
+
+  const response: {
+    ok: true;
+    products: Array<Record<string, unknown>>;
+    masters?: Array<Record<string, unknown>>;
+  } = {
     ok: true,
     products: refreshedProducts.map((item) => ({
       id: item.id,
@@ -178,7 +322,9 @@ export async function GET() {
       accountId: item.accountId,
       institutionId: item.institutionId,
       ownerGroupId: item.ownerGroupId,
+      policyholderPersonId: item.policyholderPersonId,
       insuredUserId: item.insuredUserId,
+      insuredPersonId: item.insuredPersonId,
       beneficiaryName: item.beneficiaryName,
       startDate: item.startDate?.toISOString().slice(0, 10) ?? null,
       effectiveDate: item.effectiveDate?.toISOString().slice(0, 10) ?? null,
@@ -191,13 +337,30 @@ export async function GET() {
       coverageAmount: item.coverageAmount ? Number(item.coverageAmount) : null,
       cashValueEnabled: item.cashValueEnabled,
       note: item.note,
+      latestPremiumDate: latestPremiumDateByProductId.get(item.id) ?? null,
+      nextPlannedPremiumDate: nextPlannedPremiumDateByProductId.get(item.id) ?? null,
       accountName: item.Account?.name ?? "",
       institutionName: item.Institution?.name ?? "",
       institutionShortName: item.Institution?.shortName ?? "",
       ownerGroupName: item.OwnerGroup?.name ?? "",
+      policyholderPersonName: item.PolicyholderPerson?.name ?? "",
       insuredUserName: item.InsuredUser?.name ?? "",
+      insuredPersonName: item.InsuredPerson?.name ?? "",
     })),
-  });
+  };
+
+  if (includeMasters) {
+    const masters = await prisma.insuranceProductMaster.findMany({
+      where: hidFilter,
+      include: {
+        Institution: { select: { name: true, shortName: true } },
+      },
+      orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
+    });
+    response.masters = masters.map(serializeProductMaster);
+  }
+
+  return NextResponse.json(response);
 }
 
 export async function POST(req: NextRequest) {
@@ -217,7 +380,11 @@ export async function POST(req: NextRequest) {
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const institutionId = String(body.institutionId ?? "").trim() || null;
     const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
+    const policyholderPersonIdInput = String(body.policyholderPersonId ?? "").trim() || null;
+    const policyholderPersonNameInput = String(body.policyholderPersonName ?? "").trim() || null;
     const insuredUserId = String(body.insuredUserId ?? "").trim() || null;
+    const insuredPersonIdInput = String(body.insuredPersonId ?? "").trim() || null;
+    const insuredPersonNameInput = String(body.insuredPersonName ?? "").trim() || null;
     const beneficiaryName = String(body.beneficiaryName ?? "").trim() || null;
     const premiumMode = String(body.premiumMode ?? "").trim() || null;
     const premiumFrequencyMonths = parseIntOrNull(body.premiumFrequencyMonths);
@@ -227,14 +394,12 @@ export async function POST(req: NextRequest) {
     const coverageAmount = parseMoney(body.coverageAmount);
     const cashValueEnabled = body.cashValueEnabled === false ? false : true;
     const note = String(body.note ?? "").trim() || null;
+    const mode = String(body.mode ?? "").trim() || null;
+    const requestedProductMasterId = String(body.productMasterId ?? "").trim() || null;
 
     if (!name) {
       return NextResponse.json({ ok: false, error: "保险产品名称不能为空" }, { status: 400 });
     }
-    if (!ownerGroupId) {
-      return NextResponse.json({ ok: false, error: "请选择投保人" }, { status: 400 });
-    }
-
     const productType = PRODUCT_TYPES.has(productTypeRaw) ? productTypeRaw : "other";
     const accountingType = ACCOUNTING_TYPES.has(accountingTypeRaw) ? accountingTypeRaw : "asset";
     const status = STATUSES.has(statusRaw) ? statusRaw : "active";
@@ -242,11 +407,66 @@ export async function POST(req: NextRequest) {
     const { hidFilter } = await getHouseholdScope();
     const householdId = hidFilter.householdId;
 
-    const [institution, ownerGroup, insuredUser] = await Promise.all([
+    if (mode === "master") {
+      if (!institutionId) {
+        return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
+      }
+      const institution = await prisma.institution.findFirst({ where: { id: institutionId, ...hidFilter } });
+      if (!institution) {
+        return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+      }
+      if (institution.type !== "insurance") {
+        return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+      }
+      const duplicateMaster = await prisma.insuranceProductMaster.findFirst({
+        where: { householdId, institutionId, name, productType },
+        include: { Institution: { select: { name: true, shortName: true } } },
+      });
+      if (duplicateMaster) {
+        return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+      }
+      const createdMaster = await prisma.insuranceProductMaster.create({
+        data: {
+          householdId,
+          institutionId,
+          name,
+          shortName,
+          productType,
+          accountingType,
+          currency,
+          note,
+        },
+        include: {
+          Institution: { select: { name: true, shortName: true } },
+        },
+      });
+      return NextResponse.json({
+        ok: true,
+        productMaster: serializeProductMaster(createdMaster),
+      });
+    }
+
+    const ownerGroupFromInput = ownerGroupId
+      ? await prisma.accountGroup.findFirst({ where: { id: ownerGroupId, householdId } })
+      : null;
+    const ownerGroupName = ownerGroupFromInput?.name ?? null;
+    const [institution, policyholderPerson, insuredPerson, insuredUser] = await Promise.all([
       institutionId ? prisma.institution.findFirst({ where: { id: institutionId, ...hidFilter } }) : Promise.resolve(null),
-      prisma.accountGroup.findFirst({ where: { id: ownerGroupId, ...hidFilter } }),
+      ensureFamilyMemberInstitution({
+        householdId,
+        personId: policyholderPersonIdInput,
+        personName: policyholderPersonNameInput || ownerGroupName,
+      }),
+      ensureFamilyMemberInstitution({
+        householdId,
+        personId: insuredPersonIdInput,
+        personName: insuredPersonNameInput,
+      }),
       insuredUserId ? prisma.user.findFirst({ where: { id: insuredUserId, ...hidFilter } }) : Promise.resolve(null),
     ]);
+    const policyholderPersonId = policyholderPerson?.id ?? null;
+    const insuredPersonId = insuredPerson?.id ?? null;
+    const ownerGroup = await resolveInsuranceOwnerGroup({ ownerGroupId, policyholderPerson, householdId });
 
     if (!institutionId) {
       return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
@@ -257,8 +477,14 @@ export async function POST(req: NextRequest) {
     if (institution && institution.type !== "insurance") {
       return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
     }
+    if (policyholderPersonIdInput && !isFamilyMember(policyholderPerson)) {
+      return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+    }
+    if (insuredPersonIdInput && !isFamilyMember(insuredPerson)) {
+      return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+    }
     if (!ownerGroup) {
-      return NextResponse.json({ ok: false, error: "投保人不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
     }
     if (insuredUserId && !insuredUser) {
       return NextResponse.json({ ok: false, error: "被保险人不存在" }, { status: 400 });
@@ -266,7 +492,7 @@ export async function POST(req: NextRequest) {
 
     const account = requestedAccountId
       ? await prisma.account.findFirst({ where: { id: requestedAccountId, ...hidFilter } })
-      : await getOrCreateInsuranceAccount(prisma, ownerGroupId, householdId, institutionId);
+      : await getOrCreateInsuranceAccount(prisma, ownerGroup.id, householdId, institutionId);
 
     if (!account) {
       return NextResponse.json({ ok: false, error: "保险账户不存在" }, { status: 400 });
@@ -282,16 +508,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
     }
 
-    const productMaster = await getOrCreateProductMaster({
-      householdId,
-      institutionId,
-      name,
-      shortName,
-      productType,
-      accountingType,
-      currency,
-      note,
-    });
+    const productMaster = requestedProductMasterId
+      ? await prisma.insuranceProductMaster.findFirst({
+          where: { id: requestedProductMasterId, householdId },
+        })
+      : await getOrCreateProductMaster({
+          householdId,
+          institutionId,
+          name,
+          shortName,
+          productType,
+          accountingType,
+          currency,
+          note,
+        });
+    if (requestedProductMasterId && !productMaster) {
+      return NextResponse.json({ ok: false, error: "保险产品主数据不存在" }, { status: 404 });
+    }
 
     const created = await prisma.insuranceProduct.create({
       data: {
@@ -306,8 +539,10 @@ export async function POST(req: NextRequest) {
         householdId,
         accountId: account.id,
         institutionId,
-        ownerGroupId,
-        insuredUserId,
+        ownerGroupId: ownerGroup.id,
+        policyholderPersonId,
+        insuredUserId: null,
+        insuredPersonId,
         beneficiaryName,
         startDate: parseDate(body.startDate),
         effectiveDate: parseDate(body.effectiveDate),
@@ -340,7 +575,9 @@ export async function POST(req: NextRequest) {
         accountId: created.accountId,
         institutionId: created.institutionId,
         ownerGroupId: created.ownerGroupId,
+        policyholderPersonId: created.policyholderPersonId,
         insuredUserId: created.insuredUserId,
+        insuredPersonId: created.insuredPersonId,
         beneficiaryName: created.beneficiaryName,
         startDate: created.startDate?.toISOString().slice(0, 10) ?? null,
         effectiveDate: created.effectiveDate?.toISOString().slice(0, 10) ?? null,
@@ -357,7 +594,9 @@ export async function POST(req: NextRequest) {
         institutionName: institution?.name ?? "",
         institutionShortName: institution?.shortName ?? "",
         ownerGroupName: ownerGroup.name,
+        policyholderPersonName: policyholderPerson?.name ?? "",
         insuredUserName: insuredUser?.name ?? "",
+        insuredPersonName: insuredPerson?.name ?? "",
       },
     });
   } catch (error) {
@@ -388,7 +627,11 @@ export async function PUT(req: NextRequest) {
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const institutionId = String(body.institutionId ?? "").trim() || null;
     const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
+    const policyholderPersonId = String(body.policyholderPersonId ?? "").trim() || null;
+    const policyholderPersonName = String(body.policyholderPersonName ?? "").trim() || null;
     const insuredUserId = String(body.insuredUserId ?? "").trim() || null;
+    const insuredPersonId = String(body.insuredPersonId ?? "").trim() || null;
+    const insuredPersonName = String(body.insuredPersonName ?? "").trim() || null;
     const beneficiaryName = String(body.beneficiaryName ?? "").trim() || null;
     const premiumMode = String(body.premiumMode ?? "").trim() || null;
     const premiumFrequencyMonths = parseIntOrNull(body.premiumFrequencyMonths);
@@ -398,12 +641,10 @@ export async function PUT(req: NextRequest) {
     const coverageAmount = parseMoney(body.coverageAmount);
     const cashValueEnabled = body.cashValueEnabled === false ? false : true;
     const note = String(body.note ?? "").trim() || null;
+    const mode = String(body.mode ?? "").trim() || null;
 
     if (!name) {
       return NextResponse.json({ ok: false, error: "保险产品名称不能为空" }, { status: 400 });
-    }
-    if (!ownerGroupId) {
-      return NextResponse.json({ ok: false, error: "请选择投保人" }, { status: 400 });
     }
     if (!institutionId) {
       return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
@@ -416,6 +657,62 @@ export async function PUT(req: NextRequest) {
     const { hidFilter } = await getHouseholdScope();
     const householdId = hidFilter.householdId;
 
+    if (mode === "master") {
+      const existingMaster = await prisma.insuranceProductMaster.findFirst({
+        where: { id, householdId },
+        include: {
+          Institution: { select: { name: true, shortName: true } },
+        },
+      });
+      if (!existingMaster) {
+        return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+      }
+      const institution = await prisma.institution.findFirst({
+        where: { id: institutionId, ...hidFilter },
+      });
+      if (!institution) {
+        return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+      }
+      if (institution.type !== "insurance") {
+        return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+      }
+      const duplicateMaster = await prisma.insuranceProductMaster.findFirst({
+        where: {
+          householdId,
+          institutionId,
+          name,
+          productType,
+          NOT: { id },
+        },
+      });
+      if (duplicateMaster) {
+        return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+      }
+      const updatedMaster = await prisma.insuranceProductMaster.update({
+        where: { id },
+        data: {
+          name,
+          shortName,
+          productType,
+          accountingType,
+          currency,
+          institutionId,
+          note,
+        },
+        include: {
+          Institution: { select: { name: true, shortName: true } },
+          _count: { select: { InsuranceProduct: true } },
+        },
+      });
+      return NextResponse.json({
+        ok: true,
+        productMaster: {
+          ...serializeProductMaster(updatedMaster),
+          policyCount: updatedMaster._count.InsuranceProduct,
+        },
+      });
+    }
+
     const existing = await prisma.insuranceProduct.findFirst({
       where: { id, ...hidFilter },
     });
@@ -423,11 +720,21 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
     }
 
-    const [institution, ownerGroup, insuredUser] = await Promise.all([
+    const [institution, policyholderPerson, insuredPerson, insuredUser] = await Promise.all([
       prisma.institution.findFirst({ where: { id: institutionId, ...hidFilter } }),
-      prisma.accountGroup.findFirst({ where: { id: ownerGroupId, ...hidFilter } }),
+      ensureFamilyMemberInstitution({
+        householdId,
+        personId: policyholderPersonId,
+        personName: policyholderPersonName,
+      }),
+      ensureFamilyMemberInstitution({
+        householdId,
+        personId: insuredPersonId,
+        personName: insuredPersonName,
+      }),
       insuredUserId ? prisma.user.findFirst({ where: { id: insuredUserId, ...hidFilter } }) : Promise.resolve(null),
     ]);
+    const ownerGroup = await resolveInsuranceOwnerGroup({ ownerGroupId, policyholderPerson, householdId });
 
     if (!institution) {
       return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
@@ -435,8 +742,14 @@ export async function PUT(req: NextRequest) {
     if (institution.type !== "insurance") {
       return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
     }
+    if (policyholderPersonId && !isFamilyMember(policyholderPerson)) {
+      return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+    }
+    if (insuredPersonId && !isFamilyMember(insuredPerson)) {
+      return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+    }
     if (!ownerGroup) {
-      return NextResponse.json({ ok: false, error: "投保人不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
     }
     if (insuredUserId && !insuredUser) {
       return NextResponse.json({ ok: false, error: "被保险人不存在" }, { status: 400 });
@@ -444,7 +757,7 @@ export async function PUT(req: NextRequest) {
 
     const account = requestedAccountId
       ? await prisma.account.findFirst({ where: { id: requestedAccountId, ...hidFilter } })
-      : await getOrCreateInsuranceAccount(prisma, ownerGroupId, householdId, institutionId);
+      : await getOrCreateInsuranceAccount(prisma, ownerGroup.id, householdId, institutionId);
 
     if (!account) {
       return NextResponse.json({ ok: false, error: "保险账户不存在" }, { status: 400 });
@@ -490,8 +803,10 @@ export async function PUT(req: NextRequest) {
         currency,
         accountId: account.id,
         institutionId,
-        ownerGroupId,
-        insuredUserId,
+        ownerGroupId: ownerGroup.id,
+        policyholderPersonId,
+        insuredUserId: null,
+        insuredPersonId,
         beneficiaryName,
         startDate: parseDate(body.startDate),
         effectiveDate: parseDate(body.effectiveDate),
@@ -554,7 +869,9 @@ export async function PUT(req: NextRequest) {
         accountId: updated.accountId,
         institutionId: updated.institutionId,
         ownerGroupId: updated.ownerGroupId,
+        policyholderPersonId: updated.policyholderPersonId,
         insuredUserId: updated.insuredUserId,
+        insuredPersonId: updated.insuredPersonId,
         beneficiaryName: updated.beneficiaryName,
         startDate: updated.startDate?.toISOString().slice(0, 10) ?? null,
         effectiveDate: updated.effectiveDate?.toISOString().slice(0, 10) ?? null,
@@ -571,11 +888,239 @@ export async function PUT(req: NextRequest) {
         institutionName: institution.name,
         institutionShortName: institution.shortName ?? "",
         ownerGroupName: ownerGroup.name,
+        policyholderPersonName: policyholderPerson?.name ?? "",
         insuredUserName: insuredUser?.name ?? "",
+        insuredPersonName: insuredPerson?.name ?? "",
       },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "更新保险产品失败";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id")?.trim() || "";
+    const mode = url.searchParams.get("mode")?.trim() || null;
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "缺少保险产品ID" }, { status: 400 });
+    }
+
+    const { hidFilter, user } = await getHouseholdScope();
+    const householdId = hidFilter.householdId;
+
+    if (mode === "master") {
+      const existingMaster = await prisma.insuranceProductMaster.findFirst({
+        where: { id, householdId },
+        select: { id: true, name: true },
+      });
+      if (!existingMaster) {
+        return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+      }
+
+      let body: { password?: string; cascade?: boolean } | null = null;
+      try {
+        body = await req.json();
+      } catch {
+        body = null;
+      }
+      const password = String(body?.password ?? "").trim();
+      const cascade = body?.cascade === true;
+
+      if (!password) {
+        return NextResponse.json({ ok: false, error: "请输入密码确认删除" }, { status: 400 });
+      }
+      if (!user) {
+        return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+      }
+      const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
+      if (!currentUser) {
+        return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+      }
+      if (currentUser.passwordHash) {
+        const match = await verifyPassword(password, currentUser.passwordHash);
+        if (!match) {
+          return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+        }
+      } else {
+        const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
+        if (!legacy?.value) {
+          return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+        }
+        if (password !== legacy.value) {
+          return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+        }
+      }
+
+      const linkedPolicies = await prisma.insuranceProduct.findMany({
+        where: { householdId, productMasterId: id },
+        select: { id: true },
+      });
+      const linkedPolicyIds = linkedPolicies.map((item) => item.id);
+      const [txCount, planCount] = linkedPolicyIds.length
+        ? await Promise.all([
+            prisma.txRecord.count({
+              where: {
+                householdId,
+                insuranceProductId: { in: linkedPolicyIds },
+                deletedAt: null,
+              },
+            }),
+            prisma.regularInvestPlan.count({
+              where: {
+                householdId,
+                fundCode: "insurance_premium",
+                OR: insurancePlanMemoFilters(linkedPolicyIds),
+              },
+            }),
+          ])
+        : [0, 0];
+
+      if ((linkedPolicyIds.length > 0 || txCount > 0 || planCount > 0) && !cascade) {
+        return NextResponse.json({
+          ok: false,
+          error: `该保险产品已关联${linkedPolicyIds.length}个保单、${txCount}条记录、${planCount}个计划任务，请勾选“同时删除关联数据”后再确认`,
+        }, { status: 409 });
+      }
+
+      await prisma.$transaction(async (tx) => {
+        if (linkedPolicyIds.length > 0) {
+          await tx.regularInvestPlan.deleteMany({
+            where: {
+              householdId,
+              fundCode: "insurance_premium",
+              OR: insurancePlanMemoFilters(linkedPolicyIds),
+            },
+          });
+          await tx.txRecord.deleteMany({
+            where: {
+              householdId,
+              insuranceProductId: { in: linkedPolicyIds },
+            },
+          });
+          await tx.insuranceProduct.deleteMany({
+            where: {
+              householdId,
+              id: { in: linkedPolicyIds },
+            },
+          });
+        }
+        await tx.insuranceProductMaster.delete({ where: { id } });
+      });
+
+      return NextResponse.json({ ok: true, data: { id } });
+    }
+
+    const existing = await prisma.insuranceProduct.findFirst({
+      where: { id, ...hidFilter },
+      select: { id: true, name: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+    }
+
+    const [txCount, planCount] = await Promise.all([
+      prisma.txRecord.count({
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          insuranceProductId: id,
+          deletedAt: null,
+        },
+      }),
+      prisma.regularInvestPlan.count({
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          fundCode: "insurance_premium",
+          memo: { contains: `"insuranceProductId":"${id}"` },
+        },
+      }),
+    ]);
+
+    const hasLinkedPayments = txCount > 0;
+    if (!hasLinkedPayments) {
+      await prisma.$transaction(async (tx) => {
+        if (planCount > 0) {
+          await tx.regularInvestPlan.deleteMany({
+            where: {
+              householdId: hidFilter.householdId ?? undefined,
+              fundCode: "insurance_premium",
+              memo: { contains: `"insuranceProductId":"${id}"` },
+            },
+          });
+        }
+        await tx.insuranceProduct.delete({ where: { id } });
+      });
+      return NextResponse.json({ ok: true, data: { id } });
+    }
+
+    let body: { password?: string; cascade?: boolean } | null = null;
+    try {
+      body = await req.json();
+    } catch {
+      body = null;
+    }
+    const password = String(body?.password ?? "").trim();
+    const cascade = body?.cascade === true;
+
+    if (!password) {
+      return NextResponse.json({
+        ok: false,
+        error: `该保单已有${txCount}条缴费记录，需输入密码并确认删除全部记录`,
+        needPassword: true,
+      }, { status: 409 });
+    }
+    if (!cascade) {
+      return NextResponse.json({
+        ok: false,
+        error: "请确认是否删除全部记录",
+      }, { status: 409 });
+    }
+
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    }
+    const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+    }
+    if (currentUser.passwordHash) {
+      const match = await verifyPassword(password, currentUser.passwordHash);
+      if (!match) {
+        return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+      }
+    } else {
+      const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
+      if (!legacy?.value) {
+        return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+      }
+      if (password !== legacy.value) {
+        return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (planCount > 0) {
+        await tx.regularInvestPlan.deleteMany({
+          where: {
+            householdId: hidFilter.householdId ?? undefined,
+            fundCode: "insurance_premium",
+            memo: { contains: `"insuranceProductId":"${id}"` },
+          },
+        });
+      }
+      await tx.txRecord.deleteMany({
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          insuranceProductId: id,
+        },
+      });
+      await tx.insuranceProduct.delete({ where: { id } });
+    });
+    return NextResponse.json({ ok: true, data: { id } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "删除保险产品失败";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

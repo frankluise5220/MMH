@@ -1,9 +1,10 @@
 ﻿import { AccountKind } from "@prisma/client";
-import { Banknote, Coins, CreditCard, HandCoins, Landmark, PiggyBank, Plus, Wallet } from "lucide-react";
+import { Banknote, Coins, CreditCard, HandCoins, Landmark, PiggyBank, Wallet } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
@@ -176,10 +177,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
             <div className="text-xs text-slate-500">现金、借记卡、信用卡和债务/债权</div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <Link href="/" className="primary-button h-8 gap-1 px-3">
-              <Plus className="h-4 w-4" />
-              记一笔
-            </Link>
+            <TopEntryLauncher defaultAction={tab === "credit" ? "transfer" : "transaction"} />
             <Link href="/batch-import" className="secondary-button h-8 px-3 text-xs">
               导入账单
             </Link>

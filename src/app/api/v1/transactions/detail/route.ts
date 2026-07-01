@@ -16,19 +16,22 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind, TransactionType, FundSubtype } from "@prisma/client";
+import { AccountKind, TransactionType, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
-import { toNumber, addWorkdaysUtc, toStatementMonth } from "@/lib/date-utils";
+import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import { calcNextScheduledRunDate, encodeYearlyExecutionDay } from "@/lib/scheduled-task-date";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -43,12 +46,109 @@ function parseMoney(val: unknown): number {
   return 0;
 }
 
+function positiveNumber(value: unknown) {
+  const n = toNumber(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function insurancePremiumTotalCycles(paymentTermYears: unknown, premiumFrequencyMonths: number) {
+  const years = positiveNumber(paymentTermYears);
+  if (!years || premiumFrequencyMonths <= 0 || premiumFrequencyMonths >= 999999) return null;
+  const total = Math.ceil((years * 12) / premiumFrequencyMonths);
+  return total > 0 ? total : null;
+}
+
+function addMonthsKeepingAnchorDay(date: Date, months: number, anchorDay?: number | null) {
+  const source = startOfDayUtc(date);
+  const targetMonth = source.getUTCMonth() + months;
+  const targetYear = source.getUTCFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+  const targetDay = Math.min(
+    anchorDay && anchorDay >= 1 ? anchorDay : source.getUTCDate(),
+    lastDayOfMonthUtc(targetYear, normalizedMonth),
+  );
+  return new Date(Date.UTC(targetYear, normalizedMonth, targetDay));
+}
+
 function toDateOrNull(val: unknown): Date | null {
   if (!val) return null;
   const s = String(val).trim();
   if (!s) return null;
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+async function ensureFamilyMemberInstitutionInTx(input: {
+  tx: {
+    institution: {
+      findFirst: typeof prisma.institution.findFirst;
+      create: typeof prisma.institution.create;
+    };
+  };
+  householdId: string;
+  personId: string | null;
+  personName: string | null;
+}) {
+  if (input.personId) {
+    const existing = await input.tx.institution.findFirst({
+      where: {
+        id: input.personId,
+        householdId: input.householdId,
+        type: "family_member",
+      },
+    });
+    if (existing) return existing;
+  }
+  const normalizedName = String(input.personName ?? "").trim();
+  if (!normalizedName) return null;
+  const matched = await input.tx.institution.findFirst({
+    where: {
+      householdId: input.householdId,
+      type: "family_member",
+      name: normalizedName,
+    },
+  });
+  if (matched) return matched;
+  return input.tx.institution.create({
+    data: {
+      householdId: input.householdId,
+      type: "family_member",
+      name: normalizedName,
+      shortName: null,
+    },
+  });
+}
+
+async function resolveOwnerGroupFromPersonInTx(input: {
+  tx: {
+    accountGroup: {
+      findFirst: typeof prisma.accountGroup.findFirst;
+      create: typeof prisma.accountGroup.create;
+    };
+  };
+  householdId: string;
+  ownerGroupId: string | null;
+  policyholderPerson: { name: string } | null;
+}) {
+  if (input.ownerGroupId) return input.ownerGroupId;
+  const name = input.policyholderPerson?.name.trim();
+  if (!name) return null;
+  const existing = await input.tx.accountGroup.findFirst({
+    where: { householdId: input.householdId, name },
+  });
+  if (existing) return existing.id;
+  const lastGroup = await input.tx.accountGroup.findFirst({
+    where: { householdId: input.householdId },
+    orderBy: { sortOrder: "desc" },
+  });
+  const created = await input.tx.accountGroup.create({
+    data: {
+      householdId: input.householdId,
+      name,
+      sortOrder: (lastGroup?.sortOrder ?? 0) + 1,
+    },
+  });
+  return created.id;
 }
 
 function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: string; color: string | null } | null }> }) {
@@ -192,6 +292,7 @@ export async function GET(req: Request) {
       fundSubtype: e.fundSubtype,
       fundCode: e.fundCode,
       fundName: e.fundName,
+      insuranceProductId: e.insuranceProductId ?? null,
       fundProductType: e.fundProductType,
       fundNav: e.fundNav ? toNumber(e.fundNav) : null,
       depositAnnualRate: e.depositAnnualRate ? toNumber(e.depositAnnualRate) : null,
@@ -283,6 +384,7 @@ export async function POST(req: Request) {
     }
 
     let createdId: string | undefined;
+    let changedInvestment = false;
 
     if (type === "transfer") {
       const fromAccountId = String(body.fromAccountId ?? body.accountId ?? "").trim();
@@ -417,6 +519,7 @@ export async function POST(req: Request) {
 
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (type === "investment") {
+      changedInvestment = true;
       const accountId = String(body.accountId ?? "").trim();
       const subtype = String(body.fundSubtype ?? "buy").trim();
       let fundCode = String(body.fundCode ?? "").trim() || null;
@@ -446,8 +549,14 @@ export async function POST(req: Request) {
       }
 
       const fundNameInput = String(body.fundName ?? "").trim();
-      const insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
+      let insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
+      const insuranceProductMasterId = String(body.insuranceProductMasterId ?? "").trim() || null;
       const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
+      const createInsurancePremiumPlan =
+        body.createInsurancePremiumPlan !== false &&
+        body.createPremiumPlan !== false &&
+        body.skipPlanCreation !== true;
+      const skipDuplicateInsurancePremiumDate = body.skipDuplicateInsurancePremiumDate === true;
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
       const validSubtypes = Object.values(FundSubtype);
@@ -469,13 +578,22 @@ export async function POST(req: Request) {
       if (!accountId && fundProductType !== "deposit" && !isInsurance) {
         return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
       }
-      if (isInsurance && !insuranceProductId && !ownerGroupId) {
+      if (isInsurance && !insuranceProductId && !insuranceProductMasterId && !ownerGroupId && !String(body.policyholderPersonId ?? "").trim()) {
         return NextResponse.json({ ok: false, error: "请选择投保人" }, { status: 400 });
       }
 
       let finalInvestmentAccId = "";
       await prisma.$transaction(async (tx) => {
         let resolvedInsuranceProductName: string | null = null;
+        let insuranceProductForPlan: {
+          id: string;
+          name: string;
+          accountId: string;
+          premiumFrequencyMonths: number | null;
+          premiumAmount: unknown;
+          paymentTermYears: unknown;
+          startDate: Date | null;
+        } | null = null;
         let investAcc =
           fundProductType === "deposit"
             ? await resolveOrCreateDepositAccount(tx, {
@@ -489,14 +607,88 @@ export async function POST(req: Request) {
               : null;
 
         if (isInsurance) {
-          if (!insuranceProductId) throw new Error("请选择保险产品");
-          const insuranceProduct = await tx.insuranceProduct.findFirst({
-            where: { id: insuranceProductId, householdId },
+          const policyholderPersonIdInput = String(body.policyholderPersonId ?? "").trim() || null;
+          const insuredPersonIdInput = String(body.insuredPersonId ?? "").trim() || null;
+          const policyholderPersonName = String(body.policyholderPersonName ?? "").trim() || null;
+          const insuredPersonName = String(body.insuredPersonName ?? "").trim() || null;
+          const beneficiaryName = String(body.beneficiaryName ?? "").trim() || null;
+          const policyholderPerson = await ensureFamilyMemberInstitutionInTx({
+            tx,
+            householdId,
+            personId: policyholderPersonIdInput,
+            personName: policyholderPersonName,
           });
+          const insuredPerson = await ensureFamilyMemberInstitutionInTx({
+            tx,
+            householdId,
+            personId: insuredPersonIdInput,
+            personName: insuredPersonName,
+          });
+          const resolvedOwnerGroupId = await resolveOwnerGroupFromPersonInTx({
+            tx,
+            householdId,
+            ownerGroupId,
+            policyholderPerson,
+          });
+          let resolvedInsuranceProductId = insuranceProductId;
+          let insuranceProduct =
+            resolvedInsuranceProductId
+              ? await tx.insuranceProduct.findFirst({
+                  where: { id: resolvedInsuranceProductId, householdId },
+                })
+              : null;
+          if (!insuranceProduct && insuranceProductMasterId) {
+            if (!resolvedOwnerGroupId) throw new Error("请选择投保人");
+            const productMaster = await tx.insuranceProductMaster.findFirst({
+              where: { id: insuranceProductMasterId, householdId },
+            });
+            if (!productMaster) throw new Error("保险产品不存在");
+            const account = await getOrCreateInsuranceAccount(tx, resolvedOwnerGroupId, householdId, productMaster.institutionId);
+            insuranceProduct = await tx.insuranceProduct.create({
+              data: {
+                householdId,
+                accountId: account.id,
+                ownerGroupId: resolvedOwnerGroupId,
+                institutionId: productMaster.institutionId,
+                productMasterId: productMaster.id,
+                name: productMaster.name,
+                shortName: productMaster.shortName,
+                productType: productMaster.productType,
+                accountingType: productMaster.accountingType,
+                currency: productMaster.currency,
+                status: "active",
+                policyholderPersonId: policyholderPerson?.id ?? null,
+                insuredPersonId: insuredPerson?.id ?? null,
+                beneficiaryName: beneficiaryName || null,
+                startDate: toDateOrNull(body.startDate),
+                effectiveDate: toDateOrNull(body.effectiveDate) ?? toDateOrNull(body.startDate),
+                premiumMode: String(body.premiumMode ?? "").trim() || null,
+                premiumFrequencyMonths: positiveNumber(body.premiumFrequencyMonths) ?? null,
+                premiumAmount: positiveNumber(body.premiumAmount) ?? amountAbs,
+                paymentTermYears: positiveNumber(body.paymentTermYears) ?? null,
+                coverageTermYears: positiveNumber(body.coverageTermYears) ?? null,
+                coverageAmount: positiveNumber(body.coverageAmount) ?? null,
+                cashValueEnabled: body.cashValueEnabled === false ? false : productMaster.accountingType !== "protection",
+                note: String(body.productNote ?? body.note ?? "").trim() || productMaster.note || null,
+              },
+            });
+            resolvedInsuranceProductId = insuranceProduct.id;
+          }
+          if (!insuranceProduct) throw new Error("请选择保险产品");
           if (!insuranceProduct) throw new Error("保险产品不存在");
           if (!insuranceProduct.ownerGroupId) throw new Error("该保险产品缺少投保人");
-          if (ownerGroupId && ownerGroupId !== insuranceProduct.ownerGroupId) throw new Error("投保人与保险产品不一致");
+          if (resolvedOwnerGroupId && resolvedOwnerGroupId !== insuranceProduct.ownerGroupId) throw new Error("投保人与保险产品不一致");
           resolvedInsuranceProductName = insuranceProduct.name;
+          insuranceProductForPlan = {
+            id: insuranceProduct.id,
+            name: insuranceProduct.name,
+            accountId: insuranceProduct.accountId,
+            premiumFrequencyMonths: insuranceProduct.premiumFrequencyMonths,
+            premiumAmount: insuranceProduct.premiumAmount,
+            paymentTermYears: insuranceProduct.paymentTermYears,
+            startDate: insuranceProduct.startDate ?? insuranceProduct.effectiveDate ?? null,
+          };
+          insuranceProductId = resolvedInsuranceProductId;
           if (!investAcc) {
             investAcc = await tx.account.findUnique({ where: { id: insuranceProduct.accountId } });
           }
@@ -508,6 +700,7 @@ export async function POST(req: Request) {
               where: { id: insuranceProduct.id },
               data: { accountId: investAcc.id },
             });
+            insuranceProductForPlan.accountId = investAcc.id;
           }
         }
 
@@ -525,6 +718,33 @@ export async function POST(req: Request) {
 
         const entryFundCode = fundCode || null;
         const entryFundName = resolvedInsuranceProductName || fundNameInput || fundCode || null;
+
+        if (
+          skipDuplicateInsurancePremiumDate &&
+          isInsurance &&
+          insuranceProductId &&
+          finalFundSubtype === FundSubtype.buy &&
+          !redeemLike
+        ) {
+          const nextDay = new Date(date);
+          nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+          const existingPremiumEntry = await tx.txRecord.findFirst({
+            where: {
+              householdId,
+              insuranceProductId,
+              source: "insurance",
+              type: TransactionType.investment,
+              fundSubtype: FundSubtype.buy,
+              deletedAt: null,
+              date: { gte: date, lt: nextDay },
+            },
+            select: { id: true },
+          });
+          if (existingPremiumEntry) {
+            createdId = existingPremiumEntry.id;
+            return;
+          }
+        }
 
         let recordAccountId: string;
         let recordAccountName: string;
@@ -608,6 +828,118 @@ export async function POST(req: Request) {
         if (tagIds.length > 0) {
           await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
         }
+
+        if (
+          isInsurance &&
+          finalFundSubtype === FundSubtype.buy &&
+          !redeemLike &&
+          createInsurancePremiumPlan &&
+          insuranceProductForPlan &&
+          cashAcc?.id
+        ) {
+          const premiumFrequencyMonths = Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0);
+          const premiumAmount = positiveNumber(insuranceProductForPlan.premiumAmount) ?? amountAbs;
+          const totalCycles = insurancePremiumTotalCycles(
+            insuranceProductForPlan.paymentTermYears,
+            premiumFrequencyMonths,
+          );
+          if (totalCycles && totalCycles > 1 && premiumAmount > 0) {
+            const premiumEntries = await tx.txRecord.findMany({
+              where: {
+                householdId,
+                insuranceProductId: insuranceProductForPlan.id,
+                source: "insurance",
+                type: TransactionType.investment,
+                fundSubtype: FundSubtype.buy,
+                deletedAt: null,
+              },
+              select: { date: true },
+              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+            });
+            const pendingHistoryPremiumCount = Math.max(
+              0,
+              Math.floor(positiveNumber(body.insurancePremiumBackfillCount) ?? 0),
+            );
+            const paidCycles = premiumEntries.length + pendingHistoryPremiumCount;
+            const remainingRuns = Math.max(0, totalCycles - paidCycles);
+            const latestPremiumDate = premiumEntries[0]?.date ?? date;
+            const anchorDate = insuranceProductForPlan.startDate ?? latestPremiumDate;
+            const anchorDay = anchorDate.getUTCDate();
+            const nextPremiumDate = addMonthsKeepingAnchorDay(
+              latestPremiumDate,
+              premiumFrequencyMonths,
+              anchorDay,
+            );
+            const memo = encodeScheduledTaskMemo({
+              type: "insurance_premium",
+              title: `${insuranceProductForPlan.name} 缴费`,
+              fromAccountId: cashAcc.id,
+              toAccountId: investAcc.id,
+              insuranceProductId: insuranceProductForPlan.id,
+            });
+            const existingPlan = await tx.regularInvestPlan.findFirst({
+              where: {
+                householdId,
+                fundCode: "insurance_premium",
+                memo: { contains: insuranceProductForPlan.id },
+                status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused, RegularInvestStatus.completed] },
+              },
+              orderBy: { createdAt: "desc" },
+            });
+            if (remainingRuns <= 0) {
+              if (existingPlan) {
+                await tx.regularInvestPlan.update({
+                  where: { id: existingPlan.id },
+                  data: {
+                    status: RegularInvestStatus.completed,
+                    totalRuns: 0,
+                    executedRuns: 0,
+                    lastRunDate: latestPremiumDate,
+                    nextRunDate: nextPremiumDate,
+                    startDate: anchorDate,
+                  },
+                });
+              }
+              return;
+            }
+            const planData = {
+              accountId: investAcc.id,
+              accountName: investAcc.name,
+              cashAccountId: cashAcc.id,
+              cashAccountName: cashAcc.name,
+              fundCode: "insurance_premium",
+              fundName: `${insuranceProductForPlan.name} 缴费`,
+              fundProductType: null,
+              amount: premiumAmount,
+              intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
+              intervalValue: premiumFrequencyMonths === 12 ? 1 : premiumFrequencyMonths,
+              executionDay: premiumFrequencyMonths === 12 ? encodeYearlyExecutionDay(anchorDate) : anchorDay,
+              startDate: anchorDate,
+              nextRunDate: nextPremiumDate,
+              totalRuns: remainingRuns,
+              executedRuns: 0,
+              feeRate: 0,
+              confirmDays: 0,
+              arrivalDays: 0,
+              memo,
+              skipPendingPreceding: false,
+              status: RegularInvestStatus.active,
+            };
+            if (existingPlan) {
+              await tx.regularInvestPlan.update({
+                where: { id: existingPlan.id },
+                data: planData,
+              });
+            } else {
+              await tx.regularInvestPlan.create({
+                data: {
+                  householdId,
+                  ...planData,
+                },
+              });
+            }
+          }
+        }
       });
 
       if (fundProductType !== "deposit" && finalInvestmentAccId) {
@@ -622,6 +954,9 @@ export async function POST(req: Request) {
     } else {
       return NextResponse.json({ ok: false, error: "类型不正确" }, { status: 400 });
     }
+
+    if (changedInvestment) revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
 
     // 返回刚创建的记录
     if (createdId) {
@@ -748,6 +1083,7 @@ export async function PUT(req: Request) {
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;
     let investmentAccId: string | undefined;
+    let changedInvestment = false;
 
     await prisma.$transaction(async (tx) => {
       const entry = await tx.txRecord.findUnique({ where: { id: entryId } });
@@ -804,10 +1140,11 @@ export async function PUT(req: Request) {
       }
 
   if (type === "investment") {
+    changedInvestment = true;
     const accountIdFormData = String(body.accountId ?? body.investAccountId ?? "").trim();
     const cashAccountIdFormData = String(body.cashAccountId ?? "").trim();
     const fundCode = String(body.fundCode ?? "").trim() || null;
-    const insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
+    const insuranceProductId = String(body.insuranceProductId ?? "").trim() || entry.insuranceProductId || null;
     const ownerGroupIdFromBody = String(body.ownerGroupId ?? "").trim() || null;
     const productType = String(body.fundProductType ?? "fund").trim();
     const subtype = String(body.fundSubtype ?? "buy").trim();
@@ -914,15 +1251,20 @@ export async function PUT(req: Request) {
             insuranceProductId,
             fundProductType: (productType as any) || null,
             fundSubtype: (subtype as any) || null,
+            fundConfirmDate: toDateOrNull(body.fundConfirmDate),
+            fundArrivalDate: toDateOrNull(body.fundArrivalDate),
+            fundArrivalAmount: parseMoney(body.fundArrivalAmount) || null,
+            fundUnits: positiveNumber(body.fundUnits),
+            fundNav: positiveNumber(body.fundNav),
+            fundFee: parseMoney(body.fundFee) || null,
+            depositAnnualRate: parseMoney(body.depositAnnualRate) || null,
+            depositInterest: parseMoney(body.depositInterest) || null,
             depositSourceEntryId,
+            date,
+            type: TransactionType.investment,
             note: note || null,
           },
         });
-
-await tx.txRecord.update({
-  where: { id: entry.id },
-  data: { date, type: TransactionType.investment, note: note || null },
-});
 
 if (!isInsuranceEdit) {
   await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
@@ -1013,6 +1355,9 @@ return;
         },
       });
     });
+
+    if (changedInvestment) revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
 
     // 重算余额：所有涉及的旧/新账户
     const accountsToRecalc = new Set<string>();
@@ -1151,6 +1496,12 @@ export async function DELETE(req: Request) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
+    if (txRecord.type === TransactionType.investment || txRecord.fundProductType) {
+      revalidateAfterInvestChange();
+    } else {
+      revalidateAfterTxChange();
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "删除失败";
@@ -1158,5 +1509,3 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
-
-

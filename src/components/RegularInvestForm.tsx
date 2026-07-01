@@ -9,13 +9,27 @@ import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
+import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { decodeYearlyExecutionDay, encodeYearlyExecutionDay } from "@/lib/scheduled-task-date";
 
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
   week: "每周",
   biweek: "每两周",
   month: "每月",
+  year: "每年",
 };
+
+const WEEKDAY_OPTIONS = [
+  { value: "1", label: "周一" },
+  { value: "2", label: "周二" },
+  { value: "3", label: "周三" },
+  { value: "4", label: "周四" },
+  { value: "5", label: "周五" },
+  { value: "6", label: "周六" },
+  { value: "0", label: "周日" },
+];
 
 const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; label: string }> = [
   { value: "fund_regular_invest", label: "基金定投" },
@@ -36,6 +50,19 @@ function toDateInput(value?: string | Date | null): string {
 
 function todayInput(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function yearlyExecutionInput(value?: number | null): string {
+  const decoded = decodeYearlyExecutionDay(value ?? null, new Date().getUTCFullYear());
+  return decoded ? decoded.toISOString().slice(0, 10) : "";
+}
+
+function serializeExecutionDay(intervalUnit: string, executionDay: string): number | null {
+  const trimmed = executionDay.trim();
+  if (!trimmed) return null;
+  if (intervalUnit === "year") return encodeYearlyExecutionDay(trimmed);
+  const parsed = parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function stripDefaultGroupLabel(label?: string) {
@@ -191,6 +218,10 @@ export function RegularInvestForm({
 
   const actualOpen = showTriggerButton ? internalOpen : open ?? false;
   const setActualOpen = showTriggerButton ? setInternalOpen : onOpenChange ?? (() => {});
+  useCloseOnNavigation(actualOpen, () => {
+    setActualOpen(false);
+    setNestedEntityType(null);
+  });
 
   function getDefaultFormData(): RegularInvestFormData {
     if (mode === "edit" && editData) {
@@ -206,7 +237,12 @@ export function RegularInvestForm({
         startDate: toDateInput(editData.startDate) || todayInput(),
         endDate: toDateInput(editData.endDate),
         totalRuns: editData.totalRuns != null ? String(editData.totalRuns) : "",
-        executionDay: editData.executionDay != null ? String(editData.executionDay) : "",
+        executionDay:
+          editData.intervalUnit === "year"
+            ? yearlyExecutionInput(editData.executionDay)
+            : editData.executionDay != null
+              ? String(editData.executionDay)
+              : "",
         cashAccountId: editData.cashAccountId || "",
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "1",
@@ -248,6 +284,33 @@ export function RegularInvestForm({
   useEffect(() => { setLocalCashSSOptions(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestmentSSOptions(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
   useEffect(() => { setLocalTransferTargetSSOptions(transferTargetAccountSSOptions); }, [transferTargetAccountSSOptions]);
+
+  useEffect(() => {
+    if (mode !== "create") return;
+    function onCreate(ev: Event) {
+      const detail = (ev as CustomEvent<{
+        requestId?: string;
+        taskType?: ScheduledTaskType;
+        defaultCashAccountId?: string;
+        defaultAccountId?: string;
+      }>).detail;
+      resetForm();
+      const nextTaskType = detail?.taskType ?? "fund_regular_invest";
+      handleTaskTypeChange(nextTaskType);
+      setFormData((prev) => ({
+        ...prev,
+        taskType: nextTaskType,
+        cashAccountId: detail?.defaultCashAccountId ?? prev.cashAccountId,
+        accountId:
+          nextTaskType === "fund_regular_invest"
+            ? (detail?.defaultAccountId ?? prev.accountId)
+            : prev.accountId,
+      }));
+      setActualOpen(true);
+    }
+    window.addEventListener("mmh:regular-task:create", onCreate as EventListener);
+    return () => window.removeEventListener("mmh:regular-task:create", onCreate as EventListener);
+  }, [mode, setActualOpen]);
 
   useEffect(() => {
     if (!actualOpen || mode !== "create") return;
@@ -384,14 +447,19 @@ export function RegularInvestForm({
 
     setSubmitting(true);
     try {
+      const serializedExecutionDay = serializeExecutionDay(formData.intervalUnit, formData.executionDay);
+
       if (mode === "edit" && editData) {
         if (submitMethod === "serverAction" && action) {
           // Server Action 方式（主页）
           const fd = new FormData();
           fd.set("intent", "updateRegularInvest");
           fd.set("planId", editData.id);
+          fd.set("taskType", formData.taskType);
+          fd.set("insuranceProductId", formData.insuranceProductId || "");
           fd.set("accountId", formData.accountId);
-          fd.set("fundName", formData.fundName.trim() || formData.fundCode);
+          fd.set("fundCode", formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType);
+          fd.set("fundName", formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
           fd.set("amount", String(finalAmount));
           fd.set("intervalUnit", formData.intervalUnit);
           fd.set("intervalValue", formData.intervalValue);
@@ -421,7 +489,7 @@ export function RegularInvestForm({
             amount: finalAmount,
             intervalUnit: formData.intervalUnit,
             intervalValue: parseInt(formData.intervalValue) || 1,
-            executionDay: formData.executionDay.trim() ? parseInt(formData.executionDay) : null,
+            executionDay: serializedExecutionDay,
             startDate: formData.startDate,
             endDate: formData.endDate || null,
             totalRuns: formData.totalRuns.trim() ? parseInt(formData.totalRuns) : null,
@@ -453,9 +521,11 @@ export function RegularInvestForm({
         if (action) {
           const fd = new FormData();
           fd.set("intent", "createRegularInvest");
+          fd.set("taskType", formData.taskType);
+          fd.set("insuranceProductId", formData.insuranceProductId || "");
           fd.set("accountId", formData.accountId);
-          fd.set("fundCode", formData.fundCode.trim());
-          fd.set("fundName", formData.fundName.trim() || formData.fundCode.trim());
+          fd.set("fundCode", formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType);
+          fd.set("fundName", formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
           fd.set("amount", String(finalAmount));
           fd.set("intervalUnit", formData.intervalUnit);
           fd.set("intervalValue", formData.intervalValue);
@@ -488,7 +558,7 @@ export function RegularInvestForm({
             amount: finalAmount,
             intervalUnit: formData.intervalUnit,
             intervalValue: parseInt(formData.intervalValue) || 1,
-            executionDay: formData.executionDay.trim() ? parseInt(formData.executionDay) : null,
+            executionDay: serializedExecutionDay,
             startDate: formData.startDate,
             endDate: formData.endDate || null,
             totalRuns: formData.totalRuns.trim() ? parseInt(formData.totalRuns) : null,
@@ -519,15 +589,16 @@ export function RegularInvestForm({
   }
 
   const title = mode === "edit" ? "修改计划任务" : "新增计划任务";
+  const recentAccountIds = useRecentAccountIds();
 
   // edit 模式下的账户显示标签
   const displayAccountLabel = stripDefaultGroupLabel(mode === "edit" ? (editAccountLabel ?? accountLabel) : accountLabel);
   const investmentOptions = investFiltered
-    ? stripDefaultGroupOptions(investFiltered)
-    : investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel }));
-  const cashOptions = cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+    ? sortOptionsByRecent(stripDefaultGroupOptions(investFiltered), recentAccountIds)
+    : sortOptionsByRecent(investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel })), recentAccountIds);
+  const cashOptions = sortOptionsByRecent(cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
   const loanOptions = loanAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
-  const transferTargetOptions = transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
+  const transferTargetOptions = sortOptionsByRecent(transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
   const insuranceOptions = (insuranceProductOptions ?? []).map(item => ({ id: item.id, label: item.label, subLabel: item.subLabel ?? item.accountLabel ?? undefined }));
   const selectedInsuranceProduct = (insuranceProductOptions ?? []).find((item) => item.id === formData.insuranceProductId) ?? null;
   const isFundTask = formData.taskType === "fund_regular_invest";
@@ -547,6 +618,19 @@ export function RegularInvestForm({
       confirmDays: taskType === "fund_regular_invest" ? prev.confirmDays : "0",
       arrivalDays: taskType === "fund_regular_invest" ? prev.arrivalDays : "0",
       skipPendingPreceding: taskType === "fund_regular_invest" ? prev.skipPendingPreceding : false,
+    }));
+  }
+
+  function handleIntervalUnitChange(intervalUnit: string) {
+    setFormData((prev) => ({
+      ...prev,
+      intervalUnit,
+      executionDay:
+        intervalUnit === "year"
+          ? prev.startDate || todayInput()
+          : intervalUnit === "day"
+            ? ""
+            : prev.executionDay,
     }));
   }
 
@@ -581,9 +665,9 @@ export function RegularInvestForm({
       )}
 
       {actualOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+        <div className="app-modal-backdrop z-50">
+          <div className="app-modal-panel max-w-md">
+            <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{title}</div>
               <button
                 type="button"
@@ -594,7 +678,7 @@ export function RegularInvestForm({
               </button>
             </div>
 
-            <form className="p-4 space-y-3 overflow-y-auto max-h-[80vh]" onSubmit={onSubmit}>
+            <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
               <div className="grid grid-cols-4 gap-2">
                 {TASK_TYPE_OPTIONS.map((item) => (
                   <button
@@ -815,7 +899,7 @@ export function RegularInvestForm({
                   <div className="text-xs font-medium text-slate-600">周期</div>
                   <select
                     value={formData.intervalUnit}
-                    onChange={(e) => setFormData(d => ({ ...d, intervalUnit: e.target.value }))}
+                    onChange={(e) => handleIntervalUnitChange(e.target.value)}
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   >
                     {Object.entries(INTERVAL_LABELS).map(([v, l]) => (
@@ -842,6 +926,13 @@ export function RegularInvestForm({
                       disabled
                       className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 cursor-not-allowed"
                     />
+                  ) : formData.intervalUnit === "year" ? (
+                    <input
+                      type="date"
+                      value={formData.executionDay}
+                      onChange={(e) => setFormData(d => ({ ...d, executionDay: e.target.value }))}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
                   ) : formData.intervalUnit === "week" || formData.intervalUnit === "biweek" ? (
                     <select
                       value={formData.executionDay}
@@ -849,11 +940,9 @@ export function RegularInvestForm({
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     >
                       <option value="">不指定</option>
-                      <option value="1">周一</option>
-                      <option value="2">周二</option>
-                      <option value="3">周三</option>
-                      <option value="4">周四</option>
-                      <option value="5">周五</option>
+                      {WEEKDAY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : (
                     <select

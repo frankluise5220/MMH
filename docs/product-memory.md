@@ -33,6 +33,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Treat mojibake as a real defect, not harmless console noise.
 - When touching a file that already contains mojibake, clean that file instead of layering more edits onto corrupted text.
 - Repository text files must remain UTF-8 with LF.
+- In this repo, do not rely on complex PowerShell expressions to inspect or patch source files when a simpler `rg` search, explicit UTF-8 file read, or `apply_patch` edit can do the job more reliably.
+- When Chinese text is involved, file content is the source of truth; terminal rendering is not.
 
 ### Sidebar And Navigation
 
@@ -68,6 +70,22 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - The account SS experience used in the preferred transaction entry flow is the reference behavior that other account selectors should converge toward.
 - Do not add extra always-visible owner header rows above the dropdown body when the cycling control already expresses owner switching.
 
+### Table Column Filters
+
+- Table header filters should reuse the shared `TableColumnFilter` component instead of creating page-specific dropdown variants.
+- When a table needs a field filter, prefer placing it directly in the header label area beside the field name.
+- For shared dropdown filter behavior, a single row click should select that row, clear other values, confirm, and close the menu unless a page has a stronger, documented requirement.
+- If a new table filter needs different behavior, update the shared component first and let calling pages inherit the change.
+- Table columns should support user-adjustable widths with remembered preferences when the table is dense enough to benefit from it.
+- The same table surface should expose a unified header settings button instead of multiple unrelated per-page controls.
+- Sorting behavior should be shared where possible, so a sort change in one table follows the same interaction model in other tables.
+
+### Shared Settings
+
+- Settings that affect multiple screens should be centralized as a shared source of truth, not duplicated page by page.
+- When the user changes a setting in one place, prefer reusing that setting everywhere the concept applies.
+- If a page needs a different default, override only the default value, not the underlying setting shape or behavior.
+
 ### Accounts
 
 - Account uniqueness matters. Avoid allowing indistinguishable duplicate accounts when institution and name are the same and there is no differentiator such as last four digits.
@@ -82,6 +100,22 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Insurance should exist as a first-class area alongside other major financial areas, not be hidden as a special case.
 - Insurance product definition and owned policy/holding are different concepts and should not share one table forever.
 - The same insurance product may be purchased by different owners or insured people, so product master data must be reusable across multiple policy/holding records.
+- Insurance product master data is not a policy. It should contain reusable product facts such as name, type, insurer, currency, accounting type, and note. It must not contain policyholder, insured person, beneficiary, first purchase date, premium term, coverage amount, or premium records.
+- Insurance purchase creates or selects one owned policy under a policyholder plus insurer context. One initial purchase/payment creates one policy; later scheduled or manual payments for that policy must not create a new policy.
+- The insurance purchase form should select an insurance product master through SS, with nested creation of product master data when missing.
+- Insurance product creation inside SS should only ask for product master fields, especially name, type, accounting type, insurer institution, currency, and note.
+- Insurance purchase fields should be:
+  - policyholder first, selected from family members
+  - funding account SS filtered to the selected policyholder's account scope
+  - insurance product SS, with insurer derived from the selected product
+  - insured person and beneficiary selected from family members
+  - first purchase date, payment method, payment term or already-paid dates when annual payment applies, premium amount, coverage amount, and note
+- Insurance account grouping uses the selected policyholder. The funding account must belong to that policyholder's account scope.
+- Insurance policy payment method is limited to annual payment and single premium for now. Annual payment stores a yearly schedule anchored to the first purchase date; single premium does not create repeated payment plans.
+- If the first purchase date is earlier than the current premium date by at least one payment cycle, the purchase flow should offer two default-checked actions: create a future payment plan and generate historical premium records up to the latest scheduled date before the current premium date.
+- Insurance scheduled payment notes should read like "计划任务：保险缴费：保险名称", and debit-card transaction views should show category wording as insurance expense.
+- Family-member selection for insurance must come from `Institution(type="family_member")`, not from users or account groups. Adding an account owner should also create/update the same-named family member.
+- Family-member SS labels should use the sublabel "家庭成员", not "投保人" or "被保险人".
 - Different insurance products should show different content, but within a unified insurance workflow.
 - Insurance purchase flow should collect core product information directly in the main form instead of forcing a disconnected side flow.
 - Core insurance fields include:
@@ -107,9 +141,10 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Insurance form and holdings should prefer the user's financial mental model over generic investment terminology.
 - Insurance view structure should be:
   - insurance account as the container
-  - product holdings at the top
-  - product-linked transaction records below
+  - policy list at the top
+  - policy-linked premium/insurance records below
 - Insurance accounts should be created around policy owner plus insurer context, so the account layer matches how the user thinks about policies.
+- Insurance account names should be policyholder plus insurer, such as "张四的泰康养老", not a duplicated form such as "泰康养老·张四的泰康养老".
 - Insurance product rows should preferably show:
   - product name
   - status
@@ -129,6 +164,13 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
   - one product master table for reusable insurance product definitions
   - one owned policy/holding table for one person's actual purchased policy under one insurer/account context
   - transaction records should ultimately link to the owned policy/holding record, not directly treat the reusable product master as the holding itself
+- Insurance policy list should include policyholder, insured person, total premium paid, cash value balance, coverage amount, and status.
+- Insurance policy list summary should be a table-like summary row at the bottom: "汇总" in the policy-name column and totals under total premium, cash value balance, and coverage amount.
+- The lower insurance detail list should be called "投保记录", not generic "保险记录".
+- Selecting a policy should filter the lower detail list to only records linked to that policy.
+- Double-clicking a policy should open an edit dialog for policy name, policyholder, insured person, beneficiary, payment term, and related policy fields, using SS dropdowns where selection is needed.
+- Editing an insurance premium record should only edit premium date, funding account, non-editable insurance product/policy, premium amount with two decimals, and note.
+- Insurance create/edit dialogs must stay inside the viewport with a fixed full-screen overlay and scrollable body; they must not jump to the top of the page or overflow above the viewport.
 
 ### Deposits
 

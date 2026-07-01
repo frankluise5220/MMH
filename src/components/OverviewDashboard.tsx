@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
 
 type AssetDistItem = {
   kind: string;
@@ -79,6 +80,7 @@ type OverviewDashboardProps = {
   investmentCost?: number;
   investmentFloatingPnL?: number;
   investmentFloatingPnLRate?: number;
+  insuranceOverview?: InsuranceOverview | null;
   isRedUp: boolean;
 };
 
@@ -138,6 +140,7 @@ export function OverviewDashboard({
   investmentCost,
   investmentFloatingPnL,
   investmentFloatingPnLRate,
+  insuranceOverview,
   isRedUp,
 }: OverviewDashboardProps) {
   const totals: AccountTypeTotals = { ...ZERO_TOTALS, ...(accountTypeTotals ?? {}) };
@@ -154,7 +157,7 @@ export function OverviewDashboard({
   const creditBillTotal = creditCards.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
   const creditPaidTotal = creditCards.reduce((sum, account) => sum + Math.max(0, Math.min(account.paid, account.currentBill)), 0);
   const debtAccounts = debtAccountList.filter((account) => account.balance !== 0);
-  const overviewModuleCount = 2 + (creditCards.length > 0 ? 1 : 0) + (debtAccounts.length > 0 ? 1 : 0);
+  const overviewModuleCount = 3 + (creditCards.length > 0 ? 1 : 0) + (debtAccounts.length > 0 ? 1 : 0);
   const moduleClass = (index: number) =>
     `panel-surface ${overviewModuleCount === 3 && index === 0 ? "xl:col-span-2" : ""}`;
 
@@ -275,8 +278,10 @@ export function OverviewDashboard({
             </div>
           </div>
 
+          <InsuranceOverviewCard className={moduleClass(2)} insuranceOverview={insuranceOverview} isRedUp={isRedUp} />
+
           {creditCards.length > 0 && (
-            <div className={moduleClass(2)}>
+            <div className={moduleClass(3)}>
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <CreditCard className="h-4 w-4 text-amber-500" />
@@ -310,7 +315,7 @@ export function OverviewDashboard({
           )}
 
           {debtAccounts.length > 0 && (
-            <div className={moduleClass(creditCards.length > 0 ? 3 : 2)}>
+            <div className={moduleClass(creditCards.length > 0 ? 4 : 3)}>
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <HandCoins className="h-4 w-4 text-rose-500" />

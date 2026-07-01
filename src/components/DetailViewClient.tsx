@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
+import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { EntryRowActions } from "./EntryRowActions";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import {
@@ -39,6 +40,9 @@ export type DetailEntry = {
   source: string | null;
   fundProductType: string | null;
   insuranceProductId?: string | null;
+  cashAccountId?: string | null;
+  coverageAmount?: number | null;
+  paymentTermYears?: number | null;
   fundUnits: number | null;
   fundNav: number | null;
   depositAnnualRate?: number | null;
@@ -111,6 +115,9 @@ export function DetailViewClient({
   accountOptions,
   investmentProductTypeByAccountId,
   compactRows = false,
+  toolbarMode = "default",
+  toolbarTitle,
+  toolbarRightContent,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -118,13 +125,12 @@ export function DetailViewClient({
   accountOptions: Array<{ id: string; label: string }>;
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
+  toolbarMode?: "default" | "custom" | "none";
+  toolbarTitle?: ReactNode;
+  toolbarRightContent?: ReactNode;
 }) {
-  const initialEntriesKey = useMemo(() => initialEntries.map((entry) => entry.id).join("|"), [initialEntries]);
-  const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; baseKey: string; entries: DetailEntry[] } | null>(null);
-  const entries =
-    refreshedEntries?.accountId === accountId && refreshedEntries.baseKey === initialEntriesKey
-      ? refreshedEntries.entries
-      : initialEntries;
+  const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
+  const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -132,22 +138,37 @@ export function DetailViewClient({
   const inflowCls = pnlColor(1, colorScheme);
   const outflowCls = pnlColor(-1, colorScheme);
   const { selectedIds, setSelection } = useBasicDetailSelection();
+  const selectedCount = selectedIds.size;
+
+  useEffect(() => {
+    setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
+  }, [accountId]);
 
   // Listen for mmh:fund:refresh → re-fetch from detail API
   useEffect(() => {
     const handler = () => {
-      fetch(`/api/v1/transactions/detail?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" })
+      const url = new URL(window.location.href);
+      const detailAll = url.searchParams.get("detailAll") === "1";
+      const detailPage = url.searchParams.get("detailPage") ?? "1";
+      const pageSize = url.searchParams.get("pageSize") ?? "20";
+      const params = new URLSearchParams({
+        accountId,
+        page: detailAll ? "1" : detailPage,
+        pageSize: detailAll ? "5000" : pageSize,
+      });
+      fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((data) => {
           if (data?.ok && Array.isArray(data?.data?.entries)) {
-            setRefreshedEntries({ accountId, baseKey: initialEntriesKey, entries: data.data.entries });
+            setRefreshedEntries({ accountId, entries: data.data.entries });
+            setSelection(new Set());
           }
         })
         .catch(() => {});
     };
     window.addEventListener("mmh:fund:refresh", handler);
     return () => window.removeEventListener("mmh:fund:refresh", handler);
-  }, [accountId, initialEntriesKey]);
+  }, [accountId, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {
@@ -155,6 +176,7 @@ export function DetailViewClient({
       label: "日期",
       width: 96,
       minWidth: 78,
+      filterKind: "dateRange",
       filterText: (e) => (e.date ?? "").slice(0, 10),
       render: (e) => <span className="tabular-nums text-slate-600">{(e.date ?? "").slice(0, 10)}</span>,
     },
@@ -231,7 +253,17 @@ export function DetailViewClient({
         );
       },
     },
-    { key: "category", label: "分类", width: 140, minWidth: 90, filterText: (e) => e.categoryName ?? "", render: (e) => <span className="block truncate text-slate-500" title={e.categoryName ?? ""}>{e.categoryName ?? <span className="text-slate-300">-</span>}</span> },
+    {
+      key: "category",
+      label: "分类",
+      width: 140,
+      minWidth: 90,
+      filterText: (e) => getInsuranceDetailCategoryName(e),
+      render: (e) => {
+        const text = getInsuranceDetailCategoryName(e);
+        return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
+      },
+    },
     {
       key: "counterpartyInstitution",
       label: "收支机构",
@@ -292,9 +324,9 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
-      filterText: (e) => e.note ?? "",
+      filterText: (e) => getInsuranceDetailNote(e),
       render: (e) => {
-        const text = e.note ?? "";
+        const text = getInsuranceDetailNote(e);
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
     },
@@ -389,6 +421,15 @@ export function DetailViewClient({
     },
   ], [accountId, accountOptions, inflowCls, investmentProductTypeByAccountId, outflowCls]);
 
+  const customToolbarLeft = toolbarMode === "custom" ? (
+    <div className="flex min-w-0 items-center gap-2">
+      {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
+      {selectedCount > 0 ? <span className="text-xs text-slate-500">已选 {selectedCount}</span> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
+    </div>
+  ) : undefined;
+
   return (
     <AdvancedDataTable
       storageKey="mmh_basic_detail_table_v1"
@@ -400,15 +441,18 @@ export function DetailViewClient({
       selectable
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
-      batchActionSlot={
+      batchActionSlot={toolbarMode === "default" ? (
         <>
           <BasicDetailBatchReplaceButton accountOptions={accountOptions} />
           <BasicDetailBatchDeleteButton />
         </>
-      }
+      ) : undefined}
       rowClassName={() => "hover:bg-blue-50/40"}
       fillHeight
       compactRows={compactRows}
+      toolbarMode={toolbarMode}
+      toolbarLeftContent={customToolbarLeft}
+      toolbarRightContent={toolbarRightContent}
     />
   );
 }

@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { Trash2 } from "lucide-react";
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 
@@ -41,9 +41,20 @@ export function useBasicDetailSelection() {
   return ctx;
 }
 
-export function BasicDetailSelectionProvider({ children }: { children: ReactNode }) {
+export function BasicDetailSelectionProvider({
+  children,
+  resetKey,
+}: {
+  children: ReactNode;
+  resetKey?: string;
+}) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteMessage, setDeleteMessage] = useState<string>("");
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setDeleteMessage("");
+  }, [resetKey]);
 
   const value = useMemo<SelectionContextValue>(() => ({
     selectedIds,

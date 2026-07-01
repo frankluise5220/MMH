@@ -144,6 +144,13 @@ html {
     box-shadow: inset 3px 0 0 var(--accent-blue);
   }
 
+  .text-fade-right {
+    overflow: hidden;
+    white-space: nowrap;
+    mask-image: linear-gradient(to right, black 0%, black 78%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, black 0%, black 78%, transparent 100%);
+  }
+
   .panel-surface {
     @apply bg-surface-white border rounded-lg shadow-soft;
     border-color: var(--line-soft);
@@ -155,13 +162,30 @@ html {
   }
 
   .modal-surface {
-    @apply overflow-hidden rounded-xl border bg-surface-white shadow-elevated;
+    @apply max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border bg-surface-white shadow-elevated;
     border-color: var(--line-strong);
   }
 
   .modal-header {
     @apply flex items-center justify-between border-b bg-surface-muted/95 px-4 py-3;
     border-color: var(--line-soft);
+  }
+
+  .app-modal-backdrop {
+    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/28 p-2 pt-2 backdrop-blur-[2px] sm:items-start sm:p-4;
+  }
+
+  .app-modal-panel {
+    @apply flex h-full w-full max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-elevated sm:max-h-[calc(100dvh-2rem)];
+    border-color: var(--line-strong);
+  }
+
+  .viewport-floater {
+    @apply fixed z-[9999] max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-1rem)] overflow-auto;
+  }
+
+  .viewport-menu {
+    @apply fixed z-30 max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-1rem)] overflow-auto;
   }
 
   .form-label {

@@ -278,8 +278,8 @@ model FundNavCache {
   nav           Decimal  @db.Decimal(20, 6)
   cumNav        Decimal? @db.Decimal(20, 6)
   name          String?
-  sgzt          String? // 鐢宠喘鐘舵€侊紙寮€鏀剧敵璐€佹殏鍋滅敵璐€侀檺鍒跺ぇ棰濈敵璐瓑锛?
-  purchaseLimit Int? // 鐢宠喘鏃ヤ笂闄愰噾棰濓紙鍏冿級锛屼粠澶╁ぉ鍩洪噾璇︽儏椤佃В鏋?
+  sgzt          String? // 申购状态（开放申购、暂停申购、限制大额申购等）
+  purchaseLimit Int? // 申购日上限金额（元），从天天基金详情页解析
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 
@@ -362,7 +362,9 @@ model Institution {
   householdId String?
   Account     Account[]
   InsuranceProductMaster InsuranceProductMaster[]
-  InsuranceProduct InsuranceProduct[]
+  InsuranceProductAsInsurer InsuranceProduct[] @relation("InsuranceProductInsurer")
+  InsuranceProductAsPolicyholder InsuranceProduct[] @relation("InsuranceProductPolicyholder")
+  InsuranceProductAsInsured InsuranceProduct[] @relation("InsuranceProductInsured")
   Household   Household? @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
@@ -546,7 +548,9 @@ model InsuranceProduct {
   accountId      String
   institutionId  String?
   ownerGroupId   String?
+  policyholderPersonId String?
   insuredUserId  String?
+  insuredPersonId String?
   beneficiaryName String?
   startDate      DateTime?
   effectiveDate  DateTime?
@@ -564,9 +568,11 @@ model InsuranceProduct {
   ProductMaster  InsuranceProductMaster? @relation(fields: [productMasterId], references: [id], onDelete: SetNull)
   Account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
   Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  Institution    Institution?           @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  Institution    Institution?           @relation("InsuranceProductInsurer", fields: [institutionId], references: [id], onDelete: SetNull)
   OwnerGroup     AccountGroup?          @relation(fields: [ownerGroupId], references: [id], onDelete: SetNull)
+  PolicyholderPerson Institution?       @relation("InsuranceProductPolicyholder", fields: [policyholderPersonId], references: [id], onDelete: SetNull)
   InsuredUser    User?                  @relation("InsuranceProduct_insuredUserIdToUser", fields: [insuredUserId], references: [id], onDelete: SetNull)
+  InsuredPerson  Institution?           @relation("InsuranceProductInsured", fields: [insuredPersonId], references: [id], onDelete: SetNull)
   TxRecord       TxRecord[]
 
   @@index([productMasterId])
@@ -575,7 +581,9 @@ model InsuranceProduct {
   @@index([accountId])
   @@index([institutionId])
   @@index([ownerGroupId])
+  @@index([policyholderPersonId])
   @@index([insuredUserId])
+  @@index([insuredPersonId])
   @@unique([householdId, accountId, name, policyNo])
 }
 
@@ -748,6 +756,7 @@ enum IntervalUnit {
   week
   biweek
   month
+  year
 }
 
 enum RegularInvestStatus {

@@ -1,12 +1,19 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
-import { Pause, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { ArrowDownAZ, ArrowDownUp, Pause, Pencil, Play, Plus, RefreshCw, SlidersHorizontal, Square, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
+import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import type { SmartSelectOption } from "@/components/SmartSelect";
-import { addWorkdaysUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
 
@@ -15,6 +22,7 @@ const INTERVAL_LABELS: Record<string, string> = {
   week: "每周",
   biweek: "每两周",
   month: "每月",
+  year: "每年",
 };
 
 const WEEKDAY_LABELS: Record<number, string> = {
@@ -33,6 +41,20 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 };
 
 type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "none";
+type SortKey = "taskContent" | "startDate" | "nextRunDate";
+type SortDirection = "asc" | "desc";
+type RegularInvestColumnKey =
+  | "taskContent"
+  | "taskType"
+  | "startDate"
+  | "targetAccount"
+  | "cashAccount"
+  | "amount"
+  | "interval"
+  | "status"
+  | "nextRunDate"
+  | "executedCount";
+type RegularInvestTableColumnKey = RegularInvestColumnKey | "actions";
 
 type RegularInvestPlanView = {
   id: string;
@@ -83,6 +105,100 @@ type InsuranceProductOption = {
   subLabel?: string | null;
 };
 
+const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label: string }> = [
+  { key: "taskContent", label: "任务内容" },
+  { key: "taskType", label: "类型" },
+  { key: "startDate", label: "开始日期" },
+  { key: "targetAccount", label: "目标账户" },
+  { key: "cashAccount", label: "资金账户" },
+  { key: "amount", label: "金额" },
+  { key: "interval", label: "周期" },
+  { key: "status", label: "状态" },
+  { key: "nextRunDate", label: "下次执行" },
+  { key: "executedCount", label: "已执行次数" },
+];
+
+const REGULAR_INVEST_COLUMN_WIDTHS: Record<RegularInvestColumnKey, number> = {
+  taskContent: 260,
+  taskType: 120,
+  startDate: 110,
+  targetAccount: 180,
+  cashAccount: 180,
+  amount: 104,
+  interval: 126,
+  status: 104,
+  nextRunDate: 110,
+  executedCount: 140,
+};
+
+const REGULAR_INVEST_ACTION_COLUMN_WIDTH = 152;
+const REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY = "regular-invest:main-table:widths";
+const REGULAR_INVEST_TABLE_COLUMN_KEYS: ReadonlyArray<RegularInvestTableColumnKey> = [
+  "taskContent",
+  "taskType",
+  "startDate",
+  "targetAccount",
+  "cashAccount",
+  "amount",
+  "interval",
+  "status",
+  "nextRunDate",
+  "executedCount",
+  "actions",
+];
+const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, number> = {
+  taskContent: 160,
+  taskType: 88,
+  startDate: 92,
+  targetAccount: 132,
+  cashAccount: 132,
+  amount: 86,
+  interval: 92,
+  status: 82,
+  nextRunDate: 92,
+  executedCount: 120,
+  actions: 132,
+};
+const REGULAR_INVEST_SORT_COLUMNS: Partial<Record<RegularInvestColumnKey, SortKey>> = {
+  taskContent: "taskContent",
+  startDate: "startDate",
+  nextRunDate: "nextRunDate",
+};
+
+function isRegularInvestTableColumnKey(value: string): value is RegularInvestTableColumnKey {
+  return REGULAR_INVEST_TABLE_COLUMN_KEYS.some((key) => key === value);
+}
+
+function defaultRegularInvestColumnWidth(key: RegularInvestTableColumnKey): number {
+  return key === "actions" ? REGULAR_INVEST_ACTION_COLUMN_WIDTH : REGULAR_INVEST_COLUMN_WIDTHS[key];
+}
+
+function readRegularInvestColumnWidths(): Partial<Record<RegularInvestTableColumnKey, number>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const widths: Partial<Record<RegularInvestTableColumnKey, number>> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (isRegularInvestTableColumnKey(key) && typeof value === "number" && Number.isFinite(value)) {
+        widths[key] = value;
+      }
+    }
+    return widths;
+  } catch {
+    return {};
+  }
+}
+
+function writeRegularInvestColumnWidths(widths: Partial<Record<RegularInvestTableColumnKey, number>>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(widths));
+  } catch {}
+}
+
 function formatInterval(p: RegularInvestPlanView): string {
   const base = INTERVAL_LABELS[p.intervalUnit] || p.intervalUnit;
   if (p.intervalUnit === "week" || p.intervalUnit === "biweek") {
@@ -90,13 +206,18 @@ function formatInterval(p: RegularInvestPlanView): string {
     if (weekday) return `${base}${weekday}`;
   }
   if (p.intervalUnit === "month" && p.executionDay) return `每月${p.executionDay}号`;
+  if (p.intervalUnit === "year" && p.executionDay) {
+    const month = Math.floor(p.executionDay / 100);
+    const day = p.executionDay % 100;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return `每年${month}.${day}`;
+  }
   if (p.intervalValue > 1) return `${base} x${p.intervalValue}`;
   return base;
 }
 
 function formatDate(value?: string | null): string {
   const date = value ? new Date(value) : null;
-  return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString() : "-";
+  return date && Number.isFinite(date.getTime()) ? formatDateUtc(date) : "-";
 }
 
 function toDateInput(value?: string | Date | null): string {
@@ -163,6 +284,37 @@ function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
     .map(([label, items]) => ({ label, items }));
 }
 
+function compareNullableDate(a?: string | null, b?: string | null): number {
+  const left = a ? new Date(a).getTime() : Number.POSITIVE_INFINITY;
+  const right = b ? new Date(b).getTime() : Number.POSITIVE_INFINITY;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, "zh-Hans-CN");
+}
+
+function sortPlans(
+  plans: readonly RegularInvestPlanView[],
+  sortKey: SortKey,
+  direction: SortDirection,
+): RegularInvestPlanView[] {
+  const factor = direction === "asc" ? 1 : -1;
+  return [...plans].sort((left, right) => {
+    let result = 0;
+    if (sortKey === "taskContent") {
+      result = compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
+    } else if (sortKey === "startDate") {
+      result = compareNullableDate(left.startDate, right.startDate);
+    } else {
+      result = compareNullableDate(left.nextRunDate, right.nextRunDate);
+    }
+    if (result !== 0) return result * factor;
+    return compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
+  });
+}
+
 function AccountCell({ label }: { label: string }) {
   return (
     <div className="min-w-0">
@@ -209,6 +361,8 @@ export function RegularInvestClient({
   transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const router = useRouter();
+  const tableViewportRef = useRef<HTMLDivElement>(null);
+  const columnMenuRef = useRef<HTMLDivElement>(null);
   const [plans, setPlans] = useState(initialPlans);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -220,10 +374,47 @@ export function RegularInvestClient({
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupByMode>("fundGroup");
+  const [sortKey, setSortKey] = useState<SortKey>("nextRunDate");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [columnFilterOpen, setColumnFilterOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<RegularInvestColumnKey[]>([]);
+  const [taskTypeFilterOpen, setTaskTypeFilterOpen] = useState(false);
+  const [selectedTaskTypes, setSelectedTaskTypes] = useState<string[]>([]);
+  const [tableViewportWidth, setTableViewportWidth] = useState(0);
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<RegularInvestTableColumnKey, number>>>({});
 
   useEffect(() => {
     setPlans(initialPlans);
   }, [initialPlans]);
+
+  useEffect(() => {
+    setColumnWidths(readRegularInvestColumnWidths());
+  }, []);
+
+  useEffect(() => {
+    const node = tableViewportRef.current;
+    if (!node) return;
+    const update = () => setTableViewportWidth(Math.floor(node.clientWidth));
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!columnFilterOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const node = columnMenuRef.current;
+      if (!node || !(event.target instanceof Node) || node.contains(event.target)) return;
+      setColumnFilterOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [columnFilterOpen]);
 
   useEffect(() => {
     async function handleEditSuccess() {
@@ -501,8 +692,155 @@ export function RegularInvestClient({
     }
   }
 
-  const filteredPlans = plans.filter((plan) => showEnded || (plan.status !== "stopped" && plan.status !== "completed"));
-  const groupedPlans = groupPlans(filteredPlans, groupBy);
+  function toggleSort(nextKey: SortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(nextKey);
+    setSortDirection(nextKey === "taskContent" ? "asc" : "asc");
+  }
+
+  function renderSortButton(label: string, key: SortKey) {
+    const active = sortKey === key;
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSort(key)}
+        className={`flex min-w-0 items-center gap-1 truncate transition-colors ${
+          active ? "text-slate-800" : "text-slate-600 hover:text-slate-800"
+        }`}
+      >
+        <span className="truncate">{label}</span>
+        {active ? (
+          <ArrowDownUp className={`h-3.5 w-3.5 ${sortDirection === "desc" ? "rotate-180" : ""}`} />
+        ) : (
+          <ArrowDownAZ className="h-3.5 w-3.5 opacity-60" />
+        )}
+      </button>
+    );
+  }
+
+  function isColumnVisible(key: RegularInvestColumnKey): boolean {
+    return visibleColumns.length === 0 || visibleColumns.includes(key);
+  }
+
+  function toggleColumnVisibility(key: RegularInvestColumnKey) {
+    const allColumnKeys = REGULAR_INVEST_COLUMNS.map((column) => column.key);
+    const currentVisibleKeys = visibleColumns.length === 0 ? allColumnKeys : visibleColumns;
+    const nextVisibleKeys = currentVisibleKeys.includes(key)
+      ? currentVisibleKeys.filter((item) => item !== key)
+      : [...currentVisibleKeys, key];
+    if (nextVisibleKeys.length === 0) return;
+    setVisibleColumns(nextVisibleKeys.length === allColumnKeys.length ? [] : nextVisibleKeys);
+  }
+
+  function baseColumnWidth(key: RegularInvestTableColumnKey): number {
+    const storedWidth = columnWidths[key];
+    const width = storedWidth ?? defaultRegularInvestColumnWidth(key);
+    return Math.max(REGULAR_INVEST_COLUMN_MIN_WIDTHS[key], width);
+  }
+
+  function layoutColumnWidth(key: RegularInvestTableColumnKey): number {
+    return baseColumnWidth(key);
+  }
+
+  function setMainTableColumnWidth(key: RegularInvestTableColumnKey, width: number) {
+    setColumnWidths((prev) => {
+      const next = {
+        ...prev,
+        [key]: Math.max(REGULAR_INVEST_COLUMN_MIN_WIDTHS[key], Math.round(width)),
+      };
+      writeRegularInvestColumnWidths(next);
+      return next;
+    });
+  }
+
+  function beginColumnResize(event: ReactMouseEvent, key: RegularInvestTableColumnKey) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = layoutColumnWidth(key);
+    const onMove = (moveEvent: MouseEvent) => {
+      setMainTableColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function renderHeaderContent(column: { key: RegularInvestColumnKey; label: string }) {
+    const columnSortKey = REGULAR_INVEST_SORT_COLUMNS[column.key];
+    const labelNode = columnSortKey ? renderSortButton(column.label, columnSortKey) : <span className="block truncate">{column.label}</span>;
+    const filterNode = column.key === "taskType" ? (
+      <TableColumnFilter
+        label={column.label}
+        options={taskTypeOptions}
+        selectedValues={selectedTaskTypes}
+        open={taskTypeFilterOpen}
+        filtered={selectedTaskTypes.length > 0}
+        showLabel={false}
+        onToggleOpen={() => setTaskTypeFilterOpen((current) => !current)}
+        onClose={() => setTaskTypeFilterOpen(false)}
+        onChange={(values) => setSelectedTaskTypes(values ?? [])}
+      />
+    ) : null;
+
+    return (
+      <div className="flex min-w-0 items-center justify-between gap-1">
+        <div className="min-w-0 flex-1">{labelNode}</div>
+        {filterNode ? <div className="shrink-0">{filterNode}</div> : null}
+      </div>
+    );
+  }
+
+  function renderHeaderCell(column: { key: RegularInvestColumnKey; label: string }) {
+    const alignClass = column.key === "amount" ? "text-right" : "text-left";
+    return (
+      <th
+        key={column.key}
+        className={`relative select-none border-b border-r border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 ${alignClass}`}
+      >
+        {renderHeaderContent(column)}
+        <span
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={(event) => beginColumnResize(event, column.key)}
+          className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
+          title="拖动调整列宽"
+        />
+      </th>
+    );
+  }
+
+  const taskTypeOptions = Array.from(new Set(plans.map((plan) => getPlanTaskLabel(plan)))).sort((a, b) =>
+    a.localeCompare(b, "zh-Hans-CN"),
+  );
+
+  const filteredPlans = plans.filter((plan) => {
+    if (!showEnded && (plan.status === "stopped" || plan.status === "completed")) return false;
+    if (selectedTaskTypes.length > 0 && !selectedTaskTypes.includes(getPlanTaskLabel(plan))) return false;
+    return true;
+  });
+  const sortedPlans = sortPlans(filteredPlans, sortKey, sortDirection);
+  const groupedPlans = groupPlans(sortedPlans, groupBy);
+  const visibleRegularInvestColumns = REGULAR_INVEST_COLUMNS.filter((column) => isColumnVisible(column.key));
+  const mainTableColSpan = visibleRegularInvestColumns.length + 1;
+  const mainTableBaseWidth = visibleRegularInvestColumns.reduce(
+    (total, column) => total + baseColumnWidth(column.key),
+    baseColumnWidth("actions"),
+  );
+  const mainTableWidth = Math.max(tableViewportWidth || 0, mainTableBaseWidth);
+  const mainTableScale = mainTableBaseWidth > 0 && mainTableBaseWidth < mainTableWidth
+    ? mainTableWidth / mainTableBaseWidth
+    : 1;
 
   function renderRow(plan: RegularInvestPlanView) {
     return (
@@ -511,25 +849,48 @@ export function RegularInvestClient({
         className={`cursor-pointer hover:bg-slate-50 ${selectedPlan?.id === plan.id ? "bg-blue-50" : ""}`}
         onClick={() => handleSelectPlan(plan)}
       >
-        <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <span className="font-medium text-slate-800">{getPlanTargetLabel(plan)}</span>
-        </td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs text-slate-500">{getPlanTaskLabel(plan)}</td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">{formatDate(plan.startDate)}</td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <AccountCell label={planAccountLabel(plan)} />
-        </td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <AccountCell label={planCashAccountLabel(plan)} />
-        </td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs text-slate-500">{formatInterval(plan)}</td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs">
-          <span className={STATUS_MAP[plan.status]?.cls || "text-slate-600"}>{STATUS_MAP[plan.status]?.label || plan.status}</span>
-        </td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">{formatDate(plan.nextRunDate)}</td>
-        <td className="border-b border-slate-100 px-3 py-1 text-xs tabular-nums text-slate-500">
-          {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
-        </td>
+        {isColumnVisible("taskContent") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
+            <span className="font-medium text-slate-800">{getPlanTargetLabel(plan)}</span>
+          </td>
+        ) : null}
+        {isColumnVisible("taskType") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden text-slate-500">{getPlanTaskLabel(plan)}</td>
+        ) : null}
+        {isColumnVisible("startDate") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">{formatDate(plan.startDate)}</td>
+        ) : null}
+        {isColumnVisible("targetAccount") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
+            <AccountCell label={planAccountLabel(plan)} />
+          </td>
+        ) : null}
+        {isColumnVisible("cashAccount") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
+            <AccountCell label={planCashAccountLabel(plan)} />
+          </td>
+        ) : null}
+        {isColumnVisible("amount") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-right text-xs tabular-nums overflow-hidden text-slate-700">
+            {Number(plan.amount || 0).toFixed(2)}
+          </td>
+        ) : null}
+        {isColumnVisible("interval") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden text-slate-500">{formatInterval(plan)}</td>
+        ) : null}
+        {isColumnVisible("status") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
+            <span className={STATUS_MAP[plan.status]?.cls || "text-slate-600"}>{STATUS_MAP[plan.status]?.label || plan.status}</span>
+          </td>
+        ) : null}
+        {isColumnVisible("nextRunDate") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">{formatDate(plan.nextRunDate)}</td>
+        ) : null}
+        {isColumnVisible("executedCount") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">
+            {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
+          </td>
+        ) : null}
         <td className="border-b border-slate-100 px-2 py-1">
           <div className="flex items-center justify-end gap-1">
             {plan.status === "active" && (
@@ -609,39 +970,87 @@ export function RegularInvestClient({
                   <option value="none">不按所有人</option>
                 </select>
               </div>
-              <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
-                <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
-                不显示已结束计划
-              </label>
+              <div className="flex items-center gap-3">
+                <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
+                  <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
+                  不显示已结束计划
+                </label>
+                <div ref={columnMenuRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setColumnFilterOpen((current) => !current)}
+                    className="secondary-button h-7 px-2 text-xs"
+                    title="表头设置"
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    <span>表头设置</span>
+                  </button>
+                  {columnFilterOpen ? (
+                    <div className="absolute right-0 top-8 z-50 w-48 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+                      <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">显示列</div>
+                      <div className="max-h-56 space-y-1 overflow-y-auto">
+                        {REGULAR_INVEST_COLUMNS.map((column) => {
+                          const checked = isColumnVisible(column.key);
+                          const disabled = checked && visibleRegularInvestColumns.length <= 1;
+                          return (
+                            <label
+                              key={column.key}
+                              className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
+                                disabled ? "text-slate-400" : "cursor-pointer text-slate-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={() => toggleColumnVisibility(column.key)}
+                                className="h-3.5 w-3.5 rounded border-slate-300"
+                              />
+                              <span className="truncate">{column.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </header>
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className={`${selectedPlan ? "min-h-[240px] flex-1 overflow-auto border-b border-slate-200 bg-white" : "min-h-0 flex-1 overflow-auto bg-white"}`}>
-              <table className="w-full min-w-[1040px] border-separate border-spacing-0">
+            <div ref={tableViewportRef} className={`${selectedPlan ? "min-h-[240px] flex-1 overflow-auto border-b border-slate-200 bg-white" : "min-h-0 flex-1 overflow-auto bg-white"}`}>
+              <table className="table-fixed w-full border-separate border-spacing-0" style={{ minWidth: mainTableWidth }}>
+                <colgroup>
+                  {visibleRegularInvestColumns.map((column) => (
+                    <col key={column.key} style={{ width: layoutColumnWidth(column.key) }} />
+                  ))}
+                  <col style={{ width: layoutColumnWidth("actions") }} />
+                </colgroup>
                 <thead className="sticky top-0 z-10 bg-white">
                   <tr>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">任务内容</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">类型</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">开始日期</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">目标账户</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">资金账户</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">周期</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">状态</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">下次执行</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">已执行次数</th>
-                    <th className="border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">操作</th>
+                    {visibleRegularInvestColumns.map((column) => renderHeaderCell(column))}
+                    <th className="relative select-none border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">
+                      操作
+                      <span
+                        role="separator"
+                        aria-orientation="vertical"
+                        onMouseDown={(event) => beginColumnResize(event, "actions")}
+                        className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
+                        title="拖动调整列宽"
+                      />
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="text-sm">
                   {groupedPlans.length === 0 || groupedPlans[0].items.length === 0 ? (
-                    <tr><td className="px-3 py-6 text-xs text-slate-500" colSpan={10}>暂无计划任务</td></tr>
+                    <tr><td className="px-3 py-6 text-xs text-slate-500" colSpan={mainTableColSpan}>暂无计划任务</td></tr>
                   ) : (
                     groupedPlans.map((group, index) => (
                       group.label ? (
                         <Fragment key={`g-${index}`}>
                           <tr className="bg-slate-50">
-                            <td className="px-3 py-1.5 text-xs font-semibold text-slate-600" colSpan={10}>
+                            <td className="px-3 py-1.5 text-xs font-semibold text-slate-600" colSpan={mainTableColSpan}>
                               {group.label} ({group.items.length})
                             </td>
                           </tr>

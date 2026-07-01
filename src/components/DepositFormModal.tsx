@@ -9,6 +9,8 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { Repeat } from "lucide-react";
 
 type Entry = {
@@ -205,7 +207,6 @@ export function DepositFormModal({
   const {
     ownerFilterLabel: depositOwnerFilterLabel,
     cycleOwnerFilter: cycleDepositOwnerFilter,
-    filteredOptions: depositFiltered,
   } = useAccountSSFilter(localDepositSSOpts);
 
   useEffect(() => {
@@ -587,6 +588,8 @@ export function DepositFormModal({
   }, [allRedeemLotOptions, defaultAccountId, depositAccountList, redeemLotOptions, today]);
 
   useEffect(() => {
+    if (mode !== "create") return;
+
     function onCreate(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId: string;
@@ -615,7 +618,7 @@ export function DepositFormModal({
     }
     window.addEventListener("mmh:deposit:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:deposit:create", onCreate as EventListener);
-  }, [applyBuyDefaults, applyRedeemDefaults, today]);
+  }, [applyBuyDefaults, applyRedeemDefaults, mode, today]);
 
   useEffect(() => {
     if (!isRedeem) {
@@ -853,10 +856,14 @@ export function DepositFormModal({
     }
   }
 
-  if (!open) return null;
+  const recentAccountIds = useRecentAccountIds();
+  const visibleCashOptions = sortOptionsByRecent(cashFiltered ?? localCashSSOpts ?? cashAccountList, recentAccountIds);
 
-  const visibleCashOptions = cashFiltered ?? localCashSSOpts ?? cashAccountList;
-  const visibleDepositOptions = depositFiltered ?? localDepositSSOpts ?? depositAccountList;
+  useCloseOnNavigation(open, () => {
+    setOpen(false);
+    if (mode === "create") reset();
+  });
+  if (!open) return null;
   const cashOwnerCycleButton = localCashSSOpts?.some((option) => option.isHeader) ? (
     <button
       type="button"
@@ -883,8 +890,8 @@ export function DepositFormModal({
   return (
     <>
       {createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/28 p-4 backdrop-blur-[2px]">
-          <div className="modal-surface w-full max-w-md">
+        <div className="app-modal-backdrop z-[1000]">
+          <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
                 {mode === "edit" ? "编辑存款记录" : "新增存款记录"}
@@ -902,7 +909,8 @@ export function DepositFormModal({
               </button>
             </div>
 
-            <form className="max-h-[80vh] space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -1187,6 +1195,7 @@ export function DepositFormModal({
                 >
                   {submitting ? "保存中…" : mode === "edit" ? "保存修改" : isRedeem ? "记账（取出）" : "记账（存入）"}
                 </button>
+              </div>
               </div>
             </form>
           </div>

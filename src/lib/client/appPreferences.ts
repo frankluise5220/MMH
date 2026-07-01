@@ -13,6 +13,9 @@ export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
 export const TIME_ZONE_COOKIE = "mmh_time_zone";
 export const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
 export const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
+export const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
+export const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
+export const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
@@ -32,6 +35,9 @@ export type AppPreferencesSnapshot = {
   timeZone: string;
   creditCardLabelMode: CreditCardLabelMode;
   creditCardLabelTemplate: string;
+  creditBillHideZero: boolean;
+  creditBillHideSettled: boolean;
+  creditBillShowRecentCycles: boolean;
   sidebarGroupBy: SidebarGroupMode;
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
@@ -142,6 +148,40 @@ export function setCreditCardLabelTemplatePreference(template: string) {
   emitPreferencesChanged();
 }
 
+export function getCreditBillHideZeroPreference(): boolean {
+  const raw = parseCookieValue(CREDIT_BILL_HIDE_ZERO_COOKIE);
+  return raw === "1" || raw === "true";
+}
+
+export function setCreditBillHideZeroPreference(value: boolean) {
+  if (typeof document === "undefined") return;
+  setCookieValue(CREDIT_BILL_HIDE_ZERO_COOKIE, value ? "1" : "0");
+  emitPreferencesChanged();
+}
+
+export function getCreditBillHideSettledPreference(): boolean {
+  const raw = parseCookieValue(CREDIT_BILL_HIDE_SETTLED_COOKIE);
+  return raw === "1" || raw === "true";
+}
+
+export function setCreditBillHideSettledPreference(value: boolean) {
+  if (typeof document === "undefined") return;
+  setCookieValue(CREDIT_BILL_HIDE_SETTLED_COOKIE, value ? "1" : "0");
+  emitPreferencesChanged();
+}
+
+export function getCreditBillShowRecentCyclesPreference(): boolean {
+  const raw = parseCookieValue(CREDIT_BILL_RECENT_CYCLES_COOKIE);
+  if (raw == null) return true;
+  return raw === "1" || raw === "true";
+}
+
+export function setCreditBillShowRecentCyclesPreference(value: boolean) {
+  if (typeof document === "undefined") return;
+  setCookieValue(CREDIT_BILL_RECENT_CYCLES_COOKIE, value ? "1" : "0");
+  emitPreferencesChanged();
+}
+
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
     const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY) ?? parseCookieValue(SIDEBAR_GROUP_BY_KEY);
@@ -236,6 +276,9 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     timeZone: getTimeZonePreference(),
     creditCardLabelMode: getCreditCardLabelModePreference(),
     creditCardLabelTemplate: getCreditCardLabelTemplatePreference(),
+    creditBillHideZero: getCreditBillHideZeroPreference(),
+    creditBillHideSettled: getCreditBillHideSettledPreference(),
+    creditBillShowRecentCycles: getCreditBillShowRecentCyclesPreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),

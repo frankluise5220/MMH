@@ -50,12 +50,15 @@ export function CalcInput({
   useEffect(() => {
     if (!open) return;
     setExpr("");
-    if (triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      const top = Math.min(rect.bottom + 4, window.innerHeight - 420);
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 280));
-      setDialogPos({ top, left });
-    }
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const width = 272;
+    const height = 248;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const top = rect.bottom + height > window.innerHeight
+      ? Math.max(8, rect.top - height - 8)
+      : Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8));
+    setDialogPos({ top, left });
   }, [open]);
 
   useEffect(() => {
@@ -192,7 +195,7 @@ export function CalcInput({
               left: dialogPos.left,
               pointerEvents: "auto",
             }}
-            className="modal-surface w-[272px] select-none"
+            className="viewport-floater w-[272px] select-none rounded-xl border bg-surface-white shadow-elevated"
           >
             <div className="border-b border-slate-100 bg-slate-50 px-3 pb-2 pt-2.5">
               <div className="tabular-nums text-[11px] text-slate-400">当前值 {formatValue(numVal)}</div>

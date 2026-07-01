@@ -10,6 +10,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./TransactionFormModal";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { formatMoneyLoose as formatMoney } from "@/lib/format";
 
 type Entry = {
   id?: string;
@@ -33,6 +34,8 @@ type InsuranceProductOption = {
   id: string;
   label: string;
   subLabel?: string;
+  isMaster?: boolean;
+  productMasterId?: string | null;
   accountId: string;
   accountLabel?: string;
   ownerGroupId?: string | null;
@@ -42,6 +45,10 @@ type InsuranceProductOption = {
   institutionShortName?: string | null;
   productType?: string | null;
   accountingType?: string | null;
+  policyholderPersonId?: string | null;
+  policyholderPersonName?: string | null;
+  insuredPersonId?: string | null;
+  insuredPersonName?: string | null;
   insuredUserId?: string | null;
   insuredUserName?: string | null;
   beneficiaryName?: string | null;
@@ -77,51 +84,18 @@ type AccountMeta = {
   institutionShortName?: string | null;
 };
 
-type InsuranceLookupReference = {
-  title: string;
-  url: string;
-  snippet: string;
-  source: string;
-};
-
-type InsuranceOfficialProductCandidate = {
+type InternalAccountRow = {
+  id: string;
   name: string;
-  institutionName: string;
-  status: string;
-  saleDate: string | null;
-  termsNo: string | null;
-  source: string;
+  kind?: string | null;
+  groupId?: string | null;
+  AccountGroup?: { id?: string | null; name?: string | null } | null;
 };
 
-type InsuranceProductCandidate = {
-  name: string;
-  institutionName: string | null;
-  productType: string | null;
-  status: string | null;
-  saleDate: string | null;
-  termsNo: string | null;
-  source: string;
-  sourceType: "official" | "crawled" | "search";
-  url: string | null;
-  confidence: "low" | "medium" | "high";
-  reason: string;
-};
-
-type InsuranceLookupData = {
-  query: string;
-  institutionName: string | null;
-  candidates: InsuranceProductCandidate[];
-  officialProducts: InsuranceOfficialProductCandidate[];
-  officialSources: InsuranceLookupReference[];
-  webResults: InsuranceLookupReference[];
-  crawledPages: InsuranceLookupReference[];
-  suggestion: {
-    productType: string | null;
-    institutionName: string | null;
-    confidence: "low" | "medium" | "high";
-    reason: string;
-  };
-  searchedAt: string;
+type OwnerOption = {
+  id: string;
+  label: string;
+  subLabel?: string;
 };
 
 const PRODUCT_TYPE_OPTIONS = [
@@ -138,15 +112,10 @@ const PRODUCT_TYPE_OPTIONS = [
   { value: "other", label: "其他" },
 ] as const;
 
-const PREMIUM_FREQUENCY_OPTIONS = [
-  { value: 1, label: "每月" },
-  { value: 3, label: "每季" },
-  { value: 6, label: "每半年" },
-  { value: 12, label: "每年" },
+const PAYMENT_MODE_OPTIONS = [
+  { value: 12, label: "年交" },
   { value: 999999, label: "趸交" },
 ] as const;
-
-type InsuranceStatusValue = "active" | "matured" | "surrendered" | "lapsed";
 
 const PRODUCT_ACCOUNTING_TYPE: Record<string, "asset" | "protection" | "hybrid"> = {
   savings: "asset",
@@ -162,27 +131,8 @@ const PRODUCT_ACCOUNTING_TYPE: Record<string, "asset" | "protection" | "hybrid">
   other: "asset",
 };
 
-const PRODUCT_LOOKUP_TYPE_RULES: Array<{ productType: string; keywords: string[] }> = [
-  { productType: "critical_illness", keywords: ["重疾", "重大疾病"] },
-  { productType: "medical", keywords: ["医疗", "住院", "百万医疗"] },
-  { productType: "accident", keywords: ["意外"] },
-  { productType: "annuity", keywords: ["年金", "养老"] },
-  { productType: "term_life", keywords: ["定期寿", "定寿"] },
-  { productType: "whole_life", keywords: ["终身寿", "增额终身寿"] },
-  { productType: "universal", keywords: ["万能"] },
-  { productType: "investment_linked", keywords: ["投连", "投资连结"] },
-  { productType: "dividend", keywords: ["分红"] },
-  { productType: "savings", keywords: ["两全", "储蓄", "教育金"] },
-];
-
 function productTypeLabel(type?: string | null) {
   return PRODUCT_TYPE_OPTIONS.find((item) => item.value === type)?.label ?? "保险";
-}
-
-function inferProductTypeFromText(text: string) {
-  return PRODUCT_LOOKUP_TYPE_RULES.find((rule) =>
-    rule.keywords.some((keyword) => text.includes(keyword)),
-  )?.productType ?? null;
 }
 
 function accountingTypeForProductType(type?: string | null) {
@@ -212,73 +162,81 @@ function formatDateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function addMonthsClamped(date: Date, months: number) {
-  const next = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+function addYearsClamped(date: Date, years: number) {
+  const next = new Date(Date.UTC(date.getUTCFullYear() + years, date.getUTCMonth(), 1));
   const maxDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
   next.setUTCDate(Math.min(date.getUTCDate(), maxDay));
   return next;
 }
 
-function buildMissingPremiumDates(startDate: string, currentDate: string, frequencyMonths: number | null) {
-  if (!frequencyMonths || frequencyMonths <= 0 || frequencyMonths === 999999) return [];
-  const start = parseDateOnly(startDate);
-  const current = parseDateOnly(currentDate);
-  if (!start || !current || start >= current) return [];
-
-  const dates: string[] = [];
-  let cursor = start;
-  for (let guard = 0; guard < 600; guard += 1) {
-    if (cursor >= current) break;
-    dates.push(formatDateOnly(cursor));
-    cursor = addMonthsClamped(cursor, frequencyMonths);
-  }
-  return dates;
+function valueFromRecord(item: Record<string, unknown>, key: string) {
+  const value = item[key];
+  return value == null ? "" : String(value);
 }
 
-function buildLookupCandidateNote(candidate?: InsuranceProductCandidate | null) {
-  if (!candidate) return undefined;
-  return [
-    "公开保险产品资料：",
-    `来源：${candidate.source}`,
-    `来源类型：${candidate.sourceType === "official" ? "官方库" : candidate.sourceType === "crawled" ? "公开页面整理" : "搜索整理"}`,
-    candidate.institutionName ? `承保机构：${candidate.institutionName}` : "",
-    candidate.status ? `官方销售状态：${candidate.status}` : "",
-    candidate.saleDate ? `发布日期：${candidate.saleDate}` : "",
-    candidate.termsNo ? `条款号：${candidate.termsNo}` : "",
-    candidate.url ? `核对地址：${candidate.url}` : "",
-    `整理说明：${candidate.reason}`,
-  ].filter(Boolean).join("\n");
+function nullableStringFromRecord(item: Record<string, unknown>, key: string) {
+  const value = valueFromRecord(item, key).trim();
+  return value || null;
 }
 
-function mapInsuranceProduct(item: any): InsuranceProductOption {
+function nullableNumberFromRecord(item: Record<string, unknown>, key: string) {
+  const value = item[key];
+  return value == null ? null : Number(value);
+}
+
+function mapInsuranceProduct(item: Record<string, unknown>): InsuranceProductOption {
   return {
-    id: String(item.id),
-    label: String(item.name ?? ""),
-    subLabel: [item.institutionShortName || item.institutionName, productTypeLabel(item.productType)].filter(Boolean).join(" · "),
-    accountId: String(item.accountId ?? ""),
-    accountLabel: String(item.accountName ?? ""),
-    ownerGroupId: item.ownerGroupId ? String(item.ownerGroupId) : null,
-    ownerGroupName: item.ownerGroupName ? String(item.ownerGroupName) : null,
-    institutionId: item.institutionId ? String(item.institutionId) : null,
-    institutionName: item.institutionName ? String(item.institutionName) : null,
-    institutionShortName: item.institutionShortName ? String(item.institutionShortName) : null,
-    productType: item.productType ? String(item.productType) : null,
-    accountingType: item.accountingType ? String(item.accountingType) : null,
-    insuredUserId: item.insuredUserId ? String(item.insuredUserId) : null,
-    insuredUserName: item.insuredUserName ? String(item.insuredUserName) : null,
-    beneficiaryName: item.beneficiaryName ? String(item.beneficiaryName) : null,
-    premiumMode: item.premiumMode ? String(item.premiumMode) : null,
-    premiumFrequencyMonths: item.premiumFrequencyMonths != null ? Number(item.premiumFrequencyMonths) : null,
-    premiumAmount: item.premiumAmount != null ? Number(item.premiumAmount) : null,
-    paymentTermYears: item.paymentTermYears != null ? Number(item.paymentTermYears) : null,
-    coverageTermYears: item.coverageTermYears != null ? Number(item.coverageTermYears) : null,
-    coverageAmount: item.coverageAmount != null ? Number(item.coverageAmount) : null,
-    status: item.status ? String(item.status) : null,
-    startDate: item.startDate ? String(item.startDate) : null,
-    effectiveDate: item.effectiveDate ? String(item.effectiveDate) : null,
-    maturityDate: item.maturityDate ? String(item.maturityDate) : null,
+    id: valueFromRecord(item, "id"),
+    label: valueFromRecord(item, "name"),
+    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    productMasterId: nullableStringFromRecord(item, "productMasterId"),
+    accountId: valueFromRecord(item, "accountId"),
+    accountLabel: valueFromRecord(item, "accountName"),
+    ownerGroupId: nullableStringFromRecord(item, "ownerGroupId"),
+    ownerGroupName: nullableStringFromRecord(item, "ownerGroupName"),
+    institutionId: nullableStringFromRecord(item, "institutionId"),
+    institutionName: nullableStringFromRecord(item, "institutionName"),
+    institutionShortName: nullableStringFromRecord(item, "institutionShortName"),
+    productType: nullableStringFromRecord(item, "productType"),
+    accountingType: nullableStringFromRecord(item, "accountingType"),
+    policyholderPersonId: nullableStringFromRecord(item, "policyholderPersonId"),
+    policyholderPersonName: nullableStringFromRecord(item, "policyholderPersonName"),
+    insuredPersonId: nullableStringFromRecord(item, "insuredPersonId"),
+    insuredPersonName: nullableStringFromRecord(item, "insuredPersonName"),
+    insuredUserId: nullableStringFromRecord(item, "insuredUserId"),
+    insuredUserName: nullableStringFromRecord(item, "insuredUserName"),
+    beneficiaryName: nullableStringFromRecord(item, "beneficiaryName"),
+    premiumMode: nullableStringFromRecord(item, "premiumMode"),
+    premiumFrequencyMonths: nullableNumberFromRecord(item, "premiumFrequencyMonths"),
+    premiumAmount: nullableNumberFromRecord(item, "premiumAmount"),
+    paymentTermYears: nullableNumberFromRecord(item, "paymentTermYears"),
+    coverageTermYears: nullableNumberFromRecord(item, "coverageTermYears"),
+    coverageAmount: nullableNumberFromRecord(item, "coverageAmount"),
+    status: nullableStringFromRecord(item, "status"),
+    startDate: nullableStringFromRecord(item, "startDate"),
+    effectiveDate: nullableStringFromRecord(item, "effectiveDate"),
+    maturityDate: nullableStringFromRecord(item, "maturityDate"),
     cashValueEnabled: item.cashValueEnabled != null ? Boolean(item.cashValueEnabled) : null,
-    note: item.note ? String(item.note) : null,
+    note: nullableStringFromRecord(item, "note"),
+  };
+}
+
+function mapInsuranceProductMaster(item: Record<string, unknown>): InsuranceProductOption {
+  const id = valueFromRecord(item, "id");
+  return {
+    id: `master:${id}`,
+    isMaster: true,
+    productMasterId: id,
+    label: valueFromRecord(item, "name"),
+    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    accountId: "",
+    institutionId: nullableStringFromRecord(item, "institutionId"),
+    institutionName: nullableStringFromRecord(item, "institutionName"),
+    institutionShortName: nullableStringFromRecord(item, "institutionShortName"),
+    productType: nullableStringFromRecord(item, "productType"),
+    accountingType: nullableStringFromRecord(item, "accountingType"),
+    status: nullableStringFromRecord(item, "status"),
+    note: nullableStringFromRecord(item, "note"),
   };
 }
 
@@ -295,8 +253,6 @@ export function InsuranceFormModal({
   entry?: Entry;
   cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   cashAccountSSOptions?: SmartSelectOption[];
-  insuranceAccountSSOptions?: SmartSelectOption[];
-  ownerSSOptions?: SmartSelectOption[];
   nestedFieldData?: NestedFieldData;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
@@ -321,40 +277,207 @@ export function InsuranceFormModal({
   const [submitting, setSubmitting] = useState(false);
 
   const [insuranceProductId, setInsuranceProductId] = useState(mode === "edit" ? (entry?.insuranceProductId ?? "") : "");
-  const [productName, setProductName] = useState(mode === "edit" ? (entry?.fundName ?? "") : "");
   const [productType, setProductType] = useState("savings");
-  const [institutionId, setInstitutionId] = useState("");
-  const [ownerGroupId, setOwnerGroupId] = useState("");
-  const [insuredUserId, setInsuredUserId] = useState("");
-  const [beneficiaryName, setBeneficiaryName] = useState("");
+  const [policyholderPersonId, setPolicyholderPersonId] = useState("");
+  const [insuredPersonId, setInsuredPersonId] = useState("");
+  const [beneficiaryPersonId, setBeneficiaryPersonId] = useState("");
   const [premiumFrequencyMonths, setPremiumFrequencyMonths] = useState("12");
+  const isAnnualPayment = premiumFrequencyMonths === "12";
+  const isSinglePayment = premiumFrequencyMonths === "999999";
+  const [productStartDateTouched, setProductStartDateTouched] = useState(false);
   const [productStartDate, setProductStartDate] = useState(initDate);
   const [paymentTermYears, setPaymentTermYears] = useState("");
   const [coverageTermYears, setCoverageTermYears] = useState("");
   const [coverageAmount, setCoverageAmount] = useState("");
-  const [productStatus, setProductStatus] = useState<InsuranceStatusValue>("active");
   const [lastAppliedProductId, setLastAppliedProductId] = useState<string>("");
-  const [lookupLoading, setLookupLoading] = useState(false);
-  const [lookupError, setLookupError] = useState("");
-  const [lookupData, setLookupData] = useState<InsuranceLookupData | null>(null);
-  const [selectedLookupCandidate, setSelectedLookupCandidate] = useState<InsuranceProductCandidate | null>(null);
+  const [showNewProductModal, setShowNewProductModal] = useState(false);
+  const [newProductInstitutionId, setNewProductInstitutionId] = useState("");
+  const [newProductName, setNewProductName] = useState("");
+  const [newProductLookupCandidates, setNewProductLookupCandidates] = useState<
+    Array<{
+      id: string;
+      name: string;
+      institutionName?: string | null;
+      productType?: string | null;
+      accountingType?: string | null;
+      status?: string | null;
+    }>
+  >([]);
+  const [newProductSelectedCandidate, setNewProductSelectedCandidate] = useState(-1);
+  const [newProductLookupLoading, setNewProductLookupLoading] = useState(false);
+  const [newProductLookupError, setNewProductLookupError] = useState("");
+  const [newProductSaving, setNewProductSaving] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [pendingPlanData, setPendingPlanData] = useState<{
+    totalRuns: number;
+    amount: number;
+    planStartDate: string;
+  } | null>(null);
+  const [confirmCreatePlan, setConfirmCreatePlan] = useState(true);
+  const [confirmBatchGenerate, setConfirmBatchGenerate] = useState(false);
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [insuranceProductOptions, setInsuranceProductOptions] = useState<InsuranceProductOption[]>([]);
   const [institutionOptions, setInstitutionOptions] = useState<OptionItem[]>([]);
-  const [ownerOptions, setOwnerOptions] = useState<OptionItem[]>([]);
-  const [userOptions, setUserOptions] = useState<OptionItem[]>([]);
+  const [familyMemberOptions, setFamilyMemberOptions] = useState<OptionItem[]>([]);
   const [accountMetaById, setAccountMetaById] = useState<Record<string, AccountMeta>>({});
-  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "owner" | "institution" | null>(null);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "family-member" | null>(null);
+
+  const selectedInsuranceProduct = useMemo(
+    () => insuranceProductOptions.find((item) => item.id === insuranceProductId) ?? null,
+    [insuranceProductId, insuranceProductOptions],
+  );
+
+  const selectedPolicyholder = useMemo(
+    () => familyMemberOptions.find((item) => item.id === policyholderPersonId) ?? null,
+    [familyMemberOptions, policyholderPersonId],
+  );
+  const selectedPolicyholderName = selectedPolicyholder?.label.trim() ?? "";
+  const selectedOwnerGroupId = useMemo(() => {
+    if (!selectedPolicyholderName) return "";
+    const matchedAccount = Object.values(accountMetaById).find(
+      (account) => account.groupName?.trim() === selectedPolicyholderName,
+    );
+    return matchedAccount?.groupId ?? "";
+  }, [accountMetaById, selectedPolicyholderName]);
+
+  async function handleNewProductLookup() {
+    const productName = newProductName.trim();
+    const institutionId = newProductInstitutionId.trim();
+    if (!productName || !institutionId) return;
+
+    const institutionName = institutionOptions.find((item) => item.id === institutionId)?.label.trim() ?? "";
+    setNewProductLookupLoading(true);
+    setNewProductLookupError("");
+    try {
+      const params = new URLSearchParams({ name: productName });
+      if (institutionName) params.set("institutionName", institutionName);
+      const response = await fetch(`/api/v1/insurance-products/lookup?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const data = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            error?: string;
+            data?: { candidates?: Array<{ name?: string; institutionName?: string | null; productType?: string | null; status?: string | null; source?: string; url?: string | null; confidence?: "low" | "medium" | "high"; reason?: string }> };
+          }
+        | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "查询失败");
+      }
+      const candidates = data.data?.candidates ?? [];
+      setNewProductLookupCandidates(
+        candidates.map((candidate) => ({
+          id: `${candidate.name ?? ""}__${candidate.institutionName ?? ""}__${candidate.source ?? ""}`,
+          name: candidate.name ?? "",
+          institutionName: candidate.institutionName ?? null,
+          productType: candidate.productType ?? null,
+          accountingType: null,
+          status: candidate.status ?? null,
+        })),
+      );
+      setNewProductSelectedCandidate(candidates.length > 0 ? 0 : -1);
+    } catch (error) {
+      setNewProductLookupCandidates([]);
+      setNewProductSelectedCandidate(-1);
+      setNewProductLookupError(error instanceof Error ? error.message : "查询失败");
+    } finally {
+      setNewProductLookupLoading(false);
+    }
+  }
+
+  async function handleCreateProductMaster() {
+    const productName = newProductName.trim();
+    const institutionId = newProductInstitutionId.trim();
+    if (!productName || !institutionId || newProductSaving) return;
+
+    const selectedCandidate = newProductLookupCandidates[newProductSelectedCandidate] ?? null;
+    setNewProductSaving(true);
+    try {
+      const response = await fetch("/api/v1/insurance-products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          institutionId,
+          name: productName,
+          shortName: selectedCandidate?.name ?? null,
+          productType: selectedCandidate?.productType ?? "other",
+          accountingType: selectedCandidate?.accountingType ?? "protection",
+          currency: "CNY",
+          note: selectedCandidate?.status ?? null,
+          mode: "master",
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; productMaster?: { id: string; name: string } }
+        | null;
+      if (!response.ok || !data?.ok || !data.productMaster) {
+        throw new Error(data?.error || "创建失败");
+      }
+      setInsuranceProductId(`master:${data.productMaster.id}`);
+      setShowNewProductModal(false);
+      setNewProductInstitutionId("");
+      setNewProductName("");
+      setNewProductLookupCandidates([]);
+      setNewProductSelectedCandidate(-1);
+      setNewProductLookupError("");
+    } catch (error) {
+      setNewProductLookupError(error instanceof Error ? error.message : "创建失败");
+    } finally {
+      setNewProductSaving(false);
+    }
+  }
+
+  function handleCancelConfirm() {
+    setShowConfirmDialog(false);
+    setPendingPlanData(null);
+    setConfirmCreatePlan(true);
+    setConfirmBatchGenerate(false);
+  }
+
+  function handleConfirmPlanAndBatch() {
+    handleCancelConfirm();
+  }
+
+  const cashOptionsForPolicyholder = useMemo<SmartSelectOption[] | undefined>(() => {
+    const sourceOptions = localCashSSOpts;
+    if (!sourceOptions || !selectedPolicyholderName) return sourceOptions;
+    const allowedAccountIds = new Set(
+      Object.values(accountMetaById)
+        .filter((account) => account.groupName?.trim() === selectedPolicyholderName)
+        .map((account) => account.id),
+    );
+    const optionById = new Map(sourceOptions.map((option) => [option.id, option]));
+    const keptIds = new Set<string>();
+    for (const accountId of allowedAccountIds) {
+      keptIds.add(accountId);
+      let parentId = optionById.get(accountId)?.parentId;
+      while (parentId) {
+        keptIds.add(parentId);
+        parentId = optionById.get(parentId)?.parentId;
+      }
+    }
+    return sourceOptions.filter((option) => keptIds.has(option.id));
+  }, [accountMetaById, localCashSSOpts, selectedPolicyholderName]);
+
+  const cashListForPolicyholder = useMemo(
+    () =>
+      selectedPolicyholderName
+        ? cashAccountList.filter(
+            (account) => accountMetaById[account.id]?.groupName?.trim() === selectedPolicyholderName,
+          )
+        : cashAccountList,
+    [accountMetaById, cashAccountList, selectedPolicyholderName],
+  );
 
   const {
     ownerFilterLabel: cashOwnerFilterLabel,
     cycleOwnerFilter: cycleCashOwnerFilter,
     filteredOptions: cashFiltered,
-  } = useAccountSSFilter(localCashSSOpts);
+  } = useAccountSSFilter(cashOptionsForPolicyholder);
 
-  const cashOwnerCycleButton = localCashSSOpts?.some((option) => option.isHeader) ? (
+  const cashOwnerCycleButton = cashOptionsForPolicyholder?.some((option) => option.isHeader) ? (
     <button
       type="button"
       onClick={cycleCashOwnerFilter}
@@ -366,19 +489,14 @@ export function InsuranceFormModal({
     </button>
   ) : undefined;
 
-  const selectedInsuranceProduct = useMemo(
-    () => insuranceProductOptions.find((item) => item.id === insuranceProductId) ?? null,
-    [insuranceProductId, insuranceProductOptions],
-  );
-
   const filteredInsuranceProductOptions = useMemo<SmartSelectOption[]>(() => {
     return insuranceProductOptions
       .filter((item) => {
         if (subtype === "redeem") {
-          if (ownerGroupId && item.ownerGroupId !== ownerGroupId) return false;
-          if (institutionId && item.institutionId !== institutionId) return false;
-        } else if (ownerGroupId && item.ownerGroupId !== ownerGroupId) {
-          return false;
+          if (item.isMaster) return false;
+          if (selectedOwnerGroupId && item.ownerGroupId !== selectedOwnerGroupId) return false;
+        } else {
+          if (!item.isMaster) return false;
         }
         return true;
       })
@@ -387,144 +505,9 @@ export function InsuranceFormModal({
         label: item.label,
         subLabel: item.subLabel,
       }));
-  }, [insuranceProductOptions, institutionId, ownerGroupId, subtype]);
-
-  const insuranceAccountLabel = useMemo(() => {
-    if (selectedInsuranceProduct?.accountLabel?.trim()) return selectedInsuranceProduct.accountLabel.trim();
-    if (selectedInsuranceProduct?.accountId) {
-      const matched = accountMetaById[selectedInsuranceProduct.accountId];
-      if (matched?.label) return matched.label;
-    }
-    const ownerLabel = ownerOptions.find((item) => item.id === ownerGroupId)?.label ?? "";
-    const institution = institutionOptions.find((item) => item.id === institutionId)?.label ?? "";
-    if (ownerLabel && institution) return `${ownerLabel}的${institution}`;
-    const contextAccount = accountMetaById[defaultAccountId];
-    if (contextAccount?.kind === "insurance") return contextAccount.label;
-    return "";
-  }, [accountMetaById, defaultAccountId, institutionId, institutionOptions, ownerGroupId, ownerOptions, selectedInsuranceProduct]);
-
-  const selectedInstitutionLabel = useMemo(() => {
-    const matched = institutionOptions.find((item) => item.id === institutionId);
-    return matched?.subLabel && matched.subLabel !== "保险公司" ? matched.subLabel : matched?.label ?? "";
-  }, [institutionId, institutionOptions]);
-
-  function applyProductOption(product: InsuranceProductOption) {
-    setInsuranceProductId(product.id);
-    setSelectedLookupCandidate(null);
-    setProductName(product.label);
-    setProductType(product.productType ?? "savings");
-    setInstitutionId(product.institutionId ?? "");
-    setOwnerGroupId(product.ownerGroupId ?? "");
-    setInsuredUserId(product.insuredUserId ?? "");
-    setBeneficiaryName(product.beneficiaryName ?? "");
-    setPremiumFrequencyMonths(
-      product.premiumFrequencyMonths != null ? String(product.premiumFrequencyMonths) : "12",
-    );
-    setProductStartDate(product.startDate || product.effectiveDate || date);
-    setPaymentTermYears(
-      product.paymentTermYears != null ? String(product.paymentTermYears) : "",
-    );
-    setCoverageTermYears(
-      product.coverageTermYears != null ? String(product.coverageTermYears) : "",
-    );
-    setCoverageAmount(
-      product.coverageAmount != null ? String(product.coverageAmount) : "",
-    );
-    setProductStatus((product.status as InsuranceStatusValue) || "active");
-    setLastAppliedProductId(product.id);
-  }
-
-  function clearProductSelection() {
-    setInsuranceProductId("");
-    setLastAppliedProductId("");
-    setSelectedLookupCandidate(null);
-  }
-
-  function findInstitutionByLookupName(name?: string | null) {
-    const normalized = String(name ?? "").replace(/\s+/g, "");
-    if (!normalized) return null;
-    return institutionOptions.find((item) => {
-      const label = item.label.replace(/\s+/g, "");
-      const subLabel = String(item.subLabel ?? "").replace(/\s+/g, "");
-      return (
-        normalized.includes(label) ||
-        label.includes(normalized) ||
-        (subLabel && normalized.includes(subLabel)) ||
-        (subLabel && subLabel.includes(normalized))
-      );
-    }) ?? null;
-  }
-
-  async function lookupProductInfo() {
-    const trimmedProductName = productName.trim();
-    if (!institutionId) {
-      window.alert("请先选择承保机构");
-      return;
-    }
-    if (!trimmedProductName) {
-      window.alert("请先输入保险名称");
-      return;
-    }
-
-    setLookupLoading(true);
-    setLookupError("");
-    try {
-      const params = new URLSearchParams({ name: trimmedProductName });
-      if (selectedInstitutionLabel) params.set("institutionName", selectedInstitutionLabel);
-      const response = await fetch(`/api/v1/insurance-products/lookup?${params.toString()}`, {
-        cache: "no-store",
-      });
-      const data = (await response.json().catch(() => null)) as
-        | { ok?: boolean; error?: string; data?: InsuranceLookupData }
-        | null;
-      if (!response.ok || !data?.ok || !data.data) {
-        throw new Error(data?.error || "查询保险产品资料失败");
-      }
-      setLookupData(data.data);
-      if (data.data.candidates.length === 1) {
-        applyProductCandidate(data.data.candidates[0], data.data.suggestion);
-      } else if (data.data.candidates.length === 0) {
-        setSelectedLookupCandidate(null);
-        setLookupError("没有整理出可直接套用的产品候选");
-      } else {
-        setSelectedLookupCandidate(null);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "查询保险产品资料失败";
-      setLookupError(message);
-      setLookupData(null);
-    } finally {
-      setLookupLoading(false);
-    }
-  }
-
-  function applyProductCandidate(candidate: InsuranceProductCandidate, suggestion?: InsuranceLookupData["suggestion"]) {
-    setInsuranceProductId("");
-    setLastAppliedProductId("");
-    setSelectedLookupCandidate(candidate);
-    setProductName(candidate.name);
-    const inferredType = candidate.productType ?? inferProductTypeFromText(candidate.name);
-    if (inferredType) {
-      setProductType(inferredType);
-    } else if (suggestion?.productType || lookupData?.suggestion.productType) {
-      setProductType(suggestion?.productType ?? lookupData?.suggestion.productType ?? "other");
-    }
-    const matchedInstitution = findInstitutionByLookupName(candidate.institutionName);
-    if (matchedInstitution) {
-      setInstitutionId(matchedInstitution.id);
-    }
-    setLookupError("");
-  }
+  }, [insuranceProductOptions, selectedOwnerGroupId, subtype]);
 
   function resetForm(defaults?: { requestId?: string | null; defaultCashAccountId?: string; defaultInsuranceAccountId?: string }) {
-    const contextAccount = defaults?.defaultInsuranceAccountId
-      ? accountMetaById[defaults.defaultInsuranceAccountId]
-      : accountMetaById[defaultAccountId];
-    const inferredOwnerId =
-      contextAccount?.kind === "insurance" ? (contextAccount.groupId ?? "") : "";
-    const inferredInstitutionId =
-      contextAccount?.kind === "insurance" ? (contextAccount.institutionId ?? "") : "";
-
     setSubtype("buy");
     setDate(today);
     setAmount("");
@@ -533,139 +516,110 @@ export function InsuranceFormModal({
     setRequestId(defaults?.requestId ?? null);
     setEditEntryId(null);
     setInsuranceProductId("");
-    setProductName("");
     setProductType("savings");
-    setInstitutionId(inferredInstitutionId);
-    setOwnerGroupId(inferredOwnerId);
-    setInsuredUserId("");
-    setBeneficiaryName("");
+    setPolicyholderPersonId("");
+    setInsuredPersonId("");
+    setBeneficiaryPersonId("");
     setPremiumFrequencyMonths("12");
+    setProductStartDateTouched(false);
     setProductStartDate(today);
     setPaymentTermYears("");
-    setCoverageTermYears("");
     setCoverageAmount("");
-    setProductStatus("active");
     setLastAppliedProductId("");
-    setLookupData(null);
-    setLookupError("");
-    setSelectedLookupCandidate(null);
   }
 
   useEffect(() => setCashAccountList(cashAccounts), [cashAccounts]);
   useEffect(() => setLocalCashSSOpts(cashAccountSSOptions), [cashAccountSSOptions]);
-
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetch("/api/v1/insurance-products", { cache: "no-store" }).then((res) => res.json()).catch(() => null),
-      fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" }).then((res) => res.json()).catch(() => null),
-    ]).then(([productsData, accountsData]) => {
-      if (cancelled) return;
 
-      if (productsData?.ok && Array.isArray(productsData.products)) {
-        setInsuranceProductOptions(productsData.products.map(mapInsuranceProduct));
-      }
+    async function loadInsuranceOptions() {
+      try {
+        const response = await fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" });
+        const accountsData = (await response.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              accounts?: InternalAccountRow[];
+              institutions?: Array<{ id: string; name: string; type?: string | null; shortName?: string | null }>;
+            }
+          | null;
+        if (cancelled || !response.ok || !accountsData?.ok) return;
 
-      if (Array.isArray(accountsData?.institutions)) {
-        setInstitutionOptions(
-          accountsData.institutions
-            .filter((item: any) => item?.type === "insurance")
-            .map((item: any) => ({
-              id: String(item.id),
-              label: String(item.shortName || item.name || ""),
-              subLabel: item.shortName ? String(item.name ?? "") : "保险公司",
-            })),
-        );
-      }
-
-      if (Array.isArray(accountsData?.groups)) {
-        setOwnerOptions(
-          accountsData.groups.map((item: any) => ({
-            id: String(item.id),
-            label: String(item.name ?? ""),
-            subLabel: "投保人",
-          })),
-        );
-      }
-
-      if (Array.isArray(accountsData?.users)) {
-        setUserOptions(
-          accountsData.users.map((item: any) => ({
-            id: String(item.id),
-            label: String(item.name ?? ""),
-            subLabel: "被保险人",
-          })),
-        );
-      }
-
-      if (Array.isArray(accountsData?.accounts)) {
-        const meta: Record<string, AccountMeta> = {};
-        for (const item of accountsData.accounts) {
-          const label = String(item.name ?? "");
-          meta[String(item.id)] = {
-            id: String(item.id),
-            name: String(item.name ?? ""),
-            kind: item.kind ? String(item.kind) : null,
-            label,
-            groupId: item.groupId ? String(item.groupId) : null,
-            groupName: item.AccountGroup?.name ? String(item.AccountGroup.name) : null,
-            institutionId: item.institutionId ? String(item.institutionId) : null,
-            institutionName: item.Institution?.name ? String(item.Institution.name) : null,
-            institutionShortName: item.Institution?.shortName ? String(item.Institution.shortName) : null,
-          };
+        const institutions = Array.isArray(accountsData.institutions) ? accountsData.institutions : [];
+        const accounts = Array.isArray(accountsData.accounts) ? accountsData.accounts : [];
+        const nextFamilyMembers = institutions
+          .filter((item) => item.type === "family_member")
+          .map((item) => ({
+            id: item.id,
+            label: item.name,
+            subLabel: "家庭成员",
+          }));
+        const nextInstitutions = institutions
+          .filter((item) => item.type === "insurance")
+          .map((item) => ({
+            id: item.id,
+            label: item.name,
+            subLabel: item.shortName && item.shortName !== item.name ? item.shortName : "保险公司",
+          }));
+        setFamilyMemberOptions(nextFamilyMembers);
+        setInstitutionOptions(nextInstitutions);
+        setAccountMetaById(() => {
+          const nextMeta: Record<string, AccountMeta> = {};
+          for (const item of accounts) {
+            nextMeta[item.id] = {
+              id: item.id,
+              name: item.name,
+              label: item.name,
+              kind: item.kind,
+              groupId: item.groupId ?? item.AccountGroup?.id ?? null,
+              groupName: item.AccountGroup?.name ?? null,
+            };
+          }
+          return nextMeta;
+        });
+      } catch {
+        if (!cancelled) {
+          setFamilyMemberOptions([]);
+          setInstitutionOptions([]);
         }
-        setAccountMetaById(meta);
       }
-    }).catch(() => {});
+    }
 
+    void loadInsuranceOptions();
     return () => {
       cancelled = true;
     };
   }, []);
 
   useEffect(() => {
-    if (!insuranceProductId || insuranceProductId === lastAppliedProductId) return;
-    const matched = insuranceProductOptions.find((item) => item.id === insuranceProductId);
-    if (matched) applyProductOption(matched);
-  }, [insuranceProductId, insuranceProductOptions, lastAppliedProductId]);
+    let cancelled = false;
 
-  useEffect(() => {
-    function onEdit(ev: Event) {
-      const detail = (ev as CustomEvent<{
-        requestId: string;
-        entryId: string;
-        date: string;
-        amount: number;
-        note: string;
-        accountId?: string;
-        cashAccountId?: string;
-        toAccountId?: string;
-        fundName?: string;
-        fundSubtype?: string;
-        insuranceProductId?: string | null;
-      }>).detail;
-      if (!detail?.requestId || !detail.entryId) return;
-
-      setRequestId(detail.requestId);
-      setEditEntryId(detail.entryId);
-      setSubtype(detail.fundSubtype === "redeem" ? "redeem" : "buy");
-      setDate(detail.date || today);
-      setAmount(detail.amount > 0 ? String(detail.amount) : "");
-      setMemo(detail.note ?? "");
-      setProductStartDate(detail.date || today);
-      setCashAccountId(
-        detail.cashAccountId ??
-          (detail.fundSubtype === "redeem" ? (detail.toAccountId ?? "") : (detail.accountId ?? "")),
-      );
-      setProductName(detail.fundName ?? "");
-      setInsuranceProductId(detail.insuranceProductId ?? "");
-      setLastAppliedProductId("");
-      setOpen(true);
+    async function loadInsuranceProducts() {
+      try {
+        const response = await fetch("/api/v1/insurance-products?includeMasters=1", { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              products?: Array<Record<string, unknown>>;
+              masters?: Array<Record<string, unknown>>;
+            }
+          | null;
+        if (cancelled || !response.ok || !data?.ok) return;
+        const nextOptions = [
+          ...(Array.isArray(data.products) ? data.products.map(mapInsuranceProduct) : []),
+          ...(Array.isArray(data.masters) ? data.masters.map(mapInsuranceProductMaster) : []),
+        ];
+        setInsuranceProductOptions(nextOptions);
+      } catch {
+        if (!cancelled) setInsuranceProductOptions([]);
+      }
     }
 
-    window.addEventListener("mmh:insurance:edit", onEdit as EventListener);
-    return () => window.removeEventListener("mmh:insurance:edit", onEdit as EventListener);
-  }, [today]);
+    void loadInsuranceProducts();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function onCreate(ev: Event) {
@@ -682,93 +636,6 @@ export function InsuranceFormModal({
     return () => window.removeEventListener("mmh:insurance:create", onCreate as EventListener);
   }, [accountMetaById, defaultAccountId, today]);
 
-  async function ensureInsuranceProduct() {
-    const trimmedProductName = productName.trim();
-    if (!trimmedProductName) throw new Error("请输入保险名称");
-    if (!ownerGroupId) throw new Error("请选择投保人");
-    let finalInstitutionId = institutionId;
-    if (selectedLookupCandidate?.institutionName) {
-      const matchedInstitution = findInstitutionByLookupName(selectedLookupCandidate.institutionName);
-      if (matchedInstitution) {
-        finalInstitutionId = matchedInstitution.id;
-        if (matchedInstitution.id !== institutionId) setInstitutionId(matchedInstitution.id);
-      } else if (!insuranceProductId) {
-        const response = await fetch("/api/v1/institution", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: selectedLookupCandidate.institutionName,
-            shortName: selectedLookupCandidate.institutionName.replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司/g, ""),
-            type: "insurance",
-          }),
-        });
-        const data = (await response.json().catch(() => null)) as
-          | { ok?: boolean; error?: string; institution?: { id?: string; name?: string; shortName?: string | null } }
-          | null;
-        if (!response.ok || !data?.ok || !data.institution?.id) {
-          throw new Error(data?.error || "创建承保机构失败");
-        }
-        const option = {
-          id: String(data.institution.id),
-          label: String(data.institution.shortName || data.institution.name || ""),
-          subLabel: data.institution.shortName ? String(data.institution.name ?? "") : "保险公司",
-        };
-        setInstitutionOptions((prev) => [...prev, option]);
-        finalInstitutionId = option.id;
-        setInstitutionId(option.id);
-      }
-    }
-    if (!finalInstitutionId) throw new Error("请选择承保机构");
-
-    const premiumFrequencyValue = parseOptionalNumber(premiumFrequencyMonths);
-    const accountingType = accountingTypeForProductType(productType);
-    const lookupNote = buildLookupCandidateNote(selectedLookupCandidate);
-    const payload = {
-      id: insuranceProductId || undefined,
-      name: trimmedProductName,
-      productType,
-      accountingType,
-      ownerGroupId,
-      institutionId: finalInstitutionId,
-      insuredUserId: insuredUserId || undefined,
-      beneficiaryName: beneficiaryName.trim() || undefined,
-      premiumMode: inferPremiumMode(premiumFrequencyValue),
-      premiumFrequencyMonths: premiumFrequencyValue,
-      premiumAmount: parseOptionalNumber(amount),
-      paymentTermYears: parseOptionalNumber(paymentTermYears),
-      coverageTermYears: parseOptionalNumber(coverageTermYears),
-      coverageAmount: parseOptionalNumber(coverageAmount),
-      status: productStatus,
-      startDate: productStartDate || date,
-      effectiveDate: selectedInsuranceProduct?.effectiveDate ?? (productStartDate || date),
-      maturityDate: selectedInsuranceProduct?.maturityDate ?? undefined,
-      cashValueEnabled:
-        selectedInsuranceProduct?.cashValueEnabled ?? (accountingType !== "protection"),
-      note: selectedInsuranceProduct?.note ?? lookupNote,
-    };
-
-    const response = await fetch("/api/v1/insurance-products", {
-      method: insuranceProductId ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = (await response.json().catch(() => null)) as
-      | { ok?: boolean; error?: string; insuranceProduct?: any }
-      | null;
-    if (!response.ok || !data?.ok || !data.insuranceProduct) {
-      throw new Error(data?.error || (insuranceProductId ? "更新保险产品失败" : "创建保险产品失败"));
-    }
-
-    const mapped = mapInsuranceProduct(data.insuranceProduct);
-    setInsuranceProductOptions((prev) => {
-      const existed = prev.some((item) => item.id === mapped.id);
-      if (existed) return prev.map((item) => (item.id === mapped.id ? mapped : item));
-      return [...prev, mapped];
-    });
-    applyProductOption(mapped);
-    return mapped;
-  }
-
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (submitting) return;
@@ -778,30 +645,25 @@ export function InsuranceFormModal({
       window.alert("请输入正确金额");
       return;
     }
-    if (!cashAccountId) {
-      window.alert(subtype === "redeem" ? "请选择到账账户" : "请选择资金来源账户");
+
+    if (!insuranceProductId) {
+      window.alert("请选择保单");
       return;
     }
-    if (subtype === "redeem" && !insuranceProductId) {
+    if (!cashAccountId) {
+      window.alert("请选择资金账户");
+      return;
+    }
+    if (!selectedInsuranceProduct) {
       window.alert("请选择保险产品");
       return;
     }
 
     const entryId = entry?.id || editEntryId || "";
     const isEdit = !!entryId;
-    const creatingNewInsuranceProduct = subtype === "buy" && !insuranceProductId;
 
     setSubmitting(true);
     try {
-      const product =
-        subtype === "buy" || insuranceProductId
-          ? await ensureInsuranceProduct()
-          : selectedInsuranceProduct;
-
-      if (!product?.id) {
-        throw new Error("保险产品未创建成功");
-      }
-
       const payload = {
         id: isEdit ? entryId : undefined,
         type: "investment",
@@ -809,12 +671,30 @@ export function InsuranceFormModal({
         amount: amountValue,
         note: memo,
         cashAccountId,
-        ownerGroupId: product.ownerGroupId || ownerGroupId,
-        accountId: product.accountId || undefined,
-        fundName: product.label,
-        insuranceProductId: product.id,
+        accountId: selectedInsuranceProduct.accountId || undefined,
+        fundName: selectedInsuranceProduct.label || undefined,
+        insuranceProductId: selectedInsuranceProduct.isMaster ? undefined : selectedInsuranceProduct.id,
+        insuranceProductMasterId: selectedInsuranceProduct.isMaster ? selectedInsuranceProduct.productMasterId : undefined,
+        policyholderPersonId: policyholderPersonId || undefined,
+        policyholderPersonName: selectedPolicyholderName || undefined,
+        insuredPersonId: insuredPersonId || undefined,
+        insuredPersonName:
+          familyMemberOptions.find((item) => item.id === insuredPersonId)?.label.trim() ||
+          undefined,
+        beneficiaryName:
+          familyMemberOptions.find((item) => item.id === beneficiaryPersonId)?.label.trim() ||
+          undefined,
+        startDate: productStartDate || undefined,
+        effectiveDate: productStartDate || undefined,
+        premiumMode: inferPremiumMode(parseOptionalNumber(premiumFrequencyMonths)),
+        premiumFrequencyMonths: parseOptionalNumber(premiumFrequencyMonths) ?? undefined,
+        premiumAmount: amountValue,
+        paymentTermYears: parseOptionalNumber(paymentTermYears),
+        coverageTermYears: parseOptionalNumber(coverageTermYears),
+        coverageAmount: parseOptionalNumber(coverageAmount),
+        cashValueEnabled: true,
         fundProductType: "wealth",
-        fundSubtype: subtype,
+        fundSubtype: "buy",
         source: "insurance",
       };
 
@@ -823,39 +703,9 @@ export function InsuranceFormModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string; data?: { id?: string } } | null;
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || (isEdit ? "保存失败" : "记账失败"));
-      }
-
-      if (!isEdit && creatingNewInsuranceProduct) {
-        const missingPremiumDates = buildMissingPremiumDates(
-          productStartDate || date,
-          date,
-          parseOptionalNumber(premiumFrequencyMonths),
-        );
-        if (missingPremiumDates.length > 0) {
-          if (missingPremiumDates.length > 120) {
-            window.alert(`从 ${missingPremiumDates[0]} 到 ${date} 共有 ${missingPremiumDates.length} 期历史投保记录，数量较多，请使用批量导入或分段补录。`);
-          } else if (window.confirm(`初次投保日早于本次记录至少一个缴费周期。是否按${premiumFrequencyMonths === "12" ? "每年" : `${premiumFrequencyMonths}个月`}补生成 ${missingPremiumDates.length} 条历史投保记录？\n\n范围：${missingPremiumDates[0]} 至 ${missingPremiumDates[missingPremiumDates.length - 1]}`)) {
-            for (const premiumDate of missingPremiumDates) {
-              const backfillResponse = await fetch("/api/v1/transactions/detail", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  ...payload,
-                  id: undefined,
-                  date: premiumDate,
-                  note: memo ? `${memo}（历史投保）` : "历史投保",
-                }),
-              });
-              const backfillData = (await backfillResponse.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
-              if (!backfillResponse.ok || !backfillData?.ok) {
-                throw new Error(backfillData?.error || `生成 ${premiumDate} 历史投保记录失败`);
-              }
-            }
-          }
-        }
       }
 
       if (isEdit) {
@@ -878,11 +728,11 @@ export function InsuranceFormModal({
 
   return createPortal(
     <>
-      <div className="fixed inset-0 z-[1000] flex items-stretch justify-center overflow-hidden bg-slate-950/28 p-2 backdrop-blur-[2px] sm:items-center sm:p-4">
-        <div className="modal-surface flex h-full w-full max-w-[min(42rem,calc(100vw-1rem))] flex-col overflow-hidden sm:h-auto sm:max-h-[calc(100dvh-2rem)]">
+      <div className="app-modal-backdrop z-[1000]">
+        <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
-              {isEditingRecord ? "编辑保险记录" : "新增保险记录"}
+              {isEditingRecord ? "编辑保单" : "新增保单"}
               <span className="ml-2 text-xs font-normal text-slate-500">保险</span>
             </div>
             <button
@@ -899,344 +749,330 @@ export function InsuranceFormModal({
 
           <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+              {/* 投保 / 退保 切换 */}
               <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setSubtype("buy")}
-                className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
-              >
-                投保
-              </button>
-              <button
-                type="button"
-                onClick={() => setSubtype("redeem")}
-                className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
-              >
-                赎回
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setSubtype("buy")}
+                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
+                >
+                  投保
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubtype("redeem")}
+                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
+                >
+                  退保
+                </button>
+              </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">日期</div>
-                <DateStepper value={date} onChange={setDate} />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">{isRedeem ? "赎回金额" : "保费金额"}</div>
-                <CalcInput
-                  value={amount}
-                  onChange={setAmount}
-                  placeholder="0.00"
-                  label={isRedeem ? "赎回" : "保费"}
-                  precision={2}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">投保人</div>
-                <SmartSelect
-                  mode="single"
-                  value={ownerGroupId}
-                  onChange={(id) => setOwnerGroupId(id)}
-                  options={ownerOptions}
-                  placeholder="选择投保人"
-                  behavior={{
-                    hierarchy: false,
-                    search: "auto",
-                    clearable: false,
-                    create: {
-                      type: "button",
-                      onClick: () => setNestedEntityType("owner"),
-                      label: "+",
-                    },
-                  }}
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">承保机构</div>
-                <SmartSelect
-                  mode="single"
-                  value={institutionId}
-                  onChange={(id) => {
-                    setInstitutionId(id);
-                    setLookupData(null);
-                    setLookupError("");
-                  }}
-                  options={institutionOptions}
-                  placeholder="先选择保险公司，再查询产品"
-                  behavior={{
-                    hierarchy: false,
-                    search: "auto",
-                    clearable: false,
-                    create: {
-                      type: "button",
-                      onClick: () => setNestedEntityType("institution"),
-                      label: "+",
-                    },
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">被保险人</div>
-                <SmartSelect
-                  mode="single"
-                  value={insuredUserId}
-                  onChange={setInsuredUserId}
-                  options={userOptions}
-                  placeholder="选择被保险人"
-                  behavior={{ hierarchy: false, search: "auto", clearable: false }}
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">受益人</div>
-                <input
-                  value={beneficiaryName}
-                  onChange={(event) => setBeneficiaryName(event.target.value)}
-                  placeholder="可选"
-                  className="form-input"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <div className="form-label">保险产品</div>
-                {insuranceProductId && subtype === "buy" ? (
-                  <button
-                    type="button"
-                    onClick={clearProductSelection}
-                    className="text-[11px] text-blue-600 hover:text-blue-700"
-                  >
-                    改为新产品
-                  </button>
-                ) : null}
-              </div>
-              <SmartSelect
-                mode="single"
-                value={insuranceProductId}
-                onChange={(id) => {
-                  setInsuranceProductId(id);
-                  setLastAppliedProductId("");
-                }}
-                options={filteredInsuranceProductOptions}
-                placeholder={isRedeem ? "选择保险产品" : "可先选择已有产品，也可直接填写下方信息"}
-                behavior={{ hierarchy: false, search: "auto", clearable: false }}
-              />
-              <div className="text-[11px] text-slate-400">
-                {isRedeem ? "赎回必须关联到一份已有保险产品。" : "不选也可以，保存时会自动创建保险产品和保险账户。"}
-              </div>
-            </div>
-
-            <div className="ml-3 border-l border-slate-200 pl-3">
-              <div className="rounded-lg bg-slate-50/70 p-3">
-                <div className="mb-2 text-[11px] text-slate-500">
-                  承保机构：{selectedInstitutionLabel || "请先选择承保机构"}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
+              {isRedeem ? (
+                /* ========== 退保模式 ========== */
+                <>
                   <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="form-label">保险名称</div>
-                      <button
-                        type="button"
-                        onClick={lookupProductInfo}
-                        disabled={lookupLoading || !productName.trim() || !institutionId}
-                        className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
-                      >
-                        {lookupLoading ? "查询中..." : "查询"}
-                      </button>
-                    </div>
-                    <input
-                      value={productName}
-                      onChange={(event) => {
-                        setProductName(event.target.value);
-                        setLookupError("");
-                        setLookupData(null);
-                        setSelectedLookupCandidate(null);
-                        setInsuranceProductId("");
+                    <div className="form-label">保单</div>
+                    <SmartSelect
+                      mode="single"
+                      value={insuranceProductId}
+                      onChange={(id) => {
+                        setInsuranceProductId(id);
                         setLastAppliedProductId("");
                       }}
-                      placeholder="例如：平安福满分"
-                      className="form-input bg-white"
+                      options={filteredInsuranceProductOptions}
+                      placeholder="选择已有保单"
+                      behavior={{ hierarchy: false, search: "auto", clearable: false }}
                     />
                   </div>
+
                   <div className="space-y-1">
-                    <div className="form-label">产品类型</div>
-                    <select
-                      value={productType}
-                      onChange={(event) => setProductType(event.target.value)}
-                      className="form-input bg-white"
-                      title="产品类型"
-                      aria-label="产品类型"
-                    >
-                      {PRODUCT_TYPE_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {lookupData?.candidates.length && lookupData.candidates.length > 1 ? (
-                  <div className="mt-2 grid grid-cols-[88px_1fr] items-center gap-2 text-xs">
-                    <div className="text-[11px] text-slate-500">查询候选</div>
-                    <select
-                      value=""
-                      onChange={(event) => {
-                        const candidate = lookupData.candidates[Number(event.target.value)];
-                        if (candidate) applyProductCandidate(candidate, lookupData.suggestion);
+                    <div className="form-label">资金退回账户</div>
+                    <SmartSelect
+                      mode="single"
+                      value={cashAccountId}
+                      onChange={setCashAccountId}
+                      options={cashFiltered ?? cashAccountList}
+                      placeholder="选择账户"
+                      behavior={{
+                        hierarchy: false,
+                        search: "auto",
+                        clearable: false,
+                        headerExtra: cashOwnerCycleButton,
+                        create: {
+                          type: "button",
+                          onClick: () => setNestedEntityType("cash-account"),
+                          label: "+",
+                        },
                       }}
-                      className="form-input h-8 bg-white text-xs"
-                      title="查询候选"
-                      aria-label="查询候选"
-                    >
-                      <option value="">选择一个匹配产品</option>
-                      {lookupData.candidates.map((item, index) => (
-                        <option key={`${item.termsNo ?? item.name}-${item.institutionName}`} value={index}>
-                          {item.name} · {item.institutionName || "未知保险公司"} · {item.productType ? productTypeLabel(item.productType) : "未识别类型"}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
-                ) : null}
-                {selectedLookupCandidate ? (
-                  <div className="mt-2 text-[11px] text-slate-500">
-                    已套用：{selectedLookupCandidate.institutionName || selectedInstitutionLabel || "未知保险公司"} · {selectedLookupCandidate.status || "状态未识别"}
-                    {selectedLookupCandidate.saleDate ? ` · ${selectedLookupCandidate.saleDate}` : ""}
-                    {selectedLookupCandidate.termsNo ? ` · 条款号 ${selectedLookupCandidate.termsNo}` : ""}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">退保日期</div>
+                      <DateStepper
+                        value={date}
+                        onChange={setDate}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">退保金额</div>
+                      <CalcInput
+                        value={amount}
+                        onChange={setAmount}
+                        placeholder="0.00"
+                        label="退保"
+                        precision={2}
+                      />
+                    </div>
                   </div>
-                ) : null}
-                {lookupError ? (
-                  <div className="mt-2 text-[11px] text-rose-600">{lookupError}</div>
-                ) : null}
-              </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <div className="space-y-1">
-                <div className="form-label">初次投保</div>
-                <input
-                  type="date"
-                  value={productStartDate}
-                  onChange={(event) => setProductStartDate(event.target.value)}
-                  className="form-input"
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">缴费频率</div>
-                <select
-                  value={premiumFrequencyMonths}
-                  onChange={(event) => setPremiumFrequencyMonths(event.target.value)}
-                  className="form-input"
-                  title="缴费频率"
-                  aria-label="缴费频率"
-                >
-                  {PREMIUM_FREQUENCY_OPTIONS.map((item) => (
-                    <option key={item.value} value={String(item.value)}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">缴费年限</div>
-                <input
-                  inputMode="decimal"
-                  value={paymentTermYears}
-                  onChange={(event) => setPaymentTermYears(event.target.value)}
-                  placeholder="例如：20"
-                  className="form-input"
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">保障年限</div>
-                <input
-                  inputMode="decimal"
-                  value={coverageTermYears}
-                  onChange={(event) => setCoverageTermYears(event.target.value)}
-                  placeholder="例如：30"
-                  className="form-input"
-                />
-              </div>
-            </div>
+                  <div className="space-y-1">
+                    <div className="form-label">备注</div>
+                    <input
+                      value={memo}
+                      onChange={(event) => setMemo(event.target.value)}
+                      placeholder="可选"
+                      className="form-input"
+                    />
+                  </div>
+                </>
+              ) : (
+                /* ========== 投保模式 ========== */
+                <>
+                  {/* 1. 投保人 + 2. 资金账户 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">投保人</div>
+                      <SmartSelect
+                        mode="single"
+                        value={policyholderPersonId}
+                        onChange={(id) => {
+                          setPolicyholderPersonId(id);
+                          setCashAccountId("");
+                        }}
+                        options={familyMemberOptions}
+                        placeholder="选择投保人"
+                        behavior={{
+                          hierarchy: false,
+                          search: "auto",
+                          clearable: false,
+                          create: {
+                            type: "button",
+                            onClick: () => setNestedEntityType("family-member"),
+                            label: "+",
+                          },
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">资金来源账户</div>
+                      <SmartSelect
+                        mode="single"
+                        value={cashAccountId}
+                        onChange={setCashAccountId}
+                        options={cashFiltered ?? cashListForPolicyholder}
+                        placeholder={policyholderPersonId ? "选择账户" : "先选择投保人"}
+                        behavior={{
+                          hierarchy: false,
+                          search: "auto",
+                          clearable: false,
+                          headerExtra: cashOwnerCycleButton,
+                          create: {
+                            type: "button",
+                            onClick: () => setNestedEntityType("cash-account"),
+                            label: "+",
+                          },
+                        }}
+                      />
+                    </div>
+                  </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">保额</div>
-                <CalcInput
-                  value={coverageAmount}
-                  onChange={setCoverageAmount}
-                  placeholder="0.00"
-                  label="保额"
-                  precision={2}
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">{isRedeem ? "到账账户" : "资金来源账户"}</div>
-                <SmartSelect
-                  mode="single"
-                  value={cashAccountId}
-                  onChange={setCashAccountId}
-                  options={cashFiltered ?? cashAccountList}
-                  placeholder="选择账户"
-                  behavior={{
-                    hierarchy: false,
-                    search: "auto",
-                    clearable: false,
-                    headerExtra: cashOwnerCycleButton,
-                    create: {
-                      type: "button",
-                      onClick: () => setNestedEntityType("cash-account"),
-                      label: "+",
-                    },
-                  }}
-                />
-              </div>
-            </div>
+                  {/* 3. 保险产品 */}
+                  <div className="space-y-1">
+                    <div className="form-label">保险产品</div>
+                    <SmartSelect
+                      mode="single"
+                      value={insuranceProductId}
+                      onChange={(id) => {
+                        setInsuranceProductId(id);
+                        setLastAppliedProductId("");
+                      }}
+                      options={filteredInsuranceProductOptions}
+                      placeholder="选择保险产品"
+                      behavior={{
+                        hierarchy: false,
+                        search: "auto",
+                        clearable: false,
+                        create: {
+                          type: "button",
+                          onClick: () => setShowNewProductModal(true),
+                          label: "+",
+                        },
+                      }}
+                    />
+                  </div>
 
-            <div className="space-y-1">
-              <div className="form-label">保险账户</div>
-              <div className="form-input flex h-9 items-center text-sm text-slate-600">
-                {insuranceAccountLabel || "保存时按投保人和承保机构自动生成"}
-              </div>
-              <div className="text-[11px] text-slate-400">
-                保险账户按“投保人 + 承保机构”自动归档，不需要你手动挑其他账户类型。
-              </div>
-            </div>
+                  {/* 4. 被保险人 + 5. 受益人 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">被保险人</div>
+                      <SmartSelect
+                        mode="single"
+                        value={insuredPersonId}
+                        onChange={setInsuredPersonId}
+                        options={familyMemberOptions}
+                        placeholder="选择被保险人"
+                        behavior={{
+                          hierarchy: false,
+                          search: "auto",
+                          clearable: true,
+                          create: {
+                            type: "button",
+                            onClick: () => setNestedEntityType("family-member"),
+                            label: "+",
+                          },
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">受益人</div>
+                      <SmartSelect
+                        mode="single"
+                        value={beneficiaryPersonId}
+                        onChange={setBeneficiaryPersonId}
+                        options={familyMemberOptions}
+                        placeholder="选择受益人"
+                        behavior={{
+                          hierarchy: false,
+                          search: "auto",
+                          clearable: true,
+                          create: {
+                            type: "button",
+                            onClick: () => setNestedEntityType("family-member"),
+                            label: "+",
+                          },
+                        }}
+                      />
+                    </div>
+                  </div>
 
-            <div className="space-y-1">
-              <div className="form-label">备注</div>
-              <input
-                value={memo}
-                onChange={(event) => setMemo(event.target.value)}
-                placeholder="可选"
-                className="form-input"
-              />
-            </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">交款方式</div>
+                      <select
+                        value={premiumFrequencyMonths}
+                        onChange={(event) => setPremiumFrequencyMonths(event.target.value)}
+                        className="form-input"
+                        title="交款方式"
+                        aria-label="交款方式"
+                      >
+                        {PAYMENT_MODE_OPTIONS.map((item) => (
+                          <option key={item.value} value={String(item.value)}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">缴费期限（年）</div>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={isAnnualPayment ? paymentTermYears : ""}
+                        onChange={(event) => setPaymentTermYears(event.target.value)}
+                        min={2}
+                        max={30}
+                        placeholder={isAnnualPayment ? "2-30" : "锁定"}
+                        disabled={isSinglePayment}
+                        className="form-input disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
 
+                  {/* 7. 初次购买日期 + 投保金额 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">初次购买日期</div>
+                      <input
+                        type="date"
+                        value={productStartDate}
+                        onChange={(event) => {
+                          setProductStartDate(event.target.value);
+                          setProductStartDateTouched(true);
+                          if (!productStartDateTouched) setDate(event.target.value);
+                        }}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">投保金额</div>
+                      <CalcInput
+                        value={amount}
+                        onChange={setAmount}
+                        placeholder="0.00"
+                        label="投保"
+                        precision={2}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">保额</div>
+                      <CalcInput
+                        value={coverageAmount}
+                        onChange={setCoverageAmount}
+                        placeholder="0.00"
+                        label="保额"
+                        precision={2}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">保障期限（年）</div>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={coverageTermYears}
+                        onChange={(event) => setCoverageTermYears(event.target.value)}
+                        min={1}
+                        max={30}
+                        placeholder="1-30"
+                        className="form-input"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 9. 备注 */}
+                  <div className="space-y-1">
+                    <div className="form-label">备注</div>
+                    <input
+                      value={memo}
+                      onChange={(event) => setMemo(event.target.value)}
+                      placeholder="可选"
+                      className="form-input"
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="shrink-0 border-t border-slate-100 bg-white/95 px-3 py-3 sm:px-4">
               <div className="flex justify-end gap-2">
-              <button
-                type="submit"
-                disabled={submitting}
-                className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
-              >
-                {submitting ? "保存中..." : isEditingRecord ? "保存修改" : isRedeem ? "记账（赎回）" : "记账（投保）"}
-              </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
+                >
+                  {submitting ? "保存中..." : isEditingRecord ? "保存修改" : isRedeem ? "记账（退保）" : "记账（投保）"}
+                </button>
               </div>
             </div>
           </form>
         </div>
       </div>
 
+      {/* Nested modals */}
       {nestedEntityType === "cash-account" && (
         <NestedAddModal
           mode="compact"
@@ -1256,38 +1092,203 @@ export function InsuranceFormModal({
         />
       )}
 
-      {nestedEntityType === "owner" && (
-        <NestedAddModal
-          mode="compact"
-          entityType="group"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: "投保人" };
-            setOwnerOptions((prev) => [...prev, option]);
-            setOwnerGroupId(id);
-            setNestedEntityType(null);
-          }}
-          nestedFieldData={nestedFieldData}
-        />
-      )}
-
-      {nestedEntityType === "institution" && (
+      {nestedEntityType === "family-member" && (
         <NestedAddModal
           mode="compact"
           entityType="institution"
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: "保险公司" };
-            setInstitutionOptions((prev) => [...prev, option]);
-            setInstitutionId(id);
+            const option = { id, label: name, subLabel: "家庭成员" };
+            setFamilyMemberOptions((prev) => [...prev, option]);
             setNestedEntityType(null);
           }}
-          extraFields={{ type: "insurance" }}
+          extraFields={{ type: "family_member" }}
           hiddenFields={["type"]}
           nestedFieldData={nestedFieldData}
         />
+      )}
+
+      {/* 新增保险产品母体弹窗 */}
+      {showNewProductModal && (
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/35 p-4">
+          <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-sm font-semibold text-slate-800">新增保险产品</div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewProductModal(false);
+                  setNewProductInstitutionId("");
+                  setNewProductName("");
+                  setNewProductLookupCandidates([]);
+                  setNewProductSelectedCandidate(-1);
+                  setNewProductLookupError("");
+                }}
+                className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">承保机构</div>
+                <select
+                  value={newProductInstitutionId}
+                  onChange={(event) => setNewProductInstitutionId(event.target.value)}
+                  className="form-input bg-white"
+                >
+                  <option value="">选择机构</option>
+                  {institutionOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}{item.subLabel && item.subLabel !== "保险公司" ? ` (${item.subLabel})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium text-slate-600">产品名称</div>
+                  <button
+                    type="button"
+                    onClick={handleNewProductLookup}
+                    disabled={newProductLookupLoading || !newProductName.trim() || !newProductInstitutionId}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
+                  >
+                    {newProductLookupLoading ? "查询中..." : "查询"}
+                  </button>
+                </div>
+                <input
+                  value={newProductName}
+                  onChange={(event) => {
+                    setNewProductName(event.target.value);
+                    setNewProductLookupError("");
+                    setNewProductLookupCandidates([]);
+                    setNewProductSelectedCandidate(-1);
+                  }}
+                  placeholder="例如：平安福满分"
+                  className="form-input bg-white"
+                />
+              </div>
+
+              {newProductLookupError && (
+                <div className="text-[11px] text-rose-600">{newProductLookupError}</div>
+              )}
+
+              {newProductLookupCandidates.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">
+                    查询结果 ({newProductLookupCandidates.length})
+                  </div>
+                  <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
+                    {newProductLookupCandidates.map((candidate, index) => (
+                      <label
+                        key={`${candidate.name}-${candidate.institutionName}-${index}`}
+                        className={`flex cursor-pointer items-start gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
+                          newProductSelectedCandidate === index ? "bg-blue-50" : ""
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="lookupCandidate"
+                          checked={newProductSelectedCandidate === index}
+                          onChange={() => setNewProductSelectedCandidate(index)}
+                          className="mt-0.5 accent-blue-600"
+                        />
+                        <div>
+                          <div className="text-slate-800">{candidate.name}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {candidate.institutionName}
+                            {candidate.productType ? ` · ${productTypeLabel(candidate.productType)}` : ""}
+                            {candidate.status ? ` · ${candidate.status}` : ""}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewProductModal(false);
+                    setNewProductInstitutionId("");
+                    setNewProductName("");
+                    setNewProductLookupCandidates([]);
+                    setNewProductSelectedCandidate(-1);
+                    setNewProductLookupError("");
+                  }}
+                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateProductMaster}
+                  disabled={newProductSaving || !newProductName.trim() || !newProductInstitutionId}
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {newProductSaving ? "保存中..." : "创建"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 确认弹窗：是否创建缴费计划并批量生成过往记录 */}
+      {showConfirmDialog && pendingPlanData && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 p-4">
+          <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-sm font-semibold text-slate-800">缴费计划确认</div>
+            </div>
+            <div className="space-y-4 p-4">
+              <div className="text-sm text-slate-600">
+                初次购买日期为 <span className="font-semibold text-slate-800">{productStartDate}</span>，
+                距今已超过一年。是否需要：
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={confirmCreatePlan}
+                  onChange={(e) => setConfirmCreatePlan(e.target.checked)}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                生成缴费计划（{pendingPlanData.totalRuns} 次，每年 {formatMoney(pendingPlanData.amount)}）
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={confirmBatchGenerate}
+                  onChange={(e) => setConfirmBatchGenerate(e.target.checked)}
+                  disabled={!confirmCreatePlan}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                批量生成过往续保记录（从 {pendingPlanData.planStartDate} 至今）
+              </label>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleCancelConfirm}
+                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  跳过
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmPlanAndBatch}
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
+                >
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </>,
     document.body,

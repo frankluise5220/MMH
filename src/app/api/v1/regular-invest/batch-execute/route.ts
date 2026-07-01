@@ -8,7 +8,9 @@ import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 
 function utcDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -84,6 +86,23 @@ export async function POST(req: NextRequest) {
         data: { status: RegularInvestStatus.completed },
       });
       return NextResponse.json({ ok: false, error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
+    }
+
+    const scheduledTask = decodeScheduledTaskMemo(plan.memo);
+    if (isNonFundScheduledTask(scheduledTask.type)) {
+      const result = await executeNonFundScheduledTaskPlan({
+        householdId,
+        plan,
+        task: scheduledTask,
+        now,
+      });
+      return NextResponse.json({
+        ok: true,
+        message: result.message,
+        executedCount: result.generatedCount,
+        completed: result.completed,
+        stats: result.stats,
+      });
     }
 
     const fundAcc = await prisma.account.findUnique({ where: { id: plan.accountId } });

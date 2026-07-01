@@ -761,12 +761,16 @@ export function SidebarClient({
                                   scroll={false}
                                   className={`${accountLinkCls(active)} ${group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : ""} ${index > 0 ? "border-t border-slate-100/90" : ""}`}
                                 >
-                                  <span className="min-w-0 flex-1 truncate pr-2">
+                                  <span className="min-w-0 flex-1 pr-2">
+                                    <span className="text-fade-right block min-w-0">
                                     {sidebarGroupBy === "institution"
-                                      ? `${KIND_INLINE_LABEL.get(it.kind) ?? "账户"}·${it.shortLabel || it.label}`
+                                      ? it.kind === "insurance"
+                                        ? (it.shortLabel || it.label)
+                                        : `${KIND_INLINE_LABEL.get(it.kind) ?? "账户"}·${it.shortLabel || it.label}`
                                       : it.label}
+                                    </span>
                                   </span>
-                                  <span className={`relative right-7 shrink-0 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatMoney(displayBalance(it))}</span>
+                                  <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatMoney(displayBalance(it))}</span>
                                 </Link>
                               );
                             })}

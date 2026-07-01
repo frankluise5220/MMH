@@ -1,7 +1,8 @@
 ﻿"use client";
 
 import { Pencil } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
@@ -47,15 +48,93 @@ export function BatchReplacePopoverButton<Field extends string>({
   onApply,
 }: Props<Field>) {
   const firstField = fields[0]?.value;
+  const triggerRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [field, setField] = useState<Field | undefined>(firstField);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
 
   const fieldConfig = useMemo(() => fields.find((item) => item.value === field) ?? fields[0], [field, fields]);
   const disabled = targetCount === 0 || fields.length === 0;
   const canApply = Boolean(fieldConfig) && !submitting && targetCount > 0 && (fieldConfig.allowEmpty || value.trim().length > 0);
+
+  useEffect(() => {
+    if (!open) {
+      setPanelStyle(null);
+      return;
+    }
+    if (typeof window === "undefined") return;
+
+    const viewportPadding = 12;
+    const panelGap = 8;
+    const boundaryPadding = 8;
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger || !panel) return;
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const boundary = trigger.closest("[data-batch-popover-boundary]");
+      const boundaryRect =
+        boundary instanceof HTMLElement ? boundary.getBoundingClientRect() : null;
+      const horizontalMin = Math.max(
+        viewportPadding,
+        (boundaryRect?.left ?? viewportPadding) + boundaryPadding,
+      );
+      const horizontalMax = Math.min(
+        window.innerWidth - viewportPadding,
+        (boundaryRect?.right ?? window.innerWidth - viewportPadding) - boundaryPadding,
+      );
+      const availableWidth = Math.max(240, horizontalMax - horizontalMin);
+      const nextWidth = Math.min(360, availableWidth);
+      const panelHeight = panel.offsetHeight || 220;
+      const leftBase = panelAlign === "right" ? triggerRect.right - nextWidth : triggerRect.left;
+      const left = Math.min(Math.max(leftBase, horizontalMin), horizontalMax - nextWidth);
+      const maxTop = window.innerHeight - viewportPadding - panelHeight;
+      const topBelow = triggerRect.bottom + panelGap;
+      const topAbove = triggerRect.top - panelHeight - panelGap;
+      const shouldPlaceAbove = topBelow > maxTop && topAbove >= viewportPadding;
+      const top = shouldPlaceAbove
+        ? Math.max(viewportPadding, topAbove)
+        : Math.max(viewportPadding, Math.min(topBelow, maxTop));
+
+      setPanelStyle({
+        position: "fixed",
+        top,
+        left,
+        width: nextWidth,
+        maxHeight: `min(24rem, calc(100vh - ${viewportPadding * 2}px))`,
+      });
+    };
+
+    const rafId = window.requestAnimationFrame(updatePosition);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, panelAlign]);
 
   async function applyReplace() {
     if (!fieldConfig || !canApply) return;
@@ -74,7 +153,7 @@ export function BatchReplacePopoverButton<Field extends string>({
   }
 
   return (
-    <div className="relative flex items-center gap-2">
+    <div ref={triggerRef} className="flex items-center gap-2">
       {message ? <span className={messageClassName}>{message}</span> : null}
       <button
         type="button"
@@ -86,57 +165,64 @@ export function BatchReplacePopoverButton<Field extends string>({
       >
         <Pencil className="h-4 w-4" />
       </button>
-      {open ? (
-        <div className={`absolute top-full z-30 mt-2 w-[360px] rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg ${panelAlign === "right" ? "right-0" : "left-0"}`}>
-          <div className="mb-2 flex items-center justify-between">
-            <span className="font-medium text-slate-700">修改{targetLabel} {targetCount} 条</span>
-            <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600">关闭</button>
-          </div>
-          {children ? <div className="mb-2 text-xs text-slate-500">{children}</div> : null}
-          <div className="grid grid-cols-[96px_1fr] gap-2">
-            <select
-              value={fieldConfig?.value ?? ""}
-              onChange={(event) => {
-                setField(event.target.value as Field);
-                setValue("");
-              }}
-              className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={panelRef}
+              style={panelStyle ?? { position: "fixed", top: -9999, left: -9999, width: 320 }}
+              className="z-[120] overflow-y-auto rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg"
             >
-              {fields.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            </select>
-            {fieldConfig?.kind === "select" ? (
-              <select value={value} onChange={(event) => setValue(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400">
-                {(fieldConfig.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            ) : fieldConfig?.kind === "smartSelect" ? (
-              <SmartSelect
-                mode="single"
-                value={value}
-                onChange={setValue}
-                options={(fieldConfig.options ?? []).map((option) => ({ id: option.value, label: option.label } satisfies SmartSelectOption))}
-                placeholder={fieldConfig.placeholder ?? "请选择"}
-                searchable
-              />
-            ) : fieldConfig?.kind === "number" ? (
-              <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? "输入数值"} precision={2} />
-            ) : (
-              <input
-                type={fieldConfig?.kind === "date" ? "date" : "text"}
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder={fieldConfig?.placeholder ?? "输入修改内容"}
-                className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
-              />
-            )}
-          </div>
-          <div className="mt-3 flex justify-end gap-2">
-            <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">取消</button>
-            <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
-              {submitting ? "修改中…" : "应用修改"}
-            </button>
-          </div>
-        </div>
-      ) : null}
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="font-medium text-slate-700">修改{targetLabel} {targetCount} 条</span>
+                <button type="button" onClick={() => setOpen(false)} className="shrink-0 text-slate-400 hover:text-slate-600">关闭</button>
+              </div>
+              {children ? <div className="mb-2 text-xs text-slate-500">{children}</div> : null}
+              <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2">
+                <select
+                  value={fieldConfig?.value ?? ""}
+                  onChange={(event) => {
+                    setField(event.target.value as Field);
+                    setValue("");
+                  }}
+                  className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
+                >
+                  {fields.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+                {fieldConfig?.kind === "select" ? (
+                  <select value={value} onChange={(event) => setValue(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400">
+                    {(fieldConfig.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                ) : fieldConfig?.kind === "smartSelect" ? (
+                  <SmartSelect
+                    mode="single"
+                    value={value}
+                    onChange={setValue}
+                    options={(fieldConfig.options ?? []).map((option) => ({ id: option.value, label: option.label } satisfies SmartSelectOption))}
+                    placeholder={fieldConfig.placeholder ?? "请选择"}
+                    searchable
+                  />
+                ) : fieldConfig?.kind === "number" ? (
+                  <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? "输入数值"} precision={2} />
+                ) : (
+                  <input
+                    type={fieldConfig?.kind === "date" ? "date" : "text"}
+                    value={value}
+                    onChange={(event) => setValue(event.target.value)}
+                    placeholder={fieldConfig?.placeholder ?? "输入修改内容"}
+                    className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
+                  />
+                )}
+              </div>
+              <div className="mt-3 flex justify-end gap-2">
+                <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">取消</button>
+                <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
+                  {submitting ? "修改中…" : "应用修改"}
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

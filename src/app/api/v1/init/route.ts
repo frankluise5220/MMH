@@ -22,7 +22,7 @@
  *     cashAccountId?: string;
  *     regularInvest?: {          // 定投计划（可选）
  *       amount: number;
- *       intervalUnit: string;    // day|week|biweek|month
+ *       intervalUnit: string;    // day|week|biweek|month|year
  *       intervalValue: number;
  *       cashAccountId: string;
  *       confirmDays?: number;
@@ -288,7 +288,7 @@ export async function POST(req: NextRequest) {
                 await setFundFeeRateByDateInTx(tx, investAcc.id, fundCode, Number(ri.feeRate), date, "buy");
               }
 
-              results.push(`${fundCode} 定投计划已创建: 每${ri.intervalUnit === "month" ? "月" : ri.intervalUnit === "week" ? "周" : ri.intervalUnit === "biweek" ? "双周" : "天"} ${ri.amount} 元`);
+              results.push(`${fundCode} 定投计划已创建: 每${ri.intervalUnit === "year" ? "年" : ri.intervalUnit === "month" ? "月" : ri.intervalUnit === "week" ? "周" : ri.intervalUnit === "biweek" ? "双周" : "天"} ${ri.amount} 元`);
             }
           }
         }

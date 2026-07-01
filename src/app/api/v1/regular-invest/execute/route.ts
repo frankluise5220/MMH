@@ -12,6 +12,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 
 export async function POST(req: NextRequest) {
   try {
@@ -62,6 +63,28 @@ export async function POST(req: NextRequest) {
         data: { status: RegularInvestStatus.completed },
       });
       return NextResponse.json({ ok: false, error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
+    }
+
+    const scheduledTask = decodeScheduledTaskMemo(plan.memo);
+    if (isNonFundScheduledTask(scheduledTask.type)) {
+      const parsedOverrideAmount = overrideAmount ? parseFloat(overrideAmount) : null;
+      const result = await executeNonFundScheduledTaskPlan({
+        householdId,
+        plan,
+        task: scheduledTask,
+        overrideDate: overrideDate ? new Date(overrideDate) : null,
+        overrideAmount: parsedOverrideAmount && Number.isFinite(parsedOverrideAmount) ? parsedOverrideAmount : null,
+        now,
+      });
+      return NextResponse.json({
+        ok: true,
+        message: result.message,
+        date: result.date,
+        executedCount: result.generatedCount,
+        executedRuns: result.executedRuns,
+        completed: result.completed,
+        stats: result.stats,
+      });
     }
 
     const fundAcc = await prisma.account.findUnique({ where: { id: plan.accountId } });
@@ -207,7 +230,7 @@ export async function POST(req: NextRequest) {
                 source: "insurance",
                 insuranceProductId: insuranceProduct.id,
                 regularInvestPlanId: planId,
-                note: "计划任务：保险缴费",
+                note: `计划任务：保险缴费：${insuranceProduct.name}`,
               },
             });
           }

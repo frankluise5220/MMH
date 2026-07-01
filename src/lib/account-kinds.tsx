@@ -1,15 +1,15 @@
 export function kindLabel(k: string): string {
   const map: Record<string, string> = {
-    bank_credit: "信用卡",
-    bank_debit: "借记卡",
-    ewallet: "电子钱包",
     cash: "现金",
+    bank_debit: "借记卡",
+    bank_credit: "信用卡",
+    ewallet: "电子钱包",
     deposit: "存款",
     investment: "投资",
     loan: "债务/债权",
+    insurance: "保险",
     other: "其他",
     bank_savings: "储蓄卡",
-    insurance: "保险",
   };
   return map[k] || k;
 }
@@ -52,6 +52,9 @@ export function kindIconName(k: string): string {
 
 export function institutionTypeLabel(t: string | null): string {
   const map: Record<string, string> = {
+    family_member: "家庭成员",
+    person: "往来人员",
+    organization: "往来机构",
     bank: "银行",
     insurance: "保险公司",
     brokerage: "证券",

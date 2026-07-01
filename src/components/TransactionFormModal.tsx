@@ -7,6 +7,8 @@ import { CalcInput } from "./CalcInput";
 import { NestedAddModal } from "./EntityCreateForm";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
+import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 
 /** Shared hook: owner-filter logic for account SS dropdowns */
 export function useAccountSSFilter(accountSSOptions?: SmartSelectOption[], controlledOwnerFilter?: string) {
@@ -146,6 +148,7 @@ export function TransactionFormModal({
   accountSSOptions,
   transferAccountSSOptions,
   nestedFieldData,
+  hideTrigger = false,
 }: {
   accounts: AccountOption[];
   transferAccounts: AccountOption[];
@@ -165,6 +168,7 @@ export function TransactionFormModal({
   transferAccountSSOptions?: SmartSelectOption[];
   /** Groups & institutions data for NestedAddModal compact account creation */
   nestedFieldData?: NestedFieldData;
+  hideTrigger?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
@@ -406,6 +410,7 @@ export function TransactionFormModal({
     () => mergeSmartSelectOptions(localAccountSSOpts, accountList),
     [localAccountSSOpts, accountList],
   );
+  const recentAccountIds = useRecentAccountIds();
   const displayTransferOptions = useMemo(() => {
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
     const filtered = source.filter((option) => !option.isHeader);
@@ -413,44 +418,15 @@ export function TransactionFormModal({
     if (transferVisibleOptionIds) {
       merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
     }
-    return merged;
-  }, [localTransferAccountSSOpts, transferAccountList, transferFiltered, transferVisibleOptionIds]);
-
-  // Apply owner filter on top of merged options (keeps locally added accounts)
-  // Recent account tracking — last used accounts float to top
-  const RECENT_ACCOUNTS_KEY = "mmh_recent_accounts";
-  const recentAccountIds = useMemo(() => {
-    try {
-      const raw = localStorage.getItem(RECENT_ACCOUNTS_KEY);
-      return raw ? (JSON.parse(raw) as string[]) : [];
-    } catch { return []; }
-  }, []);
-
-  const recordRecentAccount = useCallback((accId: string) => {
-    if (!accId) return;
-    try {
-      const raw = localStorage.getItem(RECENT_ACCOUNTS_KEY);
-      const list: string[] = raw ? JSON.parse(raw) : [];
-      const idx = list.indexOf(accId);
-      if (idx >= 0) list.splice(idx, 1);
-      list.unshift(accId);
-      localStorage.setItem(RECENT_ACCOUNTS_KEY, JSON.stringify(list.slice(0, 20)));
-    } catch {}
-  }, []);
+    return sortOptionsByRecent(merged, recentAccountIds);
+  }, [localTransferAccountSSOpts, transferAccountList, transferFiltered, transferVisibleOptionIds, recentAccountIds]);
 
   const displayAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(accountSSOptionsFiltered, accountList);
     if (accountVisibleOptionIds) {
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
-    // Sort: recently used first, preserving order within each "bucket"
-    const recentSet = new Set(recentAccountIds);
-    base = [...base].sort((a, b) => {
-      const aRecent = recentSet.has(a.id) ? 1 : 0;
-      const bRecent = recentSet.has(b.id) ? 1 : 0;
-      return bRecent - aRecent;
-    });
-    return base;
+    return sortOptionsByRecent(base, recentAccountIds);
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
 
   useEffect(() => {
@@ -486,6 +462,10 @@ export function TransactionFormModal({
     setEditEntryHasFundDetail(false);
     setFromAccountIdEdited(false);
   }
+  useCloseOnNavigation(open, () => {
+    setOpen(false);
+    resetDraft();
+  });
 
   function repeatDraft() {
     setAmount("");
@@ -752,95 +732,96 @@ export function TransactionFormModal({
 
   return (
     <>
-      <div ref={triggerWrapRef} className="relative inline-flex">
-        <div className="inline-flex h-8 items-stretch overflow-hidden rounded-full bg-blue-600 text-white shadow-sm ring-1 ring-blue-600/90">
-          <button
-            type="button"
-            onClick={() => {
-              setEntryMenuOpen(false);
-              setOpen(true);
-              setIsFromButton(true);
-              resetDraft();
-            }}
-            className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10"
-          >
-            <Plus className="w-4 h-4" />
-            记账
-          </button>
-          <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
-          <button
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={entryMenuOpen}
-            onClick={() => setEntryMenuOpen((prev) => !prev)}
-            className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
-            title="更多记账入口"
-          >
-            <ChevronDown className="w-4 h-4 opacity-90" />
-          </button>
-        </div>
-        {entryMenuOpen ? (
-          <div className="absolute right-0 top-9 z-20 min-w-[180px] overflow-hidden rounded-[12px] border border-slate-200 bg-white py-1 shadow-[0_12px_32px_rgba(15,23,42,0.16)]">
+      {!hideTrigger ? (
+        <div ref={triggerWrapRef} className="relative inline-flex">
+          <div className="inline-flex h-8 items-stretch overflow-hidden rounded-full bg-blue-600 text-white shadow-sm ring-1 ring-blue-600/90">
             <button
               type="button"
               onClick={() => {
                 setEntryMenuOpen(false);
-                window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
-                  detail: { requestId: `create-${Date.now()}`, item: { type: "investment" }, defaultAccountId, defaultCashAccountId: defaultAccountId ?? "" },
-                }));
+                setOpen(true);
+                setIsFromButton(true);
+                resetDraft();
               }}
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10"
             >
-              开放式基金 / 货币基金
+              <Plus className="w-4 h-4" />
+              记账
             </button>
+            <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
             <button
               type="button"
-              onClick={() => {
-                setEntryMenuOpen(false);
-                window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
-                  detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
-                }));
-              }}
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              aria-haspopup="menu"
+              aria-expanded={entryMenuOpen}
+              onClick={() => setEntryMenuOpen((prev) => !prev)}
+              className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
+              title="更多记账入口"
             >
-              银行理财
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEntryMenuOpen(false);
-                window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
-                  detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
-                }));
-              }}
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-            >
-              活期 / 定期存款
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEntryMenuOpen(false);
-      window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
-        detail: {
-          requestId: `create-${Date.now()}`,
-          defaultCashAccountId: defaultAccountId ?? "",
-          defaultOwnerGroupId: "",
-        },
-      }));
-              }}
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-            >
-              保险
+              <ChevronDown className="w-4 h-4 opacity-90" />
             </button>
           </div>
-        ) : null}
-      </div>
+          {entryMenuOpen ? (
+            <div className="absolute right-0 top-9 z-20 min-w-[180px] overflow-hidden rounded-[12px] border border-slate-200 bg-white py-1 shadow-[0_12px_32px_rgba(15,23,42,0.16)]">
+              <button
+                type="button"
+                onClick={() => {
+                  setEntryMenuOpen(false);
+                  window.dispatchEvent(new CustomEvent("mmh:investment:create", {
+                    detail: { requestId: `create-${Date.now()}`, defaultAccountId, defaultCashAccountId: defaultAccountId ?? "" },
+                  }));
+                }}
+                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                开放式基金 / 货币基金
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEntryMenuOpen(false);
+                  window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
+                    detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
+                  }));
+                }}
+                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                银行理财
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEntryMenuOpen(false);
+                  window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
+                    detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
+                  }));
+                }}
+                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                活期 / 定期存款
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEntryMenuOpen(false);
+                  window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
+                    detail: {
+                      requestId: `create-${Date.now()}`,
+                      defaultCashAccountId: defaultAccountId ?? "",
+                      defaultOwnerGroupId: "",
+                    },
+                  }));
+                }}
+                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                保险
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {open ? createPortal(
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
-          <div className="flex min-h-full items-center justify-center p-4 py-8">
-          <div className="modal-surface flex max-h-[90vh] w-full max-w-xl flex-col">
+        <div className="app-modal-backdrop z-50">
+          <div className="app-modal-panel max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
               <button
@@ -855,7 +836,7 @@ export function TransactionFormModal({
               </button>
             </div>
 
-            <form ref={formRef} className="p-4 space-y-4 overflow-y-auto" onSubmit={onSubmit}>
+            <form ref={formRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
               <div className="flex justify-center gap-2">
                 {isCreditCardAccount ? (
                   <>
@@ -941,8 +922,8 @@ export function TransactionFormModal({
                     onClick={() => {
                       setOpen(false);
                       resetDraft();
-                      window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
-                        detail: { requestId: `create-${Date.now()}`, item: { type: "investment", date, amount: Number(amount) || undefined }, defaultAccountId, defaultCashAccountId: accountId },
+                      window.dispatchEvent(new CustomEvent("mmh:investment:create", {
+                        detail: { requestId: `create-${Date.now()}`, defaultAccountId, defaultCashAccountId: accountId, defaultDate: date, defaultAmount: Number(amount) || undefined },
                       }));
                     }}
                     className="segment-button segment-button-active h-10 w-full"
@@ -1192,7 +1173,6 @@ export function TransactionFormModal({
                 </button>
               </div>
             </form>
-          </div>
           </div>
         </div>
       , document.body) : null}

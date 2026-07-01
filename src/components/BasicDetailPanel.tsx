@@ -109,57 +109,11 @@ export function BasicDetailPanel({
 
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
+  const selectionResetKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
 
   return (
-    <BasicDetailSelectionProvider>
+    <BasicDetailSelectionProvider resetKey={selectionResetKey}>
       <BasicDetailBatchDeleteMessage />
-      <div className="panel-header shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-semibold text-slate-800">资金明细</div>
-          <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
-            <Upload className="w-3 h-3" />导入
-          </Link>
-          <a href={normalExportHref} download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
-            <Download className="w-3 h-3" />导出
-          </a>
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-xs text-slate-600">共 {entries.length} 条{hasDetailFilters ? ` / 原 ${originalCount} 条` : ""}</span>
-          <span className="text-xs text-slate-400 mx-1">|</span>
-          <span className="text-xs text-slate-600">每页</span>
-          {PAGE_SIZE_OPTIONS.map((n) => {
-            const active = !detailAll && pageSize === n;
-            return (
-              <button
-                key={n}
-                type="button"
-                onClick={() => setPagedSize(n)}
-                className={`h-7 px-2 rounded border inline-flex items-center justify-center ${active ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
-              >
-                {n}
-              </button>
-            );
-          })}
-          <button type="button" onClick={showAll} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${detailAll ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`} title="当前账户全部记录不分页显示">
-            全部
-          </button>
-          <span className="text-xs text-slate-600">条</span>
-          <span className="text-slate-400">|</span>
-          <button type="button" onClick={() => goPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={detailAll ? "全部模式" : "第一页"}>
-            <ChevronsLeft className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" onClick={() => goPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={detailAll ? "全部模式" : "上一页"}>
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </button>
-          <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? "全部" : `${safePage}/${totalPages}`}</span>
-          <button type="button" onClick={() => goPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={detailAll ? "全部模式" : "下一页"}>
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" onClick={() => goPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={detailAll ? "全部模式" : "最后一页"}>
-            <ChevronsRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         <DetailViewClient
           accountId={accountId}
@@ -168,6 +122,53 @@ export function BasicDetailPanel({
           accountOptions={accountOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
+          toolbarMode="custom"
+          toolbarTitle="资金明细"
+          toolbarRightContent={
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-xs text-slate-600">共 {entries.length} 条{hasDetailFilters ? ` / 原 ${originalCount} 条` : ""}</span>
+              <span className="text-xs text-slate-400 mx-1">|</span>
+              <span className="text-xs text-slate-600">每页</span>
+              {PAGE_SIZE_OPTIONS.map((n) => {
+                const active = !detailAll && pageSize === n;
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setPagedSize(n)}
+                    className={`h-7 px-2 rounded border inline-flex items-center justify-center ${active ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
+                  >
+                    {n}
+                  </button>
+                );
+              })}
+              <button type="button" onClick={showAll} className={`h-7 px-2 rounded border inline-flex items-center justify-center ${detailAll ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`} title="当前账户全部记录不分页显示">
+                全部
+              </button>
+              <span className="text-xs text-slate-600">条</span>
+              <span className="text-slate-400">|</span>
+              <button type="button" onClick={() => goPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={detailAll ? "全部模式" : "第一页"}>
+                <ChevronsLeft className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => goPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={detailAll ? "全部模式" : "上一页"}>
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? "全部" : `${safePage}/${totalPages}`}</span>
+              <button type="button" onClick={() => goPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={detailAll ? "全部模式" : "下一页"}>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => goPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={detailAll ? "全部模式" : "最后一页"}>
+                <ChevronsRight className="h-3.5 w-3.5" />
+              </button>
+              <span className="text-slate-400">|</span>
+              <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
+                <Upload className="w-3 h-3" />导入
+              </Link>
+              <a href={normalExportHref} download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
+                <Download className="w-3 h-3" />导出
+              </a>
+            </div>
+          }
         />
       </div>
     </BasicDetailSelectionProvider>

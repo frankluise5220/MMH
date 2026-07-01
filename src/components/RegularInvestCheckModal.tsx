@@ -30,6 +30,7 @@ const INTERVAL_OPTIONS = [
   { value: "week", label: "每周" },
   { value: "biweek", label: "每两周" },
   { value: "month", label: "每月" },
+  { value: "year", label: "每年" },
 ];
 
 function formatDate(d: string | Date): string {

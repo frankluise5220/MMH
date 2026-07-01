@@ -21,11 +21,21 @@ export default function EditBillAmount({
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const displayAmount = currentAmount * displayMultiplier;
+  const [committedAmount, setCommittedAmount] = useState(currentAmount);
+  const [localHasOverride, setLocalHasOverride] = useState(hasOverride);
+  const displayAmount = committedAmount * displayMultiplier;
   const [val, setVal] = useState(String(displayAmount.toFixed(2)));
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setCommittedAmount(currentAmount);
+  }, [currentAmount]);
+
+  useEffect(() => {
+    setLocalHasOverride(hasOverride);
+  }, [hasOverride]);
 
   useEffect(() => {
     if (!editing) {
@@ -34,11 +44,44 @@ export default function EditBillAmount({
     }
   }, [displayAmount, editing]);
 
+  useEffect(() => {
+    function handleBillOverrideChanged(event: Event) {
+      const detail = (event as CustomEvent<{
+        accountId?: string;
+        statementMonth?: string;
+        amount?: number | null;
+        hasOverride?: boolean;
+      }>).detail;
+      if (!detail?.accountId || !detail?.statementMonth) return;
+      if (detail.accountId !== accountId || detail.statementMonth !== statementMonth) return;
+      if (typeof detail.amount === "number") setCommittedAmount(detail.amount);
+      if (typeof detail.hasOverride === "boolean") setLocalHasOverride(detail.hasOverride);
+    }
+
+    window.addEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
+    return () => window.removeEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
+  }, [accountId, statementMonth]);
+
   const cancelEdit = useCallback(() => {
     setVal(String(displayAmount.toFixed(2)));
     setErrMsg("");
     setEditing(false);
   }, [displayAmount]);
+
+  const parseDisplayInput = useCallback((raw: string) => {
+    const trimmed = raw.trim().replace(/,/g, "");
+    if (!trimmed) return null;
+    const explicitPositive = trimmed.startsWith("+");
+    const explicitNegative = trimmed.startsWith("-");
+    const numericPart = trimmed.replace(/^[+-]/, "");
+    if (!numericPart) return null;
+    const parsed = Number(numericPart);
+    if (!Number.isFinite(parsed)) return null;
+    const abs = Math.abs(parsed);
+    if (explicitPositive) return abs;
+    if (explicitNegative) return -abs;
+    return displayMultiplier === -1 ? -abs : abs;
+  }, [displayMultiplier]);
 
   const save = useCallback(async (amount: number) => {
     if (!accountId || !statementMonth) return;
@@ -52,10 +95,21 @@ export default function EditBillAmount({
       });
       const data = await res.json();
       if (data.ok) {
+        setCommittedAmount(amount);
+        setLocalHasOverride(true);
+        window.dispatchEvent(
+          new CustomEvent("mmh:bill-override:changed", {
+            detail: {
+              accountId,
+              statementMonth,
+              amount,
+              hasOverride: true,
+            },
+          }),
+        );
+        window.dispatchEvent(new Event("mmh:fund:refresh"));
         setEditing(false);
         setSaving(false);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        router.refresh();
         return;
       }
       setErrMsg(data.error || "保存失败");
@@ -63,28 +117,29 @@ export default function EditBillAmount({
       setErrMsg("网络错误");
     }
     setSaving(false);
-  }, [accountId, statementMonth, router]);
+  }, [accountId, statementMonth]);
 
   const reset = useCallback(async () => {
     if (!accountId || !statementMonth) return;
     setSaving(true);
     try {
       await fetch(`/api/v1/bill/override?accountId=${accountId}&statementMonth=${statementMonth}`, { method: "DELETE" });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      window.dispatchEvent(new Event("mmh:fund:refresh"));
       router.refresh();
     } catch {
       // ignore
     }
     setSaving(false);
-  }, [accountId, statementMonth, router]);
+  }, [accountId, router, statementMonth]);
 
   if (editing) {
     return (
       <div ref={wrapperRef} className="flex items-center gap-1">
         <input
-          type="number"
-          step="0.01"
-          className="h-6 w-20 rounded border border-blue-300 bg-white px-1.5 text-xs text-blue-700 outline-none text-right tabular-nums"
+          type="text"
+          inputMode="decimal"
+          className="h-6 w-20 rounded border border-blue-300 bg-white px-1.5 text-right text-xs tabular-nums text-blue-700 outline-none"
           value={val}
           onChange={(e) => setVal(e.target.value)}
           onBlur={(e) => {
@@ -94,8 +149,9 @@ export default function EditBillAmount({
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
-              const num = parseFloat(val);
-              if (Number.isFinite(num)) save(num / displayMultiplier);
+              e.preventDefault();
+              const displayValue = parseDisplayInput(val);
+              if (displayValue != null) save(displayValue / displayMultiplier);
             }
             if (e.key === "Escape") cancelEdit();
           }}
@@ -104,10 +160,10 @@ export default function EditBillAmount({
         />
         <button
           type="button"
-          className="h-5 w-5 rounded bg-emerald-500 text-white flex items-center justify-center hover:bg-emerald-600 shrink-0"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-500 text-white hover:bg-emerald-600"
           onClick={() => {
-            const num = parseFloat(val);
-            if (Number.isFinite(num)) save(num / displayMultiplier);
+            const displayValue = parseDisplayInput(val);
+            if (displayValue != null) save(displayValue / displayMultiplier);
           }}
           disabled={saving}
           title="确认锁定"
@@ -121,7 +177,7 @@ export default function EditBillAmount({
 
   return (
     <span
-      className="cursor-pointer hover:text-blue-600 tabular-nums inline-flex items-center gap-1"
+      className="inline-flex cursor-pointer items-center gap-1 tabular-nums hover:text-blue-600"
       onClick={() => {
         setVal(String(displayAmount.toFixed(2)));
         setErrMsg("");
@@ -130,14 +186,14 @@ export default function EditBillAmount({
       title="点击修改账单金额"
     >
       {formatMoney(displayAmount)}
-      {hasOverride ? (
+      {localHasOverride ? (
         <Unlock
           className="h-3.5 w-3.5 shrink-0 cursor-pointer text-orange-400 hover:text-orange-600"
           onClick={(e) => {
             e.stopPropagation();
             void reset();
           }}
-          aria-label="解锁，恢复自动计算"
+          aria-label="解锁并恢复自动计算"
         />
       ) : null}
     </span>

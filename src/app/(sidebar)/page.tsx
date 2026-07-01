@@ -20,6 +20,7 @@ import { InsuranceShell } from "@/components/InsuranceShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
+import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import { type DetailEntry } from "@/components/DetailViewClient";
 import { BasicDetailPanel } from "@/components/BasicDetailPanel";
 import { CreditBillSummaryTable, type CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
@@ -30,13 +31,14 @@ import EditBillAmount from "@/components/EditBillAmount";
 import Link from "next/link";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
+import { getFundArrivalDays, getFundConfirmDays, normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { getFundNav } from "@/lib/fund/navCache";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
+import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -46,6 +48,8 @@ import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-ut
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { calcInitialScheduledRunDate, calcNextScheduledRunDate, encodeYearlyExecutionDay, skipWeekend } from "@/lib/scheduled-task-date";
 import {
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
@@ -66,10 +70,42 @@ function formatType(type: string) {
   return type;
 }
 
+function parseDateOnlyUtc(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
 import { subtypeDisplay } from "@/lib/investment-config";
 import { LinkDateRangeFilter, LinkNumberRangeFilter, LinkTableColumnFilter } from "@/components/TableColumnFilter";
 
 type DetailFilterColumn = "date" | "flow" | "type" | "category" | "related" | "remark";
+
+function normalizeIntervalUnitValue(value: string): IntervalUnit {
+  if (value === "day" || value === "week" || value === "biweek" || value === "month" || value === "year") {
+    return value;
+  }
+  return IntervalUnit.month;
+}
+
+function parseExecutionDayValue(raw: string, intervalUnit: IntervalUnit): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (intervalUnit === "year") return encodeYearlyExecutionDay(trimmed);
+  const parsed = parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 const DETAIL_EMPTY_VALUE = "(空)";
 const DETAIL_FILTER_SEPARATOR = "\u001F";
@@ -1138,46 +1174,61 @@ async function createRegularInvest(formData: FormData) {
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent !== "createRegularInvest") return { ok: false as const, error: "intent 不匹配" };
 
+  const taskType = normalizeScheduledTaskType(formData.get("taskType"));
+  const isFundTask = taskType === "fund_regular_invest";
   const accountId = String(formData.get("accountId") ?? "").trim();
-  const fundCode = String(formData.get("fundCode") ?? "").trim();
-  const fundName = String(formData.get("fundName") ?? "").trim() || fundCode;
+  const fundCodeRaw = String(formData.get("fundCode") ?? "").trim();
+  const fundCode = isFundTask ? fundCodeRaw : taskType;
+  const fundName = String(formData.get("fundName") ?? "").trim() || (isFundTask ? fundCode : scheduledTaskTypeLabel(taskType));
+  const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || null;
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const intervalUnit = String(formData.get("intervalUnit") ?? "month").trim();
   const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
   const startDateStr = String(formData.get("startDate") ?? "").trim();
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
+  const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
   const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
   const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
 
-  if (!accountId || !fundCode || !amountRaw || !startDateStr) {
+  if (!accountId || !amountRaw || !startDateStr || (isFundTask && !fundCode)) {
     return { ok: false as const, error: "缺少必填字段" };
   }
   if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
     return { ok: false as const, error: "金额不正确" };
   }
+  if (!isFundTask && !cashAccountId) {
+    return { ok: false as const, error: "计划任务缺少资金账户" };
+  }
+  if (taskType === "insurance_premium" && !insuranceProductId) {
+    return { ok: false as const, error: "缴费计划缺少保险产品" };
+  }
 
-  const fundAcc = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!fundAcc) return { ok: false as const, error: "基金账户不存在" };
+  const targetAcc = await prisma.account.findUnique({ where: { id: accountId } });
+  if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
+  if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
 
   const cashAcc = cashAccountId
-    ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true } })
+    ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
     : null;
+  if (cashAcc && householdId && cashAcc.householdId !== householdId) return { ok: false as const, error: "资金账户不属于当前账簿" };
 
-  const startDate = new Date(startDateStr);
-  // 跳过周末
-  const dayOfWeek = startDate.getUTCDay();
-  if (dayOfWeek === 0) startDate.setUTCDate(startDate.getUTCDate() + 1);
-  else if (dayOfWeek === 6) startDate.setUTCDate(startDate.getUTCDate() + 2);
+  const parsedStartDate = parseDateOnlyUtc(startDateStr);
+  if (!parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
 
   const feeRate = feeRateRaw ? parseFloat(feeRateRaw) : null;
-  const confirmDays = confirmDaysRaw ? parseInt(confirmDaysRaw, 10) : null;
-  const arrivalDays = arrivalDaysRaw ? parseInt(arrivalDaysRaw, 10) : null;
+  const confirmDays = confirmDaysRaw ? normalizeNonNegativeDays(confirmDaysRaw, 0) : null;
+  const arrivalDays = arrivalDaysRaw ? normalizeNonNegativeDays(arrivalDaysRaw, 2) : null;
   const intervalValue = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : 1;
-  const endDate = endDateStr ? new Date(endDateStr) : null;
+  const intervalUnitValue = normalizeIntervalUnitValue(intervalUnit);
+  const executionDay = parseExecutionDayValue(executionDayRaw, intervalUnitValue);
+  const startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
+  const nextRunDate = calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
+  const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
+  if (endDateStr && !endDate) return { ok: false as const, error: "结束日期不正确" };
   const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
 
   try {
@@ -1185,34 +1236,43 @@ async function createRegularInvest(formData: FormData) {
       await tx.regularInvestPlan.create({
         data: {
           accountId,
-          accountName: fundAcc.name,
+          accountName: targetAcc.name,
           cashAccountId: cashAccountId || null,
           cashAccountName: cashAcc?.name || null,
           fundCode,
           fundName,
+          fundProductType: isFundTask ? (targetAcc.investProductType || null) : null,
           amount: amountRaw,
-          intervalUnit: intervalUnit as IntervalUnit,
+          intervalUnit: intervalUnitValue,
           intervalValue,
+          executionDay: executionDay != null && Number.isFinite(executionDay) ? executionDay : null,
           startDate,
-          nextRunDate: startDate,
+          nextRunDate,
           endDate: endDate && Number.isFinite(endDate.getTime()) ? endDate : null,
           totalRuns: totalRuns && Number.isFinite(totalRuns) && totalRuns > 0 ? totalRuns : null,
           status: RegularInvestStatus.active,
-          feeRate: feeRate != null && Number.isFinite(feeRate) ? feeRate : null,
-          confirmDays: confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : null,
-          arrivalDays: arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : null,
-          skipPendingPreceding,
+          feeRate: isFundTask && feeRate != null && Number.isFinite(feeRate) ? feeRate : isFundTask ? null : 0,
+          confirmDays: isFundTask ? confirmDays : 0,
+          arrivalDays: isFundTask ? arrivalDays : 0,
+          memo: encodeScheduledTaskMemo({
+            type: taskType,
+            title: fundName,
+            fromAccountId: cashAccountId || null,
+            toAccountId: accountId,
+            insuranceProductId,
+          }),
+          skipPendingPreceding: isFundTask ? skipPendingPreceding : false,
           ...{ householdId },
         },
       });
 
       // 同步更新确认天数和手续费率统一库（与 API Route 保持一致）
-      const newDays = confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : 1;
+      const newDays = confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : 0;
       const newRate = feeRate != null && Number.isFinite(feeRate) ? feeRate : 0;
-      if (accountId && fundCode) {
+      if (isFundTask && accountId && fundCode) {
         await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
         await setFundFeeRateByDateInTx(tx, accountId, fundCode, newRate, startDate, "buy");
-        const newArrivalDays = arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : 0;
+        const newArrivalDays = arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : 2;
         await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
       }
     });
@@ -1257,16 +1317,15 @@ async function regularInvestAction(formData: FormData) {
       if (plan.status !== RegularInvestStatus.paused) {
         return { ok: false as const, error: "只有暂停状态的计划才能恢复" };
       }
-      // 恢复时重新计算下次执行日期
+      const task = decodeScheduledTaskMemo(plan.memo);
+      const usesBusinessDays = task.type === "fund_regular_invest";
       const now = new Date();
       const nextRun = plan.lastRunDate
-        ? new Date(plan.lastRunDate.getTime() + (plan.intervalUnit === "day" ? plan.intervalValue * 86400000 : plan.intervalUnit === "week" ? plan.intervalValue * 7 * 86400000 : plan.intervalUnit === "biweek" ? plan.intervalValue * 14 * 86400000 : 30 * 86400000))
-        : plan.nextRunDate;
-      const actualNextRun = nextRun < now ? new Date(now.getTime() + (plan.intervalUnit === "day" ? plan.intervalValue * 86400000 : plan.intervalUnit === "week" ? plan.intervalValue * 7 * 86400000 : plan.intervalUnit === "biweek" ? plan.intervalValue * 14 * 86400000 : 30 * 86400000)) : nextRun;
-      // 跳过周末
-      const dow = actualNextRun.getUTCDay();
-      if (dow === 0) actualNextRun.setUTCDate(actualNextRun.getUTCDate() + 1);
-      else if (dow === 6) actualNextRun.setUTCDate(actualNextRun.getUTCDate() + 2);
+        ? calcNextScheduledRunDate(plan.lastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
+        : calcInitialScheduledRunDate(plan.startDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays);
+      const actualNextRun = nextRun < now
+        ? calcInitialScheduledRunDate(now, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
+        : nextRun;
 
       await prisma.regularInvestPlan.update({
         where: { id: planId },
@@ -1304,6 +1363,13 @@ async function updateRegularInvest(formData: FormData) {
   if (!plan) return { ok: false as const, error: "计划不存在" };
   if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
 
+  const existingTask = decodeScheduledTaskMemo(plan.memo);
+  const taskType = normalizeScheduledTaskType(formData.get("taskType") || existingTask.type);
+  const isFundTask = taskType === "fund_regular_invest";
+  const accountId = String(formData.get("accountId") ?? plan.accountId).trim();
+  const fundCodeRaw = String(formData.get("fundCode") ?? plan.fundCode).trim();
+  const fundCode = isFundTask ? fundCodeRaw : taskType;
+  const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || existingTask.insuranceProductId || null;
   const fundName = String(formData.get("fundName") ?? "").trim();
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const intervalUnit = String(formData.get("intervalUnit") ?? "").trim();
@@ -1311,19 +1377,65 @@ async function updateRegularInvest(formData: FormData) {
   const startDateStr = String(formData.get("startDate") ?? "").trim();
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
+  const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
+  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
+
+  if (!accountId || (isFundTask && !fundCode)) return { ok: false as const, error: "缺少必填字段" };
+  if (!isFundTask && !cashAccountId) return { ok: false as const, error: "计划任务缺少资金账户" };
+  if (taskType === "insurance_premium" && !insuranceProductId) return { ok: false as const, error: "缴费计划缺少保险产品" };
 
   const updateData: any = {};
-  if (fundName) updateData.fundName = fundName;
+  const displayName = fundName || (isFundTask ? plan.fundName || fundCode : scheduledTaskTypeLabel(taskType));
+  updateData.accountId = accountId;
+  updateData.fundCode = fundCode;
+  updateData.fundName = displayName;
+  updateData.memo = encodeScheduledTaskMemo({
+    type: taskType,
+    title: displayName,
+    fromAccountId: cashAccountId || null,
+    toAccountId: accountId,
+    insuranceProductId,
+  });
+  if (accountId !== plan.accountId || formData.has("accountId")) {
+    const targetAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true, householdId: true, investProductType: true } });
+    if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
+    if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
+    updateData.accountName = targetAcc.name;
+    updateData.fundProductType = isFundTask ? (targetAcc.investProductType || plan.fundProductType || null) : null;
+  } else if (!isFundTask) {
+    updateData.fundProductType = null;
+  }
   if (Number.isFinite(amountRaw) && amountRaw > 0) updateData.amount = amountRaw;
-  if (intervalUnit) updateData.intervalUnit = intervalUnit as IntervalUnit;
-  if (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0) updateData.intervalValue = intervalValueRaw;
-  if (startDateStr) updateData.startDate = new Date(startDateStr);
+  const effectiveIntervalUnit = normalizeIntervalUnitValue(intervalUnit || plan.intervalUnit);
+  const effectiveIntervalValue = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : plan.intervalValue;
+  const effectiveExecutionDay = executionDayRaw
+    ? parseExecutionDayValue(executionDayRaw, effectiveIntervalUnit)
+    : formData.has("executionDay")
+      ? null
+      : plan.executionDay;
+  if (intervalUnit) updateData.intervalUnit = effectiveIntervalUnit;
+  if (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0) updateData.intervalValue = effectiveIntervalValue;
+  const parsedStartDate = startDateStr ? parseDateOnlyUtc(startDateStr) : null;
+  if (startDateStr && !parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
+  const effectiveStartDate = parsedStartDate ?? plan.startDate;
+  if (parsedStartDate) updateData.startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
+  if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
+  if (startDateStr || intervalUnit || formData.has("intervalValue") || formData.has("executionDay") || formData.has("taskType")) {
+    updateData.nextRunDate = calcInitialScheduledRunDate(
+      effectiveStartDate,
+      effectiveIntervalUnit,
+      effectiveIntervalValue,
+      effectiveExecutionDay,
+      isFundTask,
+    );
+  }
   if (endDateStr) {
-    const endDate = new Date(endDateStr);
-    if (Number.isFinite(endDate.getTime())) updateData.endDate = endDate;
+    const endDate = parseDateOnlyUtc(endDateStr);
+    if (!endDate) return { ok: false as const, error: "结束日期不正确" };
+    updateData.endDate = endDate;
   } else if (formData.has("endDate")) {
     updateData.endDate = null;
   }
@@ -1336,31 +1448,38 @@ async function updateRegularInvest(formData: FormData) {
   if (cashAccountId != null) {
     updateData.cashAccountId = cashAccountId;
     if (cashAccountId) {
-      const cashAcc = await prisma.account.findUnique({ where: { id: cashAccountId }, select: { name: true } });
+      const cashAcc = await prisma.account.findUnique({ where: { id: cashAccountId }, select: { name: true, householdId: true } });
+      if (cashAcc && householdId && cashAcc.householdId !== householdId) return { ok: false as const, error: "资金账户不属于当前账簿" };
       updateData.cashAccountName = cashAcc?.name || null;
     } else {
       updateData.cashAccountName = null;
     }
   }
-  if (feeRateRaw) {
+  if (isFundTask && feeRateRaw) {
     const feeRate = parseFloat(feeRateRaw);
     if (Number.isFinite(feeRate)) updateData.feeRate = feeRate;
-  } else if (formData.has("feeRate")) {
+  } else if (isFundTask && formData.has("feeRate")) {
     updateData.feeRate = null;
   }
-  if (confirmDaysRaw) {
-    const confirmDays = parseInt(confirmDaysRaw, 10);
-    if (Number.isFinite(confirmDays)) updateData.confirmDays = confirmDays;
-  } else if (formData.has("confirmDays")) {
+  if (isFundTask && confirmDaysRaw) {
+    updateData.confirmDays = normalizeNonNegativeDays(confirmDaysRaw, 0);
+  } else if (isFundTask && formData.has("confirmDays")) {
     updateData.confirmDays = null;
   }
 
-  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
-  if (arrivalDaysRaw) {
-    const arrivalDays = parseInt(arrivalDaysRaw, 10);
-    if (Number.isFinite(arrivalDays)) updateData.arrivalDays = arrivalDays;
-  } else if (formData.has("arrivalDays")) {
+  if (isFundTask && arrivalDaysRaw) {
+    updateData.arrivalDays = normalizeNonNegativeDays(arrivalDaysRaw, 2);
+  } else if (isFundTask && formData.has("arrivalDays")) {
     updateData.arrivalDays = null;
+  }
+  if (!isFundTask) {
+    updateData.fundProductType = null;
+    updateData.confirmDays = 0;
+    updateData.arrivalDays = 0;
+    updateData.feeRate = 0;
+    updateData.skipPendingPreceding = false;
+  } else if (formData.has("skipPendingPreceding")) {
+    updateData.skipPendingPreceding = formData.get("skipPendingPreceding") !== "false";
   }
 
   try {
@@ -1369,11 +1488,11 @@ async function updateRegularInvest(formData: FormData) {
       data: updateData,
     });
 
-    if (updateData.arrivalDays != null) {
-      const updatedPlan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
-      if (updatedPlan?.accountId && updatedPlan?.fundCode) {
-        await setFundArrivalDays(updatedPlan.accountId, updatedPlan.fundCode, updateData.arrivalDays).catch(() => {});
-      }
+    if (isFundTask && updateData.confirmDays != null) {
+      await setFundConfirmDays(accountId, fundCode, updateData.confirmDays).catch(() => {});
+    }
+    if (isFundTask && updateData.arrivalDays != null) {
+      await setFundArrivalDays(accountId, fundCode, updateData.arrivalDays).catch(() => {});
     }
 
     // Client-side handles page refresh
@@ -1768,10 +1887,6 @@ export default async function Home({
                   : "";
   const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
-  const hideZeroBills = params?.hideZeroBills === "1";
-  const hideSettledBills = params?.hideSettledBills === "1";
-  const showRecentBillCycles = params?.billMonthsLimit !== "all";
-  const billMonthsLimit = showRecentBillCycles ? 10 : 9999;
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
   const billPage = Number.isFinite(billPageParam) && billPageParam >= 1 ? billPageParam : 1;
   const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 20;
@@ -1813,6 +1928,24 @@ export default async function Home({
     cookieStore.get("mmh_credit_card_label_template")?.value,
     creditCardLabelMode,
   );
+  const creditBillHideZeroPref = cookieStore.get("mmh_credit_hide_zero_bills")?.value;
+  const creditBillHideSettledPref = cookieStore.get("mmh_credit_hide_settled_bills")?.value;
+  const creditBillRecentCyclesPref = cookieStore.get("mmh_credit_recent_cycles")?.value;
+  const hideZeroBills =
+    typeof params?.hideZeroBills === "string"
+      ? params.hideZeroBills === "1"
+      : creditBillHideZeroPref === "1" || creditBillHideZeroPref === "true";
+  const hideSettledBills =
+    typeof params?.hideSettledBills === "string"
+      ? params.hideSettledBills === "1"
+      : creditBillHideSettledPref === "1" || creditBillHideSettledPref === "true";
+  const showRecentBillCycles =
+    typeof params?.billMonthsLimit === "string"
+      ? params.billMonthsLimit !== "all"
+      : creditBillRecentCyclesPref == null
+        ? true
+        : creditBillRecentCyclesPref === "1" || creditBillRecentCyclesPref === "true";
+  const billMonthsLimit = showRecentBillCycles ? 10 : 9999;
   const isRedUp = colorScheme === "red_up_green_down";
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
@@ -1891,7 +2024,7 @@ export default async function Home({
     view === "insurance" && selectedAccount
       ? await prisma.insuranceProduct.findMany({
           where: { ...hidFilter, accountId: selectedAccount.id },
-          include: { InsuredUser: true },
+          include: { OwnerGroup: true, InsuredUser: true, InsuredPerson: true, PolicyholderPerson: true },
           orderBy: [{ name: "asc" }],
         })
       : [];
@@ -1934,8 +2067,15 @@ export default async function Home({
   const getEntryDisplayNote = (e: (typeof entries)[number]) => {
     const fromNote = (e.note ?? "").trim();
     const receiverNote = (e.toNote ?? "").trim();
-    if (!accountId) return fromNote;
-    return e.toAccountId === accountId ? (receiverNote || fromNote) : fromNote;
+    const displayNote = !accountId
+      ? fromNote
+      : e.toAccountId === accountId ? (receiverNote || fromNote) : fromNote;
+    return getInsuranceDetailNote({
+      source: e.source,
+      fundName: e.fundName,
+      fundSubtype: e.fundSubtype,
+      note: displayNote,
+    });
   };
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
@@ -1943,7 +2083,7 @@ export default async function Home({
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
     if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
     if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
-    if (column === "category") return (e.categoryName ?? "").trim() || DETAIL_EMPTY_VALUE;
+    if (column === "category") return getInsuranceDetailCategoryName(e) || DETAIL_EMPTY_VALUE;
     if (column === "related") {
       const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
       return related.trim() || DETAIL_EMPTY_VALUE;
@@ -2458,6 +2598,7 @@ export default async function Home({
         orderBy: { statementMonth: "desc" },
       })
     : [];
+  const persistedCycleByMonth = new Map(persistedCyclesInitial.map((cycle) => [cycle.statementMonth, cycle]));
   const latestBillTxUpdatedAt = isBillAccount && selectedAccount && billScope
     ? await prisma.txRecord.findFirst({
         where: { AND: [billScope] },
@@ -2510,7 +2651,20 @@ export default async function Home({
     isBillAccount && selectedAccount?.billingDay
       ? await (async () => {
           const base = selectedBillMonth
-            ? cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow)
+            ? (() => {
+                const persisted = persistedCycleByMonth.get(selectedBillMonth);
+                if (persisted) {
+                  const today = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+                  return {
+                    start: persisted.periodStart,
+                    end: persisted.periodEnd,
+                    due: persisted.dueDate,
+                    today,
+                    isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
+                  };
+                }
+                return cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
+              })()
             : creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
           if (!base) return null;
 
@@ -2715,7 +2869,19 @@ export default async function Home({
       : isBillAccount && selectedAccount?.billingDay && billMonthsForCumulative.length
       ? await Promise.all(
           billMonthsForCumulative.map(async (m) => {
-            const base = cycleForStatementMonth(m, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
+            const persisted = persistedCycleByMonth.get(m);
+            const base = persisted
+              ? (() => {
+                  const today = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+                  return {
+                    start: persisted.periodStart,
+                    end: persisted.periodEnd,
+                    due: persisted.dueDate,
+                    today,
+                    isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
+                  };
+                })()
+              : cycleForStatementMonth(m, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
             if (!base) return null;
 
             const { start, end, due, today, isCurrentCycle } = base;
@@ -2948,6 +3114,9 @@ export default async function Home({
   const currentPage = Math.min(billPage, totalPages || 1);
   const creditBillSummaryRows: CreditBillSummaryRow[] = displayBillRows.map((s) => ({
     month: s.month,
+    periodStart: ymdUtc(s.start),
+    periodEnd: ymdUtc(s.end),
+    dueDate: s.due ? ymdUtc(s.due) : "",
     periodLabel: `${mdUtcDots(s.start)} ~ ${mdUtcDots(s.end)}`,
     dueLabel: s.due ? ymdUtc(s.due) : "-",
     expenseAbs: s.expenseAbs,
@@ -3223,7 +3392,7 @@ export default async function Home({
 
   const insuranceEntries =
     view === "insurance"
-      ? (pagedDetailEntries || [])
+      ? (allDetailEntries || [])
           .filter((entry) => entry.source === "insurance")
           .map((entry) => {
             const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
@@ -3235,18 +3404,23 @@ export default async function Home({
               typeLabel: isRedeemEntry ? "赎回" : "投保",
               productName: entry.fundName ?? "",
               cashAccountLabel,
+              cashAccountId: isRedeemEntry ? (entry.toAccountId ?? null) : (entry.accountId ?? null),
               note: entry.note ?? "",
               amount,
+              coverageAmount:
+                (entry as { coverageAmount?: number | null }).coverageAmount ?? null,
+              paymentTermYears:
+                (entry as { paymentTermYears?: number | null }).paymentTermYears ?? null,
               edit: {
                 type: "investment" as const,
                 date: entry.date,
                 amount: Math.abs(toNumber(entry.amount)),
                 note: entry.note ?? "",
-                accountId: entry.accountId ?? "",
+                accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
                 cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
                 insuranceProductId: (entry as { insuranceProductId?: string | null }).insuranceProductId ?? null,
                 fundName: entry.fundName ?? undefined,
-                fundProductType: "wealth",
+                fundProductType: entry.fundProductType ?? undefined,
                 fundSubtype: entry.fundSubtype ?? undefined,
                 source: "insurance",
               },
@@ -3270,8 +3444,12 @@ export default async function Home({
           return {
             id: product.id,
             label: product.name,
-            startDate: sortedEntries[0]?.date ?? null,
-            insuredUserName: product.InsuredUser?.name ?? "",
+            startDate: sortedEntries[0]?.date ?? product.startDate?.toISOString().slice(0, 10) ?? null,
+            ownerName: product.PolicyholderPerson?.name ?? product.OwnerGroup?.name ?? "",
+            policyholderPersonId: product.policyholderPersonId ?? null,
+            insuredPersonName: product.InsuredPerson?.name ?? product.InsuredUser?.name ?? "",
+            insuredPersonId: product.insuredPersonId ?? null,
+            beneficiaryName: product.beneficiaryName ?? null,
             displayTypeLabel: getInsuranceDisplayTypeLabel(metricMode),
             cashValueLabel: getInsuranceMetricLabel(metricMode),
             cashValue: metricMode === "coverage" ? null : balance,
@@ -3300,9 +3478,22 @@ export default async function Home({
                         : "-",
             paymentTermYears: product.paymentTermYears ? Number(product.paymentTermYears) : null,
             coverageTermYears: product.coverageTermYears ? Number(product.coverageTermYears) : null,
+            institutionId: product.institutionId ?? null,
+            institutionName: selectedAccount.Institution?.name ?? null,
+            ownerGroupId: product.ownerGroupId ?? null,
+            productType: product.productType ?? null,
+            accountingType: product.accountingType ?? null,
+            currency: product.currency ?? null,
+            accountId: product.accountId ?? null,
+            premiumMode: product.premiumMode ?? null,
+            premiumFrequencyMonths: product.premiumFrequencyMonths ?? null,
+            cashValueEnabled: product.cashValueEnabled ?? null,
+            effectiveDate: product.effectiveDate?.toISOString().slice(0, 10) ?? null,
+            maturityDate: product.maturityDate?.toISOString().slice(0, 10) ?? null,
+            note: product.note ?? null,
             relatedEntryIds: relatedEntries.map((entry) => entry.id),
           };
-        }).filter((holding) => holding.relatedEntryIds.length > 0)
+        })
       : [];
 
   const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
@@ -3502,69 +3693,49 @@ export default async function Home({
               )}
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {isDepositView && selectedAccount ? (
-              <>
-                <DepositCreateButton
-                  defaultCashAccountId={defaultCashAccountForSelectedInstitution}
-                  defaultDepositAccountId={defaultDepositAccountForSelectedInstitution}
-                  defaultSubtype="redeem"
-                />
-                <DepositFormModal
-                  mode="create"
-                  accountId={selectedAccount.id}
-                  cashAccounts={cashAccountList}
-                  investmentAccounts={investmentAccountOptions}
-                  cashAccountSSOptions={cashAccountSSOptions}
-                  investmentAccountSSOptions={investmentAccountSSOptions}
-                  redeemLotOptions={redeemLotOptions}
-                  allRedeemLotOptions={depositLots}
-                  nestedFieldData={nestedFieldData}
-                  createAction={createTransaction}
-                  editAction={editInvestment}
-                />
-              </>
-            ) : ((view === "investfund" || view === "investmoney") && selectedAccount) ? (
-              <InvestmentFormModal
-                mode="create"
-                accountId={selectedAccount.id}
-                accountProductType={selectedAccount.investProductType ?? null}
-                defaults={{
-                  fundCode: (view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode ?? undefined,
-                  fundName: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.name ?? undefined,
-                  fundUnits: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.units ?? undefined,
+              <UnifiedEntryLauncher
+                defaultAction={
+                  isDepositView
+                    ? "deposit-redeem"
+                    : (view === "investfund" || view === "investmoney")
+                      ? "investment"
+                      : view === "regularinvest"
+                        ? "regular-task"
+                        : view === "debt"
+                          ? "debt"
+                          : isInsuranceView
+                            ? "insurance"
+                            : isBillAccount
+                              ? "transfer"
+                              : "transaction"
+                }
+                context={{
+                  defaultAccountId: selectedAccount?.id ?? accountId ?? "",
+                  defaultCashAccountId: isDepositView ? defaultCashAccountForSelectedInstitution : (cashAccountList[0]?.id ?? accountId ?? ""),
+                  defaultTransferFromAccountId: isBillAccount ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "") : (selectedAccount?.id ?? accountId ?? ""),
+                  defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
+                  defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
+                  defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
+                  defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
+                  defaultScheduledTaskType:
+                    view === "regularinvest"
+                      ? "fund_regular_invest"
+                      : isInsuranceView
+                        ? "insurance_premium"
+                        : "fund_regular_invest",
                 }}
-                cashAccounts={cashAccountList}
-                investmentAccounts={investmentAccountOptions}
-                cashAccountSSOptions={cashAccountSSOptions}
-                investmentAccountSSOptions={investmentAccountSSOptions}
-                holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
-                allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
-                  date: toYmdOrNull(e.date) ?? "",
-                  fundConfirmDate: toYmdOrNull(e.fundConfirmDate),
-                  fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
-                  fundCode: e.fundCode ?? "",
-                  fundSubtype: e.fundSubtype ?? "",
-                  fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
-                  source: e.source ?? null,
-                })) ?? undefined}
-                createAction={createTransaction}
+                actions={[
+                  { key: "transaction", label: "收支记账" },
+                  { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
+                  { key: "investment", label: "开放式基金 / 货币基金" },
+                  { key: "wealth", label: "银行理财" },
+                  { key: "deposit-buy", label: "存款存入" },
+                  { key: "deposit-redeem", label: "存款取出", disabled: redeemLotOptions.length === 0 && !isDepositView },
+                  { key: "insurance", label: "保险" },
+                  { key: "debt", label: "借还款", disabled: (selectedDebtRow?.accountIds?.length ?? 0) === 0 && view === "debt" },
+                  { key: "regular-task", label: "计划任务" },
+                ]}
               />
-            ) : view === "regularinvest" && selectedAccount ? (
-              <RegularInvestForm accountId={selectedAccount.id} accountLabel={selectedAccountLabel} cashAccounts={cashAccountList} cashAccountSSOptions={cashAccountSSOptions} investmentAccountSSOptions={investmentAccountSSOptions} nestedFieldData={nestedFieldData} action={regularInvestFormAction} showTriggerButton={false} />
-            ) : view === "debt" ? (
-              <DebtTransactionModal
-                debtAccounts={(selectedDebtRow?.accountIds ?? []).map((id) => ({
-                  id,
-                  label: debtAccountLabelById.get(id) ?? id,
-                  subLabel: "借入/借出",
-                }))}
-                cashAccounts={cashAccountList}
-                cashAccountSSOptions={cashAccountSSOptions}
-                defaultDebtAccountId={selectedDebtRow?.accountIds?.[0] ?? ""}
-                defaultCashAccountId={cashAccountList[0]?.id ?? ""}
-                action={createDebtTransaction}
-              />
-            ) : (
               <>
               <TransactionFormModal
                 accounts={spendingAccountOptions} transferAccounts={accountOptions}
@@ -3576,7 +3747,36 @@ export default async function Home({
                 lastRepayToAccountId={lastRepayToAccountId} lastRepayFromAccountId={lastRepayFromAccountId}
                 isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}
                 allTags={tags.map(t => ({ id: t.id, name: t.name, color: t.color }))}
+                hideTrigger
               />
+              {((view === "investfund" || view === "investmoney") && selectedAccount) ? (
+                <InvestmentFormModal
+                  mode="create"
+                  hideTrigger
+                  accountId={selectedAccount.id}
+                  accountProductType={selectedAccount.investProductType ?? null}
+                  defaults={{
+                    fundCode: (view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode ?? undefined,
+                    fundName: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.name ?? undefined,
+                    fundUnits: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.units ?? undefined,
+                  }}
+                  cashAccounts={cashAccountList}
+                  investmentAccounts={investmentAccountOptions}
+                  cashAccountSSOptions={cashAccountSSOptions}
+                  investmentAccountSSOptions={investmentAccountSSOptions}
+                  holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
+                  allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
+                    date: toYmdOrNull(e.date) ?? "",
+                    fundConfirmDate: toYmdOrNull(e.fundConfirmDate),
+                    fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
+                    fundCode: e.fundCode ?? "",
+                    fundSubtype: e.fundSubtype ?? "",
+                    fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
+                    source: e.source ?? null,
+                  })) ?? undefined}
+                  createAction={createTransaction}
+                />
+              ) : null}
               <InvestmentFormModal
                 mode="edit"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
@@ -3589,12 +3789,36 @@ export default async function Home({
                 editAction={editInvestment}
               />
               <WealthFormModal
+                mode="create"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={cashAccountList}
+                investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                nestedFieldData={nestedFieldData}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
+              <WealthFormModal
                 mode="edit"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
+                nestedFieldData={nestedFieldData}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
+              <DepositFormModal
+                mode="create"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={cashAccountList}
+                investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                redeemLotOptions={redeemLotOptions}
+                allRedeemLotOptions={depositLots}
                 nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
@@ -3617,11 +3841,36 @@ export default async function Home({
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 cashAccounts={cashAccountList}
                 cashAccountSSOptions={cashAccountSSOptions}
-                insuranceAccountSSOptions={investmentAccountSSOptions}
                 nestedFieldData={nestedFieldData}
               />
+              <RegularInvestForm
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                accountLabel={selectedAccountLabel}
+                cashAccounts={cashAccountList}
+                investmentAccounts={investmentAccountOptions.map((item) => ({ id: item.id, name: item.label, label: item.label }))}
+                transferTargetAccounts={accountOptions}
+                insuranceProductOptions={[]}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                transferTargetAccountSSOptions={allAccountSSOptions}
+                nestedFieldData={nestedFieldData}
+                action={regularInvestFormAction}
+                showTriggerButton={false}
+              />
+              <DebtTransactionModal
+                debtAccounts={(selectedDebtRow?.accountIds ?? []).map((id) => ({
+                  id,
+                  label: debtAccountLabelById.get(id) ?? id,
+                  subLabel: "借入/借出",
+                }))}
+                cashAccounts={cashAccountList}
+                cashAccountSSOptions={cashAccountSSOptions}
+                defaultDebtAccountId={selectedDebtRow?.accountIds?.[0] ?? ""}
+                defaultCashAccountId={cashAccountList[0]?.id ?? ""}
+                action={createDebtTransaction}
+                showTriggerButton={false}
+              />
               </>
-            )}
             </div>
           </div>
         </header>
@@ -3843,10 +4092,20 @@ export default async function Home({
             />
           ) : view === "insurance" && selectedAccount ? (
             <InsuranceShell
+              accountId={selectedAccount.id}
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount.Institution?.name ?? ""}
               holdings={insuranceHoldings}
               entries={insuranceEntries}
+              cashAccounts={cashAccountList}
+              cashAccountSSOptions={cashAccountSSOptions}
+              familyMemberOptions={institutions
+                .filter((item) => item.type === "family_member")
+                .map((item) => ({
+                  id: item.id,
+                  label: item.name,
+                  subLabel: "家庭成员",
+                }))}
             />
           ) : view === "investmoney" && investmoneyData ? (
             <FundShell

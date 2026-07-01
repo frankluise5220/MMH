@@ -121,10 +121,10 @@ export function buildFundSystemPrompt(ctx: FundContext) {
 
 ## B. 批量操作 (operation: "batch")
 用户想按某个频率重复买入。输出:
-{"operation":"batch","plan":{"amount":数字,"intervalUnit":"day|week|biweek|month","intervalValue":数字,"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD 或 null"}}
+{"operation":"batch","plan":{"amount":数字,"intervalUnit":"day|week|biweek|month|year","intervalValue":数字,"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD 或 null"}}
 
 - amount: 每期买入金额(必填)
-- intervalUnit: day=每天, week=每周, biweek=每两周, month=每月
+- intervalUnit: day=每天, week=每周, biweek=每两周, month=每月, year=每年
 - intervalValue: 间隔数量(默认1)
 - startDate: 如果提到"N月份"则取该月1日，否则取今天
 - endDate: 如果提到"N月份"则取该月最后一天。无截止则 null
@@ -136,7 +136,7 @@ export function buildFundSystemPrompt(ctx: FundContext) {
 "5月1日到6月1日每两天投100" → {"operation":"batch","plan":{"amount":100,"intervalUnit":"day","intervalValue":2,"startDate":"2026-05-01","endDate":"2026-06-01"}}
 
 ## 判断规则
-- 有"每天""每周""每月""一天一""两天一""定投"等频率词 → batch
+- 有"每天""每周""每月""每年""一年一""一天一""两天一""定投"等频率词 → batch
 - 无频率词 → single
 - 只输出 JSON，不要任何解释文字，不要 markdown`;
 }

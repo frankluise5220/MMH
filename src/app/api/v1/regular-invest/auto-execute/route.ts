@@ -12,6 +12,7 @@ import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCac
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 
 export async function POST() {
   try {
@@ -49,8 +50,8 @@ export async function POST() {
       return NextResponse.json({ ok: true, message: `已完成 ${completed.length} 条到期的计划`, executedCount: 0, skippedCount: 0, completedCount: completed.length, details: [] });
     }
 
-    const generalPlans = plansToRun.filter((plan) => decodeScheduledTaskMemo(plan.memo).type !== "fund_regular_invest");
-    const fundPlans = plansToRun.filter((plan) => decodeScheduledTaskMemo(plan.memo).type === "fund_regular_invest");
+    const generalPlans = plansToRun.filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type));
+    const fundPlans = plansToRun.filter((plan) => !isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type));
 
     const generalExecuted: string[] = [];
     const generalSkipped: string[] = [];
@@ -59,135 +60,25 @@ export async function POST() {
 
     for (const plan of generalPlans) {
       const task = decodeScheduledTaskMemo(plan.memo);
-      const firstDueDate = calcInitialRunDate(
-        plan.nextRunDate,
-        plan.intervalUnit as IntervalUnit,
-        plan.intervalValue,
-        plan.executionDay,
-        false,
-      );
-      if (firstDueDate > today) {
-        generalSkipped.push(plan.id);
-        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "未到执行日" });
-        continue;
-      }
-      const targetAcc = await prisma.account.findUnique({ where: { id: plan.accountId } });
-      const cashAcc = plan.cashAccountId
-        ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
-        : null;
-      const amountNum = Number(plan.amount);
-      if (!targetAcc || !cashAcc || !Number.isFinite(amountNum) || amountNum <= 0) {
-        generalSkipped.push(plan.id);
-        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "计划账户或金额不完整" });
-        continue;
-      }
-
-      const sourceFilter = task.type === "insurance_premium" ? ["insurance"] : ["scheduled_task"];
-      const existingTxRecords = await prisma.txRecord.findMany({
-        where: {
+      try {
+        const result = await executeNonFundScheduledTaskPlan({
           householdId,
-          regularInvestPlanId: plan.id,
-          source: { in: sourceFilter },
-          deletedAt: null,
-        },
-        select: { date: true },
-      });
-      const existingDates = new Set(existingTxRecords.map((record) => formatDateUtc(record.date)));
-      const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
-      const remainingRuns = plan.totalRuns ? Math.max(0, plan.totalRuns - plan.executedRuns) : Number.POSITIVE_INFINITY;
-      const datesToProcess: Date[] = [];
-      let currentDate = firstDueDate;
-      let guard = 0;
-      while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
-        const dateStr = formatDateUtc(currentDate);
-        if (!existingDates.has(dateStr)) datesToProcess.push(currentDate);
-        currentDate = calcNextRunDate(currentDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, false);
-        guard++;
-        if (guard > 1200) throw new Error("计划周期异常，已停止生成以避免无限循环");
-      }
-
-      if (datesToProcess.length === 0) {
-        generalSkipped.push(plan.id);
-        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "到期记录已存在" });
-        continue;
-      }
-
-      const insuranceProduct = task.type === "insurance_premium"
-        ? await prisma.insuranceProduct.findFirst({
-            where: { id: task.insuranceProductId || "", householdId },
-          })
-        : null;
-      if (task.type === "insurance_premium" && !insuranceProduct) {
-        generalSkipped.push(plan.id);
-        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "保险产品不存在" });
-        continue;
-      }
-
-      const finalLastRunDate = datesToProcess[datesToProcess.length - 1]!;
-      const nextRun = calcNextRunDate(finalLastRunDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, false);
-      const newExecutedRuns = plan.executedRuns + datesToProcess.length;
-      const willComplete = !!(
-        (plan.totalRuns && newExecutedRuns >= plan.totalRuns) ||
-        (plan.endDate && plan.endDate < nextRun)
-      );
-
-      await prisma.$transaction(async (tx) => {
-        for (const runDate of datesToProcess) {
-          if (task.type === "transfer" || task.type === "loan_repayment") {
-            await tx.txRecord.create({
-              data: {
-                householdId,
-                type: TransactionType.transfer,
-                date: runDate,
-                accountId: cashAcc.id,
-                accountName: cashAcc.name,
-                toAccountId: targetAcc.id,
-                toAccountName: targetAcc.name,
-                amount: -amountNum,
-                source: "scheduled_task",
-                regularInvestPlanId: plan.id,
-                note: task.type === "loan_repayment" ? "计划任务：还贷款" : "计划任务：转账",
-              },
-            });
-          } else if (task.type === "insurance_premium" && insuranceProduct) {
-            await tx.txRecord.create({
-              data: {
-                householdId,
-                type: TransactionType.investment,
-                date: runDate,
-                accountId: cashAcc.id,
-                accountName: cashAcc.name,
-                toAccountId: insuranceProduct.accountId,
-                toAccountName: targetAcc.name,
-                amount: -amountNum,
-                fundName: insuranceProduct.name,
-                fundProductType: "wealth",
-                fundSubtype: "buy",
-                source: "insurance",
-                insuranceProductId: insuranceProduct.id,
-                regularInvestPlanId: plan.id,
-                note: "计划任务：保险缴费",
-              },
-            });
-          }
-        }
-
-        await tx.regularInvestPlan.update({
-          where: { id: plan.id },
-          data: {
-            lastRunDate: finalLastRunDate,
-            nextRunDate: nextRun,
-            executedRuns: newExecutedRuns,
-            status: willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active,
-          },
+          plan,
+          task,
+          now,
         });
-      });
-
-      await recalcAndSaveAccountBalance(cashAcc.id).catch(logger.catchLog("balance", "auto-execute"));
-      await recalcAndSaveAccountBalance(targetAcc.id).catch(logger.catchLog("balance", "auto-execute"));
-      generalExecuted.push(plan.id);
-      generalGeneratedCount += datesToProcess.length;
-      generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "executed", reason: `生成 ${datesToProcess.length} 条` });
+        if (result.generatedCount > 0) {
+          generalExecuted.push(plan.id);
+          generalGeneratedCount += result.generatedCount;
+          generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "executed", reason: `生成 ${result.generatedCount} 条` });
+        } else {
+          generalSkipped.push(plan.id);
+          generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: result.message });
+        }
+      } catch (e) {
+        generalSkipped.push(plan.id);
+        generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: e instanceof Error ? e.message : "执行失败" });
+      }
     }
 
     if (fundPlans.length === 0) {

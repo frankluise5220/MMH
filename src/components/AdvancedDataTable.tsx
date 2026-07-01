@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { SlidersHorizontal } from "lucide-react";
-import { TableColumnFilter } from "./TableColumnFilter";
+import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
 
 export type AdvancedDataTableColumn<T> = {
   key: string;
@@ -23,6 +23,7 @@ export type AdvancedDataTableColumn<T> = {
   className?: string;
   headerClassName?: string;
   filterText?: (row: T) => string;
+  filterKind?: "multi" | "dateRange";
   render: (row: T, index: number) => ReactNode;
 };
 
@@ -30,6 +31,13 @@ export type AdvancedDataTableBatchAction = {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+};
+
+export type AdvancedDataTableSummaryRow = {
+  cells: Readonly<Record<string, ReactNode | undefined>>;
+  selectCell?: ReactNode;
+  rowClassName?: string;
+  cellClassName?: string;
 };
 
 export type AdvancedDataTableProps<T> = {
@@ -41,6 +49,7 @@ export type AdvancedDataTableProps<T> = {
   minTableWidth?: number;
   rowClassName?: (row: T, index: number) => string;
   onRowClick?: (row: T, index: number) => void;
+  onRowDoubleClick?: (row: T, index: number) => void;
   selectable?: boolean;
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
@@ -49,6 +58,12 @@ export type AdvancedDataTableProps<T> = {
   showFilters?: boolean;
   fillHeight?: boolean;
   compactRows?: boolean;
+  toolbarMode?: "default" | "custom" | "none";
+  toolbarLeftContent?: ReactNode;
+  toolbarRightContent?: ReactNode;
+  showColumnVisibilityButton?: boolean;
+  columnVisibilityTriggerId?: string;
+  summaryRow?: AdvancedDataTableSummaryRow;
 };
 
 function alignClass(align?: "left" | "center" | "right") {
@@ -93,6 +108,7 @@ export function AdvancedDataTable<T>({
   minTableWidth,
   rowClassName,
   onRowClick,
+  onRowDoubleClick,
   selectable = false,
   selectedKeys,
   onSelectionChange,
@@ -101,6 +117,12 @@ export function AdvancedDataTable<T>({
   showFilters = true,
   fillHeight = false,
   compactRows = false,
+  toolbarMode = "default",
+  toolbarLeftContent,
+  toolbarRightContent,
+  showColumnVisibilityButton = true,
+  columnVisibilityTriggerId,
+  summaryRow,
 }: AdvancedDataTableProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const columnMenuRef = useRef<HTMLDivElement>(null);
@@ -151,6 +173,13 @@ export function AdvancedDataTable<T>({
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!columnVisibilityTriggerId) return;
+    const onTrigger = () => setMenuOpen(true);
+    window.addEventListener(columnVisibilityTriggerId, onTrigger);
+    return () => window.removeEventListener(columnVisibilityTriggerId, onTrigger);
+  }, [columnVisibilityTriggerId]);
+
   const visibleColumns = useMemo(
     () => columns.filter((column) => !hiddenKeys.has(column.key)),
     [columns, hiddenKeys],
@@ -173,6 +202,12 @@ export function AdvancedDataTable<T>({
       const column = columns.find((item) => item.key === key);
       if (!column?.filterText) return true;
       const value = column.filterText(row).trim() || "-";
+      if (column.filterKind === "dateRange") {
+        const [from = "", to = ""] = values ?? [];
+        if (from && value < from) return false;
+        if (to && value > to) return false;
+        return true;
+      }
       return values?.includes(value);
     }));
   }, [columns, filters, rows, showFilters]);
@@ -259,53 +294,84 @@ export function AdvancedDataTable<T>({
   const headerPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const cellPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const selectPaddingClass = compactRows ? "px-2 py-1.5" : "px-2 py-2";
+  const showToolbar =
+    toolbarMode !== "none" &&
+    (
+      toolbarMode === "default" ||
+      !!toolbarLeftContent ||
+      !!toolbarRightContent ||
+      showColumnVisibilityButton
+    );
 
   return (
     <div className={fillHeight ? "flex h-full min-h-0 flex-col" : "min-h-0"}>
-      <div className="flex shrink-0 items-center justify-between border-b border-slate-100 bg-white px-3 py-1.5">
-        <div className="flex items-center gap-2 text-[11px] text-slate-500">
-          {selectable ? <span>已选 {selectedCount}</span> : null}
-          {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
-          {hasAnyFilters ? (
-            <button
-              type="button"
-              onClick={() => {
-                setFilters({});
-                setActiveFilterColumn(null);
-              }}
-              className="text-xs text-blue-600 hover:text-blue-700"
-            >
-              清空筛选
-            </button>
-          ) : null}
-          {selectedCount > 0 ? batchActions.map((action) => (
-            <button key={action.label} type="button" onClick={action.onClick} disabled={action.disabled} className="secondary-button h-7 px-2 text-xs">
-              {action.label}
-            </button>
-          )) : null}
-          {selectedCount > 0 ? batchActionSlot : null}
-        </div>
-        <div ref={columnMenuRef} className="relative">
-          <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title="列设置">
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-          </button>
-          {menuOpen ? (
-            <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
-              <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">显示列</div>
-              <div className="max-h-56 space-y-1 overflow-y-auto">
-                {columns.map((column) => (
-                  <label key={column.key} className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${column.hideable ? "cursor-pointer text-slate-700 hover:bg-slate-50" : "text-slate-400"}`}>
-                    <input type="checkbox" checked={!hiddenKeys.has(column.key)} disabled={!column.hideable} onChange={() => toggleColumn(column.key)} className="h-3.5 w-3.5 rounded border-slate-300" />
-                    <span className="truncate">{column.label}</span>
-                  </label>
-                ))}
+      {showToolbar ? (
+        <div
+          data-batch-popover-boundary
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-white px-3 py-1.5"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-slate-500">
+            {toolbarMode === "custom" ? (
+              toolbarLeftContent
+            ) : (
+              <>
+                {selectable ? <span>已选 {selectedCount}</span> : null}
+                {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
+                {hasAnyFilters ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilters({});
+                      setActiveFilterColumn(null);
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-700"
+                  >
+                    清空筛选
+                  </button>
+                ) : null}
+                {selectedCount > 0 ? batchActions.map((action) => (
+                  <button key={action.label} type="button" onClick={action.onClick} disabled={action.disabled} className="secondary-button h-7 px-2 text-xs">
+                    {action.label}
+                  </button>
+                )) : null}
+                {selectedCount > 0 ? batchActionSlot : null}
+              </>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {toolbarMode === "custom" ? toolbarRightContent : null}
+            {showColumnVisibilityButton ? (
+              <div ref={columnMenuRef} className="relative">
+                <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title="列设置">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </button>
+                {menuOpen ? (
+                  <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+                    <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">显示列</div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto">
+                      {columns.map((column) => (
+                        <label key={column.key} className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${column.hideable ? "cursor-pointer text-slate-700 hover:bg-slate-50" : "text-slate-400"}`}>
+                          <input type="checkbox" checked={!hiddenKeys.has(column.key)} disabled={!column.hideable} onChange={() => toggleColumn(column.key)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                          <span className="truncate">{column.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      <div ref={viewportRef} className={fillHeight ? "min-h-0 flex-1 overflow-auto" : "overflow-auto"}>
+      <div
+        ref={viewportRef}
+        className={
+          fillHeight
+            ? "min-h-0 flex-1 overflow-x-auto overflow-y-scroll [scrollbar-gutter:stable]"
+            : "overflow-x-auto overflow-y-scroll [scrollbar-gutter:stable]"
+        }
+      >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
           <colgroup>
             {selectable ? <col style={{ width: layout.selectWidth }} /> : null}
@@ -321,15 +387,45 @@ export function AdvancedDataTable<T>({
               {visibleColumns.map((column) => (
                 <th key={column.key} className={["relative select-none border-b border-slate-200 text-xs font-semibold text-slate-600", headerPaddingClass, alignClass(column.align), column.headerClassName ?? ""].join(" ")}>
                   {showFilters && column.filterText ? (
-                    <TableColumnFilter
-                      label={labelText(column.label, column.key)}
-                      options={filterOptions[column.key] ?? []}
-                      selectedValues={filters[column.key] ?? []}
-                      open={activeFilterColumn === column.key}
-                      onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                      onClose={() => setActiveFilterColumn(null)}
-                      onChange={(values) => setFilters((prev) => ({ ...prev, [column.key]: values }))}
-                    />
+                    column.filterKind === "dateRange" ? (
+                      <DateRangeColumnFilter
+                        label={labelText(column.label, column.key)}
+                        from={filters[column.key]?.[0] ?? ""}
+                        to={filters[column.key]?.[1] ?? ""}
+                        open={activeFilterColumn === column.key}
+                        onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                        onClose={() => setActiveFilterColumn(null)}
+                        onChange={({ from, to }) =>
+                          setFilters((prev) => {
+                            if (!from && !to) {
+                              const next = { ...prev };
+                              delete next[column.key];
+                              return next;
+                            }
+                            return { ...prev, [column.key]: [from, to] };
+                          })
+                        }
+                      />
+                    ) : (
+                      <TableColumnFilter
+                        label={labelText(column.label, column.key)}
+                        options={filterOptions[column.key] ?? []}
+                        selectedValues={filters[column.key] ?? []}
+                        open={activeFilterColumn === column.key}
+                        onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                        onClose={() => setActiveFilterColumn(null)}
+                        onChange={(values) =>
+                          setFilters((prev) => {
+                            if (!values || values.length === 0) {
+                              const next = { ...prev };
+                              delete next[column.key];
+                              return next;
+                            }
+                            return { ...prev, [column.key]: values };
+                          })
+                        }
+                      />
+                    )
                   ) : (
                     <span className="block truncate">{column.label}</span>
                   )}
@@ -342,7 +438,12 @@ export function AdvancedDataTable<T>({
             {filteredRows.length > 0 ? filteredRows.map((row, index) => {
               const key = rowKey(row, index);
               return (
-                <tr key={key} onClick={onRowClick ? () => onRowClick(row, index) : undefined} className={rowClassName?.(row, index) ?? "hover:bg-slate-50"}>
+                <tr
+                  key={key}
+                  onClick={onRowClick ? () => onRowClick(row, index) : undefined}
+                  onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row, index) : undefined}
+                  className={rowClassName?.(row, index) ?? "hover:bg-slate-50"}
+                >
                   {selectable ? (
                     <td className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
                       <input type="checkbox" checked={effectiveSelectedKeys.has(key)} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label="选择行" />
@@ -363,6 +464,30 @@ export function AdvancedDataTable<T>({
               </tr>
             )}
           </tbody>
+          {summaryRow ? (
+            <tfoot className="sticky bottom-0 z-[1] bg-slate-50/95 backdrop-blur-sm">
+              <tr className={summaryRow.rowClassName ?? ""}>
+                {selectable ? (
+                  <td className={`border-t border-slate-200 text-center ${selectPaddingClass} ${summaryRow.cellClassName ?? ""}`}>
+                    {summaryRow.selectCell ?? null}
+                  </td>
+                ) : null}
+                {visibleColumns.map((column) => (
+                  <td
+                    key={column.key}
+                    className={[
+                      "border-t border-slate-200 text-xs font-medium text-slate-700",
+                      cellPaddingClass,
+                      alignClass(column.align),
+                      summaryRow.cellClassName ?? "",
+                    ].join(" ")}
+                  >
+                    {summaryRow.cells[column.key] ?? null}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          ) : null}
         </table>
       </div>
     </div>

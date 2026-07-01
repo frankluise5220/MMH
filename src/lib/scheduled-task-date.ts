@@ -23,7 +23,8 @@ function dateAtMonthDay(date: Date, day: number): Date {
 function dateAtWeekday(date: Date, weekday: number): Date {
   const currentDay = date.getUTCDay();
   const adjustedCurrentDay = currentDay === 0 ? 7 : currentDay;
-  return addDaysUtc(date, weekday - adjustedCurrentDay);
+  const normalizedWeekday = weekday === 0 ? 7 : weekday;
+  return addDaysUtc(date, normalizedWeekday - adjustedCurrentDay);
 }
 
 function addWeeksUtc(date: Date, weeks: number): Date {
@@ -39,6 +40,36 @@ function addMonthsClampedUtc(date: Date, months: number): Date {
   return new Date(Date.UTC(targetYear, normalizedMonth, day));
 }
 
+function addYearsClampedUtc(date: Date, years: number): Date {
+  return addMonthsClampedUtc(date, years * 12);
+}
+
+export function isYearlyExecutionDay(value: number | null | undefined): value is number {
+  if (value == null || !Number.isFinite(value)) return false;
+  const month = Math.floor(value / 100);
+  const day = value % 100;
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+export function encodeYearlyExecutionDay(value: string | Date): number | null {
+  const date = value instanceof Date ? startOfDayUtc(value) : startOfDayUtc(new Date(value));
+  if (!Number.isFinite(date.getTime())) return null;
+  return (date.getUTCMonth() + 1) * 100 + date.getUTCDate();
+}
+
+export function decodeYearlyExecutionDay(value: number | null | undefined, baseYear: number): Date | null {
+  if (!isYearlyExecutionDay(value)) return null;
+  const month = Math.floor(value / 100);
+  const day = value % 100;
+  const clampedDay = Math.min(day, lastDayOfMonthUtc(baseYear, month - 1));
+  return new Date(Date.UTC(baseYear, month - 1, clampedDay));
+}
+
+function dateAtYearAnchor(date: Date, encodedMonthDay: number): Date {
+  const anchor = decodeYearlyExecutionDay(encodedMonthDay, date.getUTCFullYear());
+  return anchor ?? startOfDayUtc(date);
+}
+
 export function calcNextScheduledRunDate(
   fromDate: Date,
   unit: IntervalUnit,
@@ -51,7 +82,9 @@ export function calcNextScheduledRunDate(
 
   if (unit === "month" && executionDay != null && executionDay >= 1 && executionDay <= 31) {
     nextDate = dateAtMonthDay(addMonthsClampedUtc(fromDate, intervalValue), executionDay);
-  } else if ((unit === "week" || unit === "biweek") && executionDay != null && executionDay >= 1 && executionDay <= 5) {
+  } else if (unit === "year" && isYearlyExecutionDay(executionDay)) {
+    nextDate = dateAtYearAnchor(addYearsClampedUtc(fromDate, intervalValue), executionDay);
+  } else if ((unit === "week" || unit === "biweek") && executionDay != null && executionDay >= 1 && executionDay <= 7) {
     nextDate = dateAtWeekday(addWeeksUtc(fromDate, unit === "biweek" ? intervalValue * 2 : intervalValue), executionDay);
   } else {
     switch (unit) {
@@ -65,6 +98,11 @@ export function calcNextScheduledRunDate(
         nextDate = addWeeksUtc(fromDate, intervalValue * 2);
         break;
       case "month":
+        nextDate = addMonthsClampedUtc(fromDate, intervalValue);
+        break;
+      case "year":
+        nextDate = addYearsClampedUtc(fromDate, intervalValue);
+        break;
       default:
         nextDate = addMonthsClampedUtc(fromDate, intervalValue);
         break;
@@ -87,7 +125,12 @@ export function calcInitialScheduledRunDate(
   if (unit === "month" && executionDay != null && executionDay >= 1 && executionDay <= 31) {
     firstDate = dateAtMonthDay(firstDate, executionDay);
     if (firstDate < startOfDayUtc(startDate)) firstDate = dateAtMonthDay(addMonthsClampedUtc(firstDate, intervalValue), executionDay);
-  } else if ((unit === "week" || unit === "biweek") && executionDay != null && executionDay >= 1 && executionDay <= 5) {
+  } else if (unit === "year" && isYearlyExecutionDay(executionDay)) {
+    firstDate = dateAtYearAnchor(firstDate, executionDay);
+    if (firstDate < startOfDayUtc(startDate)) {
+      firstDate = dateAtYearAnchor(addYearsClampedUtc(firstDate, intervalValue), executionDay);
+    }
+  } else if ((unit === "week" || unit === "biweek") && executionDay != null && executionDay >= 1 && executionDay <= 7) {
     firstDate = dateAtWeekday(firstDate, executionDay);
     if (firstDate < startOfDayUtc(startDate)) firstDate = addWeeksUtc(firstDate, unit === "biweek" ? intervalValue * 2 : intervalValue);
   }

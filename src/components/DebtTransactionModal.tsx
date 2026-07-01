@@ -1,12 +1,15 @@
 ﻿"use client";
 
 import { ChevronDown, Plus, Repeat } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./TransactionFormModal";
+import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 
 type DebtMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
@@ -30,6 +33,7 @@ export function DebtTransactionModal({
   defaultDebtAccountId,
   defaultCashAccountId,
   action,
+  showTriggerButton = true,
 }: {
   debtAccounts: AccountOption[];
   cashAccounts: AccountOption[];
@@ -37,7 +41,9 @@ export function DebtTransactionModal({
   defaultDebtAccountId?: string;
   defaultCashAccountId?: string;
   action: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  showTriggerButton?: boolean;
 }) {
+  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const debtOptions: SmartSelectOption[] = useMemo(
     () => debtAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel })),
@@ -52,7 +58,8 @@ export function DebtTransactionModal({
     cycleOwnerFilter: cycleCashOwnerFilter,
     filteredOptions: cashAccountSSFiltered,
   } = useAccountSSFilter(cashAccountSSOptions);
-  const visibleCashOptions = cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions;
+  const recentAccountIds = useRecentAccountIds();
+  const visibleCashOptions = sortOptionsByRecent(cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions, recentAccountIds);
   const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
     <button
       type="button"
@@ -75,7 +82,7 @@ export function DebtTransactionModal({
   const [interest, setInterest] = useState("");
   const [note, setNote] = useState("");
 
-  function resetDraft() {
+  const resetDraft = useCallback(() => {
     setMode("borrow_in");
     setDate(today);
     setDebtAccountId(defaultDebtAccountId ?? debtAccounts[0]?.id ?? "");
@@ -83,10 +90,29 @@ export function DebtTransactionModal({
     setPrincipal("");
     setInterest("");
     setNote("");
-  }
+  }, [cashAccounts, debtAccounts, defaultCashAccountId, defaultDebtAccountId, today]);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    function onCreate(ev: Event) {
+      const detail = (ev as CustomEvent<{
+        requestId?: string;
+        defaultDebtAccountId?: string;
+        defaultCashAccountId?: string;
+      }>).detail;
+      resetDraft();
+      if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
+      if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
+      setOpen(true);
+    }
+    window.addEventListener("mmh:debt:create", onCreate as EventListener);
+    return () => window.removeEventListener("mmh:debt:create", onCreate as EventListener);
+  }, [defaultCashAccountId, defaultDebtAccountId, resetDraft]);
+  useCloseOnNavigation(open, () => {
+    setOpen(false);
+    resetDraft();
+  });
+
+  async function saveDebtTransaction(keepAdding: boolean) {
     if (submitting) return;
 
     const formData = new FormData();
@@ -105,9 +131,15 @@ export function DebtTransactionModal({
         window.alert(res.error);
         return;
       }
-      setOpen(false);
-      resetDraft();
-      window.location.reload();
+      router.refresh();
+      if (keepAdding) {
+        setPrincipal("");
+        setInterest("");
+        setNote("");
+      } else {
+        setOpen(false);
+        resetDraft();
+      }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存失败");
     } finally {
@@ -115,30 +147,36 @@ export function DebtTransactionModal({
     }
   }
 
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await saveDebtTransaction(false);
+  }
+
   const showInterest = mode === "repay_out" || mode === "collect_in";
   const disabled = debtAccounts.length === 0 || cashAccounts.length === 0;
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => {
-          setOpen(true);
-          resetDraft();
-        }}
-        disabled={disabled}
-        className="primary-button h-8 gap-1 px-3 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <Plus className="w-4 h-4" />
-        借还款
-        <ChevronDown className="w-4 h-4 opacity-90" />
-      </button>
+      {showTriggerButton ? (
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true);
+            resetDraft();
+          }}
+          disabled={disabled}
+          className="primary-button h-8 gap-1 px-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Plus className="w-4 h-4" />
+          借还款
+          <ChevronDown className="w-4 h-4 opacity-90" />
+        </button>
+      ) : null}
 
       {open
         ? createPortal(
-            <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 backdrop-blur-[2px]">
-              <div className="flex min-h-full items-start justify-center p-4 py-8">
-                <div className="modal-surface flex max-h-[90vh] w-full max-w-xl flex-col">
+            <div className="app-modal-backdrop z-50">
+              <div className="app-modal-panel max-w-xl">
                   <div className="modal-header shrink-0">
                     <div className="text-sm font-semibold text-slate-800">借还款</div>
                     <button
@@ -153,7 +191,7 @@ export function DebtTransactionModal({
                     </button>
                   </div>
 
-                  <form className="space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
+                  <form className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
                     <div className="grid grid-cols-4 gap-2">
                       {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
                         <button
@@ -242,12 +280,14 @@ export function DebtTransactionModal({
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-1">
+                      <button type="button" className="secondary-button h-9 px-3" disabled={submitting} onClick={() => saveDebtTransaction(true)}>
+                        {submitting ? "保存中…" : "保存并再记一笔"}
+                      </button>
                       <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
                         {submitting ? "保存中…" : "保存"}
                       </button>
                     </div>
                   </form>
-                </div>
               </div>
             </div>,
             document.body,

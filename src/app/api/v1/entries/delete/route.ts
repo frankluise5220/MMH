@@ -5,6 +5,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 /**
  * 删除 / 恢复 交易记录
@@ -37,16 +38,20 @@ export async function POST(req: Request) {
       // 收集恢复记录涉及的账户，重算余额
       const restoredRecords = await prisma.txRecord.findMany({
         where: { id: { in: transactionIds } },
-        select: { accountId: true, toAccountId: true },
+        select: { accountId: true, toAccountId: true, type: true, fundProductType: true },
       });
       const accountsToRecalc = new Set<string>();
+      let touchedInvestment = false;
       for (const r of restoredRecords) {
         if (r.accountId) accountsToRecalc.add(r.accountId);
         if (r.toAccountId) accountsToRecalc.add(r.toAccountId);
+        if (r.type === "investment" || r.fundProductType) touchedInvestment = true;
       }
       for (const acctId of accountsToRecalc) {
         await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
       }
+      if (touchedInvestment) revalidateAfterInvestChange();
+      else revalidateAfterTxChange();
       // Client-side will handle page refresh
       return NextResponse.json({ ok: true, count: res.count, message: `已恢复 ${res.count} 条记录` });
     }
@@ -60,6 +65,7 @@ export async function POST(req: Request) {
     let deletedCount = 0;
     const fundAccountsToRecalc = new Map<string, string[]>();
     const accountsToRecalcBalance = new Set<string>();
+    let touchedInvestment = false;
 
     for (const entryId of entryIds) {
       const txRecord = await prisma.txRecord.findUnique({
@@ -79,6 +85,7 @@ export async function POST(req: Request) {
       // 记录需要重新计算余额的账户（accountId 和 toAccountId 两侧）
       if (txRecord.accountId) accountsToRecalcBalance.add(txRecord.accountId);
       if (txRecord.toAccountId) accountsToRecalcBalance.add(txRecord.toAccountId);
+      if (txRecord.type === "investment" || txRecord.fundProductType) touchedInvestment = true;
 
       // 如果是基金交易，记录需要重新计算持仓的账户和基金代码
       // 买入类：accountId=资金账户, toAccountId=投资账户
@@ -105,6 +112,9 @@ export async function POST(req: Request) {
     for (const accountId of accountsToRecalcBalance) {
       await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+
+    if (touchedInvestment) revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
 
     if (deletedCount === 0) {
       return NextResponse.json(

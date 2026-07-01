@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { formatDateUtc } from "@/lib/date-utils";
+import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import { getScheduledTaskSourceFilter, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 
 /**
- * 测试批量执行API的逻辑
+ * Debug endpoint for scheduled task execution state.
  * GET /api/v1/regular-invest/batch-execute-test?planId=xxx
  */
 export async function GET(req: Request) {
@@ -11,7 +14,7 @@ export async function GET(req: Request) {
     const planId = searchParams.get("planId");
 
     if (!planId) {
-      return NextResponse.json({ ok: false, error: "缺少 planId" });
+      return NextResponse.json({ ok: false, error: "缺少 planId" }, { status: 400 });
     }
 
     const plan = await prisma.regularInvestPlan.findUnique({
@@ -19,37 +22,75 @@ export async function GET(req: Request) {
     });
 
     if (!plan) {
-      return NextResponse.json({ ok: false, error: "计划不存在" });
+      return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
     }
 
-    // 查询该定投计划关联的所有 TxRecord
-    const existingEntries = await prisma.txRecord.findMany({
+    const task = decodeScheduledTaskMemo(plan.memo);
+    const sourceFilter = isNonFundScheduledTask(task.type)
+      ? getScheduledTaskSourceFilter(task.type)
+      : ["regular_invest", "regular_invest_refund"];
+
+    const entriesWithPlanId = await prisma.txRecord.findMany({
       where: {
         regularInvestPlanId: planId,
-        deletedAt: null,
+        source: { in: sourceFilter },
       },
+      orderBy: [{ date: "asc" }, { createdAt: "asc" }],
       select: {
         id: true,
+        date: true,
+        type: true,
+        source: true,
+        amount: true,
+        accountId: true,
+        accountName: true,
+        toAccountId: true,
+        toAccountName: true,
         fundCode: true,
         fundSubtype: true,
-        amount: true,
+        note: true,
+        deletedAt: true,
         regularInvestPlanId: true,
       },
     });
 
-    // 查询所有该基金代码的 TxRecord
-    const allFundEntries = await prisma.txRecord.findMany({
+    const activeDates = new Set(
+      entriesWithPlanId
+        .filter((entry) => !entry.deletedAt)
+        .map((entry) => formatDateUtc(entry.date)),
+    );
+
+    const relatedEntryWhere = isNonFundScheduledTask(task.type)
+      ? {
+          OR: [
+            { accountId: plan.cashAccountId ?? undefined, toAccountId: plan.accountId },
+            { accountId: plan.accountId },
+          ],
+          source: { in: sourceFilter },
+        }
+      : {
+          OR: [{ toAccountId: plan.accountId }, { accountId: plan.accountId }],
+          fundCode: plan.fundCode,
+          source: { in: sourceFilter },
+        };
+
+    const relatedEntries = await prisma.txRecord.findMany({
       where: {
-        OR: [{ toAccountId: plan.accountId }, { accountId: plan.accountId }],
-        fundCode: plan.fundCode,
-        source: "regular_invest",
+        ...relatedEntryWhere,
         deletedAt: null,
       },
+      orderBy: [{ date: "asc" }, { createdAt: "asc" }],
       select: {
         id: true,
-        fundCode: true,
+        date: true,
+        type: true,
+        source: true,
         amount: true,
+        accountName: true,
+        toAccountName: true,
+        fundCode: true,
         regularInvestPlanId: true,
+        note: true,
       },
     });
 
@@ -57,22 +98,44 @@ export async function GET(req: Request) {
       ok: true,
       plan: {
         id: plan.id,
+        taskType: task.type,
         fundCode: plan.fundCode,
         amount: Number(plan.amount),
-        startDate: plan.startDate?.toISOString(),
+        startDate: formatDateUtc(plan.startDate),
+        lastRunDate: plan.lastRunDate ? formatDateUtc(plan.lastRunDate) : null,
+        nextRunDate: formatDateUtc(plan.nextRunDate),
         intervalUnit: plan.intervalUnit,
         intervalValue: plan.intervalValue,
+        executionDay: plan.executionDay,
         status: plan.status,
+        executedRuns: plan.executedRuns,
+        accountId: plan.accountId,
+        accountName: plan.accountName,
+        cashAccountId: plan.cashAccountId,
+        cashAccountName: plan.cashAccountName,
+        memo: plan.memo,
       },
-      entriesWithPlanId: existingEntries.length,
-      allEntriesForFund: allFundEntries.length,
-      entriesWithPlanIdData: existingEntries,
-      allEntriesForFundData: allFundEntries,
+      sourceFilter,
+      activeDates: [...activeDates],
+      entriesWithPlanId: entriesWithPlanId.length,
+      entriesWithPlanIdData: entriesWithPlanId.map((entry) => ({
+        ...entry,
+        amount: Number(entry.amount),
+        date: formatDateUtc(entry.date),
+        deleted: Boolean(entry.deletedAt),
+        deletedAt: entry.deletedAt?.toISOString() ?? null,
+      })),
+      relatedEntries: relatedEntries.length,
+      relatedEntriesData: relatedEntries.map((entry) => ({
+        ...entry,
+        amount: Number(entry.amount),
+        date: formatDateUtc(entry.date),
+      })),
     });
   } catch (e) {
     return NextResponse.json({
       ok: false,
       error: e instanceof Error ? e.message : "查询失败",
-    });
+    }, { status: 500 });
   }
 }
