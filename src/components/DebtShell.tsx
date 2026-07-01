@@ -154,7 +154,7 @@ export function DebtShell({
             rows={rows}
             rowKey={(row) => row.key}
             minTableWidth={520}
-            emptyText="暂无债务/债权余额"
+            emptyText="暂无往来款余额"
             showFilters={false}
             onRowClick={(row) => {
               window.location.href = `/?view=debt&debtPerson=${encodeURIComponent(row.key)}`;

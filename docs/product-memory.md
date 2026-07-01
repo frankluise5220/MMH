@@ -187,6 +187,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Names such as borrower/lender, borrowed/lent, or institution/person context matter and should be chosen carefully.
 - Debt views should lean toward personal/family wording such as borrowed/lent or person/institution context, rather than formal enterprise wording.
 - Debt details should behave more like position/detail views, with a clear summary by counterparty and linked detail records below.
+- The stable product name for debt/claim style flows is "往来款"; "应收" and "应付" are balance results, not separate account types.
+- 往来人员/机构 should be maintained as a separate "往来对象" library/table, not mixed into the financial institution library. Banks, insurers, brokerages, payment channels, and wallets remain "机构"; people, friends, companies, family members, and other loan/代付 counterparties belong to "往来对象".
+- "代付" is a top-level entry mode alongside 支出、收入、转账; it has submodes such as "公司代付" and "朋友代付", plus purpose categories "差旅费", "代购费", and "其他". Save it as a transfer from the real payment account to the 往来款 account so it appears in 往来款 instead of ordinary expense statistics.
 
 ### Overview
 

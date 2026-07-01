@@ -5,7 +5,7 @@ import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
-import { isDepositAccount, isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export const KIND_LABEL: Record<string, string> = {
   cash: "现金",
@@ -13,7 +13,7 @@ export const KIND_LABEL: Record<string, string> = {
   bank_credit: "信用卡",
   ewallet: "电子钱包",
   deposit: "存款",
-  loan: "债务/债权",
+  loan: "往来款",
   other: "其他",
 };
 
@@ -159,6 +159,7 @@ export async function computeOverviewSummary(
       numberMasked: true,
       investProductType: true,
       Institution: { select: { name: true, shortName: true } },
+      Counterparty: { select: { name: true, shortName: true } },
       AccountGroup: { select: { name: true } },
     },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
@@ -257,6 +258,7 @@ export async function computeOverviewSummary(
         numberMasked: account.numberMasked,
         groupId: account.groupId,
         Institution: account.Institution,
+        Counterparty: account.Counterparty,
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,

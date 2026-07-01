@@ -172,16 +172,16 @@ export function AccountEditModalButton({
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs text-slate-500">往来机构/人员</div>
+                  <div className="mb-1 text-xs text-slate-500">机构/往来对象</div>
                   <SmartSelect
                     mode="single"
                     value={institutionId}
                     onChange={setInstitutionId}
                     options={institutionOptions}
-                    placeholder="选择往来机构/人员"
+                    placeholder="选择机构/往来对象"
                     searchable
                     onCreateClick={() => setNestedEntityType("institution")}
-                    createLabel="新增往来机构/人员"
+                    createLabel="新增机构/往来对象"
                   />
                 </div>
 
@@ -200,7 +200,7 @@ export function AccountEditModalButton({
                   <option value="ewallet">电子钱包</option>
                   <option value="deposit">存款</option>
                   <option value="investment">投资</option>
-                  <option value="loan">债务/债权</option>
+                  <option value="loan">往来款</option>
                   <option value="other">其他</option>
                 </select>
 

@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 
+import { CounterpartyEditButton } from "@/components/CounterpartyEditButton";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
-import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
 import { fetchSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
 
-type Institution = {
+type Counterparty = {
   id: string;
   name: string;
   shortName?: string | null;
@@ -15,34 +15,30 @@ type Institution = {
 };
 
 const typeLabelMap: Record<string, string> = {
-  bank: "银行",
-  insurance: "保险公司",
-  brokerage: "证券",
-  payment: "第三方支付",
-  ewallet: "钱包",
-  debt: "债权债务",
+  family_member: "家庭成员",
+  person: "个人",
+  organization: "机构",
+  company: "公司",
+  friend: "朋友",
   other: "其他",
 };
-const REAL_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
 
-export function SettingsInstitutionsClient({
-  institutions: initialInstitutions,
+export function SettingsCounterpartiesClient({
+  counterparties: initialCounterparties,
   updateAction,
 }: {
-  institutions: Institution[];
+  counterparties: Counterparty[];
   updateAction: (formData: FormData) => void | Promise<void>;
 }) {
-  const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
+  const [counterparties, setCounterparties] = useState<Counterparty[]>(initialCounterparties);
 
   useEffect(() => {
-    setInstitutions(initialInstitutions);
-  }, [initialInstitutions]);
+    setCounterparties(initialCounterparties);
+  }, [initialCounterparties]);
 
   const refreshList = useCallback(async () => {
     const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
-    if (data?.institutions) {
-      setInstitutions((data.institutions as Institution[]).filter((item) => REAL_INSTITUTION_TYPES.has(item.type ?? "other")));
-    }
+    if (data?.counterparties) setCounterparties(data.counterparties as Counterparty[]);
   }, []);
 
   function handleCreated() {
@@ -55,18 +51,21 @@ export function SettingsInstitutionsClient({
       <EntityCreateForm
         mode="full"
         layout="inline"
-        entityType="institution"
+        entityType="counterparty"
         onCreated={handleCreated}
-        existingNames={institutions.map((item) => item.name)}
+        existingNames={counterparties.map((item) => item.name)}
       />
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div className="text-sm font-semibold text-slate-800">机构列表</div>
-          <div className="tabular-nums text-xs text-slate-500">{institutions.length} 项</div>
+          <div>
+            <div className="text-sm font-semibold text-slate-800">往来对象列表</div>
+            <div className="mt-0.5 text-xs text-slate-500">用于往来款账户和代付对象</div>
+          </div>
+          <div className="tabular-nums text-xs text-slate-500">{counterparties.length} 项</div>
         </div>
         <div className="overflow-auto">
-          <table className="min-w-[780px] w-full border-separate border-spacing-0">
+          <table className="w-full min-w-[760px] border-separate border-spacing-0">
             <thead className="sticky top-0 z-10">
               <tr className="bg-slate-50">
                 <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">名称</th>
@@ -76,21 +75,21 @@ export function SettingsInstitutionsClient({
               </tr>
             </thead>
             <tbody className="text-sm">
-              {institutions.length ? institutions.map((item) => (
+              {counterparties.length ? counterparties.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50">
                   <td className="border-b border-slate-100 px-4 py-2 text-sm text-slate-800">{item.name}</td>
                   <td className="border-b border-slate-100 px-3 py-2 text-sm text-slate-600">{item.shortName?.trim() || "-"}</td>
                   <td className="border-b border-slate-100 px-3 py-2 text-xs text-slate-500">{typeLabelMap[item.type ?? "other"] ?? item.type}</td>
                   <td className="border-b border-slate-100 px-3 py-2">
                     <div className="flex items-center gap-1.5">
-                      <InstitutionEditButton institution={item} action={updateAction} />
-                      <SettingsDeleteButton label={`机构：${item.name}`} entity="institution" id={item.id} />
+                      <CounterpartyEditButton counterparty={item} action={updateAction} />
+                      <SettingsDeleteButton label={`往来对象：${item.name}`} entity="counterparty" id={item.id} />
                     </div>
                   </td>
                 </tr>
               )) : (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={4}>暂无机构</td>
+                  <td className="px-4 py-6 text-slate-500" colSpan={4}>暂无往来对象</td>
                 </tr>
               )}
             </tbody>

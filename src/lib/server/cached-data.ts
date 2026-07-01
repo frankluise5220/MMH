@@ -10,7 +10,6 @@
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind } from "@prisma/client";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
@@ -25,14 +24,14 @@ export type BaseData = CommonData & {
 // ── Common 基础数据（跨账户共享，跨请求缓存） ──
 
 async function _loadCommonData(hidFilter: { householdId: string }) {
-  const [categories, accounts, tags, groups, institutions] = await Promise.all([
+  const [categories, accounts, tags, groups, institutions, counterparties] = await Promise.all([
     prisma.category.findMany({
       where: { ...hidFilter },
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, ...hidFilter },
-      include: { Institution: true, AccountGroup: true },
+      include: { Institution: true, Counterparty: true, AccountGroup: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
     prisma.tag.findMany({
@@ -47,8 +46,12 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
       where: { ...hidFilter },
       orderBy: { name: "asc" },
     }),
+    prisma.counterparty.findMany({
+      where: { ...hidFilter },
+      orderBy: { name: "asc" },
+    }),
   ]);
-  return { categories, accounts, tags, groups, institutions };
+  return { categories, accounts, tags, groups, institutions, counterparties };
 }
 
 /** 跨请求缓存：不随账户变化的数据 */
@@ -64,7 +67,7 @@ export const loadSelectedAccount = cache(
     if (!accountId) return null;
     return prisma.account.findFirst({
       where: { id: accountId, isPlaceholder: { not: true }, ...hidFilter },
-      include: { Institution: true, AccountGroup: true },
+      include: { Institution: true, Counterparty: true, AccountGroup: true },
     });
   },
 );

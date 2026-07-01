@@ -80,7 +80,7 @@ const SECTION_ICON: Record<string, React.ElementType> = {
   信用卡: CreditCard,
   投资: BarChart3,
   保险: Shield,
-  负债: Landmark,
+  往来款: Landmark,
 };
 const KIND_SORT_ORDER = new Map<string, number>([
   ["cash", 10],
@@ -108,8 +108,8 @@ const KIND_INLINE_LABEL = new Map<string, string>([
   ["investment_wealth", "理财"],
   ["insurance", "保险"],
   ["bank_credit", "信用卡"],
-  ["loan_summary", "借入/借出"],
-  ["loan", "借入/借出"],
+  ["loan_summary", "往来款"],
+  ["loan", "往来款"],
   ["other", "其他"],
 ]);
 
@@ -125,12 +125,12 @@ function normalizeSidebarItems(items: AccountItem[]) {
     ...otherItems,
     {
       id: "__debt__",
-      name: "借入/借出",
-      label: "借入/借出",
+      name: "往来款",
+      label: "往来款",
       balance: loanBalance,
       kind: "loan_summary",
       groupName: "未设置所有人",
-      institution: "负债",
+      institution: "往来款",
     },
   ];
 }
@@ -407,7 +407,7 @@ export function SidebarClient({
       { label: "信用卡", kinds: CREDIT_KINDS },
       { label: "投资", kinds: INVEST_KINDS },
       { label: "保险", kinds: INSURANCE_KINDS },
-      { label: "负债", kinds: LIABILITY_KINDS }
+      { label: "往来款", kinds: LIABILITY_KINDS }
     ];
     return groups.map(g => {
       const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
@@ -562,7 +562,7 @@ export function SidebarClient({
           <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
             <BarChart3 size={18} />
           </Link>
-          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="负债">
+          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="往来款">
             <Landmark size={18} />
           </Link>
         </nav>

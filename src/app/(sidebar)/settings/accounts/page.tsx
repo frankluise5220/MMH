@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
-import { kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
+import { counterpartyTypeLabel, kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
@@ -25,11 +25,13 @@ function kindIcon(k: string) {
 
 type Group = { id: string; name: string; sortOrder: number };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
+type Counterparty = { id: string; name: string; shortName?: string | null; type?: string };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   isPlaceholder?: boolean;
-  institutionId: string | null; groupId: string | null;
+  institutionId: string | null; counterpartyId?: string | null; groupId: string | null;
   Institution: { id: string; name: string; shortName?: string | null } | null;
+  Counterparty?: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
   billingDay: number | null; repaymentDay: number | null;
   creditLimit: string | null; numberMasked: string | null;
@@ -39,6 +41,7 @@ type Account = {
 
 const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
 const investmentProductTypeLabel = (value: string | null | undefined) => PRODUCT_LABELS[(value || "fund") as ProductType] || "开放式基金";
+const REAL_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
 
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
   return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;
@@ -48,6 +51,7 @@ export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
+  const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<string>("");
   const [selectedInstitution, setSelectedInstitution] = useState<string>("");
   const [selectedKinds, setSelectedKinds] = useState<string[]>([]);
@@ -62,7 +66,7 @@ export default function SettingsAccountsPage() {
   const [deleteError, setDeleteError] = useState("");
 
   // Nested creation from SmartSelect in inline edit
-  const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
+  const [nestedEntityType, setNestedEntityType] = useState<"institution" | "counterparty" | "group" | null>(null);
 
   // Group CRUD
   const [newGroupName, setNewGroupName] = useState("");
@@ -76,6 +80,7 @@ export default function SettingsAccountsPage() {
       setGroups(cached.groups as Group[]);
       setAccounts(cached.accounts as Account[]);
       setInstitutions(cached.institutions as Institution[]);
+      setCounterparties((cached.counterparties ?? []) as Counterparty[]);
     }
     loadAll();
   }, []);
@@ -86,6 +91,7 @@ export default function SettingsAccountsPage() {
     setGroups(data.groups as Group[]);
     setAccounts(data.accounts as Account[]);
     setInstitutions(data.institutions as Institution[]);
+    setCounterparties((data.counterparties ?? []) as Counterparty[]);
   }
 
   // ---- Group handlers ----
@@ -134,6 +140,7 @@ export default function SettingsAccountsPage() {
       kind: normalizedKind,
       groupId: a.groupId || "",
       institutionId: a.institutionId || "",
+      counterpartyId: a.counterpartyId || "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
@@ -167,7 +174,8 @@ export default function SettingsAccountsPage() {
   }
 
   const accountDisplayName = (account: Account) => {
-    const institutionLabel = account.Institution?.shortName?.trim() || account.Institution?.name || "";
+    const party = account.kind === "loan" ? (account.Counterparty ?? account.Institution) : account.Institution;
+    const institutionLabel = party?.shortName?.trim() || party?.name || "";
     return institutionLabel ? `${institutionLabel}·${account.name}` : account.name;
   };
 
@@ -192,8 +200,8 @@ export default function SettingsAccountsPage() {
     ...groups.map((g) => ({ id: g.id, label: g.name })),
   ];
   const institutionFilterOptions = [
-    { id: "", label: "全部机构/人员" },
-    ...institutions.map((i) => ({
+    { id: "", label: "全部机构" },
+    ...institutions.filter((i) => REAL_INSTITUTION_TYPES.has(i.type ?? "other")).map((i) => ({
       id: i.id,
       label: i.shortName?.trim() || i.name,
       subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
@@ -237,7 +245,7 @@ export default function SettingsAccountsPage() {
               value={selectedInstitution}
               onChange={setSelectedInstitution}
               options={institutionFilterOptions}
-              placeholder="筛选机构/人员"
+              placeholder="筛选机构"
               searchable={true}
             />
           </div>
@@ -282,9 +290,7 @@ export default function SettingsAccountsPage() {
                       const editKind = (editForm.kind || normalizedKind) as AccountKind;
                       const isInvestmentKind = editKind === "investment";
                       const isBillLikeKind = editKind === "bank_credit";
-                      const filteredInstitutions = institutions.filter((institution) =>
-                        editKind === "loan" ? institution.type === "debt" : institution.type !== "debt",
-                      );
+                      const filteredInstitutions = institutions.filter((institution) => REAL_INSTITUTION_TYPES.has(institution.type ?? "other"));
                       return (
                         <>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -301,6 +307,7 @@ export default function SettingsAccountsPage() {
                             ...f,
                             kind: e.target.value,
                             institutionId: "",
+                            counterpartyId: "",
                             investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : "",
                           }))}
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
@@ -311,7 +318,7 @@ export default function SettingsAccountsPage() {
                           <option value="ewallet">电子钱包</option>
                           <option value="deposit">存款</option>
                           <option value="investment">投资</option>
-                          <option value="loan">借入/借出</option>
+                          <option value="loan">往来款</option>
                           <option value="other">其他</option>
                         </select>
                       </div>
@@ -323,18 +330,35 @@ export default function SettingsAccountsPage() {
                           placeholder="选择所有人"
                           onCreateClick={() => setNestedEntityType("group")} createLabel="新增所有人" />
                       </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">机构</label>
-                        <SmartSelect mode="single" value={editForm.institutionId || ""}
-                          onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
-                          options={filteredInstitutions.map(i => ({
-                            id: i.id,
-                            label: i.shortName?.trim() || i.name,
-                            subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
-                          }))}
-                          placeholder="选择机构"
-                          onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
-                      </div>
+                      {editKind === "loan" ? (
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">往来对象</label>
+                          <SmartSelect mode="single" value={editForm.counterpartyId || ""}
+                            onChange={id => setEditForm(f => ({ ...f, counterpartyId: id }))}
+                            options={counterparties.map(i => ({
+                              id: i.id,
+                              label: i.shortName?.trim() || i.name,
+                              subLabel: [i.shortName?.trim() ? i.name : "", counterpartyTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
+                            }))}
+                            placeholder="选择往来对象"
+                            searchable
+                            onCreateClick={() => setNestedEntityType("counterparty")} createLabel="新增往来对象" />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">机构</label>
+                          <SmartSelect mode="single" value={editForm.institutionId || ""}
+                            onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
+                            options={filteredInstitutions.map(i => ({
+                              id: i.id,
+                              label: i.shortName?.trim() || i.name,
+                              subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
+                            }))}
+                            placeholder="选择机构"
+                            searchable
+                            onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
+                        </div>
+                      )}
                       {isInvestmentKind && (
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
@@ -496,7 +520,11 @@ export default function SettingsAccountsPage() {
         entityType="account"
         open={showCreateAccount}
         onClose={() => setShowCreateAccount(false)}
-        fieldData={{ groupId: groups, institutionId: institutions }}
+        fieldData={{
+          groupId: groups,
+          institutionId: institutions.filter((institution) => REAL_INSTITUTION_TYPES.has(institution.type ?? "other")),
+          counterpartyId: counterparties,
+        }}
         onCreated={() => {
           setShowCreateAccount(false);
           invalidateSettingsAccountData();
@@ -516,6 +544,9 @@ export default function SettingsAccountsPage() {
             if (nestedEntityType === "institution") {
               setInstitutions(prev => [...prev, { id, name, shortName: extra?.institutionShortName ?? null, type: extra?.type }]);
               setEditForm(f => ({ ...f, institutionId: id }));
+            } else if (nestedEntityType === "counterparty") {
+              setCounterparties(prev => [...prev, { id, name, shortName: extra?.counterpartyShortName ?? null, type: extra?.type }]);
+              setEditForm(f => ({ ...f, counterpartyId: id }));
             } else if (nestedEntityType === "group") {
               setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);
               setEditForm(f => ({ ...f, groupId: id }));

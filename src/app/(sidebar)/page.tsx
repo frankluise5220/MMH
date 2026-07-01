@@ -449,6 +449,62 @@ async function createTransaction(formData: FormData) {
 
       await recalcAndSaveAccountBalance(fromAccountId).catch(() => {});
       await recalcAndSaveAccountBalance(toAccountId).catch(() => {});
+    } else if (type === "advance_payment") {
+      const accountId = String(formData.get("accountId") ?? "").trim();
+      const toAccountId = String(formData.get("toAccountId") ?? "").trim();
+      const advancePaymentKindRaw = String(formData.get("advancePaymentKind") ?? "").trim();
+      const advancePaymentKind = advancePaymentKindRaw === "friend" ? "friend" : "company";
+      const advancePaymentCategoryRaw = String(formData.get("advancePaymentCategory") ?? "").trim();
+      const advancePaymentCategory =
+        advancePaymentCategoryRaw === "purchase" || advancePaymentCategoryRaw === "other"
+          ? advancePaymentCategoryRaw
+          : "travel";
+      const advancePaymentKindLabel = advancePaymentKind === "friend" ? "朋友代付" : "公司代付";
+      const advancePaymentCategoryLabel =
+        advancePaymentCategory === "purchase"
+          ? "代购费"
+          : advancePaymentCategory === "other"
+            ? "其他"
+            : "差旅费";
+      const advancePaymentLabel = `${advancePaymentKindLabel}·${advancePaymentCategoryLabel}`;
+      if (!accountId || !toAccountId) return { ok: false as const, error: "代付需要选择付款账户和代付账号" };
+      if (accountId === toAccountId) return { ok: false as const, error: "付款账户和代付账号不能相同" };
+
+      await prisma.$transaction(async (tx) => {
+        const [acc, advanceAccount] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
+          tx.account.findUnique({ where: { id: toAccountId }, include: { Institution: true } }),
+        ]);
+        if (!acc) throw new Error("付款账户不存在");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        if (!advanceAccount || advanceAccount.kind !== AccountKind.loan) throw new Error("代付账号需要选择往来款账户");
+
+        const advanceStatementMonth =
+          advanceAccount.billingDay ? toStatementMonth(date, advanceAccount.billingDay) : null;
+        const created = await tx.txRecord.create({
+          data: {
+            accountId: acc.id,
+            accountName: acc.name,
+            toAccountId: advanceAccount.id,
+            toAccountName: advanceAccount.name,
+            amount: -amountAbs,
+            type: TransactionType.transfer,
+            date,
+            note: note || null,
+            toNote: toNote || null,
+            statementMonth: advanceStatementMonth,
+            source: `advance_payment_${advancePaymentKind}_${advancePaymentCategory}`,
+            categoryName: advancePaymentLabel,
+            householdId,
+          },
+        });
+        if (tagIds.length > 0) {
+          await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId: created.id, tagId })) });
+        }
+      });
+
+      await recalcAndSaveAccountBalance(accountId).catch(() => {});
+      await recalcAndSaveAccountBalance(toAccountId).catch(() => {});
     } else if (type === "expense") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -1858,12 +1914,16 @@ async function backfillStatementMonthForAccount(formData: FormData) {
   await prisma.$transaction(async (tx) => {
     const acc = await tx.account.findUnique({
       where: { id: accountId },
-      include: { Institution: true },
+      include: { Institution: true, Counterparty: true },
     });
     if (!acc?.billingDay) return;
     if (acc.kind !== AccountKind.bank_credit && acc.kind !== AccountKind.loan) return;
 
-    const inst = (acc.Institution?.name ?? "").trim();
+    const inst = (
+      acc.kind === AccountKind.loan
+        ? (acc.Counterparty?.name ?? acc.Institution?.name ?? "")
+        : (acc.Institution?.name ?? "")
+    ).trim();
     const legacyNames = [acc.name, inst ? `${inst}·${acc.name}` : ""].filter(Boolean);
 
     const rows = await tx.txRecord.findMany({
@@ -2031,7 +2091,7 @@ export default async function Home({
 
   // Common data: 跨账户共享，跨请求缓存
   const common = await loadCommonData(hidFilter);
-  const { categories, accounts, tags, groups, institutions } = common;
+  const { categories, accounts, tags, groups, institutions, counterparties } = common;
   // selectedAccount: per-account，请求级缓存去重
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 3);
@@ -2069,7 +2129,10 @@ export default async function Home({
     if (!selectedAccount) return [];
     const set = new Set<string>();
     set.add(selectedAccount.name);
-    const inst = (selectedAccount.Institution?.name ?? "").trim();
+    const inst = (selectedAccount.kind === AccountKind.loan
+      ? (selectedAccount.Counterparty?.name ?? selectedAccount.Institution?.name ?? "")
+      : (selectedAccount.Institution?.name ?? "")
+    ).trim();
     if (inst) set.add(`${inst}·${selectedAccount.name}`);
     return [...set].filter(Boolean);
   })();
@@ -2319,7 +2382,7 @@ export default async function Home({
   }
 
   const selectedAccountLabel = (() => {
-    if (view === "debt") return "借入/借出";
+    if (view === "debt") return "往来款";
     if (selectedAccount) {
       const display = buildAccountDisplayOption({
         id: selectedAccount.id,
@@ -2329,6 +2392,7 @@ export default async function Home({
         groupId: selectedAccount.groupId,
         investProductType: selectedAccount.investProductType,
         Institution: selectedAccount.Institution,
+        Counterparty: selectedAccount.Counterparty,
         AccountGroup: selectedAccount.AccountGroup,
       }, creditCardLabelTemplate);
       const accountLabel = display.label;
@@ -2352,6 +2416,7 @@ export default async function Home({
       groupId: a.groupId,
       investProductType: a.investProductType,
       Institution: a.Institution,
+      Counterparty: a.Counterparty,
       AccountGroup: a.AccountGroup,
     }, creditCardLabelTemplate);
     return {
@@ -2415,6 +2480,7 @@ export default async function Home({
         groupId: a.groupId,
         investProductType: a.investProductType,
         Institution: a.Institution,
+        Counterparty: a.Counterparty,
         AccountGroup: a.AccountGroup,
       }, creditCardLabelTemplate);
       return {
@@ -2440,6 +2506,7 @@ export default async function Home({
         groupId: a.groupId,
         investProductType: a.investProductType,
         Institution: a.Institution,
+        Counterparty: a.Counterparty,
         AccountGroup: a.AccountGroup,
       }, creditCardLabelTemplate);
       return {
@@ -2493,6 +2560,7 @@ export default async function Home({
   const nestedFieldData = {
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
+    counterpartyId: counterparties.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
   };
 
   const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
@@ -2508,11 +2576,11 @@ export default async function Home({
   }>();
 
   for (const account of debtAccounts) {
-    const institutionName = (account.Institution?.name ?? "").trim();
-    const rowKey = institutionName
-      ? `institution:${account.institutionId ?? institutionName}`
+    const counterpartyName = (account.Counterparty?.name ?? account.Institution?.name ?? "").trim();
+    const rowKey = counterpartyName
+      ? `counterparty:${account.counterpartyId ?? account.institutionId ?? counterpartyName}`
       : `account:${account.id}`;
-    const rowName = institutionName || account.name;
+    const rowName = counterpartyName || account.name;
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const current = debtRowMap.get(rowKey) ?? {
       key: rowKey,
@@ -2526,7 +2594,7 @@ export default async function Home({
     };
     current.accountCount += 1;
     current.accountIds.push(account.id);
-    current.accountLabels.push(institutionName ? `${institutionName}·${account.name}` : account.name);
+    current.accountLabels.push(counterpartyName ? `${counterpartyName}·${account.name}` : account.name);
     current.net += balance;
     if (balance >= 0) current.receivable += balance;
     else current.payable += Math.abs(balance);
@@ -2537,8 +2605,8 @@ export default async function Home({
     (a, b) => (b.payable + b.receivable) - (a.payable + a.receivable),
   );
   const derivedDebtKey = selectedAccount?.kind === AccountKind.loan
-    ? (((selectedAccount.Institution?.name ?? "").trim()
-        ? `institution:${selectedAccount.institutionId ?? (selectedAccount.Institution?.name ?? "").trim()}`
+    ? (((selectedAccount.Counterparty?.name ?? selectedAccount.Institution?.name ?? "").trim()
+        ? `counterparty:${selectedAccount.counterpartyId ?? selectedAccount.institutionId ?? (selectedAccount.Counterparty?.name ?? selectedAccount.Institution?.name ?? "").trim()}`
         : `account:${selectedAccount.id}`))
     : "";
   const selectedDebtKey = debtRows.some((row) => row.key === debtPersonParam)
@@ -2570,7 +2638,7 @@ export default async function Home({
   const debtAccountLabelById = new Map(
     debtAccounts.map((account) => [
       account.id,
-      (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
+      ((account.Counterparty?.name ?? account.Institution?.name) ? `${account.Counterparty?.name ?? account.Institution?.name}·${account.name}` : account.name),
     ]),
   );
   const filteredDebtEntries = debtEntriesRaw.filter(
@@ -2593,7 +2661,9 @@ export default async function Home({
       const relatedAccountId = isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
       const inferredDirection = (selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable";
       const transferActionLabel =
-        entry.source === "debt_borrow_in"
+        entry.source?.startsWith("advance_payment")
+          ? (entry.categoryName || "代付")
+          : entry.source === "debt_borrow_in"
           ? "借入"
           : entry.source === "debt_repay_out"
             ? "还款"
@@ -3937,7 +4007,7 @@ export default async function Home({
                 debtAccounts={(selectedDebtRow?.accountIds ?? []).map((id) => ({
                   id,
                   label: debtAccountLabelById.get(id) ?? id,
-                  subLabel: "借入/借出",
+                  subLabel: "往来款",
                 }))}
                 cashAccounts={cashAccountList}
                 cashAccountSSOptions={cashAccountSSOptions}

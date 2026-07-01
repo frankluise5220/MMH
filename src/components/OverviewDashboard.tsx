@@ -175,7 +175,7 @@ export function OverviewDashboard({
             </div>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
               <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
-              <MetricCard label="总负债" value={formatMoneyYuan(totals.liabilities)} valueClass={liabilityClass(totals.liabilities, isRedUp)} />
+              <MetricCard label="总应付" value={formatMoneyYuan(totals.liabilities)} valueClass={liabilityClass(totals.liabilities, isRedUp)} />
               <MetricCard label="本月净流入" value={formatMoneyYuan(monthNet)} valueClass={directionalClass(monthNet, isRedUp)} />
             </div>
           </div>
@@ -319,7 +319,7 @@ export function OverviewDashboard({
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <HandCoins className="h-4 w-4 text-rose-500" />
-                  债务/债权
+                  往来款
                 </div>
                 <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
               </div>

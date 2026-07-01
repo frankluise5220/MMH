@@ -278,7 +278,7 @@ export async function POST(req: NextRequest) {
     if (kind === "bank_debit") return byName(/银行|存款/) ?? groups[0]?.id ?? null;
     if (kind === "ewallet") return byName(/第三方|储值|支付/) ?? groups[0]?.id ?? null;
     if (kind === "investment") return byName(/投资/) ?? groups[0]?.id ?? null;
-    if (kind === "loan") return byName(/负债|贷款|借/) ?? groups[0]?.id ?? null;
+    if (kind === "loan") return byName(/往来款|负债|贷款|借/) ?? groups[0]?.id ?? null;
     return groups[0]?.id ?? null;
   }
 

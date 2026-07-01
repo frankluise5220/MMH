@@ -57,11 +57,12 @@ export function useAccountSSFilter(accountSSOptions?: SmartSelectOption[], contr
   return { ownerFilter, setOwnerFilter, ownerFilterLabel, cycleOwnerFilter, filteredOptions, visibleOptionIds, ownerNames };
 }
 
-type TxType = "expense" | "income" | "transfer" | "investment";
+type TxType = "expense" | "income" | "transfer" | "investment" | "advance_payment";
 
 type AccountOption = {
   id: string;
   label: string;
+  kind?: string;
   icon?: string;
   subLabel?: string;
 };
@@ -391,6 +392,8 @@ export function TransactionFormModal({
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
   const [note, setNote] = useState("");
   const [toNote, setToNote] = useState("");
+  const [advancePaymentKind, setAdvancePaymentKind] = useState<"company" | "friend">("company");
+  const [advancePaymentCategory, setAdvancePaymentCategory] = useState<"travel" | "purchase" | "other">("travel");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
 
@@ -428,6 +431,13 @@ export function TransactionFormModal({
     }
     return sortOptionsByRecent(base, recentAccountIds);
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
+  const advancePaymentAccountOptions = useMemo(
+    () => transferAccountList
+      .filter((option) => option.kind === "loan")
+      .map((option) => ({ id: option.id, label: option.label, subLabel: option.subLabel })),
+    [transferAccountList],
+  );
+  const isAdvancePayment = txType === "advance_payment";
   const isEditingTransfer = !!editEntryId && txType === "transfer";
   const readonlyFromAccountLabel =
     displayTransferOptions.find((option) => option.id === fromAccountId)?.label
@@ -435,7 +445,7 @@ export function TransactionFormModal({
     ?? "未选择";
 
   useEffect(() => {
-    if (!open || txType === "transfer" || !accountId) return;
+    if (!open || txType === "transfer" || txType === "advance_payment" || !accountId) return;
     setLocalAccountSSOpts((prev) => {
       const currentOptions = prev ?? accountSSOptions ?? [];
       if (currentOptions.some((opt) => opt.id === accountId)) return prev;
@@ -460,6 +470,8 @@ export function TransactionFormModal({
     setCategoryId("");
     setNote("");
     setToNote("");
+    setAdvancePaymentKind("company");
+    setAdvancePaymentCategory("travel");
     setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -695,6 +707,19 @@ export function TransactionFormModal({
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
         formData.set("toAccountId", toAccountId);
+      } else if (txType === "advance_payment") {
+        if (!accountId) {
+          window.alert("请选择付款账户");
+          return;
+        }
+        if (!toAccountId) {
+          window.alert("请选择代付账号");
+          return;
+        }
+        formData.set("accountId", accountId);
+        formData.set("toAccountId", toAccountId);
+        formData.set("advancePaymentKind", advancePaymentKind);
+        formData.set("advancePaymentCategory", advancePaymentCategory);
       } else if (txType === "income") {
         formData.set("accountId", accountId);
         formData.set("categoryId", categoryId);
@@ -915,6 +940,21 @@ export function TransactionFormModal({
                     >
                       转账
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTxType("advance_payment");
+                        setAccountId(defaultAccountId ?? "");
+                        setToAccountId("");
+                      }}
+                      className={`segment-button h-9 flex-1 ${
+                        txType === "advance_payment"
+                          ? "segment-button-active"
+                          : ""
+                      }`}
+                    >
+                      代付
+                    </button>
                   </>
                 )}
               </div>
@@ -977,6 +1017,137 @@ export function TransactionFormModal({
                 </div>
               )}
 
+              {txType === "advance_payment" && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentKind("company")}
+                      className={`segment-button h-9 ${advancePaymentKind === "company" ? "segment-button-active" : ""}`}
+                    >
+                      公司代付
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentKind("friend")}
+                      className={`segment-button h-9 ${advancePaymentKind === "friend" ? "segment-button-active" : ""}`}
+                    >
+                      朋友代付
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentCategory("travel")}
+                      className={`segment-button h-9 ${advancePaymentCategory === "travel" ? "segment-button-active" : ""}`}
+                    >
+                      差旅费
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentCategory("purchase")}
+                      className={`segment-button h-9 ${advancePaymentCategory === "purchase" ? "segment-button-active" : ""}`}
+                    >
+                      代购费
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentCategory("other")}
+                      className={`segment-button h-9 ${advancePaymentCategory === "other" ? "segment-button-active" : ""}`}
+                    >
+                      其他
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">日期</div>
+                      <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">付款账户</div>
+                      <SmartSelect mode="single" value={accountId}
+                        onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                        options={displayAccountOptions} placeholder="请选择"
+                        onCreateClick={() => { void openAccountCreate("account"); }}
+                        onCycleOwnerFilter={cycleOwnerFilter}
+                        ownerFilterLabel={ownerFilterLabel} />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">代付账号</div>
+                      <SmartSelect
+                        mode="single"
+                        value={toAccountId}
+                        onChange={setToAccountId}
+                        options={advancePaymentAccountOptions}
+                        placeholder="选择往来款账户"
+                        onCreateClick={() => { void openAccountCreate("to"); }}
+                        createLabel="新增往来账户"
+                        searchable
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">标签</div>
+                      <SmartSelect mode="multi" value={selectedTagIds}
+                        onChange={(ids) => setSelectedTagIds(ids)}
+                        options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder="选择标签"
+                        onInlineCreate={async (name, color) => {
+                          const res = await fetch("/api/v1/tags", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name, color }),
+                          });
+                          const data = await res.json();
+                          if (!data.ok || !data.tag) throw new Error(data.error ?? "创建失败");
+                          return { id: data.tag.id, label: data.tag.name, color: data.tag.color };
+                        }}
+                        onCreated={(tag) => {
+                          setTagList(prev => [...prev, { id: tag.id, name: tag.label, color: tag.color }]);
+                          setSelectedTagIds(prev => [...prev, tag.id]);
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="form-label">金额</div>
+                    <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
+                  </div>
+
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                    代付不会计入普通支出，会记为付款账户转到代付账号，并出现在往来款里。
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">转出备注</div>
+                      <input
+                        name="note"
+                        placeholder="可选，例如：公司代买办公用品"
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">转入备注</div>
+                      <input
+                        name="toNote"
+                        placeholder="可选"
+                        value={toNote}
+                        onChange={(e) => setToNote(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {(txType === "expense" || txType === "income") && (
                 <div className="space-y-3">
                   {/* 第一行：日期 | 账户 */}
@@ -1030,7 +1201,7 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* 第三行：金额 | 附件 */}
+                  {/* 第三行：金额 | 收支机构 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">金额</div>
@@ -1233,7 +1404,7 @@ export function TransactionFormModal({
           const groupName = extra?.groupName?.trim();
           const label = institutionLabel ? `${institutionLabel}·${name}` : name;
           const subLabel = kindLabel(kind);
-          const option = { id, label, subLabel };
+          const option = { id, label, kind, subLabel };
           setAccountList(prev => [...prev, option]);
           setTransferAccountList(prev => [...prev, option]);
           setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
@@ -1245,6 +1416,7 @@ export function TransactionFormModal({
           setAccountCreateTarget("account");
         }}
         nestedFieldData={localNestedFieldData ?? nestedFieldData}
+        defaultType={accountCreateTarget === "to" && isAdvancePayment ? "loan" : undefined}
       />,
       document.body,
     )}
