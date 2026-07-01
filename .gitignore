@@ -53,6 +53,8 @@ next-env.d.ts
 
 # Claude Code session (may contain sensitive context)
 .claude/
+.codex/
+.omo/
 AGENTS.md
 CLAUDE.md
 DESIGN.md
@@ -151,11 +153,16 @@ public/test-results.json
 /src/app/test-results/
 release-artifacts/
 mmh-doc-edit/
+.next-hotfix.tar.gz
 .ssh-mmh/
 backup-deleted-*.json
 tmp-backup-*.json
 nul
 resume_japan_network_engineer/
+output/
+regular-invest-*.png
+.tmp*.cjs
+.tmp*.tsx
 
 # temporary plans
 plans/

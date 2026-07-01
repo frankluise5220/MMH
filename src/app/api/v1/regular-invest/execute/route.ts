@@ -6,6 +6,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -91,6 +92,7 @@ export async function POST(req: NextRequest) {
     if (!fundAcc) {
       return NextResponse.json({ ok: false, error: "基金账户不存在" }, { status: 400 });
     }
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(fundAcc.fundUnitsDecimals);
 
     const cashAcc = plan.cashAccountId
       ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
@@ -388,7 +390,7 @@ export async function POST(req: NextRequest) {
       const foundNavInfo = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
       if (foundNavInfo && foundNavInfo.nav > 0) {
         fundNav = foundNavInfo.nav;
-        fundUnits = principal / foundNavInfo.nav;
+        fundUnits = roundFundUnits(principal / foundNavInfo.nav, fundUnitsDecimals);
       }
 
       // 创建 TxRecord，直接包含所有基金字段

@@ -20,18 +20,19 @@ import { AccountKind, TransactionType, FundSubtype, IntervalUnit, RegularInvestS
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
-import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
+import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
-import { calcNextScheduledRunDate, encodeYearlyExecutionDay } from "@/lib/scheduled-task-date";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
 
 export const runtime = "nodejs";
 
@@ -56,18 +57,6 @@ function insurancePremiumTotalCycles(paymentTermYears: unknown, premiumFrequency
   if (!years || premiumFrequencyMonths <= 0 || premiumFrequencyMonths >= 999999) return null;
   const total = Math.ceil((years * 12) / premiumFrequencyMonths);
   return total > 0 ? total : null;
-}
-
-function addMonthsKeepingAnchorDay(date: Date, months: number, anchorDay?: number | null) {
-  const source = startOfDayUtc(date);
-  const targetMonth = source.getUTCMonth() + months;
-  const targetYear = source.getUTCFullYear() + Math.floor(targetMonth / 12);
-  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
-  const targetDay = Math.min(
-    anchorDay && anchorDay >= 1 ? anchorDay : source.getUTCDate(),
-    lastDayOfMonthUtc(targetYear, normalizedMonth),
-  );
-  return new Date(Date.UTC(targetYear, normalizedMonth, targetDay));
 }
 
 function toDateOrNull(val: unknown): Date | null {
@@ -384,6 +373,7 @@ export async function POST(req: Request) {
     }
 
     let createdId: string | undefined;
+    let createdPlanId: string | undefined;
     let changedInvestment = false;
 
     if (type === "transfer") {
@@ -556,6 +546,9 @@ export async function POST(req: Request) {
         body.createInsurancePremiumPlan !== false &&
         body.createPremiumPlan !== false &&
         body.skipPlanCreation !== true;
+      const backfillInsurancePremiumRecords =
+        body.insurancePremiumBackfillPastRecords === true ||
+        body.backfillPastInsurancePremiumRecords === true;
       const skipDuplicateInsurancePremiumDate = body.skipDuplicateInsurancePremiumDate === true;
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
@@ -583,6 +576,7 @@ export async function POST(req: Request) {
       }
 
       let finalInvestmentAccId = "";
+      let scheduledInsurancePremiumPlanId: string | null = null;
       await prisma.$transaction(async (tx) => {
         let resolvedInsuranceProductName: string | null = null;
         let insuranceProductForPlan: {
@@ -711,6 +705,12 @@ export async function POST(req: Request) {
           throw new Error("请选择投资/存款账户");
         }
         finalInvestmentAccId = investAcc.id;
+        const fundUnitsPrecisionAccount = await tx.account.findUnique({
+          where: { id: investAcc.id },
+          select: { fundUnitsDecimals: true },
+        });
+        const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals);
+        const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
         const cashAcc = cashAccountIdInput
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true } })
@@ -718,9 +718,29 @@ export async function POST(req: Request) {
 
         const entryFundCode = fundCode || null;
         const entryFundName = resolvedInsuranceProductName || fundNameInput || fundCode || null;
+        const isInsurancePremiumBuy = isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike;
+        const premiumFrequencyMonths = insuranceProductForPlan
+          ? Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0)
+          : 0;
+        const premiumAmount = insuranceProductForPlan
+          ? positiveNumber(insuranceProductForPlan.premiumAmount) ?? amountAbs
+          : amountAbs;
+        const insurancePremiumTotalRuns = insuranceProductForPlan
+          ? insurancePremiumTotalCycles(insuranceProductForPlan.paymentTermYears, premiumFrequencyMonths)
+          : null;
+        const shouldUseInsurancePremiumPlan = !!(
+          isInsurancePremiumBuy &&
+          (createInsurancePremiumPlan || backfillInsurancePremiumRecords) &&
+          insuranceProductForPlan &&
+          cashAcc?.id &&
+          insurancePremiumTotalRuns &&
+          insurancePremiumTotalRuns > 1 &&
+          premiumAmount > 0
+        );
 
         if (
           skipDuplicateInsurancePremiumDate &&
+          !shouldUseInsurancePremiumPlan &&
           isInsurance &&
           insuranceProductId &&
           finalFundSubtype === FundSubtype.buy &&
@@ -744,6 +764,70 @@ export async function POST(req: Request) {
             createdId = existingPremiumEntry.id;
             return;
           }
+        }
+
+        if (shouldUseInsurancePremiumPlan && insuranceProductForPlan && cashAcc?.id && insurancePremiumTotalRuns) {
+          const anchorDate = startOfDayUtc(insuranceProductForPlan.startDate ?? date);
+          const anchorDay = anchorDate.getUTCDate();
+          const memo = encodeScheduledTaskMemo({
+            type: "insurance_premium",
+            title: `${insuranceProductForPlan.name} 缴费`,
+            fromAccountId: cashAcc.id,
+            toAccountId: investAcc.id,
+            insuranceProductId: insuranceProductForPlan.id,
+          });
+          const existingPlan = await tx.regularInvestPlan.findFirst({
+            where: {
+              householdId,
+              fundCode: "insurance_premium",
+              memo: { contains: insuranceProductForPlan.id },
+              status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused, RegularInvestStatus.completed] },
+            },
+            orderBy: { createdAt: "desc" },
+          });
+          const existingExecutedRuns = existingPlan?.executedRuns ?? 0;
+          const existingCompleted = existingPlan?.status === RegularInvestStatus.completed && existingExecutedRuns >= insurancePremiumTotalRuns;
+          const planData = {
+            accountId: investAcc.id,
+            accountName: investAcc.name,
+            cashAccountId: cashAcc.id,
+            cashAccountName: cashAcc.name,
+            fundCode: "insurance_premium",
+            fundName: `${insuranceProductForPlan.name} 缴费`,
+            fundProductType: null,
+            amount: premiumAmount,
+            intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
+            intervalValue: premiumFrequencyMonths === 12 ? 1 : premiumFrequencyMonths,
+            executionDay: premiumFrequencyMonths === 12 ? null : anchorDay,
+            startDate: anchorDate,
+            nextRunDate: existingPlan?.nextRunDate ?? anchorDate,
+            totalRuns: insurancePremiumTotalRuns,
+            executedRuns: existingExecutedRuns,
+            lastRunDate: existingPlan?.lastRunDate ?? null,
+            feeRate: 0,
+            confirmDays: 0,
+            arrivalDays: 0,
+            memo,
+            skipPendingPreceding: false,
+            status: existingCompleted ? RegularInvestStatus.completed : RegularInvestStatus.active,
+          };
+          if (existingPlan) {
+            await tx.regularInvestPlan.update({
+              where: { id: existingPlan.id },
+              data: planData,
+            });
+            scheduledInsurancePremiumPlanId = existingPlan.id;
+          } else {
+            const createdPlan = await tx.regularInvestPlan.create({
+              data: {
+                householdId,
+                ...planData,
+              },
+            });
+            scheduledInsurancePremiumPlanId = createdPlan.id;
+          }
+          createdPlanId = scheduledInsurancePremiumPlanId;
+          return;
         }
 
         let recordAccountId: string;
@@ -810,7 +894,7 @@ export async function POST(req: Request) {
             fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
-            fundUnits: fundUnits ?? undefined,
+            fundUnits: roundedFundUnits ?? undefined,
             fundNav: fundProductType === "deposit" ? undefined : fundNav ?? undefined,
             depositAnnualRate: depositAnnualRate ?? undefined,
             depositInterest: depositInterest ?? undefined,
@@ -819,7 +903,7 @@ export async function POST(req: Request) {
             fundConfirmDate: computedConfirmDate ?? undefined,
             fundArrivalDate: computedArrivalDate ?? undefined,
             fundArrivalAmount: fundArrivalAmount ?? undefined,
-            note: note || undefined,
+            note: note || (isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike ? `保险缴费：${entryFundName}` : undefined),
             householdId,
           },
         });
@@ -828,119 +912,20 @@ export async function POST(req: Request) {
         if (tagIds.length > 0) {
           await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
         }
-
-        if (
-          isInsurance &&
-          finalFundSubtype === FundSubtype.buy &&
-          !redeemLike &&
-          createInsurancePremiumPlan &&
-          insuranceProductForPlan &&
-          cashAcc?.id
-        ) {
-          const premiumFrequencyMonths = Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0);
-          const premiumAmount = positiveNumber(insuranceProductForPlan.premiumAmount) ?? amountAbs;
-          const totalCycles = insurancePremiumTotalCycles(
-            insuranceProductForPlan.paymentTermYears,
-            premiumFrequencyMonths,
-          );
-          if (totalCycles && totalCycles > 1 && premiumAmount > 0) {
-            const premiumEntries = await tx.txRecord.findMany({
-              where: {
-                householdId,
-                insuranceProductId: insuranceProductForPlan.id,
-                source: "insurance",
-                type: TransactionType.investment,
-                fundSubtype: FundSubtype.buy,
-                deletedAt: null,
-              },
-              select: { date: true },
-              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-            });
-            const pendingHistoryPremiumCount = Math.max(
-              0,
-              Math.floor(positiveNumber(body.insurancePremiumBackfillCount) ?? 0),
-            );
-            const paidCycles = premiumEntries.length + pendingHistoryPremiumCount;
-            const remainingRuns = Math.max(0, totalCycles - paidCycles);
-            const latestPremiumDate = premiumEntries[0]?.date ?? date;
-            const anchorDate = insuranceProductForPlan.startDate ?? latestPremiumDate;
-            const anchorDay = anchorDate.getUTCDate();
-            const nextPremiumDate = addMonthsKeepingAnchorDay(
-              latestPremiumDate,
-              premiumFrequencyMonths,
-              anchorDay,
-            );
-            const memo = encodeScheduledTaskMemo({
-              type: "insurance_premium",
-              title: `${insuranceProductForPlan.name} 缴费`,
-              fromAccountId: cashAcc.id,
-              toAccountId: investAcc.id,
-              insuranceProductId: insuranceProductForPlan.id,
-            });
-            const existingPlan = await tx.regularInvestPlan.findFirst({
-              where: {
-                householdId,
-                fundCode: "insurance_premium",
-                memo: { contains: insuranceProductForPlan.id },
-                status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused, RegularInvestStatus.completed] },
-              },
-              orderBy: { createdAt: "desc" },
-            });
-            if (remainingRuns <= 0) {
-              if (existingPlan) {
-                await tx.regularInvestPlan.update({
-                  where: { id: existingPlan.id },
-                  data: {
-                    status: RegularInvestStatus.completed,
-                    totalRuns: 0,
-                    executedRuns: 0,
-                    lastRunDate: latestPremiumDate,
-                    nextRunDate: nextPremiumDate,
-                    startDate: anchorDate,
-                  },
-                });
-              }
-              return;
-            }
-            const planData = {
-              accountId: investAcc.id,
-              accountName: investAcc.name,
-              cashAccountId: cashAcc.id,
-              cashAccountName: cashAcc.name,
-              fundCode: "insurance_premium",
-              fundName: `${insuranceProductForPlan.name} 缴费`,
-              fundProductType: null,
-              amount: premiumAmount,
-              intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
-              intervalValue: premiumFrequencyMonths === 12 ? 1 : premiumFrequencyMonths,
-              executionDay: premiumFrequencyMonths === 12 ? encodeYearlyExecutionDay(anchorDate) : anchorDay,
-              startDate: anchorDate,
-              nextRunDate: nextPremiumDate,
-              totalRuns: remainingRuns,
-              executedRuns: 0,
-              feeRate: 0,
-              confirmDays: 0,
-              arrivalDays: 0,
-              memo,
-              skipPendingPreceding: false,
-              status: RegularInvestStatus.active,
-            };
-            if (existingPlan) {
-              await tx.regularInvestPlan.update({
-                where: { id: existingPlan.id },
-                data: planData,
-              });
-            } else {
-              await tx.regularInvestPlan.create({
-                data: {
-                  householdId,
-                  ...planData,
-                },
-              });
-            }
-          }
-        }
       });
+
+      if (scheduledInsurancePremiumPlanId && backfillInsurancePremiumRecords) {
+        const plan = await prisma.regularInvestPlan.findFirst({
+          where: { id: scheduledInsurancePremiumPlanId, householdId },
+        });
+        if (plan) {
+          await executeNonFundScheduledTaskPlan({
+            householdId,
+            plan,
+            now: date,
+          });
+        }
+      }
 
       if (fundProductType !== "deposit" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
@@ -1006,7 +991,7 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, data: { id: createdId } });
+    return NextResponse.json({ ok: true, data: { id: createdId, regularInvestPlanId: createdPlanId } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "创建失败";
     console.error("POST /api/v1/transactions/detail error:", err);
@@ -1187,6 +1172,9 @@ export async function PUT(req: Request) {
 
     if (!investAcc) throw new Error("请选择投资账户");
     investmentAccId = investAcc.id;
+    const fundUnitsInput = positiveNumber(body.fundUnits);
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(investAcc.fundUnitsDecimals);
+    const roundedFundUnits = fundUnitsInput != null ? roundFundUnits(fundUnitsInput, fundUnitsDecimals) : null;
 
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
@@ -1214,9 +1202,10 @@ export async function PUT(req: Request) {
         let recordToAccountName: string;
         let signedAmount: number;
 
+        const hasFundFee = Object.prototype.hasOwnProperty.call(body, "fundFee");
         const fundArrivalAmount = parseMoney(body.fundArrivalAmount);
         const depositSourceEntryId = String(body.depositSourceEntryId ?? "").trim() || null;
-        const fundFee = parseMoney(body.fundFee);
+        const fundFee = hasFundFee ? parseMoney(body.fundFee) : toNumber(entry.fundFee);
 
         if (cashReceivingLike) {
           recordAccountId = investAcc.id;
@@ -1254,9 +1243,9 @@ export async function PUT(req: Request) {
             fundConfirmDate: toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: toDateOrNull(body.fundArrivalDate),
             fundArrivalAmount: parseMoney(body.fundArrivalAmount) || null,
-            fundUnits: positiveNumber(body.fundUnits),
+            fundUnits: roundedFundUnits,
             fundNav: positiveNumber(body.fundNav),
-            fundFee: parseMoney(body.fundFee) || null,
+            fundFee: hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.fundFee,
             depositAnnualRate: parseMoney(body.depositAnnualRate) || null,
             depositInterest: parseMoney(body.depositInterest) || null,
             depositSourceEntryId,

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
   type FundSubtype,
   type ProductType,
@@ -40,10 +41,9 @@ function pnlCls(n: number | null | undefined): string {
   return "text-slate-600";
 }
 
-// 鏈湴绠€鍐欏埆鍚?
 const p = parseNumber;
 
-// 缂栬緫妯″紡鐨勫叆鍙ｆ暟鎹被鍨?
+// 编辑模式的入口数据。
 export type InvestmentEntry = {
   id: string;
   transactionId: string;
@@ -60,8 +60,8 @@ export type InvestmentEntry = {
   fundProductType: string | null;
   fundSubtype: string | null;
   source?: string | null;
-  accountId?: string | null; // 鏁版嵁搴撹祫閲戞祦鍚戞潵婧愯处鎴稩D锛氳祹鍥炰负鍩洪噾璐︽埛锛屼拱鍏ヤ负璧勯噾璐︽埛
-  toAccountId?: string | null; // 鏁版嵁搴撹祫閲戞祦鍚戝幓鍚戣处鎴稩D锛氳祹鍥炰负璧勯噾璐︽埛锛屼拱鍏ヤ负鍩洪噾璐︽埛
+  accountId?: string | null;
+  toAccountId?: string | null;
   cashAccountId?: string | null;
   toAccountName?: string | null;
   fundArrivalDate?: string | null;
@@ -69,7 +69,7 @@ export type InvestmentEntry = {
   realizedProfit?: number | null;
 };
 
-// 鏂板妯″紡鐨勯粯璁ゅ€肩被鍨?
+// 新增模式的默认值。
 export type InvestmentDefaults = {
   fundCode?: string;
   fundName?: string;
@@ -102,12 +102,13 @@ export function InvestmentFormModal({
   editAction,
   openSignal,
   hideTrigger,
+  fundUnitsDecimals: fundUnitsDecimalsProp,
 }: {
   mode: "create" | "edit";
-  accountId: string; // 榛樿鍩洪噾璐︽埛ID锛堟柊澧炴ā寮忥級鎴栧綋鍓嶈处鎴稩D锛堢紪杈戞ā寮忥級
+  accountId: string;
   accountProductType?: string | null;
-  entry?: InvestmentEntry; // 缂栬緫妯″紡蹇呴』鎻愪緵
-  defaults?: InvestmentDefaults; // 鏂板妯″紡鐨勯粯璁ゅ€?
+  entry?: InvestmentEntry;
+  defaults?: InvestmentDefaults;
   cashAccounts?: { id: string; label: string }[];
   investmentAccounts?: { id: string; label: string }[];
   cashAccountSSOptions?: SmartSelectOption[];
@@ -118,8 +119,11 @@ export function InvestmentFormModal({
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   openSignal?: number;
   hideTrigger?: boolean;
+  fundUnitsDecimals?: number | null;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 3);
+  const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
 
   const fixedProductType: ProductType =
     (["fund", "money", "wealth", "deposit"].includes(accountProductType ?? "")
@@ -128,9 +132,7 @@ export function InvestmentFormModal({
         ? entry.fundProductType as ProductType
         : "fund"));
 
-  // 缂栬緫妯″紡锛氫粠 entry 鍒濆鍖?
-  // buy_failed锛氭殏鍋滅敵璐樉绀轰负涔板叆锛岃祫閲戦€€鍥炴樉绀轰负璧庡洖锛堜唤棰濆潎涓?锛?
-  // buy + source=dividend锛氭樉绀轰负 dividend_reinvest
+  // 编辑旧记录时，把历史存储形态映射成当前表单展示类型。
   const initDisplaySubtype: FundSubtype = mode === "edit" && entry?.fundSubtype === "buy_failed"
     ? (entry?.source === "regular_invest_refund" ? "redeem" : "buy")
     : mode === "edit" && entry?.fundSubtype === "buy" && entry?.source === "dividend"
@@ -141,11 +143,10 @@ export function InvestmentFormModal({
   const initSubtype: FundSubtype = initDisplaySubtype;
   const initAmount = mode === "edit" && entry ? Math.abs(entry.amount) : "";
   const initNav = mode === "edit" && entry?.fundNav != null ? String(entry.fundNav) : "";
-  const initUnits = mode === "edit" && entry?.fundUnits != null ? Number(entry.fundUnits).toFixed(3)
-    : defaults?.fundUnits && defaults.fundUnits > 0 ? Number(defaults.fundUnits).toFixed(3) : "";
+  const initUnits = mode === "edit" && entry?.fundUnits != null ? formatUnits(Number(entry.fundUnits))
+    : defaults?.fundUnits && defaults.fundUnits > 0 ? formatUnits(Number(defaults.fundUnits)) : "";
   const initFee = mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
-  // 涔板叆/dividend_cash锛歛ccountId=鐜伴噾璐︽埛(鏉ユ簮), toAccountId=鎶曡祫璐︽埛(鍘诲悜)
-  // 璧庡洖/杞崲杞嚭/buy_failed閫€鍥烇細accountId=鎶曡祫璐︽埛(鏉ユ簮), toAccountId=鐜伴噾璐︽埛(鍘诲悜)
+  // 买入类：现金账户 -> 基金账户；赎回类：基金账户 -> 现金账户。
   const isRedeemEntry = isRedeemLike(initSubtype);
   const initCashAccountId = mode === "edit"
     ? (isRedeemEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
@@ -156,7 +157,7 @@ export function InvestmentFormModal({
   const initConfirmDays = mode === "edit" && entry
     ? (defaults?.confirmDays ?? 0)
     : (defaults?.confirmDays ?? 0);
-  const initFeeRate = defaults?.feeRate ?? "0";
+  const initFeeRate = mode === "edit" ? "" : (defaults?.feeRate ?? "0");
   const initFundCode = mode === "edit" ? (entry?.fundCode ?? "") : (defaults?.fundCode ?? "");
   const initFundName = mode === "edit" ? (entry?.fundName ?? entry?.fundCode ?? "") : (defaults?.fundName ?? "");
   const initArrivalDate = mode === "edit"
@@ -224,6 +225,7 @@ export function InvestmentFormModal({
   const redeemLastAppliedRef = useRef<number>(0);
   const prevSavedDateRef = useRef<string | null>(null);
   const editAutoNavEnabledRef = useRef(mode !== "edit");
+  const suppressFeeAutoCalcRef = useRef(mode === "edit");
 
   const flatCashAccountOptions = useMemo<SmartSelectOption[]>(
     () => (cashAccounts ?? []).map((account) => ({ id: account.id, label: account.label })),
@@ -250,8 +252,8 @@ export function InvestmentFormModal({
     <button
       type="button"
       onClick={cycleCashOwnerFilter}
-      title={`鎵€鏈変汉锛?{cashOwnerFilterLabel}`}
-      aria-label={`鍒囨崲鎵€鏈変汉锛屽綋鍓?${cashOwnerFilterLabel}`}
+      title={`所有人：${cashOwnerFilterLabel}`}
+      aria-label={`切换所有人，当前 ${cashOwnerFilterLabel}`}
       className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
     >
       <Repeat className="h-3.5 w-3.5" />
@@ -261,8 +263,8 @@ export function InvestmentFormModal({
     <button
       type="button"
       onClick={cycleInvestmentOwnerFilter}
-      title={`鎵€鏈変汉锛?{investmentOwnerFilterLabel}`}
-      aria-label={`鍒囨崲鎵€鏈変汉锛屽綋鍓?${investmentOwnerFilterLabel}`}
+      title={`所有人：${investmentOwnerFilterLabel}`}
+      aria-label={`切换所有人，当前 ${investmentOwnerFilterLabel}`}
       className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
     >
       <Repeat className="h-3.5 w-3.5" />
@@ -275,7 +277,7 @@ export function InvestmentFormModal({
     setCashAccountId(id);
   }
 
-  function renderCashAccountSelect(placeholder = "璇烽€夋嫨璧勯噾璐︽埛") {
+  function renderCashAccountSelect(placeholder = "请选择资金账户") {
     return (
       <SmartSelect
         mode="single"
@@ -293,7 +295,7 @@ export function InvestmentFormModal({
     );
   }
 
-  function renderInvestmentAccountSelect(placeholder = "璇烽€夋嫨璐︽埛") {
+  function renderInvestmentAccountSelect(placeholder = "请选择账户") {
     return (
       <SmartSelect
         mode="single"
@@ -358,6 +360,7 @@ export function InvestmentFormModal({
     arrivalDateEditedRef.current = false;
     lastNavFetchedDate.current = "";
     editAutoNavEnabledRef.current = false;
+    suppressFeeAutoCalcRef.current = true;
     cashAccountTouchedRef.current = false;
     cashAccountAutoRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -380,10 +383,12 @@ export function InvestmentFormModal({
       .then(r => r.json())
       .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
       .catch(() => {});
-    fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
-      .then(r => r.json())
-      .then(d => { if (d.ok && d.rate != null) setFeeRate(String(d.rate)); })
-      .catch(() => {});
+    if (mode === "create") {
+      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
+        .then(r => r.json())
+        .then(d => { if (d.ok && d.rate != null) setFeeRate(String(d.rate)); })
+        .catch(() => {});
+    }
   }, [open, toAccountId, subtype]);
 
   // Always re-verify fund name from authoritative source when modal opens with a fundCode
@@ -397,7 +402,7 @@ export function InvestmentFormModal({
       .finally(() => setNameLoading(false));
   }, [open, fundCode]);
 
-  // Listen for AI panel "open create transaction" event 鈥?only in create mode
+  // AI 面板触发新增记账时，自动带入识别到的基金信息。
   useEffect(() => {
     if (mode !== "create") return;
 
@@ -423,7 +428,7 @@ export function InvestmentFormModal({
 
       requestIdRef.current = detail.requestId;
 
-      // Extract fund code from category (鍩洪噾路004011) or counterparty (鍩洪噾004011)
+      // 从分类或交易对方中提取 6 位基金代码。
       const catCode = (detail.item.category ?? "").match(/\b(\d{6})\b/)?.[1];
       const cptyCode = (detail.item.counterparty ?? "").match(/\b(\d{6})\b/)?.[1];
       const fundCodeFromAi = catCode || cptyCode || "";
@@ -431,8 +436,8 @@ export function InvestmentFormModal({
       const amt = detail.item.amount ?? 0;
       const aiDate = detail.item.date ?? today;
       const note = (detail.item.remark ?? detail.item.rawText ?? "").trim();
-      const isRedeem = /璧庡洖|鍗栧嚭/.test(note + detail.item.rawText);
-      const isDivCash = /鐜伴噾绾㈠埄/.test(note + detail.item.rawText);
+      const isRedeem = /赎回|卖出/.test(note + detail.item.rawText);
+      const isDivCash = /现金红利/.test(note + detail.item.rawText);
 
       // Reset form first, then populate
       resetForCreate();
@@ -542,10 +547,17 @@ export function InvestmentFormModal({
         const st = detail.fundSubtype === "buy_failed" ? "buy" : detail.fundSubtype as FundSubtype;
         if (SUBTYPE_LABELS[st as FundSubtype]) setSubtype(st as FundSubtype);
       }
-      if (detail.fundUnits != null) setUnits(Number(detail.fundUnits).toFixed(3));
+      if (detail.fundUnits != null) setUnits(formatUnits(Number(detail.fundUnits)));
       if (detail.fundNav != null) setNav(String(detail.fundNav));
       if (detail.fundFee != null) setFee(String(detail.fundFee));
       if (detail.fundName) setFundName(detail.fundName);
+      setFeeRate("");
+      setFeeEdited(false);
+      setFeeRateEdited(false);
+      unitsEditedRef.current = false;
+      amountEditedRef.current = false;
+      navEditedRef.current = false;
+      suppressFeeAutoCalcRef.current = true;
       setOpen(true);
     }
 
@@ -558,7 +570,7 @@ export function InvestmentFormModal({
     window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
-  // 璧庡洖妯″紡锛氳绠楃敵璇锋棩鏈熷墠宸茬‘璁?鍒拌处鐨勫彲璧庡洖浠介
+  // 赎回时只计算申请日前已确认或已到账的可用份额。
   const holdingsAsOfDate = useMemo(() => {
     if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
     const map = new Map<string, number>();
@@ -585,8 +597,7 @@ export function InvestmentFormModal({
   const effectiveHoldings = useMemo(() => {
     if (!holdings) return undefined;
     if (!holdingsAsOfDate) return holdings;
-    // 璧庡洖妯″紡锛氫繚鐣欐墍鏈夋寔浠撳熀閲戝湪涓嬫媺鍒楄〃锛屼笉鍥犱唤棰濅负 0 灏卞墧闄?
-    // 浠介涓?0 鐨勪粛鍙€夛紝鐢ㄦ埛鍙墜鍔ㄨ緭鍏ヤ唤棰濓紙鍙兘鏄巻鍙叉暟鎹ˉ褰曪級
+    // 赎回模式保留全部持仓选项，份额为 0 的历史数据也允许手动补录。
     return holdings.map(h => ({
       ...h,
       units: holdingsAsOfDate.has(h.fundCode) ? holdingsAsOfDate.get(h.fundCode)! : 0,
@@ -598,7 +609,7 @@ export function InvestmentFormModal({
 
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
-      // 鍒囧埌璧庡洖锛氶噸缃拱鍏ョ殑閲戦/浠介/鎵嬬画璐癸紝棰勫～鎸佷粨浠介
+      // 切到赎回时清空买入金额和费用，并优先带入当前持仓份额。
       setAmount("");
       setFee("");
       setFeeEdited(false);
@@ -606,12 +617,12 @@ export function InvestmentFormModal({
       setFeeRateEdited(false);
       amountEditedRef.current = false;
       const h = effectiveHoldings?.find(p => p.fundCode === fundCode);
-      if (h && h.units > 0) setUnits(Number(h.units).toFixed(3));
-      else if (defaults?.fundUnits && defaults.fundUnits > 0) setUnits(Number(defaults.fundUnits).toFixed(3));
+      if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
+      else if (defaults?.fundUnits && defaults.fundUnits > 0) setUnits(formatUnits(Number(defaults.fundUnits)));
       else setUnits("");
     }
     if (isBuyLike(nextSubtype) && !isBuyLike(subtype)) {
-      // 鍒囧洖涔板叆锛氶噸缃祹鍥炵殑閲戦/浠介/鎵嬬画璐?鍒拌处閲戦/璐圭巼
+      // 切回买入时清空赎回金额、到账金额和相关自动计算状态。
       setUnits("");
       unitsEditedRef.current = false;
       amountEditedRef.current = false;
@@ -643,7 +654,7 @@ export function InvestmentFormModal({
     }
   }, [productType]);
 
-  // 鐜伴噾绾㈠埄妯″紡锛氬厜鏍囪嚜鍔ㄨ仛鐒﹀埌閲戦杈撳叆妗?
+  // 现金红利模式打开后聚焦到金额输入。
   useEffect(() => {
     if (isDividend(subtype) && open) {
       setTimeout(() => dividendAmountRef.current?.focus(), 100);
@@ -659,7 +670,7 @@ export function InvestmentFormModal({
     return /^\d{6}$/.test(raw) ? raw : "";
   }, [fundCode]);
 
-  // 鏂板妯″紡锛氭墦寮€鏃惰嚜鍔ㄥ～鍏呯幇閲戣处鎴凤紙璐圭巼/纭澶╂暟鍙敤浜庝拱鍏?璧庡洖锛?
+  // 新增模式打开后，按基金账户和基金代码补全资金账户、费率和确认天数。
   useEffect(() => {
     if (mode !== "create" || !open || !toAccountId) return;
     const controller = new AbortController();
@@ -702,15 +713,10 @@ export function InvestmentFormModal({
     return () => controller.abort();
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype]);
 
-  // 缂栬緫妯″紡锛氫粠搴撲腑鑾峰彇 confirmDays 鍜?feeRate 鐨勫噯纭€硷紙鐜伴噾绾㈠埄涓嶉渶瑕侊級
+  // 编辑模式打开后只刷新确认天数；手续费金额以当前记录为准，不重读费率库。
   useEffect(() => {
     if (mode !== "edit" || !open || !toAccountId || isDividend(subtype)) return;
     if (fundCodeKey) {
-      const feeType = isRedeemLike(subtype) ? "redeem" : "buy";
-      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}&feeType=${feeType}`)
-        .then(r => r.json())
-        .then(d => { if (!feeRateEdited && d.ok && d.rate != null) setFeeRate(String(d.rate)); })
-        .catch(() => {});
       fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}`)
         .then(r => r.json())
         .then(d => { if (!confirmDaysEdited && d.ok && d.days != null) { setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
@@ -740,81 +746,85 @@ export function InvestmentFormModal({
   const computedUnits = useMemo(() => {
     const navN = p(nav);
     const amountN = p(amount);
-    const effectiveFee = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
+    const effectiveFee = p(fee) > 0 ? p(fee) : (!suppressFeeAutoCalcRef.current && computedFee ? p(computedFee) : 0);
     if (navN > 0 && amountN > 0 && isBuyLike(subtype)) {
       const principal = amountN - effectiveFee;
-      return principal > 0 ? (principal / navN).toFixed(3) : "";
+      return principal > 0 ? formatUnits(principal / navN) : "";
     }
     if (isRedeemLike(subtype) && defaults?.fundUnits && defaults.fundUnits > 0) {
-      return Number(defaults.fundUnits).toFixed(3);
+      return formatUnits(Number(defaults.fundUnits));
     }
     if (navN > 0 && amountN > 0 && isRedeemLike(subtype)) {
-      return (amountN / navN).toFixed(3);
+      return formatUnits(amountN / navN);
     }
     return "";
   }, [nav, amount, fee, computedFee, subtype, defaults?.fundUnits]);
 
-  function autoCalcUnits() {
-    if (!isBuyLike(subtype)) return;
-    if (unitsEditedRef.current) return;
+  function calculateBuyUnits(nextAmountRaw: string, nextFeeRaw: string) {
+    suppressFeeAutoCalcRef.current = false;
+    if (!isBuyLike(subtype) || unitsEditedRef.current) return;
     const navN = p(nav);
-    const amountN = p(amount);
-    const feeN = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
+    const amountN = p(nextAmountRaw);
+    const feeN = p(nextFeeRaw);
     if (navN <= 0 || amountN <= 0) return;
     const principal = amountN - feeN;
-    const next = principal > 0 ? (principal / navN).toFixed(3) : "";
-    if (next && next !== units) setUnits(next);
+    const nextUnits = principal > 0 ? formatUnits(principal / navN) : "";
+    if (nextUnits) setUnits(nextUnits);
   }
 
-  // 鈹€鈹€ Auto-calc units whenever nav/amount/fee change 鈹€鈹€
-  useEffect(() => {
-    autoCalcUnits();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nav, fee, computedFee]);
+  function calculateUnitsAfterFeeChange(nextFeeRaw: string) {
+    calculateBuyUnits(amount, nextFeeRaw);
+  }
 
-  function onAmountBlur() {
-    // Auto-calc fee from rate when amount changes
-    if (!feeEdited && showFeeFor(subtype, productType)) {
-      const rate = p(feeRate) / 100;
-      const base = isRedeemLike(subtype) && redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
-      if (base > 0 && rate > 0) setFee((base * rate).toFixed(2));
+  function calculateUnitsAfterAmountChange(nextAmountRaw: string) {
+    calculateBuyUnits(nextAmountRaw, fee);
+  }
+
+  function calculateFeeFromRate(nextRateRaw: string) {
+    suppressFeeAutoCalcRef.current = false;
+    setFeeEdited(false);
+    const rate = p(nextRateRaw) / 100;
+    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
+    const nextFee = baseAmount > 0 && rate > 0 ? (baseAmount * rate).toFixed(2) : "";
+    const feeChanged = p(nextFee) !== p(fee);
+    setFee(nextFee);
+
+    if (feeChanged) {
+      calculateUnitsAfterFeeChange(nextFee);
     }
-    autoCalcUnits();
+
+    if (feeChanged && isRedeemLike(subtype) && !arrivalAmount) {
+      const gross = redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
+      if (gross > 0) setArrivalAmount(Math.max(0, gross - p(nextFee)).toFixed(2));
+    }
   }
 
-
-
-  useEffect(() => {
-    if (!showFeeFor(subtype, productType) || feeEdited) return;
-    setFee(computedFee || "");
-  }, [computedFee, subtype, productType, feeEdited]);
-
-  // 纭鏃ユ湡鑱斿姩锛氱敵璇锋棩鏈熷彉 鈫?纭鏃ユ湡鍙橈紝鍒拌处鏃ユ湡鑱斿姩锛坅rrivalDays > 0 鏃讹級
+  // 申请日期变化时，联动确认日期和到账日期。
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
       const nextConfirmDate = confirmDays > 0 ? addDays(applyDate, confirmDays) : applyDate;
       setConfirmDate(nextConfirmDate);
-      // arrivalDays > 0 涓斿埌璐︽棩鏈熸湭琚墜宸ヤ慨鏀规椂鑷姩鎺ㄧ畻
+      // 到账天数已知且未手动改过到账日时，自动推导到账日期。
       if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
         setArrivalDate(addDays(nextConfirmDate, arrivalDays));
       }
     }
   }, [applyDate, confirmDays, subtype, open, arrivalDays, mode]);
 
-  // 鍒拌处鏃ユ湡鎵嬪伐鍙樺寲鏃讹紝鑷姩璁＄畻 arrivalDays = diff(arrivalDate, confirmDate)锛屽瓨搴?
+  // 手动修改到账日期时，反算并保存 arrivalDays。
   const arrivalDateEditedRef = useRef(false);
   function onArrivalDateChange(val: string) {
     setArrivalDate(val);
     arrivalDateEditedRef.current = true;
-    // 浠?arrivalDate 鍜?confirmDate 璁＄畻宸€?鈫?arrivalDays
+    // arrivalDate - confirmDate 得到到账天数。
     if (val && confirmDate) {
       const d1 = new Date(val + "T00:00:00Z");
       const d2 = new Date(confirmDate + "T00:00:00Z");
       const diff = Math.round((d1.getTime() - d2.getTime()) / 86400000);
       if (diff >= 0) {
         setArrivalDays(diff);
-        // 瀛樺叆纭澶╂暟搴?
+        // 只持久化常见短周期到账天数，避免偶发长间隔污染默认值。
         if (toAccountId && fundCode.trim() && diff <= 3) {
           fetch("/api/v1/fund/confirm-days", {
             method: "POST",
@@ -826,18 +836,18 @@ export function InvestmentFormModal({
     }
   }
 
-  // 璧庡洖妯″紡锛氭棩鏈熷彉鍖栨椂閲嶇畻鎸佷粨浠介锛堟湭鎵嬪姩淇敼浠介鏃讹級
+  // 赎回模式下，日期变化后按当日可用持仓重算份额。
   useEffect(() => {
     if (!isRedeemLike(subtype) || unitsEditedRef.current || !fundCode || !effectiveHoldings) return;
     const h = effectiveHoldings.find(p => p.fundCode === fundCode);
-    if (h && h.units > 0) setUnits(Number(h.units).toFixed(3));
+    if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
   }, [applyDate, effectiveHoldings, fundCode, subtype]);
 
   useEffect(() => {
     const code = fundCode.trim();
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
-    // Get nav after create defaults or explicit edit-field changes 鈥?debounce to avoid rapid API calls
+    // 防抖获取净值，避免日期和代码联动时连续请求。
     if (navDebounce.current) clearTimeout(navDebounce.current);
     navDebounce.current = setTimeout(() => {
       if (lastNavFetchedDate.current === confirmDate) return;
@@ -861,7 +871,7 @@ export function InvestmentFormModal({
     if (!isRedeemLike(subtype) || mode !== "create") return;
     const gross = redeemGrossAmount;
     const feeN = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
-    // 鐢ㄦ埛鎵嬪姩鏀硅繃璧庡洖閲戦鏃朵笉鍐嶇敤 gross 瑕嗙洊锛屼互鐢ㄦ埛鍊间负鍑?
+    // 用户手动改过赎回金额后，不再用 gross 覆盖用户输入。
     const effectiveAmount = amountEditedRef.current ? p(amount) : gross;
     if (effectiveAmount <= 0) return;
     const key = effectiveAmount + feeN;
@@ -894,7 +904,7 @@ export function InvestmentFormModal({
       setFeeRate(defaults?.feeRate ?? "0");
       setFeeRateEdited(false);
     }
-    // 鍏变韩閲嶇疆锛氭棩鏈熴€侀噾棰濄€佷唤棰濄€佸噣鍊笺€佹墜缁垂銆佸娉?
+    // 重置日期、金额、份额、净值、手续费和备注。
     setApplyDate(today);
     setConfirmDate(confirmDays > 0 ? addDays(today, confirmDays) : today);
     cashAccountTouchedRef.current = false;
@@ -942,10 +952,12 @@ export function InvestmentFormModal({
       .then(r => r.json())
       .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
       .catch(() => {});
-    fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
-      .then(r => r.json())
-      .then(d => { if (d.ok && d.rate != null) setFeeRate(String(d.rate)); })
-      .catch(() => {});
+    if (mode === "create") {
+      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
+        .then(r => r.json())
+        .then(d => { if (d.ok && d.rate != null) setFeeRate(String(d.rate)); })
+        .catch(() => {});
+    }
   }
 
   async function fetchNav() {
@@ -961,17 +973,13 @@ export function InvestmentFormModal({
         const navN = data.nav;
         const amountN = p(amount);
         const feeN = p(fee);
-        const effectiveFee = feeEdited ? feeN : (feeN > 0 ? feeN : (amountN * (p(feeRate) / 100)));
-        if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
-          const principal = amountN - effectiveFee;
-          if (principal > 0) setUnits((principal / navN).toFixed(3));
-        }
+        const effectiveFee = feeN > 0 ? feeN : 0;
         if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
       } else {
-        window.alert(data.error ?? `鍑€鍊艰幏鍙栧け璐?code=${fundCode},date=${fetchDate})`);
+        window.alert(data.error ?? `净值获取失败 code=${fundCode},date=${fetchDate})`);
       }
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "鍑€鍊艰幏鍙栧紓甯?");
+      window.alert(err instanceof Error ? err.message : "净值获取异常");
     } finally {
       setNavLoading(false);
     }
@@ -981,30 +989,31 @@ export function InvestmentFormModal({
     e.preventDefault();
     if (submitting) return;
     const finalAmount = p(amount);
-    // 鍒嗙孩鍐嶆姇璧勶細鍙渶浠介锛岄噾棰濈敱浠介脳鍑€鍊兼帹瀵兼垨涓?锛屽叾浠栫孩鍒╃被鍙渶閲戦
+    // 分红再投资不要求用户输入金额，金额可由份额和净值推导。
     if (isDividend(subtype) && subtype !== "dividend_cash") {
-      // 鍒嗙孩鍐嶆姇璧勪笉闇€瑕侀噾棰濓紝涓嶅仛鎷︽埅
+      // 只校验份额，不拦截空金额。
     } else if (!amount.trim() || finalAmount < 0) {
-      window.alert("璇疯緭鍏ユ纭殑閲戦");
+      window.alert("请输入正确的金额");
       return;
     }
-    if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert("纭鏃ユ湡涓嶈兘鏃╀簬鐢宠鏃ユ湡"); return; }
+    if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert("确认日期不能早于申请日期"); return; }
 
-    const finalUnits = p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0);
-    const finalFee = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
+    const rawFinalUnits = p(units) > 0 ? p(units) : (mode === "create" && computedUnits ? p(computedUnits) : 0);
+    const finalUnits = rawFinalUnits > 0 ? roundFundUnits(rawFinalUnits, fundUnitsDecimals) : 0;
+    const finalFee = p(fee);
     const finalFeeRate = p(feeRate);
 
-    // 鍒嗙孩鍐嶆姇璧勶細閲戦 = 浠介 脳 鍑€鍊?
+    // 分红再投资：金额 = 份额 * 净值。
     const effectiveAmount = subtype === "dividend_reinvest" && !(finalAmount > 0) && finalUnits > 0 && p(nav) > 0
       ? finalUnits * p(nav)
       : (subtype === "dividend_reinvest" && !(finalAmount > 0) ? 0 : finalAmount);
 
-    // 浣跨敤鍩洪噾璐︽埛淇濆瓨璐圭巼鍜岀‘璁ゅぉ鏁帮紙鏂板鍜岀紪杈戦兘闇€瑕侊級
-    if (!isDividend(subtype) && (productType === "fund" || productType === "money") && fundCode.trim() && finalFeeRate > 0 && showFeeFor(subtype, productType)) {
+    // 只有手动修改过费率时，才把该确认日期的新费率写入费率库。
+    if (mode === "create" && feeRateEdited && !isDividend(subtype) && (productType === "fund" || productType === "money") && fundCode.trim() && showFeeFor(subtype, productType)) {
       fetch("/api/v1/fund/fee-rate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), rate: finalFeeRate, feeType: isRedeemLike(subtype) ? "redeem" : "buy" }),
+        body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), rate: finalFeeRate, feeType: isRedeemLike(subtype) ? "redeem" : "buy", effectiveDate: confirmDate || applyDate }),
       }).catch(() => {});
     }
     if (isBuyLike(subtype) && confirmDays >= 0) {
@@ -1023,7 +1032,7 @@ export function InvestmentFormModal({
     }
 
     const formData = new FormData();
-    // dividend_cash 浣跨敤鐨勬棩鏈熷瓧娈垫槸 arrivalDate锛堝埌璐︽棩鏈燂級锛屼笉鏄?applyDate
+    // 现金红利使用到账日期作为记账日期。
     const effectiveDate = isDividend(subtype) ? (arrivalDate || applyDate) : applyDate;
 
     if (mode === "edit" && (entry || editEntryId)) {
@@ -1038,7 +1047,7 @@ export function InvestmentFormModal({
       formData.set("fundName", fundName.trim());
       formData.set("fundProductType", productType);
       if (!isDividend(subtype) || subtype === "dividend_reinvest") {
-        if (units.trim() || subtype === "dividend_reinvest") formData.set("fundUnits", units.trim() ? String(p(units)) : "");
+        if (units.trim() || subtype === "dividend_reinvest") formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
       }
       if (!isDividend(subtype)) {
         formData.set("fundNav", nav.trim() ? String(p(nav)) : "");
@@ -1054,7 +1063,7 @@ export function InvestmentFormModal({
         formData.set("fundArrivalDate", arrivalDate || "");
         formData.set("fundArrivalAmount", isRedeemLike(subtype) && arrivalAmount.trim() ? String(p(arrivalAmount)) : "");
       }
-      formData.set("feeRate", isDividend(subtype) ? "" : (feeRate.trim() ? feeRate : ""));
+      if (feeRateEdited && !isDividend(subtype)) formData.set("feeRate", feeRate.trim() ? feeRate : "");
       formData.set("confirmDays", isDividend(subtype) ? "0" : String(confirmDays));
     } else {
       formData.set("type", "investment");
@@ -1071,7 +1080,7 @@ export function InvestmentFormModal({
       }
       if (!isDividend(subtype)) {
         if (p(nav) > 0) formData.set("fundNav", String(p(nav)));
-        if (finalFee > 0) formData.set("fundFee", String(finalFee));
+        formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         if (confirmDate) formData.set("fundConfirmDate", confirmDate);
       }
       if (isDividend(subtype)) {
@@ -1092,7 +1101,7 @@ export function InvestmentFormModal({
       }
       if (keepOpen) {
         if (mode === "create") {
-          // 鏍规嵁涓婃淇濆瓨闂撮殧鎺ㄧ畻涓嬫鐢宠鏃ユ湡
+          // 保存并继续时按上次保存间隔推导下一笔申请日期。
           const currentDate = applyDate;
           const prev = prevSavedDateRef.current;
           const intervalRaw = prev
@@ -1129,7 +1138,7 @@ export function InvestmentFormModal({
                   if (navN > 0 && amountN > 0) {
                     const feeN = p(fee);
                     const effectiveFee = feeEdited ? feeN : (feeN > 0 ? feeN : (amountN * (p(feeRate) / 100)));
-                    setUnits(((amountN - effectiveFee) / navN).toFixed(3));
+                    setUnits(formatUnits((amountN - effectiveFee) / navN));
                   }
                 }
               })
@@ -1146,13 +1155,13 @@ export function InvestmentFormModal({
           window.dispatchEvent(new Event("mmh:fund:refresh"));
         });
       }
-    } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "淇濆瓨澶辫触" : "璁拌处澶辫触")); }
+    } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
     finally { setSubmitting(false); }
   }
 
   async function onDelete() {
     if (deleting || mode !== "edit" || !entry) return;
-    if (!window.confirm("纭鍒犻櫎杩欐潯鍩洪噾璁板綍鍚楋紵")) return;
+    if (!window.confirm("确认删除这条基金记录吗？")) return;
     setDeleting(true);
     try {
       const res = await fetch("/api/v1/entries/delete", {
@@ -1161,12 +1170,12 @@ export function InvestmentFormModal({
         body: JSON.stringify({ entryIds: [entry.id] }),
       });
       const data = await res.json();
-      if (!data.ok) { window.alert(data.error ?? "鍒犻櫎澶辫触"); return; }
+      if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event("mmh:fund:refresh"));
       });
     } catch {
-      window.alert("鍒犻櫎澶辫触");
+      window.alert("删除失败");
     } finally {
       setDeleting(false);
     }
@@ -1175,13 +1184,13 @@ export function InvestmentFormModal({
   const showCode = productType === "fund" || productType === "money";
   const showFee = showFeeFor(subtype, productType);
 
-  const title = mode === "edit" ? "缂栬緫鍩洪噾璁板綍" : "鎶曡祫璁拌处";
+  const title = mode === "edit" ? "编辑基金记录" : "投资记账";
   useCloseOnNavigation(open, () => {
     setOpen(false);
     if (mode === "create") resetForCreate();
   });
 
-  // 瑙﹀彂鎸夐挳
+  // 编辑模式显示图标按钮，新增模式显示“记账”按钮。
   const triggerButton = mode === "edit" ? (
     entry ? (
       <div className="flex h-7 shrink-0 items-center gap-1">
@@ -1198,7 +1207,7 @@ export function InvestmentFormModal({
   ) : (
     <button type="button" onClick={() => { resetForCreate(); setOpen(true); }}
       className="primary-button h-8 gap-1 px-3 shadow-sm">
-      <Plus className="w-4 h-4" />璁拌处
+      <Plus className="w-4 h-4" />记账
     </button>
   );
 
@@ -1215,12 +1224,12 @@ export function InvestmentFormModal({
                   <span className="ml-2 text-xs font-normal text-slate-500">{PRODUCT_LABELS[productType]}</span>
                 </div>
                 <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
-                  className="secondary-button h-8 px-2">鍏抽棴</button>
+                    className="secondary-button h-8 px-2">关闭</button>
               </div>
 
               <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="form-label">浜ゆ槗绫诲瀷</div>
+                <div className="form-label">交易类型</div>
                 <div className="space-y-1.5">
                   {PRODUCT_SUBTYPES[productType].map((group, gi) => (
                     <div key={gi} className="flex gap-1.5">
@@ -1235,50 +1244,45 @@ export function InvestmentFormModal({
                 </div>
               </div>
 
-              {/* ===== 绾㈠埄绫伙細鏋佺畝甯冨眬 ===== */}
               {isDividend(subtype) ? (
                 <>
-                  {/* 鍒嗙孩鍐嶆姇璧勶細鍩洪噾璐︽埛 */}
                   {subtype === "dividend_reinvest" && investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">鍩洪噾璐︽埛</div>
-                      {renderInvestmentAccountSelect("閫夋嫨鍩洪噾璐︽埛")}
+                      <div className="text-xs font-medium text-slate-600">基金账户</div>
+                      {renderInvestmentAccountSelect("选择基金账户")}
                     </div>
                   )}
 
-                  {/* 鍒嗙孩鍐嶆姇璧勶細鍒拌处鏃ユ湡 */}
                   {subtype === "dividend_reinvest" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">鍒拌处鏃ユ湡</div>
+                      <div className="text-xs font-medium text-slate-600">到账日期</div>
                       <DateStepper value={arrivalDate} onChange={setArrivalDate} />
                     </div>
                   )}
 
-                  {/* 鐜伴噾绾㈠埄锛氬埌璐︽棩鏈?+ 璧勯噾璐︽埛 */}
                   {subtype === "dividend_cash" && (
                     <>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">鍒拌处鏃ユ湡</div>
+                          <div className="text-xs font-medium text-slate-600">到账日期</div>
                         <DateStepper value={arrivalDate} onChange={setArrivalDate} />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         {investmentAccounts && investmentAccounts.length > 0 && (
                           <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">鍩洪噾璐︽埛</div>
-                            {renderInvestmentAccountSelect("閫夋嫨鍩洪噾璐︽埛")}
+                            <div className="text-xs font-medium text-slate-600">基金账户</div>
+                            {renderInvestmentAccountSelect("选择基金账户")}
                           </div>
                         )}
                         {cashAccounts && cashAccounts.length > 0 && (
                           <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">鍒拌处璧勯噾璐︽埛</div>
-                            {renderCashAccountSelect("涓嶅叧鑱?")}
+                            <div className="text-xs font-medium text-slate-600">到账资金账户</div>
+                            {renderCashAccountSelect("不关联")}
                           </div>
                         )}
                       </div>
                     </>
                   )}
 
-                  {/* 绾㈠埄绫伙細鎸佷範鍩洪噾鍙悳绱㈤€夋嫨 */}
                   {showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
@@ -1292,12 +1296,12 @@ export function InvestmentFormModal({
                   ) : showCode ? (
                     <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">鍩洪噾浠ｇ爜</div>
+                        <div className="text-xs font-medium text-slate-600">基金代码</div>
                         <input
                           value={fundCode}
                           onChange={(e) => changeFundCode(e.target.value)}
                           onBlur={handleFundCodeBlur}
-                          placeholder="6浣嶄唬鐮?"
+                          placeholder="6位代码"
                           className="form-input"
                         />
                       </div>
@@ -1313,16 +1317,14 @@ export function InvestmentFormModal({
                     </div>
                   ) : null}
 
-                  {/* 鐜伴噾绾㈠埄锛氶噾棰?*/}
                   {subtype === "dividend_cash" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">鐜伴噾绾㈠埄閲戦</div>
+                      <div className="text-xs font-medium text-slate-600">现金红利金额</div>
                       <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
                         className="form-input" />
                     </div>
                   )}
 
-                  {/* 鍒嗙孩鍐嶆姇璧勶細浠介 */}
                   {subtype === "dividend_reinvest" && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">分红再投资份额</div>
@@ -1339,7 +1341,6 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  {/* 澶囨敞 */}
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">备注</div>
                     <input
@@ -1350,7 +1351,6 @@ export function InvestmentFormModal({
                     />
                   </div>
 
-                  {/* 淇濆瓨鎸夐挳 */}
                   <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
                     {mode === "create" && (
                       <button
@@ -1376,10 +1376,9 @@ export function InvestmentFormModal({
                 </>
               ) : (
               <>
-              {/* 鐢宠鏃ユ湡銆乀+N銆佺‘璁ゆ棩鏈?*/}
               <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">鐢宠鏃ユ湡</div>
+                  <div className="text-xs font-medium text-slate-600">申请日期</div>
                   <DateStepper value={applyDate} onChange={changeApplyDate}
                     onBlur={() => {
                       if (confirmDays >= 0 && applyDate) {
@@ -1405,30 +1404,27 @@ export function InvestmentFormModal({
                 )}
                 {showConfirmFor(subtype) && (
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">纭鏃ユ湡</div>
+                    <div className="text-xs font-medium text-slate-600">确认日期</div>
                     <DateStepper value={confirmDate} onChange={changeConfirmDate} min={applyDate} />
                   </div>
                 )}
               </div>
 
-              {/* ===== 璧庡洖妯″紡涓撶敤甯冨眬 ===== */}
               {isRedeemLike(subtype) ? (
                 <>
-                  {/* 璧庡洖锛氬熀閲戣处鎴凤紙宸︼級 + 璧庡洖鍒拌处璐︽埛锛堝彸锛?*/}
                   {investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">鍩洪噾璐︽埛</div>
-                        {renderInvestmentAccountSelect("閫夋嫨鍩洪噾璐︽埛")}
+                          <div className="text-xs font-medium text-slate-600">基金账户</div>
+                          {renderInvestmentAccountSelect("选择基金账户")}
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">璧庡洖鍒拌处璐︽埛</div>
+                        <div className="text-xs font-medium text-slate-600">赎回到账账户</div>
                         {renderCashAccountSelect("请选择资金账户")}
                       </div>
                     </div>
                   )}
 
-                  {/* 璧庡洖锛氭寔浠撳熀閲戝彲鎼滅储閫夋嫨 */}
                   {showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
@@ -1439,7 +1435,7 @@ export function InvestmentFormModal({
                       onSelect={(h) => {
                         changeFundCode(h.fundCode);
                         setFundName(h.name);
-                        if (!unitsEditedRef.current && h.units != null) setUnits(Number(h.units).toFixed(3));
+                        if (!unitsEditedRef.current && h.units != null) setUnits(formatUnits(Number(h.units)));
                       }}
                       onBlur={handleFundCodeBlur}
                     />
@@ -1468,8 +1464,8 @@ export function InvestmentFormModal({
                   ) : null}
                   {!showCode && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">浜у搧鍚嶇О</div>
-                      <input placeholder="渚嬪锛氭嫑琛屾湞鏈濆疂" value={fundName} onChange={(e) => setFundName(e.target.value)}
+                        <div className="text-xs font-medium text-slate-600">产品名称</div>
+                      <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
                         className="form-input" />
                     </div>
                   )}
@@ -1515,7 +1511,6 @@ export function InvestmentFormModal({
                           setNav(e.target.value);
                           navEditedRef.current = true;
                         }}
-                        onBlur={autoCalcUnits}
                         placeholder="1.2345"
                         style={{ caretColor: "var(--foreground)" }}
                         className="form-input caret-slate-800"
@@ -1523,8 +1518,13 @@ export function InvestmentFormModal({
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">璧庡洖閲戦</div>
-                    <input inputMode="decimal" value={amount} onChange={(e) => { amountEditedRef.current = true; setAmount(e.target.value); }} onBlur={autoCalcUnits}
+                    <div className="text-xs font-medium text-slate-600">赎回金额</div>
+                    <input inputMode="decimal" value={amount} onChange={(e) => {
+                        const nextAmount = e.target.value;
+                        amountEditedRef.current = true;
+                        setAmount(nextAmount);
+                        calculateUnitsAfterAmountChange(nextAmount);
+                      }}
                       style={{ caretColor: "var(--foreground)" }}
                       className="form-input caret-slate-800" />
                   </div>
@@ -1540,14 +1540,7 @@ export function InvestmentFormModal({
                             const nextRate = e.target.value;
                             setFeeRate(nextRate);
                             setFeeRateEdited(true);
-                            if (!feeEdited) {
-                              const rate = p(nextRate) / 100;
-                              const baseAmount = redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
-                              setFee(baseAmount > 0 && rate > 0 ? (baseAmount * rate).toFixed(2) : "");
-                            }
-                          }}
-                          onBlur={() => {
-                            if (!feeEdited) autoCalcUnits();
+                            calculateFeeFromRate(nextRate);
                           }}
                           placeholder="0.15"
                           style={{ caretColor: "var(--foreground)" }}
@@ -1560,13 +1553,16 @@ export function InvestmentFormModal({
                           inputMode="decimal"
                           value={fee}
                           onChange={(e) => {
+                            if (mode === "edit") return;
+                            suppressFeeAutoCalcRef.current = false;
                             setFee(e.target.value);
                             setFeeEdited(true);
+                            calculateUnitsAfterFeeChange(e.target.value);
                           }}
-                          onBlur={autoCalcUnits}
+                          readOnly={mode === "edit"}
                           placeholder={computedFee || "0.00"}
                           style={{ caretColor: "var(--foreground)" }}
-                          className="form-input caret-slate-800"
+                          className={`form-input caret-slate-800 ${mode === "edit" ? "bg-slate-50 text-slate-500" : ""}`}
                         />
                       </div>
                     </div>
@@ -1597,33 +1593,29 @@ export function InvestmentFormModal({
                 </>
               ) : (
                 <>
-              {/* ===== 涔板叆/鍏朵粬妯″紡甯冨眬 ===== */}
-
-              {/* 璧勯噾鏉ユ簮璐︽埛鍜屽熀閲戣处鎴?*/}
               {showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 && investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">璧勯噾鏉ユ簮璐︽埛</div>
+                    <div className="text-xs font-medium text-slate-600">资金来源账户</div>
                     {renderCashAccountSelect("请选择资金账户")}
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">鍩洪噾璐︽埛</div>
-                    {renderInvestmentAccountSelect("閫夋嫨鍩洪噾璐︽埛")}
+                    <div className="text-xs font-medium text-slate-600">基金账户</div>
+                    {renderInvestmentAccountSelect("选择基金账户")}
                   </div>
                 </div>
               ) : showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 ? (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">璧勯噾鏉ユ簮璐︽埛</div>
+                  <div className="text-xs font-medium text-slate-600">资金来源账户</div>
                   {renderCashAccountSelect("请选择资金账户")}
                 </div>
               ) : investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">鍩洪噾璐︽埛</div>
-                  {renderInvestmentAccountSelect("閫夋嫨鍩洪噾璐︽埛")}
+                  <div className="text-xs font-medium text-slate-600">基金账户</div>
+                  {renderInvestmentAccountSelect("选择基金账户")}
                 </div>
               ) : null}
 
-              {/* 鍩洪噾浠ｇ爜锛堟墜宸ヨ緭鍏ワ級+ 鍚嶇О */}
               {showCode ? (
                 <div className="grid grid-cols-[1fr_2fr] items-end gap-2">
                   <div className="space-y-1">
@@ -1650,8 +1642,8 @@ export function InvestmentFormModal({
 
               {!showCode && (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">浜у搧鍚嶇О</div>
-                  <input placeholder="渚嬪锛氭嫑琛屾湞鏈濆疂" value={fundName} onChange={(e) => setFundName(e.target.value)}
+                  <div className="text-xs font-medium text-slate-600">产品名称</div>
+                  <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
                     className="form-input" />
                 </div>
               )}
@@ -1671,7 +1663,6 @@ export function InvestmentFormModal({
                     inputMode="decimal"
                     value={nav}
                     onChange={(e) => setNav(e.target.value)}
-                    onBlur={autoCalcUnits}
                     placeholder="1.2345"
                     className="form-input"
                   />
@@ -1697,7 +1688,7 @@ export function InvestmentFormModal({
                     onChange={(v) => {
                       amountEditedRef.current = true;
                       setAmount(v);
-                      onAmountBlur();
+                      calculateUnitsAfterAmountChange(v);
                     }}
                     label="金额"
                     placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined}
@@ -1706,7 +1697,6 @@ export function InvestmentFormModal({
                 </div>
               </div>
 
-              {/* 涔板叆妯″紡锛氭墜缁垂鐜?| 鎵嬬画璐归噾棰?*/}
               {showFee && (
                 <div className="grid grid-cols-2 gap-2 items-end">
                   <div className="space-y-1">
@@ -1716,14 +1706,7 @@ export function InvestmentFormModal({
                         const nextRate = e.target.value;
                         setFeeRate(nextRate);
                         setFeeRateEdited(true);
-                        if (!feeEdited) {
-                          const rate = p(nextRate) / 100;
-                          const baseAmount = p(amount);
-                          setFee(baseAmount > 0 && rate > 0 ? (baseAmount * rate).toFixed(2) : "");
-                        }
-                      }}
-                      onBlur={() => {
-                        if (!feeEdited) autoCalcUnits();
+                        calculateFeeFromRate(nextRate);
                       }}
                       placeholder="0.15"
                       className="form-input" />
@@ -1731,15 +1714,20 @@ export function InvestmentFormModal({
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">手续费金额</div>
                     <input inputMode="decimal" value={fee}
-                      onChange={(e) => { setFee(e.target.value); setFeeEdited(true); }}
-                      onBlur={autoCalcUnits}
+                      onChange={(e) => {
+                        if (mode === "edit") return;
+                        suppressFeeAutoCalcRef.current = false;
+                        setFee(e.target.value);
+                        setFeeEdited(true);
+                        calculateUnitsAfterFeeChange(e.target.value);
+                      }}
+                      readOnly={mode === "edit"}
                       placeholder={computedFee || "0.00"}
-                      className="form-input" />
+                      className={`form-input ${mode === "edit" ? "bg-slate-50 text-slate-500" : ""}`} />
                   </div>
                 </div>
               )}
 
-              {/* 鍒拌处鏃ユ湡 + 浠介 */}
               <div className="grid grid-cols-2 gap-2 items-end">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">到账日期</div>
@@ -1756,7 +1744,6 @@ export function InvestmentFormModal({
                 </>
               )}
 
-              {/* 澶囨敞 */}
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">备注</div>
                 <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选" className="form-input" />
@@ -1794,5 +1781,3 @@ export function InvestmentFormModal({
     </>
   );
 }
-
-

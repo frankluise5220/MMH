@@ -661,12 +661,7 @@ export function InsuranceShell({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: next.id,
-          name: holding.label,
-          institutionId: holding.institutionId,
-          productType: holding.productType,
-          accountingType: holding.accountingType,
-          currency: holding.currency || "CNY",
-          status: holding.status || "active",
+          mode: "policy",
           policyholderPersonId,
           policyholderPersonName: policyholderPersonId
             ? familyMemberOptionsState.find((item) => item.id === policyholderPersonId)?.label?.trim() || undefined
@@ -675,17 +670,8 @@ export function InsuranceShell({
           insuredPersonName: insuredPersonId
             ? familyMemberOptionsState.find((item) => item.id === insuredPersonId)?.label?.trim() || undefined
             : undefined,
-          beneficiaryName: holding.beneficiaryName ?? undefined,
           paymentTermYears,
-          premiumMode: holding.premiumMode,
-          premiumFrequencyMonths: holding.premiumFrequencyMonths,
-          coverageTermYears: holding.coverageTermYears,
           coverageAmount,
-          cashValueEnabled: holding.cashValueEnabled ?? true,
-          startDate: holding.startDate,
-          effectiveDate: holding.effectiveDate,
-          maturityDate: holding.maturityDate,
-          note: holding.note,
         }),
       });
       const data = (await response.json().catch(() => null)) as

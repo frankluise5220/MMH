@@ -10,7 +10,7 @@ export default function RootLayout({
     <html lang="zh-CN" suppressHydrationWarning>
       <body
         suppressHydrationWarning
-        className="antialiased h-screen overflow-x-auto overflow-y-hidden"
+        className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
       >
         {children}
         <Script

@@ -5,6 +5,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -109,6 +110,7 @@ export async function POST(req: NextRequest) {
     if (!fundAcc) {
       return NextResponse.json({ ok: false, error: "基金账户不存在" }, { status: 400 });
     }
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(fundAcc.fundUnitsDecimals);
 
     const cashAcc = plan.cashAccountId
       ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
@@ -337,7 +339,7 @@ export async function POST(req: NextRequest) {
 
         if (foundNav && foundNav.nav > 0) {
           fundNav = foundNav.nav;
-          fundUnits = principal / foundNav.nav;
+          fundUnits = roundFundUnits(principal / foundNav.nav, fundUnitsDecimals);
         }
 
         // 构建备注：限制大额申购时记录状态提醒用户

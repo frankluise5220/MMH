@@ -14,7 +14,7 @@ import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
 
-import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, Square, Trash2, Upload } from "lucide-react";
+import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, SlidersHorizontal, Square, Trash2, Upload } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 
@@ -62,6 +62,8 @@ type FundTableKey = "positions" | "cleared" | "details";
 type FundTableViewportKey = "summary" | "details";
 
 const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
+const FUND_DETAIL_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_detail_hidden_columns_v1";
+const FUND_HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 
 const POSITION_COLS = [
   ["fund", 260],
@@ -101,6 +103,24 @@ const DETAIL_COLS = [
   ["status", 72],
   ["actions", 112],
 ] as const;
+
+type DetailColumnKey = typeof DETAIL_COLS[number][0];
+
+const FIXED_DETAIL_COLUMNS = new Set<DetailColumnKey>(["select", "actions"]);
+const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
+  select: "选择",
+  date: "申请日期",
+  arrivalDate: "到账日期",
+  cashAccount: "资金账户",
+  fund: "基金",
+  nav: "净值",
+  units: "份额",
+  subtype: "交易类型",
+  amount: "金额",
+  profit: "收益",
+  status: "状态",
+  actions: "操作",
+};
 
 const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
   positions: {
@@ -174,15 +194,21 @@ export function FundShell(props: Props) {
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
   const [regularPlanMenu, setRegularPlanMenu] = useState<any | null>(null);
   const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
+  const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
+  const regularPlanClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
   const summaryTableViewportRef = useRef<HTMLDivElement>(null);
   const detailTableViewportRef = useRef<HTMLDivElement>(null);
+  const detailColumnMenuRef = useRef<HTMLDivElement>(null);
   const [tableViewportWidths, setTableViewportWidths] = useState<Record<FundTableViewportKey, number>>({
     summary: 0,
     details: 0,
   });
+  const [needsDetailHorizontalScroll, setNeedsDetailHorizontalScroll] = useState(false);
+  const [detailColumnMenuOpen, setDetailColumnMenuOpen] = useState(false);
+  const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(new Set());
 
   // Shadow props with reactive local state
   const d = localData;
@@ -232,11 +258,47 @@ export function FundShell(props: Props) {
     } catch {}
   }, []);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!Array.isArray(saved)) return;
+      const allowed = new Set(DETAIL_COLS.map(([key]) => key).filter((key) => !FIXED_DETAIL_COLUMNS.has(key)));
+      setHiddenDetailColumns(new Set(saved.filter((key): key is DetailColumnKey => allowed.has(key))));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!detailColumnMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const node = detailColumnMenuRef.current;
+      if (!node || !(event.target instanceof Node) || node.contains(event.target)) return;
+      setDetailColumnMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [detailColumnMenuOpen]);
+
   const colWidth = useCallback((table: FundTableKey, key: string, fallback: number) => {
     const width = columnWidths[table]?.[key];
     const minWidth = minFundColWidth(table, key);
     return Math.max(minWidth, Number.isFinite(width) ? Number(width) : fallback);
   }, [columnWidths]);
+
+  const visibleDetailCols = useMemo(
+    () => DETAIL_COLS.filter(([key]) => !hiddenDetailColumns.has(key)),
+    [hiddenDetailColumns],
+  );
+  const visibleOptionalDetailColumnCount = visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)).length;
+  const detailMinTableWidth = useMemo(
+    () => Math.min(1100, visibleDetailCols.reduce((sum, [, fallback]) => sum + fallback, 0)),
+    [visibleDetailCols],
+  );
+  const isDetailColumnVisible = useCallback(
+    (key: DetailColumnKey) => !hiddenDetailColumns.has(key),
+    [hiddenDetailColumns],
+  );
 
   useEffect(() => {
     const targets: Array<[FundTableViewportKey, RefObject<HTMLDivElement | null>]> = [
@@ -292,9 +354,25 @@ export function FundShell(props: Props) {
     [tableLayout, tableViewportWidths.summary],
   );
   const detailLayout = useMemo(
-    () => tableLayout("details", DETAIL_COLS, 1100, tableViewportWidths.details),
-    [tableLayout, tableViewportWidths.details],
+    () => tableLayout("details", visibleDetailCols, detailMinTableWidth, tableViewportWidths.details),
+    [detailMinTableWidth, tableLayout, tableViewportWidths.details, visibleDetailCols],
   );
+
+  useEffect(() => {
+    const node = detailTableViewportRef.current;
+    if (!node) return;
+    const update = () => setNeedsDetailHorizontalScroll(node.scrollWidth > node.clientWidth + FUND_HORIZONTAL_SCROLL_TOLERANCE_PX);
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    const table = node.querySelector("table");
+    if (table) observer.observe(table);
+    return () => observer.disconnect();
+  }, [detailLayout.tableWidth, visibleDetailCols]);
 
   const setColWidth = useCallback((table: FundTableKey, key: string, width: number) => {
     setColumnWidths((prev) => {
@@ -307,6 +385,23 @@ export function FundShell(props: Props) {
       };
       try {
         window.localStorage.setItem(FUND_TABLE_WIDTHS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const toggleDetailColumnVisibility = useCallback((key: DetailColumnKey) => {
+    if (FIXED_DETAIL_COLUMNS.has(key)) return;
+    setHiddenDetailColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else {
+        const visibleOptionalCount = DETAIL_COLS.filter(([colKey]) => !FIXED_DETAIL_COLUMNS.has(colKey) && !next.has(colKey)).length;
+        if (visibleOptionalCount <= 1) return prev;
+        next.add(key);
+      }
+      try {
+        window.localStorage.setItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY, JSON.stringify(Array.from(next)));
       } catch {}
       return next;
     });
@@ -842,6 +937,7 @@ export function FundShell(props: Props) {
     const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "恢复" : "停止";
     if (action === "stop" && !window.confirm(`确认停止 ${plan.fundCode} 的定投计划吗？`)) return;
     setRegularPlanActionBusy(true);
+    setRegularPlanBusyId(String(plan.id));
     try {
       const res = await fetch("/api/v1/regular-invest", {
         method: "PUT",
@@ -860,8 +956,37 @@ export function FundShell(props: Props) {
       window.alert(error instanceof Error ? error.message : `${actionLabel}失败`);
     } finally {
       setRegularPlanActionBusy(false);
+      setRegularPlanBusyId(null);
     }
   }, [loadRegularPlans, regularPlanActionBusy]);
+
+  const toggleRegularPlanStatus = useCallback((plan: any) => {
+    if (!plan || regularPlanActionBusy) return;
+    if (plan.status === "active") {
+      void updateRegularPlanStatus(plan, "pause");
+    } else if (plan.status === "paused") {
+      void updateRegularPlanStatus(plan, "resume");
+    }
+  }, [regularPlanActionBusy, updateRegularPlanStatus]);
+
+  const clickRegularPlanButton = useCallback((plan: any) => {
+    if (regularPlanClickTimerRef.current) {
+      clearTimeout(regularPlanClickTimerRef.current);
+      regularPlanClickTimerRef.current = null;
+    }
+    regularPlanClickTimerRef.current = setTimeout(() => {
+      regularPlanClickTimerRef.current = null;
+      toggleRegularPlanStatus(plan);
+    }, 220);
+  }, [toggleRegularPlanStatus]);
+
+  const doubleClickRegularPlanButton = useCallback((plan: any) => {
+    if (regularPlanClickTimerRef.current) {
+      clearTimeout(regularPlanClickTimerRef.current);
+      regularPlanClickTimerRef.current = null;
+    }
+    setEditingRegularPlan(plan);
+  }, []);
 
   const regularPlanByFundCode = useMemo(() => {
     const map = new Map<string, any>();
@@ -1425,6 +1550,7 @@ export function FundShell(props: Props) {
               createAction={createAction}
               openSignal={positionEntryOpenSignal}
               hideTrigger
+              fundUnitsDecimals={fundUnitsDecimals}
             />
 
             <div className="flex items-center gap-0.5">
@@ -1574,14 +1700,44 @@ export function FundShell(props: Props) {
                       <td className="px-2 py-2 border-b border-slate-100" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           {regularPlanByFundCode.get(p.fundCode) ? (
-                            <button
-                              type="button"
-                              onClick={() => setRegularPlanMenu(regularPlanByFundCode.get(p.fundCode))}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
-                              title="定投计划"
-                            >
-                              <CalendarSync className="h-3.5 w-3.5" />
-                            </button>
+                            (() => {
+                              const plan = regularPlanByFundCode.get(p.fundCode);
+                              const isPaused = plan.status === "paused";
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    clickRegularPlanButton(plan);
+                                  }}
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    doubleClickRegularPlanButton(plan);
+                                  }}
+                                  className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
+                                    isPaused
+                                      ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+                                      : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
+                                  }`}
+                                  title={isPaused ? "当前已暂停，单击继续，双击编辑" : "当前执行中，单击暂停，双击编辑"}
+                                >
+                                  <CalendarSync className="h-3.5 w-3.5" />
+                                  {isPaused ? (
+                                    <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
+                                      <span className="h-1 w-[1px] rounded-full bg-white" />
+                                      <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
+                                    </span>
+                                  ) : (
+                                    <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
+                                      <span className="ml-[1px] h-0 w-0 border-y-[2px] border-l-[3px] border-y-transparent border-l-white" />
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })()
                           ) : null}
                           <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
                         </div>
@@ -1908,6 +2064,58 @@ export function FundShell(props: Props) {
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
 
+            <div className="relative order-last" ref={detailColumnMenuRef}>
+
+              <button
+                type="button"
+                onClick={() => setDetailColumnMenuOpen((open) => !open)}
+                className="secondary-button h-7 px-2 text-xs"
+                title="Columns"
+                aria-label="Columns"
+              >
+
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+
+              </button>
+
+              {detailColumnMenuOpen ? (
+
+                <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+
+                  <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">Columns</div>
+
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+
+                    {DETAIL_COLS.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)).map(([key]) => {
+                      const checked = isDetailColumnVisible(key);
+                      const disabled = checked && visibleOptionalDetailColumnCount <= 1;
+                      return (
+                        <label
+                          key={key}
+                          className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
+                            disabled ? "text-slate-400" : "cursor-pointer text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => toggleDetailColumnVisibility(key)}
+                            className="h-3.5 w-3.5 rounded border-slate-300"
+                          />
+                          <span className="truncate">{DETAIL_COLUMN_LABELS[key]}</span>
+                        </label>
+                      );
+                    })}
+
+                  </div>
+
+                </div>
+
+              ) : null}
+
+            </div>
+
             <div className="relative" ref={exportRef}>
 
               <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出 CSV">
@@ -2018,17 +2226,20 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div ref={detailTableViewportRef} className="flex-1 min-h-0 overflow-auto">
+        <div
+          ref={detailTableViewportRef}
+          className={`flex-1 min-h-0 ${needsDetailHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-auto`}
+        >
 
-          <table
-            className="min-w-[1100px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-            style={{ width: detailLayout.tableWidth }}
-          >
-            <colgroup>
-              {DETAIL_COLS.map(([key, fallback]) => (
-                <col key={key} style={{ width: detailLayout.colWidths[key] ?? colWidth("details", key, fallback) }} />
-              ))}
-            </colgroup>
+            <table
+              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+              style={{ minWidth: detailMinTableWidth, width: detailLayout.tableWidth }}
+            >
+              <colgroup>
+                {visibleDetailCols.map(([key, fallback]) => (
+                  <col key={key} style={{ width: detailLayout.colWidths[key] ?? colWidth("details", key, fallback) }} />
+                ))}
+              </colgroup>
 
             <thead className="sticky top-0 z-10 bg-white">
 
@@ -2094,6 +2305,7 @@ export function FundShell(props: Props) {
 
                 </th>
 
+                {isDetailColumnVisible("date") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">
 
                   <div className="relative inline-flex items-center gap-1" ref={dateFilterRef}>
@@ -2233,51 +2445,70 @@ export function FundShell(props: Props) {
                   <ResizeGrip table="details" colKey="date" width={colWidth("details", "date", 92)} minWidth={76} />
 
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("arrivalDate") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   到账日期
                   <ResizeGrip table="details" colKey="arrivalDate" width={colWidth("details", "arrivalDate", 92)} minWidth={76} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("cashAccount") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   {renderColumnFilter("cashAccount", "资金账户")}
                   <ResizeGrip table="details" colKey="cashAccount" width={colWidth("details", "cashAccount", 132)} minWidth={92} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("fund") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   基金
                   <ResizeGrip table="details" colKey="fund" width={colWidth("details", "fund", 156)} minWidth={110} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("nav") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   净值
                   <ResizeGrip table="details" colKey="nav" width={colWidth("details", "nav", 86)} minWidth={76} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("units") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   份额
                   <ResizeGrip table="details" colKey="units" width={colWidth("details", "units", 84)} minWidth={64} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("subtype") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   {renderColumnFilter("subtype", "交易类型")}
                   <ResizeGrip table="details" colKey="subtype" width={colWidth("details", "subtype", 88)} minWidth={72} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("amount") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
                   金额
                   <ResizeGrip table="details" colKey="amount" width={colWidth("details", "amount", 76)} minWidth={58} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("profit") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
                   收益
                   <ResizeGrip table="details" colKey="profit" width={colWidth("details", "profit", 76)} minWidth={58} />
                 </th>
+                ) : null}
 
+                {isDetailColumnVisible("status") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                   {renderColumnFilter("status", "状态")}
                   <ResizeGrip table="details" colKey="status" width={colWidth("details", "status", 72)} minWidth={58} />
                 </th>
+                ) : null}
 
                 <th className="relative select-none align-middle text-right text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
 
@@ -2397,14 +2628,19 @@ export function FundShell(props: Props) {
 
                     </td>
 
+                    {isDetailColumnVisible("date") ? (
                     <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{fmtDate(e.date)}</td>
+                    ) : null}
 
+                    {isDetailColumnVisible("arrivalDate") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-500">
 
                       {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
 
                     </td>
+                    ) : null}
 
+                    {isDetailColumnVisible("cashAccount") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">
 
                       {(() => {
@@ -2426,19 +2662,29 @@ export function FundShell(props: Props) {
                       })()}
 
                     </td>
+                    ) : null}
 
+                    {isDetailColumnVisible("fund") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-700">
                       <div className="truncate" title={`${displayFundName(e)} ${e.fundCode || ""}`}>
                         {displayFundName(e)}{e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
                       </div>
                     </td>
+                    ) : null}
 
+                    {isDetailColumnVisible("nav") ? (
                     <td className="overflow-hidden whitespace-nowrap px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{nav != null ? nav.toFixed(4) : <span className="text-slate-400">-</span>}</td>
+                    ) : null}
 
+                    {isDetailColumnVisible("units") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{units != null ? formatFundUnits(units) : <span className="text-slate-400">-</span>}</td>
+                    ) : null}
 
+                    {isDetailColumnVisible("subtype") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-xs"><span className={`px-1 py-0.5 rounded text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>{info.label}</span></td>
+                    ) : null}
 
+                    {isDetailColumnVisible("amount") ? (
                     <td className="px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums text-slate-700">
 
                       {(() => {
@@ -2452,13 +2698,17 @@ export function FundShell(props: Props) {
                       })()}
 
                     </td>
+                    ) : null}
 
+                    {isDetailColumnVisible("profit") ? (
                     <td className={`px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(toNumber(e.realizedProfit))}`}>
 
                       {e.realizedProfit != null && e.fundSubtype === "redeem" ? formatMoney(toNumber(e.realizedProfit)) : <span className="text-slate-300">-</span>}
 
                     </td>
+                    ) : null}
 
+                    {isDetailColumnVisible("status") ? (
                     <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-600">
 
                       {(() => {
@@ -2474,6 +2724,7 @@ export function FundShell(props: Props) {
                       })()}
 
                     </td>
+                    ) : null}
 
                     <td className="w-[112px] align-middle px-2 py-1 border-b border-slate-100">
 
@@ -2639,7 +2890,7 @@ export function FundShell(props: Props) {
 
                 );
 
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={12}>暂无交易记录</td></tr>)}
+              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>暂无交易记录</td></tr>)}
 
             </tbody>
 
@@ -2654,6 +2905,3 @@ export function FundShell(props: Props) {
   );
 
 }
-
-
-

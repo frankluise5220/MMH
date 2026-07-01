@@ -17,6 +17,14 @@ function normalizeIntervalUnit(value: unknown): IntervalUnit {
   return IntervalUnit.month;
 }
 
+function normalizeIntervalSchedule(unit: IntervalUnit, value: number): { unit: IntervalUnit; value: number } {
+  const safeValue = Number.isFinite(value) && value > 0 ? value : 1;
+  if (unit === IntervalUnit.biweek) {
+    return { unit: IntervalUnit.week, value: safeValue * 2 };
+  }
+  return { unit, value: safeValue };
+}
+
 function parseDateOnlyUtc(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
   if (!match) return null;
@@ -32,6 +40,11 @@ function parseDateOnlyUtc(value: string): Date | null {
     return null;
   }
   return date;
+}
+
+function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
+  if (!a || !b) return a == null && b == null;
+  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
 export async function GET(req: NextRequest) {
@@ -87,6 +100,7 @@ export async function POST(req: NextRequest) {
       intervalUnit = "month" as IntervalUnit,
       intervalValue = 1,
       startDate,
+      nextRunDate,
       endDate,
       totalRuns,
       executionDay,
@@ -138,10 +152,11 @@ export async function POST(req: NextRequest) {
       : null;
     if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "资金账户不属于当前账簿" }, { status: 403 });
 
-    const unitVal = parseInt(intervalValue) || 1;
     const totalRunsInt = totalRuns ? parseInt(totalRuns) : null;
-    const executionDayInt = executionDay ? parseInt(executionDay) : null;
-    const intervalUnitValue = normalizeIntervalUnit(intervalUnit);
+    const normalizedInterval = normalizeIntervalSchedule(normalizeIntervalUnit(intervalUnit), parseInt(intervalValue) || 1);
+    const unitVal = normalizedInterval.value;
+    const intervalUnitValue = normalizedInterval.unit;
+    const executionDayInt = intervalUnitValue === IntervalUnit.year ? null : executionDay ? parseInt(executionDay) : null;
     const parsedStartDate = parseDateOnlyUtc(startDate);
     if (!parsedStartDate) {
       return NextResponse.json({ ok: false, error: "开始日期不正确" }, { status: 400 });
@@ -150,8 +165,12 @@ export async function POST(req: NextRequest) {
     if (endDate && !parsedEndDate) {
       return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
     }
+    const parsedNextRunDate = nextRunDate ? parseDateOnlyUtc(nextRunDate) : null;
+    if (nextRunDate && !parsedNextRunDate) {
+      return NextResponse.json({ ok: false, error: "下次执行日期不正确" }, { status: 400 });
+    }
     const start = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-    const initialRunDate = calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask);
+    const initialRunDate = parsedNextRunDate ?? calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask);
 
     const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
     const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
@@ -329,33 +348,68 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
     }
     const effectiveStartDate = parsedStartDate ?? existing.startDate;
-    const effectiveIntervalUnit = normalizeIntervalUnit(intervalUnit || existing.intervalUnit);
-    const effectiveIntervalValue = intervalValue != null ? parseInt(intervalValue) || 1 : existing.intervalValue;
-    const effectiveExecutionDay = executionDay != null
-      ? (executionDay ? parseInt(executionDay) : null)
-      : existing.executionDay;
+    const rawEffectiveIntervalUnit = normalizeIntervalUnit(intervalUnit || existing.intervalUnit);
+    const rawEffectiveIntervalValue = intervalValue != null ? parseInt(intervalValue) || 1 : existing.intervalValue;
+    const normalizedEffectiveInterval = normalizeIntervalSchedule(rawEffectiveIntervalUnit, rawEffectiveIntervalValue);
+    const effectiveIntervalUnit = normalizedEffectiveInterval.unit;
+    const effectiveIntervalValue = normalizedEffectiveInterval.value;
+    const effectiveExecutionDay = effectiveIntervalUnit === IntervalUnit.year
+      ? null
+      : executionDay != null
+        ? (executionDay ? parseInt(executionDay) : null)
+        : existing.executionDay;
+    const nextStoredStartDate = parsedStartDate
+      ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
+      : existing.startDate;
+    const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, existing.startDate);
+    if (startDateChanged && ((existing.executedRuns ?? 0) > 0 || existing.lastRunDate)) {
+      return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改起始日期。请通过下次执行/缴费日期、停止日期或总次数调整后续计划。" }, { status: 400 });
+    }
+    if (startDateChanged) {
+      const linkedRecordCount = await prisma.txRecord.count({ where: { regularInvestPlanId: existing.id, deletedAt: null } });
+      if (linkedRecordCount > 0) {
+        return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改起始日期。请通过下次执行/缴费日期、停止日期或总次数调整后续计划。" }, { status: 400 });
+      }
+    }
+    const scheduleChanged =
+      (taskType != null && nextTaskType !== existingTask.type) ||
+      startDateChanged ||
+      (intervalUnit != null && effectiveIntervalUnit !== existing.intervalUnit) ||
+      (intervalValue != null && effectiveIntervalValue !== existing.intervalValue) ||
+      (effectiveIntervalUnit !== IntervalUnit.year && executionDay != null && effectiveExecutionDay !== existing.executionDay);
 
-    if (parsedStartDate) updateData.startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
+    if (parsedStartDate) updateData.startDate = nextStoredStartDate;
     if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
     if (fundName != null) updateData.fundName = fundName;
     if (amount != null) updateData.amount = parseFloat(amount);
-    if (intervalUnit) updateData.intervalUnit = normalizeIntervalUnit(intervalUnit);
-    if (intervalValue != null) updateData.intervalValue = parseInt(intervalValue);
-    if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
+    if (intervalUnit != null || intervalValue != null) {
+      updateData.intervalUnit = effectiveIntervalUnit;
+      updateData.intervalValue = effectiveIntervalValue;
+    }
+    if (effectiveIntervalUnit === IntervalUnit.year) updateData.executionDay = null;
+    else if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
     if (nextRunDate) {
       const parsedNextRunDate = parseDateOnlyUtc(nextRunDate);
       if (!parsedNextRunDate) {
         return NextResponse.json({ ok: false, error: "Invalid nextRunDate" }, { status: 400 });
       }
       updateData.nextRunDate = parsedNextRunDate;
-    } else if (startDate != null || intervalUnit || intervalValue != null || executionDay != null || taskType) {
-      updateData.nextRunDate = calcInitialRunDate(
-        effectiveStartDate,
-        effectiveIntervalUnit,
-        effectiveIntervalValue,
-        effectiveExecutionDay,
-        isFundTask,
-      );
+    } else if (scheduleChanged) {
+      updateData.nextRunDate = existing.lastRunDate
+        ? calcNextRunDate(
+            existing.lastRunDate,
+            effectiveIntervalUnit,
+            effectiveIntervalValue,
+            effectiveExecutionDay,
+            isFundTask,
+          )
+        : calcInitialRunDate(
+            effectiveStartDate,
+            effectiveIntervalUnit,
+            effectiveIntervalValue,
+            effectiveExecutionDay,
+            isFundTask,
+          );
     }
     if (endDate != null) updateData.endDate = parsedEndDate;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;

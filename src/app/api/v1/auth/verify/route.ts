@@ -9,6 +9,22 @@ const USERNAME_KEY = "mmh_username";
 const HOUSEHOLD_KEY = "householdId";
 const LEGACY_PASSWORD_KEY = "access_password";
 const SESSION_DAYS_KEY = "mmh_session_days";
+const AUTH_LOOKUP_TIMEOUT_MS = 1500;
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation.catch(() => null), timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
 
 const userSelect = {
   id: true,
@@ -125,7 +141,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const resolved = await resolveLoginUser(username, householdId);
+  const resolved = await withTimeout(resolveLoginUser(username, householdId), AUTH_LOOKUP_TIMEOUT_MS);
+  if (!resolved) {
+    const anyUser = await withTimeout(prisma.user.findFirst({ select: { id: true } }), AUTH_LOOKUP_TIMEOUT_MS);
+    if (!anyUser) {
+      return NextResponse.json({ ok: false, error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
+    }
+  }
   if (resolved instanceof NextResponse) {
     return resolved;
   }
@@ -145,9 +167,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
     }
   } else {
-    const legacy = await prisma.systemSetting.findUnique({
+    const legacy = await withTimeout(prisma.systemSetting.findUnique({
       where: { key: LEGACY_PASSWORD_KEY },
-    });
+    }), AUTH_LOOKUP_TIMEOUT_MS);
 
     if (legacy && legacy.value.length > 0) {
       if (password !== legacy.value) {

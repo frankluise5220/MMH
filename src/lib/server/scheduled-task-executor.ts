@@ -1,9 +1,9 @@
-import { Prisma, RegularInvestStatus, TransactionType, type Account, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
+import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type Account, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel, type ScheduledTaskPayload, type ScheduledTaskType } from "@/lib/scheduled-task";
-import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
+import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
@@ -93,12 +93,21 @@ export async function executeNonFundScheduledTaskPlan(params: {
 
   const sourceFilter = getScheduledTaskSourceFilter(task.type);
   const existingTxRecords = await prisma.txRecord.findMany({
-    where: {
-      householdId,
-      regularInvestPlanId: plan.id,
-      source: { in: sourceFilter },
-      deletedAt: null,
-    },
+    where: task.type === "insurance_premium" && task.insuranceProductId
+      ? {
+          householdId,
+          insuranceProductId: task.insuranceProductId,
+          source: { in: sourceFilter },
+          type: TransactionType.investment,
+          fundSubtype: FundSubtype.buy,
+          deletedAt: null,
+        }
+      : {
+          householdId,
+          regularInvestPlanId: plan.id,
+          source: { in: sourceFilter },
+          deletedAt: null,
+        },
     select: { date: true },
   });
   const existingDates = new Set(existingTxRecords.map((record) => formatDateUtc(record.date)));
@@ -119,7 +128,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
     const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
     let currentDate = latestExistingDate
       ? makeNextRunDate(plan, latestExistingDate)
-      : calcInitialScheduledRunDate(plan.startDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, false);
+      : startOfDayUtc(plan.nextRunDate);
     let guard = 0;
     while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
       const dateStr = formatDateUtc(currentDate);

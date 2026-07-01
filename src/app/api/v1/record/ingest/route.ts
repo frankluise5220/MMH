@@ -4,7 +4,12 @@ import { z } from "zod";
 import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { defaultModel, localProvider } from "@/lib/ai/config";
-import { formatAccountDisplayName, formatDisplayInstitutionName } from "@/lib/account-display";
+import {
+  buildImportAccountCandidates,
+  buildImportAccountInputCandidates,
+  normalizeImportAccountMatchKey,
+  resolveImportAccountIdFromList,
+} from "@/lib/account-import-match";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
@@ -17,12 +22,15 @@ type AccountLookupRow = {
   name: string;
   kind: AccountKind;
   billingDay: number | null;
+  numberMasked: string | null;
   Institution: { name: string | null; shortName?: string | null } | null;
+  AccountAlias?: Array<{ alias: string }> | null;
 };
 type ImportContext = {
   householdId: string;
   accountIdByMatchKey: Map<string, string>;
   accountMetaById: Map<string, { kind: AccountKind; billingDay: number | null }>;
+  accountLookupRows: AccountLookupRow[];
   categoryIdByName: Map<string, string>;
   tagIdByName: Map<string, string>;
   institutionIdByName: Map<string, string>;
@@ -121,53 +129,30 @@ function pickAccountName(value?: string, defaultAccountName?: string) {
   return fallback;
 }
 
-function normalizeAccountMatchKey(value?: string) {
-  return String(value ?? "")
-    .trim()
-    .replace(/[·•\-—\s]/g, "")
-    .toLowerCase();
-}
-
-function buildAccountMatchCandidates(account: {
-  name: string;
-  Institution?: { name: string | null; shortName?: string | null } | null;
-  AccountAlias?: Array<{ alias: string }> | null;
-}) {
-  const fullInstitutionName = formatDisplayInstitutionName(account.Institution, false);
-  const shortInstitutionName = formatDisplayInstitutionName(account.Institution, true);
-  const candidates = new Set<string>([
-    account.name,
-    formatAccountDisplayName(account.name, fullInstitutionName),
-    formatAccountDisplayName(account.name, shortInstitutionName),
-  ]);
-  // Also add variants without separator
-  if (fullInstitutionName) candidates.add(`${fullInstitutionName}${account.name}`);
-  if (shortInstitutionName) candidates.add(`${shortInstitutionName}${account.name}`);
-  // Add aliases
-  if (account.AccountAlias) {
-    for (const al of account.AccountAlias) {
-      candidates.add(al.alias);
-    }
-  }
-  return Array.from(candidates);
-}
-
 function indexAccountLookup(
   map: Map<string, string>,
-  account: { id: string; name: string; Institution?: { name: string | null; shortName?: string | null } | null; AccountAlias?: Array<{ alias: string }> | null },
+  account: AccountLookupRow | { id: string; name: string; kind?: AccountKind | null; numberMasked?: string | null; Institution?: { name: string | null; shortName?: string | null } | null; AccountAlias?: Array<{ alias: string }> | null },
 ) {
-  for (const candidate of buildAccountMatchCandidates(account)) {
-    const key = normalizeAccountMatchKey(candidate);
+  for (const candidate of buildImportAccountCandidates(account)) {
+    const key = normalizeImportAccountMatchKey(candidate);
     if (key) map.set(key, account.id);
   }
 }
 
 async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string) {
   if (!accountName) return null;
-  const normalizedTarget = normalizeAccountMatchKey(accountName);
+  const normalizedTarget = normalizeImportAccountMatchKey(accountName);
   if (!normalizedTarget) return null;
   const cached = ctx.accountIdByMatchKey.get(normalizedTarget);
   if (cached) return cached;
+  const resolved = resolveImportAccountIdFromList(accountName, ctx.accountLookupRows);
+  if (resolved) {
+    for (const candidate of buildImportAccountInputCandidates(accountName)) {
+      const key = normalizeImportAccountMatchKey(candidate);
+      if (key) ctx.accountIdByMatchKey.set(key, resolved);
+    }
+    return resolved;
+  }
 
   // Load all accounts with aliases for matching
   const accounts = await tx.account.findMany({
@@ -177,6 +162,7 @@ async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string
       name: true,
       kind: true,
       billingDay: true,
+      numberMasked: true,
       Institution: {
         select: {
           name: true,
@@ -192,15 +178,18 @@ async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string
     indexAccountLookup(ctx.accountIdByMatchKey, account);
     ctx.accountMetaById.set(account.id, { kind: account.kind, billingDay: account.billingDay });
   }
+  ctx.accountLookupRows = accounts;
 
   // Exact match
   const exact = ctx.accountIdByMatchKey.get(normalizedTarget);
   if (exact) return exact;
+  const retryResolved = resolveImportAccountIdFromList(accountName, accounts);
+  if (retryResolved) return retryResolved;
 
   // Partial match: target contains account key or vice versa
   for (const account of accounts) {
-    for (const candidate of buildAccountMatchCandidates(account)) {
-      const key = normalizeAccountMatchKey(candidate);
+    for (const candidate of buildImportAccountCandidates(account)) {
+      const key = normalizeImportAccountMatchKey(candidate);
       if (!key) continue;
       if (key.length >= 3 && (normalizedTarget.includes(key) || key.includes(normalizedTarget))) {
         ctx.accountIdByMatchKey.set(normalizedTarget, account.id);
@@ -260,8 +249,9 @@ async function ensureAccountId(ctx: ImportContext, tx: Db, accountName?: string)
         isActive: true,
       },
     });
-    indexAccountLookup(ctx.accountIdByMatchKey, { id: created.id, name: created.name, Institution: null });
+    indexAccountLookup(ctx.accountIdByMatchKey, { id: created.id, name: created.name, kind: created.kind, numberMasked: created.numberMasked, Institution: null });
     ctx.accountMetaById.set(created.id, { kind: created.kind, billingDay: created.billingDay });
+    ctx.accountLookupRows.push({ id: created.id, name: created.name, kind: created.kind, billingDay: created.billingDay, numberMasked: created.numberMasked, Institution: null });
     return created.id;
   } catch {
     return (await resolveAccountId(ctx, tx, name)) ?? null;
@@ -331,12 +321,14 @@ async function buildImportContext(): Promise<ImportContext> {
         name: true,
         kind: true,
         billingDay: true,
+        numberMasked: true,
         Institution: {
           select: {
             name: true,
             shortName: true,
           },
         },
+        AccountAlias: { select: { alias: true } },
       },
     }),
     prisma.category.findMany({
@@ -364,6 +356,7 @@ async function buildImportContext(): Promise<ImportContext> {
     householdId,
     accountIdByMatchKey: new Map(),
     accountMetaById: new Map(),
+    accountLookupRows: accounts,
     categoryIdByName: new Map(),
     tagIdByName: new Map(),
     institutionIdByName: new Map(),

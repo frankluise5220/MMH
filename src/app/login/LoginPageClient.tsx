@@ -54,27 +54,49 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
 
   useEffect(() => {
-    fetch("/api/v1/auth/password-status")
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+    let mounted = true;
+
+    void fetch("/api/v1/auth/password-status", { signal: controller.signal })
       .then((res) => res.json() as Promise<PasswordStatusResponse>)
       .then((data) => {
+        if (!mounted) return;
         if (data.ok) {
           setMode(data.hasPassword ? "login" : "setup");
           setSystemUsers(data.users ?? []);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
-          if ((data.users?.length ?? 0) > 0) {
-            setUsername(data.users![0]!.name);
+          const firstUser = data.users?.[0];
+          if (firstUser) {
+            setUsername(firstUser.name);
           }
+        } else {
+          setMode("login");
+          setSystemUsers([]);
+          setPasswordResetEnabled(false);
         }
         if (typeof window !== "undefined" && new URL(window.location.href).searchParams.get("reset") === "1") {
           setShowReset(true);
         }
       })
       .catch(() => {
-        setMode("setup");
+        if (!mounted) return;
+        setMode("login");
+        setSystemUsers([]);
+        setPasswordResetEnabled(false);
       })
       .finally(() => {
-        setChecking(false);
+        window.clearTimeout(timeoutId);
+        if (mounted) {
+          setChecking(false);
+        }
       });
+
+    return () => {
+      mounted = false;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   async function verifyLogin(params: { username: string; password: string; householdId?: string }) {

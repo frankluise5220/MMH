@@ -14,7 +14,7 @@ export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   fund_regular_invest: "基金定投",
   loan_repayment: "还贷款",
   transfer: "转账",
-  insurance_premium: "缴费",
+  insurance_premium: "保费缴费",
 };
 
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {

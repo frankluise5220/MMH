@@ -21,6 +21,23 @@ const currentUserSelect = {
   householdId: true,
 } as const;
 
+const USER_LOOKUP_TIMEOUT_MS = 5000;
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation.catch(() => null), timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 /**
  * Read the verified login cookies and resolve the current database user.
  *
@@ -37,42 +54,44 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   if (!verified) return null;
 
   if (username && householdId) {
-    return prisma.user.findFirst({
+    return await withTimeout(prisma.user.findFirst({
       where: { name: username, householdId },
       select: currentUserSelect,
-    });
+    }), USER_LOOKUP_TIMEOUT_MS);
   }
 
   if (!username && householdId) {
-    const householdAdmin = await prisma.user.findFirst({
+    const householdAdmin = await withTimeout(prisma.user.findFirst({
       where: { householdId, OR: [{ role: "admin" }, { isSystem: true }] },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    });
+    }), USER_LOOKUP_TIMEOUT_MS);
     if (householdAdmin) return householdAdmin;
 
-    return prisma.user.findFirst({
+    return await withTimeout(prisma.user.findFirst({
       where: { householdId },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    });
+    }), USER_LOOKUP_TIMEOUT_MS);
   }
 
   if (!username) {
-    const users = await prisma.user.findMany({
+    const users = await withTimeout(prisma.user.findMany({
       select: currentUserSelect,
       take: 2,
       orderBy: { createdAt: "asc" },
-    });
+    }), USER_LOOKUP_TIMEOUT_MS);
+    if (!users) return null;
     return users.length === 1 ? users[0] : null;
   }
 
-  const users = await prisma.user.findMany({
+  const users = await withTimeout(prisma.user.findMany({
     where: { name: username },
     select: currentUserSelect,
     take: 2,
     orderBy: { createdAt: "asc" },
-  });
+  }), USER_LOOKUP_TIMEOUT_MS);
+  if (!users) return null;
 
   return users.length === 1 ? users[0] : null;
 }

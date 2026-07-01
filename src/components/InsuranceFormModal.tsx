@@ -84,6 +84,11 @@ type AccountMeta = {
   institutionShortName?: string | null;
 };
 
+type InsuranceSubmitOptions = {
+  createPremiumPlan: boolean;
+  backfillPastRecords: boolean;
+};
+
 type InternalAccountRow = {
   id: string;
   name: string;
@@ -167,6 +172,36 @@ function addYearsClamped(date: Date, years: number) {
   const maxDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
   next.setUTCDate(Math.min(date.getUTCDate(), maxDay));
   return next;
+}
+
+function addMonthsKeepingAnchorDay(date: Date, months: number, anchorDay?: number | null) {
+  const interval = Number.isFinite(months) && months > 0 ? months : 12;
+  const source = parseDateOnly(formatDateOnly(date)) ?? date;
+  const targetMonth = source.getUTCMonth() + interval;
+  const targetYear = source.getUTCFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+  const maxDay = new Date(Date.UTC(targetYear, normalizedMonth + 1, 0)).getUTCDate();
+  const targetDay = Math.min(anchorDay && anchorDay >= 1 ? anchorDay : source.getUTCDate(), maxDay);
+  return new Date(Date.UTC(targetYear, normalizedMonth, targetDay));
+}
+
+function buildPremiumDueDates(startDate: Date, endDate: Date, frequencyMonths: number, totalRuns: number) {
+  const dates: string[] = [];
+  const anchorDay = startDate.getUTCDate();
+  let current = parseDateOnly(formatDateOnly(startDate));
+  let guard = 0;
+  while (current && current <= endDate && dates.length < totalRuns) {
+    dates.push(formatDateOnly(current));
+    current = addMonthsKeepingAnchorDay(current, frequencyMonths, anchorDay);
+    guard++;
+    if (guard > 1200) break;
+  }
+  return dates;
+}
+
+function latestPremiumDueDate(startDate: Date, endDate: Date, frequencyMonths: number, totalRuns: number) {
+  const dueDates = buildPremiumDueDates(startDate, endDate, frequencyMonths, totalRuns);
+  return dueDates.length > 0 ? dueDates[dueDates.length - 1] : null;
 }
 
 function valueFromRecord(item: Record<string, unknown>, key: string) {
@@ -310,10 +345,13 @@ export function InsuranceFormModal({
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [pendingPlanData, setPendingPlanData] = useState<{
     totalRuns: number;
+    historyCount: number;
+    dueCount: number;
     amount: number;
     planStartDate: string;
+    currentRecordDate: string;
+    frequencyLabel: string;
   } | null>(null);
-  const [confirmCreatePlan, setConfirmCreatePlan] = useState(true);
   const [confirmBatchGenerate, setConfirmBatchGenerate] = useState(false);
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
@@ -410,12 +448,17 @@ export function InsuranceFormModal({
         }),
       });
       const data = (await response.json().catch(() => null)) as
-        | { ok?: boolean; error?: string; productMaster?: { id: string; name: string } }
+        | { ok?: boolean; error?: string; productMaster?: Record<string, unknown> }
         | null;
       if (!response.ok || !data?.ok || !data.productMaster) {
         throw new Error(data?.error || "创建失败");
       }
-      setInsuranceProductId(`master:${data.productMaster.id}`);
+      const nextOption = mapInsuranceProductMaster(data.productMaster);
+      setInsuranceProductOptions((prev) => [
+        ...prev.filter((item) => item.id !== nextOption.id),
+        nextOption,
+      ]);
+      setInsuranceProductId(nextOption.id);
       setShowNewProductModal(false);
       setNewProductInstitutionId("");
       setNewProductName("");
@@ -432,12 +475,66 @@ export function InsuranceFormModal({
   function handleCancelConfirm() {
     setShowConfirmDialog(false);
     setPendingPlanData(null);
-    setConfirmCreatePlan(true);
     setConfirmBatchGenerate(false);
   }
 
+  function getPremiumRecordDate() {
+    const start = parseDateOnly(productStartDate);
+    if (!start) return date;
+
+    const frequencyMonths = parseOptionalNumber(premiumFrequencyMonths);
+    if (!frequencyMonths || frequencyMonths >= 999999) return formatDateOnly(start);
+
+    const termYears = parseOptionalNumber(paymentTermYears);
+    const todayDate = parseDateOnly(today);
+    if (!termYears || !todayDate) return formatDateOnly(start);
+
+    const totalRuns = Math.ceil((termYears * 12) / frequencyMonths);
+    return latestPremiumDueDate(start, todayDate, frequencyMonths, totalRuns) ?? formatDateOnly(start);
+  }
+
+  function getPremiumPlanPreview() {
+    const frequencyMonths = parseOptionalNumber(premiumFrequencyMonths);
+    const termYears = parseOptionalNumber(paymentTermYears);
+    const amountValue = parseOptionalNumber(amount);
+    const start = parseDateOnly(productStartDate);
+    const currentEntryDate = parseDateOnly(getPremiumRecordDate());
+    const todayDate = parseDateOnly(today);
+    if (
+      !frequencyMonths ||
+      frequencyMonths >= 999999 ||
+      !termYears ||
+      !amountValue ||
+      !start ||
+      !currentEntryDate ||
+      !todayDate
+    ) {
+      return null;
+    }
+    const totalRuns = Math.ceil((termYears * 12) / frequencyMonths);
+    if (totalRuns <= 1) return null;
+    const dueDates = buildPremiumDueDates(start, todayDate, frequencyMonths, totalRuns);
+    const currentEntryDateText = formatDateOnly(currentEntryDate);
+    const historyCount = dueDates.filter((item) => item < currentEntryDateText).length;
+    const dueCount = dueDates.filter((item) => item <= currentEntryDateText).length;
+    return {
+      totalRuns,
+      historyCount,
+      dueCount,
+      amount: amountValue,
+      planStartDate: formatDateOnly(start),
+      currentRecordDate: formatDateOnly(currentEntryDate),
+      frequencyLabel: frequencyMonths === 12 ? "每年" : `每 ${frequencyMonths} 个月`,
+    };
+  }
+
   function handleConfirmPlanAndBatch() {
-    handleCancelConfirm();
+    setShowConfirmDialog(false);
+    setPendingPlanData(null);
+    void submitInsurance({
+      createPremiumPlan: true,
+      backfillPastRecords: confirmBatchGenerate,
+    });
   }
 
   const cashOptionsForPolicyholder = useMemo<SmartSelectOption[] | undefined>(() => {
@@ -524,8 +621,12 @@ export function InsuranceFormModal({
     setProductStartDateTouched(false);
     setProductStartDate(today);
     setPaymentTermYears("");
+    setCoverageTermYears("");
     setCoverageAmount("");
     setLastAppliedProductId("");
+    setShowConfirmDialog(false);
+    setPendingPlanData(null);
+    setConfirmBatchGenerate(false);
   }
 
   useEffect(() => setCashAccountList(cashAccounts), [cashAccounts]);
@@ -636,8 +737,7 @@ export function InsuranceFormModal({
     return () => window.removeEventListener("mmh:insurance:create", onCreate as EventListener);
   }, [accountMetaById, defaultAccountId, today]);
 
-  async function onSubmit(event: FormEvent) {
-    event.preventDefault();
+  async function submitInsurance(options: InsuranceSubmitOptions) {
     if (submitting) return;
 
     const amountValue = parseOptionalNumber(amount);
@@ -661,13 +761,14 @@ export function InsuranceFormModal({
 
     const entryId = entry?.id || editEntryId || "";
     const isEdit = !!entryId;
+    const submitDate = !isEdit && subtype === "buy" ? getPremiumRecordDate() : date;
 
     setSubmitting(true);
     try {
       const payload = {
         id: isEdit ? entryId : undefined,
         type: "investment",
-        date,
+        date: submitDate,
         amount: amountValue,
         note: memo,
         cashAccountId,
@@ -696,6 +797,8 @@ export function InsuranceFormModal({
         fundProductType: "wealth",
         fundSubtype: "buy",
         source: "insurance",
+        createInsurancePremiumPlan: options.createPremiumPlan,
+        insurancePremiumBackfillPastRecords: options.backfillPastRecords,
       };
 
       const response = await fetch("/api/v1/transactions/detail", {
@@ -719,6 +822,22 @@ export function InsuranceFormModal({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+
+    const shouldAskPremiumActions = mode !== "edit" && !editEntryId && subtype === "buy";
+    const preview = shouldAskPremiumActions ? getPremiumPlanPreview() : null;
+    if (preview) {
+      setPendingPlanData(preview);
+      setConfirmBatchGenerate(preview.historyCount > 0);
+      setShowConfirmDialog(true);
+      return;
+    }
+
+    await submitInsurance({ createPremiumPlan: false, backfillPastRecords: false });
   }
 
   if (!open || typeof document === "undefined") return null;
@@ -1239,7 +1358,7 @@ export function InsuranceFormModal({
         </div>
       )}
 
-      {/* 确认弹窗：是否创建缴费计划并批量生成过往记录 */}
+      {/* 确认弹窗：缴费计划固定生成，用户只确认是否补生成过往记录 */}
       {showConfirmDialog && pendingPlanData && (
         <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
@@ -1249,26 +1368,20 @@ export function InsuranceFormModal({
             <div className="space-y-4 p-4">
               <div className="text-sm text-slate-600">
                 初次购买日期为 <span className="font-semibold text-slate-800">{productStartDate}</span>，
-                距今已超过一年。是否需要：
+                本次应补齐到 <span className="font-semibold text-slate-800">{pendingPlanData.currentRecordDate}</span>。
               </div>
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={confirmCreatePlan}
-                  onChange={(e) => setConfirmCreatePlan(e.target.checked)}
-                  className="h-4 w-4 accent-blue-600"
-                />
-                生成缴费计划（{pendingPlanData.totalRuns} 次，每年 {formatMoney(pendingPlanData.amount)}）
-              </label>
+              <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                将生成缴费计划：共 {pendingPlanData.totalRuns} 次，{pendingPlanData.frequencyLabel} {formatMoney(pendingPlanData.amount)}。
+              </div>
               <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   checked={confirmBatchGenerate}
                   onChange={(e) => setConfirmBatchGenerate(e.target.checked)}
-                  disabled={!confirmCreatePlan}
+                  disabled={pendingPlanData.dueCount <= 0}
                   className="h-4 w-4 accent-blue-600"
                 />
-                批量生成过往续保记录（从 {pendingPlanData.planStartDate} 至今）
+                同时由计划任务批量生成已到期缴费记录（预计 {pendingPlanData.dueCount} 条，从 {pendingPlanData.planStartDate} 到 {pendingPlanData.currentRecordDate}）
               </label>
               <div className="flex justify-end gap-2 pt-1">
                 <button
@@ -1276,14 +1389,14 @@ export function InsuranceFormModal({
                   onClick={handleCancelConfirm}
                   className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  跳过
+                  返回修改
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmPlanAndBatch}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
                 >
-                  确认
+                  确认并保存
                 </button>
               </div>
             </div>

@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
+import { queryFundIdentity } from "@/lib/fund/queryApi";
 
 /**
- * 获取基金名称（优先从净值缓存库，再从外部API，最后从持仓库）
+ * 获取基金名称（优先从代码权威来源，再从净值缓存库，最后从持仓库）
  * GET /api/v1/fund/name?code=000001
  *
- * 1. 先从净值缓存库查询（权威来源，切断持仓→明细名称传播循环）
- * 2. 如果找不到，从外部API获取
+ * 1. 先从外部代码详情页按 fundCode 精确校验名称
+ * 2. 再从净值缓存库查询
  * 3. 最后从持仓库兜底（仅在navCache和外部API都没有时）
  */
 
@@ -141,7 +142,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1. 先从净值缓存库查询（权威来源，切断持仓→明细名称传播循环）
+    // 1. 先按基金代码查询权威身份，避免历史净值缓存中的错误 name 污染显示。
+    const identity = await queryFundIdentity(fundCode);
+    if (identity?.name) {
+      return NextResponse.json({
+        ok: true,
+        name: identity.name,
+        source: identity.source,
+      });
+    }
+
+    // 2. 再从净值缓存库查询。
     const latestNav = await getLatestFundNav(fundCode);
     if (latestNav?.name) {
       return NextResponse.json({

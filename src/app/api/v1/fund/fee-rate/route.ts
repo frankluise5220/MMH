@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFundFeeRate, setFundFeeRate, type FundFeeRateType } from "@/lib/fund/feeRate";
+import { getFundFeeRate, setFundFeeRate, setFundFeeRateByDate, type FundFeeRateType } from "@/lib/fund/feeRate";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -21,12 +21,21 @@ export async function POST(req: NextRequest) {
     const fundCode = String(body.fundCode ?? "").trim();
     const rate = parseFloat(body.rate);
     const feeType = parseFeeType(body.feeType);
+    const effectiveDateRaw = String(body.effectiveDate ?? "").trim();
 
     if (!accountId || !fundCode || !Number.isFinite(rate) || rate < 0) {
       return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
     }
 
-    await setFundFeeRate(accountId, fundCode, rate, feeType);
+    if (effectiveDateRaw) {
+      const effectiveDate = utcDate(effectiveDateRaw);
+      if (Number.isNaN(effectiveDate.getTime())) {
+        return NextResponse.json({ ok: false, error: "生效日期不正确" }, { status: 400 });
+      }
+      await setFundFeeRateByDate(accountId, fundCode, rate, effectiveDate, feeType);
+    } else {
+      await setFundFeeRate(accountId, fundCode, rate, feeType);
+    }
     return NextResponse.json({ ok: true, feeType });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存失败" }, { status: 500 });
@@ -35,4 +44,9 @@ export async function POST(req: NextRequest) {
 
 function parseFeeType(value: unknown): FundFeeRateType {
   return value === "redeem" ? "redeem" : "buy";
+}
+
+function utcDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
 }

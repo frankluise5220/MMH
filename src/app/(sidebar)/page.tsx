@@ -45,11 +45,11 @@ import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDispla
 import { buildAccountDisplayOption, buildFlatAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { debtActionLabel } from "@/lib/debt";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
+import { getAccountFundUnitsDecimals, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
-import { calcInitialScheduledRunDate, calcNextScheduledRunDate, encodeYearlyExecutionDay, skipWeekend } from "@/lib/scheduled-task-date";
+import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import {
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
@@ -87,6 +87,11 @@ function parseDateOnlyUtc(value: string): Date | null {
   return date;
 }
 
+function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
+  if (!a || !b) return a == null && b == null;
+  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+
 import { subtypeDisplay } from "@/lib/investment-config";
 import { LinkDateRangeFilter, LinkNumberRangeFilter, LinkTableColumnFilter } from "@/components/TableColumnFilter";
 
@@ -99,10 +104,16 @@ function normalizeIntervalUnitValue(value: string): IntervalUnit {
   return IntervalUnit.month;
 }
 
+function normalizeIntervalScheduleValue(unit: IntervalUnit, value: number): { unit: IntervalUnit; value: number } {
+  const safeValue = Number.isFinite(value) && value > 0 ? value : 1;
+  if (unit === "biweek") return { unit: "week", value: safeValue * 2 };
+  return { unit, value: safeValue };
+}
+
 function parseExecutionDayValue(raw: string, intervalUnit: IntervalUnit): number | null {
+  if (intervalUnit === "year") return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  if (intervalUnit === "year") return encodeYearlyExecutionDay(trimmed);
   const parsed = parseInt(trimmed, 10);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -576,6 +587,12 @@ async function createTransaction(formData: FormData) {
         if (!investAcc) throw new Error("账户不存在");
         if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error("请选择投资/存款账户");
         finalInvestmentAccId = investAcc.id;
+        const fundUnitsPrecisionAccount = await tx.account.findUnique({
+          where: { id: investAcc.id },
+          select: { fundUnitsDecimals: true },
+        });
+        const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals, 3);
+        const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
         const cashAcc = cashAccountIdInput
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true, currency: true } })
@@ -662,7 +679,7 @@ async function createTransaction(formData: FormData) {
             fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
-            fundUnits: fundUnits ?? undefined,
+            fundUnits: roundedFundUnits ?? undefined,
             fundNav: fundProductType === "deposit" ? undefined : fundNav ?? undefined,
             depositAnnualRate: depositAnnualRate ?? undefined,
             depositInterest: depositInterest ?? undefined,
@@ -942,8 +959,16 @@ async function editInvestment(formData: FormData) {
 
       // 查询新基金账户信息（如果需要）
       const newInvestmentAccountInfo = newToAccountId
-        ? await tx.account.findUnique({ where: { id: newToAccountId }, select: { id: true, name: true } })
+        ? await tx.account.findUnique({ where: { id: newToAccountId }, select: { id: true, name: true, fundUnitsDecimals: true } })
         : null;
+      const existingInvestmentAccountInfo = !newInvestmentAccountInfo && oldInvestmentAccId
+        ? await tx.account.findUnique({ where: { id: oldInvestmentAccId }, select: { fundUnitsDecimals: true } })
+        : null;
+      const fundUnitsDecimals = normalizeFundUnitsDecimals(
+        newInvestmentAccountInfo?.fundUnitsDecimals ?? existingInvestmentAccountInfo?.fundUnitsDecimals,
+        3,
+      );
+      const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
       // 构建 TxRecord 更新数据
       const sourceValue = fundProductType === "deposit"
@@ -959,7 +984,7 @@ async function editInvestment(formData: FormData) {
         fundProductType,
         fundSubtype: finalFundSubtype,
         source: sourceValue,
-        fundUnits: fundUnits ?? null,
+        fundUnits: roundedFundUnits ?? null,
         fundNav: fundProductType === "deposit" ? null : fundNav ?? null,
         depositAnnualRate: depositAnnualRate ?? null,
         depositInterest: depositInterest ?? null,
@@ -1061,7 +1086,7 @@ async function editInvestment(formData: FormData) {
 
     // 更新费率到统一费率库，并按申购/赎回分开保存
     if (finalInvestmentAccId && fundCode && feeRate !== undefined && feeRate !== null) {
-      await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, date, redeemLike ? "redeem" : "buy").catch(() => {});
+      await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, fundConfirmDate ?? date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 
     revalidateAfterInvestChange();
@@ -1128,7 +1153,8 @@ async function fillFundNavFromCache(formData: FormData) {
     const feeRate = feeRateRaw / 100;
     const fee = amount * feeRate;
     const principal = amount - fee;
-    const units = nav > 0 ? principal / nav : null;
+    const fundUnitsDecimals = await getAccountFundUnitsDecimals(investmentAccId);
+    const units = nav > 0 ? roundFundUnits(principal / nav, fundUnitsDecimals) : null;
 
     // 更新净值、确认日期、手续费、份额
     const updateData: {
@@ -1145,7 +1171,7 @@ async function fillFundNavFromCache(formData: FormData) {
       fundArrivalDate: arrivalDate,
     };
     if (units != null) {
-      updateData.fundUnits = Number(units.toFixed(6));
+      updateData.fundUnits = units;
     }
     if (navData.name) {
       updateData.fundName = navData.name;
@@ -1160,7 +1186,7 @@ async function fillFundNavFromCache(formData: FormData) {
     // revalidation handled by FundShell optimistic update
 
 
-    return { ok: true as const, nav, units: units != null ? Number(units.toFixed(6)) : null, fee, confirmDate, arrivalDate: arrivalDateStr };
+    return { ok: true as const, nav, units, fee, confirmDate, arrivalDate: arrivalDateStr };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "获取净值失败" };
   }
@@ -1185,6 +1211,7 @@ async function createRegularInvest(formData: FormData) {
   const intervalUnit = String(formData.get("intervalUnit") ?? "month").trim();
   const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
   const startDateStr = String(formData.get("startDate") ?? "").trim();
+  const nextRunDateStr = String(formData.get("nextRunDate") ?? "").trim();
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
   const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
@@ -1222,11 +1249,17 @@ async function createRegularInvest(formData: FormData) {
   const feeRate = feeRateRaw ? parseFloat(feeRateRaw) : null;
   const confirmDays = confirmDaysRaw ? normalizeNonNegativeDays(confirmDaysRaw, 0) : null;
   const arrivalDays = arrivalDaysRaw ? normalizeNonNegativeDays(arrivalDaysRaw, 2) : null;
-  const intervalValue = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : 1;
-  const intervalUnitValue = normalizeIntervalUnitValue(intervalUnit);
+  const normalizedInterval = normalizeIntervalScheduleValue(
+    normalizeIntervalUnitValue(intervalUnit),
+    Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : 1,
+  );
+  const intervalValue = normalizedInterval.value;
+  const intervalUnitValue = normalizedInterval.unit;
   const executionDay = parseExecutionDayValue(executionDayRaw, intervalUnitValue);
   const startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-  const nextRunDate = calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
+  const parsedNextRunDate = nextRunDateStr ? parseDateOnlyUtc(nextRunDateStr) : null;
+  if (nextRunDateStr && !parsedNextRunDate) return { ok: false as const, error: "下次执行日期不正确" };
+  const nextRunDate = parsedNextRunDate ?? calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
   const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
   if (endDateStr && !endDate) return { ok: false as const, error: "结束日期不正确" };
   const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
@@ -1375,6 +1408,7 @@ async function updateRegularInvest(formData: FormData) {
   const intervalUnit = String(formData.get("intervalUnit") ?? "").trim();
   const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
   const startDateStr = String(formData.get("startDate") ?? "").trim();
+  const nextRunDateStr = String(formData.get("nextRunDate") ?? "").trim();
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
   const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
@@ -1409,28 +1443,68 @@ async function updateRegularInvest(formData: FormData) {
     updateData.fundProductType = null;
   }
   if (Number.isFinite(amountRaw) && amountRaw > 0) updateData.amount = amountRaw;
-  const effectiveIntervalUnit = normalizeIntervalUnitValue(intervalUnit || plan.intervalUnit);
-  const effectiveIntervalValue = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : plan.intervalValue;
-  const effectiveExecutionDay = executionDayRaw
-    ? parseExecutionDayValue(executionDayRaw, effectiveIntervalUnit)
-    : formData.has("executionDay")
-      ? null
-      : plan.executionDay;
-  if (intervalUnit) updateData.intervalUnit = effectiveIntervalUnit;
-  if (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0) updateData.intervalValue = effectiveIntervalValue;
+  const normalizedEffectiveInterval = normalizeIntervalScheduleValue(
+    normalizeIntervalUnitValue(intervalUnit || plan.intervalUnit),
+    Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : plan.intervalValue,
+  );
+  const effectiveIntervalUnit = normalizedEffectiveInterval.unit;
+  const effectiveIntervalValue = normalizedEffectiveInterval.value;
+  const effectiveExecutionDay = effectiveIntervalUnit === "year"
+    ? null
+    : executionDayRaw
+      ? parseExecutionDayValue(executionDayRaw, effectiveIntervalUnit)
+      : formData.has("executionDay")
+        ? null
+        : plan.executionDay;
+  if (intervalUnit || (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0)) {
+    updateData.intervalUnit = effectiveIntervalUnit;
+    updateData.intervalValue = effectiveIntervalValue;
+  }
   const parsedStartDate = startDateStr ? parseDateOnlyUtc(startDateStr) : null;
   if (startDateStr && !parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
   const effectiveStartDate = parsedStartDate ?? plan.startDate;
-  if (parsedStartDate) updateData.startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-  if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
-  if (startDateStr || intervalUnit || formData.has("intervalValue") || formData.has("executionDay") || formData.has("taskType")) {
-    updateData.nextRunDate = calcInitialScheduledRunDate(
-      effectiveStartDate,
-      effectiveIntervalUnit,
-      effectiveIntervalValue,
-      effectiveExecutionDay,
-      isFundTask,
-    );
+  const nextStoredStartDate = parsedStartDate
+    ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
+    : plan.startDate;
+  const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
+  if (startDateChanged && ((plan.executedRuns ?? 0) > 0 || plan.lastRunDate)) {
+    return { ok: false as const, error: "该计划已生成记录，不能修改起始日期。请通过下次执行/缴费日期、停止日期或总次数调整后续计划。" };
+  }
+  if (startDateChanged) {
+    const linkedRecordCount = await prisma.txRecord.count({ where: { regularInvestPlanId: plan.id, deletedAt: null } });
+    if (linkedRecordCount > 0) {
+      return { ok: false as const, error: "该计划已生成记录，不能修改起始日期。请通过下次执行/缴费日期、停止日期或总次数调整后续计划。" };
+    }
+  }
+  const scheduleChanged =
+    (formData.has("taskType") && taskType !== existingTask.type) ||
+    startDateChanged ||
+    (intervalUnit !== "" && effectiveIntervalUnit !== plan.intervalUnit) ||
+    (formData.has("intervalValue") && effectiveIntervalValue !== plan.intervalValue) ||
+    (effectiveIntervalUnit !== "year" && formData.has("executionDay") && effectiveExecutionDay !== plan.executionDay);
+  if (parsedStartDate) updateData.startDate = nextStoredStartDate;
+  if (effectiveIntervalUnit === "year") updateData.executionDay = null;
+  else if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
+  if (nextRunDateStr) {
+    const parsedNextRunDate = parseDateOnlyUtc(nextRunDateStr);
+    if (!parsedNextRunDate) return { ok: false as const, error: "下次执行日期不正确" };
+    updateData.nextRunDate = parsedNextRunDate;
+  } else if (scheduleChanged) {
+    updateData.nextRunDate = plan.lastRunDate
+      ? calcNextScheduledRunDate(
+          plan.lastRunDate,
+          effectiveIntervalUnit,
+          effectiveIntervalValue,
+          effectiveExecutionDay,
+          isFundTask,
+        )
+      : calcInitialScheduledRunDate(
+          effectiveStartDate,
+          effectiveIntervalUnit,
+          effectiveIntervalValue,
+          effectiveExecutionDay,
+          isFundTask,
+        );
   }
   if (endDateStr) {
     const endDate = parseDateOnlyUtc(endDateStr);
@@ -3775,6 +3849,7 @@ export default async function Home({
                     source: e.source ?? null,
                   })) ?? undefined}
                   createAction={createTransaction}
+                  fundUnitsDecimals={fundUnitsDecimals}
                 />
               ) : null}
               <InvestmentFormModal
@@ -3787,6 +3862,7 @@ export default async function Home({
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 createAction={createTransaction}
                 editAction={editInvestment}
+                fundUnitsDecimals={fundUnitsDecimals}
               />
               <WealthFormModal
                 mode="create"

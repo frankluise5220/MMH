@@ -9,6 +9,7 @@ import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
@@ -242,7 +243,7 @@ export async function POST() {
     }
 
     // ONE transaction: create all records + update all plans
-    const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; principal: number }> = [];
+    const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; principal: number; fundUnitsDecimals: number }> = [];
     const affectedFunds = new Set<string>();
 
     await prisma.$transaction(async (tx) => {
@@ -286,7 +287,13 @@ export async function POST() {
           await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
         } else {
           const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金定期定额申购 ${e.plan.fundCode}` } });
-          generatedRecords.push({ id: rec.id, fundCode: e.plan.fundCode, confirmDate: e.confirmDateStr, principal: e.principal });
+          generatedRecords.push({
+            id: rec.id,
+            fundCode: e.plan.fundCode,
+            confirmDate: e.confirmDateStr,
+            principal: e.principal,
+            fundUnitsDecimals: normalizeFundUnitsDecimals(e.fundAcc.fundUnitsDecimals),
+          });
         }
 
         await tx.regularInvestPlan.update({ where: { id: e.plan.id }, data: { lastRunDate: e.runDate, nextRunDate: skipWeekend(e.nextRun), executedRuns: e.newExecutedRuns, status: e.willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active } });
@@ -368,7 +375,7 @@ export async function POST() {
         const n = cacheResults[i];
         if (n && Number(n.nav) > 0) {
           const nav = Number(n.nav);
-          const units = r.principal / nav;
+          const units = roundFundUnits(r.principal / nav, r.fundUnitsDecimals);
           const name = (n.name ?? "").trim();
           await prisma.txRecord.update({
             where: { id: r.id },

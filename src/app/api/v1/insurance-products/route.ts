@@ -643,6 +643,115 @@ export async function PUT(req: NextRequest) {
     const note = String(body.note ?? "").trim() || null;
     const mode = String(body.mode ?? "").trim() || null;
 
+    const { hidFilter } = await getHouseholdScope();
+    const householdId = hidFilter.householdId;
+
+    if (mode === "policy") {
+      const existingPolicy = await prisma.insuranceProduct.findFirst({
+        where: { id, ...hidFilter },
+      });
+      if (!existingPolicy) {
+        return NextResponse.json({ ok: false, error: "保单不存在" }, { status: 404 });
+      }
+
+      const [policyholderPerson, insuredPerson] = await Promise.all([
+        ensureFamilyMemberInstitution({
+          householdId,
+          personId: policyholderPersonId,
+          personName: policyholderPersonName,
+        }),
+        ensureFamilyMemberInstitution({
+          householdId,
+          personId: insuredPersonId,
+          personName: insuredPersonName,
+        }),
+      ]);
+
+      if (policyholderPersonId && !isFamilyMember(policyholderPerson)) {
+        return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+      }
+      if (insuredPersonId && !isFamilyMember(insuredPerson)) {
+        return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+      }
+
+      const ownerGroup = await resolveInsuranceOwnerGroup({
+        ownerGroupId: policyholderPerson ? null : existingPolicy.ownerGroupId,
+        policyholderPerson,
+        householdId,
+      });
+      if (!ownerGroup) {
+        return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
+      }
+      if (!existingPolicy.institutionId) {
+        return NextResponse.json({ ok: false, error: "保单缺少承保机构" }, { status: 400 });
+      }
+
+      const account = await getOrCreateInsuranceAccount(
+        prisma,
+        ownerGroup.id,
+        householdId,
+        existingPolicy.institutionId,
+      );
+
+      const updatedPolicy = await prisma.insuranceProduct.update({
+        where: { id },
+        data: {
+          accountId: account.id,
+          ownerGroupId: ownerGroup.id,
+          policyholderPersonId: policyholderPerson?.id ?? null,
+          insuredUserId: null,
+          insuredPersonId: insuredPerson?.id ?? null,
+          paymentTermYears,
+          coverageAmount,
+        },
+      });
+
+      if (existingPolicy.accountId !== account.id) {
+        await prisma.txRecord.updateMany({
+          where: {
+            householdId,
+            source: "insurance",
+            insuranceProductId: id,
+            fundSubtype: { in: ["redeem", "switch_out"] },
+          },
+          data: {
+            accountId: account.id,
+            accountName: account.name,
+          },
+        });
+        await prisma.txRecord.updateMany({
+          where: {
+            householdId,
+            source: "insurance",
+            insuranceProductId: id,
+            OR: [{ fundSubtype: "buy" }, { fundSubtype: null }],
+          },
+          data: {
+            toAccountId: account.id,
+            toAccountName: account.name,
+          },
+        });
+      }
+
+      return NextResponse.json({
+        ok: true,
+        insuranceProduct: {
+          id: updatedPolicy.id,
+          accountId: updatedPolicy.accountId,
+          ownerGroupId: updatedPolicy.ownerGroupId,
+          policyholderPersonId: updatedPolicy.policyholderPersonId,
+          insuredUserId: updatedPolicy.insuredUserId,
+          insuredPersonId: updatedPolicy.insuredPersonId,
+          paymentTermYears: updatedPolicy.paymentTermYears ? Number(updatedPolicy.paymentTermYears) : null,
+          coverageAmount: updatedPolicy.coverageAmount ? Number(updatedPolicy.coverageAmount) : null,
+          accountName: account.name,
+          ownerGroupName: ownerGroup.name,
+          policyholderPersonName: policyholderPerson?.name ?? "",
+          insuredPersonName: insuredPerson?.name ?? "",
+        },
+      });
+    }
+
     if (!name) {
       return NextResponse.json({ ok: false, error: "保险产品名称不能为空" }, { status: 400 });
     }
@@ -653,9 +762,6 @@ export async function PUT(req: NextRequest) {
     const productType = PRODUCT_TYPES.has(productTypeRaw) ? productTypeRaw : "other";
     const accountingType = ACCOUNTING_TYPES.has(accountingTypeRaw) ? accountingTypeRaw : "asset";
     const status = STATUSES.has(statusRaw) ? statusRaw : "active";
-
-    const { hidFilter } = await getHouseholdScope();
-    const householdId = hidFilter.householdId;
 
     if (mode === "master") {
       const existingMaster = await prisma.insuranceProductMaster.findFirst({

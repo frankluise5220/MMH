@@ -428,6 +428,11 @@ export function TransactionFormModal({
     }
     return sortOptionsByRecent(base, recentAccountIds);
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
+  const isEditingTransfer = !!editEntryId && txType === "transfer";
+  const readonlyFromAccountLabel =
+    displayTransferOptions.find((option) => option.id === fromAccountId)?.label
+    ?? transferAccountList.find((option) => option.id === fromAccountId)?.label
+    ?? "未选择";
 
   useEffect(() => {
     if (!open || txType === "transfer" || !accountId) return;
@@ -1083,19 +1088,25 @@ export function TransactionFormModal({
 
                   {/* 第二行：转出账户 | 互换 | 转入账户 */}
                   {isCreditCardAccount ? (
-                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                    <div className={`grid gap-3 items-end ${isEditingTransfer ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
-                        <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
-                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                        {isEditingTransfer ? (
+                          <div className="form-input flex items-center bg-slate-50 text-slate-600">{readonlyFromAccountLabel}</div>
+                        ) : (
+                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
+                            options={displayTransferOptions} placeholder="请选择"
+                            onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                            onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                        )}
                       </div>
-                      <div className="flex flex-col items-center pb-0.5">
-                        <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
-                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                      </div>
+                      {!isEditingTransfer ? (
+                        <div className="flex flex-col items-center pb-0.5">
+                          <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
+                          <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
+                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                        </div>
+                      ) : null}
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
@@ -1105,18 +1116,24 @@ export function TransactionFormModal({
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                    <div className={`grid gap-3 items-end ${isEditingTransfer ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
-                        <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
-                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                        {isEditingTransfer ? (
+                          <div className="form-input flex items-center bg-slate-50 text-slate-600">{readonlyFromAccountLabel}</div>
+                        ) : (
+                          <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
+                            options={displayTransferOptions} placeholder="请选择"
+                            onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                            onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                        )}
                       </div>
-                      <div className="flex items-center justify-center pb-0.5">
-                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                      </div>
+                      {!isEditingTransfer ? (
+                        <div className="flex items-center justify-center pb-0.5">
+                          <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
+                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                        </div>
+                      ) : null}
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}

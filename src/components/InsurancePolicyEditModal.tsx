@@ -60,7 +60,7 @@ export function InsurancePolicyEditModal({
             void onSaved(draft);
           }}
         >
-          <div className="space-y-3 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="rounded-lg bg-slate-50/70 px-3 py-2 text-[11px] leading-5 text-slate-500">
               {[
                 meta.name ? `保单：${meta.name}` : "",

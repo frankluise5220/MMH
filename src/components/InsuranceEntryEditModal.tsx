@@ -142,7 +142,7 @@ export function InsuranceEntryEditModal({
             handleSave();
           }}
         >
-          <div className="space-y-3 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="space-y-1">
               <div className="form-label">保险产品</div>
               <div className="form-input flex h-9 items-center bg-slate-50 text-sm text-slate-600">

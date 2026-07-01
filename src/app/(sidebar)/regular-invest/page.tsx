@@ -211,6 +211,9 @@ export default async function RegularInvestPage() {
     label: product.name,
     accountId: product.accountId,
     accountLabel: accountById.get(product.accountId)?.label ?? product.Account?.name ?? "",
+    ownerGroupId: product.ownerGroupId ?? null,
+    ownerGroupName: product.OwnerGroup?.name ?? null,
+    premiumAmount: product.premiumAmount == null ? null : Number(product.premiumAmount),
     subLabel: [
       product.Institution?.shortName || product.Institution?.name,
       product.OwnerGroup?.name,

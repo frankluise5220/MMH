@@ -20,7 +20,6 @@ import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
   week: "每周",
-  biweek: "每两周",
   month: "每月",
   year: "每年",
 };
@@ -103,6 +102,9 @@ type InsuranceProductOption = {
   accountId: string;
   accountLabel?: string | null;
   subLabel?: string | null;
+  ownerGroupId?: string | null;
+  ownerGroupName?: string | null;
+  premiumAmount?: number | null;
 };
 
 const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label: string }> = [
@@ -114,7 +116,7 @@ const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label
   { key: "amount", label: "金额" },
   { key: "interval", label: "周期" },
   { key: "status", label: "状态" },
-  { key: "nextRunDate", label: "下次执行" },
+  { key: "nextRunDate", label: "下次执行/缴费" },
   { key: "executedCount", label: "已执行次数" },
 ];
 
@@ -200,18 +202,26 @@ function writeRegularInvestColumnWidths(widths: Partial<Record<RegularInvestTabl
 }
 
 function formatInterval(p: RegularInvestPlanView): string {
-  const base = INTERVAL_LABELS[p.intervalUnit] || p.intervalUnit;
-  if (p.intervalUnit === "week" || p.intervalUnit === "biweek") {
+  const intervalUnit = p.intervalUnit === "biweek" ? "week" : p.intervalUnit;
+  const intervalValue = p.intervalUnit === "biweek" ? Math.max(1, p.intervalValue || 1) * 2 : p.intervalValue;
+  if (intervalUnit === "week") {
     const weekday = p.executionDay ? WEEKDAY_LABELS[p.executionDay] : "";
-    if (weekday) return `${base}${weekday}`;
+    const prefix = intervalValue > 1 ? `每${intervalValue}周` : (INTERVAL_LABELS.week || "每周");
+    return weekday ? `${prefix}${weekday}` : prefix;
   }
-  if (p.intervalUnit === "month" && p.executionDay) return `每月${p.executionDay}号`;
-  if (p.intervalUnit === "year" && p.executionDay) {
+  const base = INTERVAL_LABELS[intervalUnit] || intervalUnit;
+  if (intervalUnit === "month" && p.executionDay) return intervalValue > 1 ? `每${intervalValue}个月${p.executionDay}号` : `每月${p.executionDay}号`;
+  if (intervalUnit === "year" && p.executionDay) {
     const month = Math.floor(p.executionDay / 100);
     const day = p.executionDay % 100;
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return `每年${month}.${day}`;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return intervalValue > 1 ? `每${intervalValue}年${month}.${day}` : `每年${month}.${day}`;
   }
-  if (p.intervalValue > 1) return `${base} x${p.intervalValue}`;
+  if (intervalValue > 1) {
+    if (intervalUnit === "day") return `每${intervalValue}天`;
+    if (intervalUnit === "month") return `每${intervalValue}个月`;
+    if (intervalUnit === "year") return `每${intervalValue}年`;
+    return `${base} x${intervalValue}`;
+  }
   return base;
 }
 
@@ -793,32 +803,31 @@ export function RegularInvestClient({
       />
     ) : null;
 
-    return (
-      <div className="flex min-w-0 items-center justify-between gap-1">
-        <div className="min-w-0 flex-1">{labelNode}</div>
-        {filterNode ? <div className="shrink-0">{filterNode}</div> : null}
-      </div>
-    );
-  }
+      return (
+        <div className="flex min-w-0 items-center justify-center gap-1 text-center">
+          <div className="min-w-0">{labelNode}</div>
+          {filterNode ? <div className="shrink-0">{filterNode}</div> : null}
+        </div>
+      );
+    }
 
-  function renderHeaderCell(column: { key: RegularInvestColumnKey; label: string }) {
-    const alignClass = column.key === "amount" ? "text-right" : "text-left";
-    return (
-      <th
-        key={column.key}
-        className={`relative select-none border-b border-r border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 ${alignClass}`}
-      >
-        {renderHeaderContent(column)}
-        <span
-          role="separator"
-          aria-orientation="vertical"
-          onMouseDown={(event) => beginColumnResize(event, column.key)}
-          className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
-          title="拖动调整列宽"
-        />
-      </th>
-    );
-  }
+    function renderHeaderCell(column: { key: RegularInvestColumnKey; label: string }) {
+      return (
+        <th
+          key={column.key}
+          className="relative select-none border-b border-r border-slate-200 px-3 py-2 text-center text-xs font-semibold text-slate-600"
+        >
+          {renderHeaderContent(column)}
+          <span
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={(event) => beginColumnResize(event, column.key)}
+            className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
+            title="拖动调整列宽"
+          />
+        </th>
+      );
+    }
 
   const taskTypeOptions = Array.from(new Set(plans.map((plan) => getPlanTaskLabel(plan)))).sort((a, b) =>
     a.localeCompare(b, "zh-Hans-CN"),
@@ -1147,8 +1156,11 @@ export function RegularInvestClient({
           intervalValue: editPlan.intervalValue || 1,
           executionDay: editPlan.executionDay ?? null,
           startDate: toDateInput(editPlan.startDate) || todayInput(),
+          nextRunDate: toDateInput(editPlan.nextRunDate) || null,
+          lastRunDate: toDateInput(editPlan.lastRunDate) || null,
           endDate: toDateInput(editPlan.endDate) || null,
           totalRuns: editPlan.totalRuns ?? null,
+          executedRuns: editPlan.executedRuns ?? null,
           cashAccountId: editPlan.cashAccountId ?? null,
           feeRate: editPlan.feeRate ?? null,
           confirmDays: editPlan.confirmDays ?? null,

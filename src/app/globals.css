@@ -176,7 +176,7 @@ html {
   }
 
   .app-modal-panel {
-    @apply flex h-full w-full max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-elevated sm:max-h-[calc(100dvh-2rem)];
+    @apply flex h-auto w-full max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-elevated sm:max-h-[calc(100dvh-2rem)];
     border-color: var(--line-strong);
   }
 
@@ -273,6 +273,12 @@ html {
 
   .subtle-button-active {
     @apply border-blue-200 bg-blue-50 text-blue-700;
+  }
+
+  thead th,
+  thead th.text-left,
+  thead th.text-right {
+    text-align: center;
   }
 }
 

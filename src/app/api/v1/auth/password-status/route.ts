@@ -3,13 +3,38 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { isAdmin } from "@/lib/server/auth";
 import { cookies } from "next/headers";
 import { hasEmailService } from "@/lib/mail/passwordReset";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 
 const LEGACY_PASSWORD_KEY = "access_password";
+const STATUS_LOOKUP_TIMEOUT_MS = 900;
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation.catch(() => null), timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function degradedStatusResponse() {
+  return NextResponse.json({
+    ok: true,
+    degraded: true,
+    hasPassword: true,
+    passwordResetEnabled: false,
+    users: [],
+  });
+}
 
 async function ensureInitialHousehold(adminName: string) {
   const ownerName = adminName.trim() || "admin";
@@ -73,34 +98,36 @@ async function ensureInitialHousehold(adminName: string) {
 export async function GET() {
   const cookieStore = await cookies();
   const householdId = cookieStore.get("householdId")?.value;
+  const status = await withTimeout(Promise.all([
+    prisma.user.findFirst({
+      where: { passwordHash: { not: null } },
+      select: { id: true },
+    }),
+    prisma.systemSetting.findUnique({
+      where: { key: LEGACY_PASSWORD_KEY },
+      select: { value: true },
+    }),
+    prisma.user.findMany({
+      select: { id: true, name: true, passwordHash: true, role: true, isSystem: true, householdId: true },
+      where: householdId
+        ? {
+            OR: [
+              { isSystem: true },
+              { householdId: householdId },
+            ],
+          }
+        : undefined,
+      orderBy: { name: "asc" },
+    }),
+    hasEmailService(),
+  ]), STATUS_LOOKUP_TIMEOUT_MS);
 
-  // 检查是否有任何用户设置了密码（全局检查，用于判断是否需要首次设置）
-  const userWithPassword = await prisma.user.findFirst({
-    where: { passwordHash: { not: null } },
-  });
-  const legacy = await prisma.systemSetting.findUnique({
-    where: { key: LEGACY_PASSWORD_KEY },
-  });
+  if (!status) {
+    return degradedStatusResponse();
+  }
+
+  const [userWithPassword, legacy, users, passwordResetEnabled] = status;
   const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
-
-  // 按账簿过滤用户列表
-  // 系统用户（isSystem=true）不绑定账簿，始终显示
-  // 普通用户只显示属于当前 householdId 的用户
-  const users = await prisma.user.findMany({
-    select: { id: true, name: true, passwordHash: true, role: true, isSystem: true, householdId: true },
-    where: householdId
-      ? {
-          OR: [
-            { isSystem: true },
-            { householdId: householdId },
-          ],
-        }
-      : undefined,
-    orderBy: { name: "asc" },
-  });
-
-  // 密码找回功能自动检测：有邮件发件服务则启用
-  const passwordResetEnabled = await hasEmailService();
 
   return NextResponse.json({
     ok: true,

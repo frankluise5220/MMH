@@ -13,7 +13,12 @@ function createClient(): PrismaClient {
     throw new Error("DATABASE_URL is required");
   }
 
-  const pool = globalForPrisma.prismaPool ?? new Pool({ connectionString });
+  const pool = globalForPrisma.prismaPool ?? new Pool({
+    connectionString,
+    max: Number(process.env.PG_POOL_MAX ?? 8),
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 1500),
+    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 10_000),
+  });
   globalForPrisma.prismaPool = pool;
 
   const adapter = new PrismaPg(pool);

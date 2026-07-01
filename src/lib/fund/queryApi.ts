@@ -20,6 +20,13 @@ type NavResult = {
   date: string;
 } | null;
 
+export type FundIdentityResult = {
+  code: string;
+  name: string;
+  fullName?: string;
+  source: string;
+} | null;
+
 const headers = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   Referer: "http://fundf10.eastmoney.com/",
@@ -83,6 +90,69 @@ function parseDanjuan(data: any): NavResult {
     cumNav: data.data.cum_nav ? parseFloat(data.data.cum_nav) : undefined,
     name: data.data.fund_name,
   };
+}
+
+function normalizeFundName(name: unknown): string | null {
+  const value = String(name ?? "").trim();
+  if (!value || value.length < 2) return null;
+  if (/基金历史净值|基金档案|天天基金|基金吧|搜索结果/.test(value)) return null;
+  return value;
+}
+
+export async function queryFundIdentity(fundCode: string): Promise<FundIdentityResult> {
+  const code = fundCode.trim();
+  if (!/^\d{6}$/.test(code)) return null;
+
+  try {
+    const url = `http://fundf10.eastmoney.com/jjjz_${code}.html`;
+    const res = await fetch(url, {
+      headers: { ...headers, Referer: url },
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const patterns = [
+        /<title[^>]*>\s*([^<]*?)\s*[（(]\s*(\d{6})\s*[）)]/i,
+        /<meta\s+name=["']keywords["']\s+content=["']([^,"']+),\s*(\d{6})[,"]/i,
+        /<meta\s+name=["']description["']\s+content=["'][^"']*?提供([^("']+)[（(](\d{6})[）)]/i,
+      ];
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (!match || match[2] !== code) continue;
+        const name = normalizeFundName(match[1]);
+        if (name) return { code, name, source: "eastmoney-f10" };
+      }
+    }
+  } catch {
+    // Try the next source.
+  }
+
+  try {
+    const url = `https://danjuanfunds.com/djapi/fund/${code}`;
+    const res = await fetch(url, {
+      headers: {
+        ...headers,
+        Referer: `https://danjuanfunds.com/fund/${code}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      const fdCode = String(data?.data?.fd_code ?? data?.fd_code ?? "").trim();
+      if (fdCode === code) {
+        const name = normalizeFundName(data?.data?.fd_name ?? data?.fd_name);
+        if (name) {
+          const fullName = normalizeFundName(data?.data?.fd_full_name ?? data?.fd_full_name) ?? undefined;
+          return { code, name, fullName, source: "danjuan" };
+        }
+      }
+    }
+  } catch {
+    // No identity result.
+  }
+
+  return null;
 }
 
 const PARSERS: Record<string, (data: any) => NavResult> = {

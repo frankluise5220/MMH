@@ -49,32 +49,32 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "餐饮费",
-    children: ["早餐", "午餐", "晚餐", "外卖", "零食饮料", "买菜食材", "水果", "烟酒茶", "聚餐请客"],
+    children: ["餐饮美食", "早餐", "午餐", "晚餐", "外卖", "零食饮料", "买菜食材", "水果", "烟酒茶", "聚餐请客"],
   },
   {
     type: "expense",
     name: "生活费",
-    children: ["日用品", "清洁用品", "家居用品", "维修维护", "快递物流", "物业杂费"],
+    children: ["日用百货", "日用品", "清洁用品", "家居用品", "维修维护", "快递物流", "物业杂费", "生活服务"],
   },
   {
     type: "expense",
     name: "交通费",
-    children: ["公交地铁", "打车", "火车高铁", "机票", "长途客运", "停车费", "过路费", "加油", "充电", "保养维修", "车险车税"],
+    children: ["交通出行", "公交地铁", "打车", "火车高铁", "机票", "长途客运", "停车费", "过路费", "加油", "充电", "爱车养车", "保养维修", "车险车税"],
   },
   {
     type: "expense",
     name: "居住住房",
-    children: ["房租", "房贷", "物业费", "水费", "电费", "燃气费", "供暖费", "宽带电视", "装修", "家具家电"],
+    children: ["住房物业", "房租", "房贷", "物业费", "水费", "电费", "燃气费", "供暖费", "宽带电视", "家居家装", "装修", "家具家电"],
   },
   {
     type: "expense",
     name: "服饰装饰",
-    children: ["服饰鞋包", "美妆护肤", "饰品配件", "洗护美发", "家居装饰"],
+    children: ["服饰装扮", "服饰鞋包", "美妆护肤", "饰品配件", "美容美发", "洗护美发", "家居装饰"],
   },
   {
     type: "expense",
     name: "数码家电",
-    children: ["手机电脑", "数码配件", "家用电器", "维修配件"],
+    children: ["数码电器", "手机电脑", "数码配件", "家用电器", "维修配件"],
   },
   {
     type: "expense",
@@ -84,32 +84,32 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "教育成长",
-    children: ["学费", "培训课程", "考试认证", "书本资料", "文具", "兴趣班", "在线课程"],
+    children: ["教育培训", "学费", "培训课程", "考试认证", "书本资料", "文具", "兴趣班", "在线课程"],
   },
   {
     type: "expense",
     name: "子女育儿",
-    children: ["奶粉尿裤", "玩具", "童装", "托育幼儿园", "课外班", "儿童医疗", "儿童保险"],
+    children: ["母婴亲子", "奶粉尿裤", "玩具", "童装", "托育幼儿园", "课外班", "儿童医疗", "儿童保险"],
   },
   {
     type: "expense",
     name: "人情往来",
-    children: ["人情开支", "红包", "礼金", "请客", "节日礼物", "婚丧嫁娶", "探望慰问"],
+    children: ["亲友代付", "人情开支", "红包", "礼金", "请客", "节日礼物", "婚丧嫁娶", "探望慰问"],
   },
   {
     type: "expense",
     name: "通讯网络",
-    children: ["手机话费", "流量套餐", "宽带", "软件会员", "云服务"],
+    children: ["充值缴费", "手机话费", "流量套餐", "宽带", "软件会员", "云服务"],
   },
   {
     type: "expense",
     name: "娱乐休闲",
-    children: ["电影演出", "旅游", "游戏", "会员订阅", "宠物", "摄影", "棋牌", "酒吧咖啡"],
+    children: ["文化休闲", "电影演出", "酒店旅游", "旅游", "游戏", "会员订阅", "宠物", "摄影", "棋牌", "酒吧咖啡", "运动户外"],
   },
   {
     type: "expense",
     name: "金融保险",
-    children: ["保险", "手续费", "利息支出", "贷款还款", "信用卡费用", "投资亏损"],
+    children: ["保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "贷款还款", "信用卡费用", "投资亏损"],
   },
   {
     type: "expense",
@@ -119,12 +119,12 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "工作经营",
-    children: ["办公用品", "差旅", "业务招待", "经营成本", "税费", "设备工具"],
+    children: ["商业服务", "办公用品", "差旅", "业务招待", "经营成本", "税费", "设备工具"],
   },
   {
     type: "expense",
     name: "其他支出",
-    children: ["临时支出", "未分类支出"],
+    children: ["其他", "公共服务", "临时支出", "未分类支出"],
   },
   {
     type: "income",
@@ -144,7 +144,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "income",
     name: "家庭往来",
-    children: ["红包礼金", "家人转入", "朋友转入", "报销", "退款返现", "借款收回"],
+    children: ["红包礼金", "家人转入", "朋友转入", "报销", "退款", "退款返现", "借款收回"],
   },
   {
     type: "income",
@@ -204,6 +204,8 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
   for (const item of rootCategoryRenames) {
     await renameRootCategory(writer, householdId, item.type, item.from, item.to);
   }
+
+  await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
 
   for (const category of defaultCategoryTemplates) {
     await normalizeSameNameChild(writer, householdId, category.type, category.name);

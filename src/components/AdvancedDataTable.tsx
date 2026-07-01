@@ -12,6 +12,8 @@ import {
 import { SlidersHorizontal } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
 
+const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
+
 export type AdvancedDataTableColumn<T> = {
   key: string;
   label: ReactNode;
@@ -127,6 +129,7 @@ export function AdvancedDataTable<T>({
   const viewportRef = useRef<HTMLDivElement>(null);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [needsHorizontalScroll, setNeedsHorizontalScroll] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
@@ -161,6 +164,22 @@ export function AdvancedDataTable<T>({
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node) return;
+    const update = () => setNeedsHorizontalScroll(node.scrollWidth > node.clientWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    const table = node.querySelector("table");
+    if (table) observer.observe(table);
+    return () => observer.disconnect();
+  }, [columns, fillHeight, hiddenKeys, minTableWidth, selectable, viewportWidth, rows.length]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -218,16 +237,61 @@ export function AdvancedDataTable<T>({
     const baseWidths = visibleColumns.map((column) => {
       const saved = columnWidths[column.key];
       const minWidth = column.minWidth ?? 52;
-      const width = Math.max(minWidth, Number.isFinite(saved) ? saved : column.width);
-      return [column.key, width] as const;
+      const preferredWidth = Math.max(minWidth, Number.isFinite(saved) ? saved : column.width);
+      return { key: column.key, minWidth, preferredWidth } as const;
     });
-    const baseTotal = selectWidth + baseWidths.reduce((sum, [, width]) => sum + width, 0);
-    const tableWidth = Math.max(minTableWidth ?? 0, viewportWidth || 0, baseTotal);
-    const scale = baseTotal > 0 && baseTotal < tableWidth ? tableWidth / baseTotal : 1;
+    const minColumnsTotal = baseWidths.reduce((sum, column) => sum + column.minWidth, 0);
+    const basePreferredColumnsTotal = baseWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
+    const basePreferredTotal = selectWidth + basePreferredColumnsTotal;
+    const preferredTotal = Math.max(minTableWidth ?? 0, basePreferredTotal);
+    const preferredScale =
+      basePreferredColumnsTotal > 0 && preferredTotal > basePreferredTotal
+        ? Math.max(0, preferredTotal - selectWidth) / basePreferredColumnsTotal
+        : 1;
+    const preferredWidths = baseWidths.map((column) => ({
+      ...column,
+      preferredWidth: Math.max(column.minWidth, column.preferredWidth * preferredScale),
+    }));
+    const preferredColumnsTotal = preferredWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
+    const minTotal = selectWidth + minColumnsTotal;
+    const availableWidth = viewportWidth || preferredTotal;
+
+    if (availableWidth >= selectWidth + preferredColumnsTotal) {
+      const availableColumnWidth = Math.max(0, availableWidth - selectWidth);
+      const growScale = preferredColumnsTotal > 0 ? availableColumnWidth / preferredColumnsTotal : 1;
+      return {
+        tableWidth: availableWidth,
+        selectWidth,
+        colWidths: Object.fromEntries(
+          preferredWidths.map((column) => [column.key, column.preferredWidth * growScale]),
+        ),
+      };
+    }
+
+    if (availableWidth >= minTotal) {
+      const availableColumnWidth = Math.max(0, availableWidth - selectWidth);
+      const shrinkNeeded = Math.max(0, preferredColumnsTotal - availableColumnWidth);
+      const shrinkCapacity = preferredWidths.reduce(
+        (sum, column) => sum + Math.max(0, column.preferredWidth - column.minWidth),
+        0,
+      );
+      return {
+        tableWidth: availableWidth,
+        selectWidth,
+        colWidths: Object.fromEntries(
+          preferredWidths.map((column) => {
+            if (shrinkCapacity <= 0) return [column.key, column.minWidth];
+            const capacity = Math.max(0, column.preferredWidth - column.minWidth);
+            return [column.key, column.preferredWidth - shrinkNeeded * (capacity / shrinkCapacity)];
+          }),
+        ),
+      };
+    }
+
     return {
-      tableWidth,
-      selectWidth: selectWidth * scale,
-      colWidths: Object.fromEntries(baseWidths.map(([key, width]) => [key, width * scale])),
+      tableWidth: minTotal,
+      selectWidth,
+      colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.minWidth])),
     };
   }, [columnWidths, minTableWidth, selectable, viewportWidth, visibleColumns]);
 
@@ -368,8 +432,8 @@ export function AdvancedDataTable<T>({
         ref={viewportRef}
         className={
           fillHeight
-            ? "min-h-0 flex-1 overflow-x-auto overflow-y-scroll [scrollbar-gutter:stable]"
-            : "overflow-x-auto overflow-y-scroll [scrollbar-gutter:stable]"
+            ? `${needsHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `${needsHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
@@ -385,49 +449,51 @@ export function AdvancedDataTable<T>({
                 </th>
               ) : null}
               {visibleColumns.map((column) => (
-                <th key={column.key} className={["relative select-none border-b border-slate-200 text-xs font-semibold text-slate-600", headerPaddingClass, alignClass(column.align), column.headerClassName ?? ""].join(" ")}>
+                <th key={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
                   {showFilters && column.filterText ? (
-                    column.filterKind === "dateRange" ? (
-                      <DateRangeColumnFilter
-                        label={labelText(column.label, column.key)}
-                        from={filters[column.key]?.[0] ?? ""}
-                        to={filters[column.key]?.[1] ?? ""}
-                        open={activeFilterColumn === column.key}
-                        onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                        onClose={() => setActiveFilterColumn(null)}
-                        onChange={({ from, to }) =>
-                          setFilters((prev) => {
-                            if (!from && !to) {
-                              const next = { ...prev };
-                              delete next[column.key];
-                              return next;
-                            }
-                            return { ...prev, [column.key]: [from, to] };
-                          })
-                        }
-                      />
-                    ) : (
-                      <TableColumnFilter
-                        label={labelText(column.label, column.key)}
-                        options={filterOptions[column.key] ?? []}
-                        selectedValues={filters[column.key] ?? []}
-                        open={activeFilterColumn === column.key}
-                        onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                        onClose={() => setActiveFilterColumn(null)}
-                        onChange={(values) =>
-                          setFilters((prev) => {
-                            if (!values || values.length === 0) {
-                              const next = { ...prev };
-                              delete next[column.key];
-                              return next;
-                            }
-                            return { ...prev, [column.key]: values };
-                          })
-                        }
-                      />
-                    )
+                    <div className="flex justify-center">
+                      {column.filterKind === "dateRange" ? (
+                        <DateRangeColumnFilter
+                          label={labelText(column.label, column.key)}
+                          from={filters[column.key]?.[0] ?? ""}
+                          to={filters[column.key]?.[1] ?? ""}
+                          open={activeFilterColumn === column.key}
+                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                          onClose={() => setActiveFilterColumn(null)}
+                          onChange={({ from, to }) =>
+                            setFilters((prev) => {
+                              if (!from && !to) {
+                                const next = { ...prev };
+                                delete next[column.key];
+                                return next;
+                              }
+                              return { ...prev, [column.key]: [from, to] };
+                            })
+                          }
+                        />
+                      ) : (
+                        <TableColumnFilter
+                          label={labelText(column.label, column.key)}
+                          options={filterOptions[column.key] ?? []}
+                          selectedValues={filters[column.key] ?? []}
+                          open={activeFilterColumn === column.key}
+                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                          onClose={() => setActiveFilterColumn(null)}
+                          onChange={(values) =>
+                            setFilters((prev) => {
+                              if (!values || values.length === 0) {
+                                const next = { ...prev };
+                                delete next[column.key];
+                                return next;
+                              }
+                              return { ...prev, [column.key]: values };
+                            })
+                          }
+                        />
+                      )}
+                    </div>
                   ) : (
-                    <span className="block truncate">{column.label}</span>
+                    <span className="block truncate text-center">{column.label}</span>
                   )}
                   <span role="separator" aria-orientation="vertical" onMouseDown={(event) => beginResize(event, column)} className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40" title="拖动调整列宽" />
                 </th>
