@@ -1,8 +1,0 @@
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:20-bookworm}
-        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:20-bookworm}
