@@ -594,7 +594,7 @@ export function SidebarClient({
           >
             <Plus size={18} />
           </button>
-          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title="账户管理">
+          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title="系统设置">
             <Users size={18} />
           </Link>
         </div>
@@ -815,7 +815,7 @@ export function SidebarClient({
           </button>
           <Link href="/settings" className={navItemCls("/settings")}>
             <Users size={18} />
-            <span className="font-medium">账户管理</span>
+            <span className="font-medium">系统设置</span>
           </Link>
         </div>
       </div>

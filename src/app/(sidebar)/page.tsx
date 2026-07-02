@@ -79,7 +79,7 @@ async function resolveOrCreateAdvanceAccount(
     where: {
       id: institutionId,
       householdId,
-      type: { in: ["family_member", "person", "debt", "other"] },
+      type: { in: ["person", "debt", "other"] },
     },
     select: { id: true, name: true, shortName: true },
   });
@@ -2588,7 +2588,7 @@ export default async function Home({
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
     counterpartyId: institutions
-      .filter(it => ["family_member", "person", "debt", "other"].includes(it.type ?? "other"))
+      .filter(it => ["person", "debt", "other"].includes(it.type ?? "other"))
       .map(it => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "other" })),
   };
 

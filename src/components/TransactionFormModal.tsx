@@ -4,7 +4,7 @@ import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus, Repeat } from
 import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
-import { NestedAddModal } from "./EntityCreateForm";
+import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
@@ -131,7 +131,7 @@ type TagOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
-const COUNTERPARTY_TYPES = new Set(["family_member", "person", "debt", "other"]);
+const COUNTERPARTY_TYPES = new Set(["person", "debt", "other"]);
 
 export function TransactionFormModal({
   accounts,
@@ -1278,14 +1278,14 @@ export function TransactionFormModal({
       document.body,
     )}
     {open && counterpartyNestedOpen && createPortal(
-      <NestedAddModal
-        mode="compact"
+      <EntityCreateForm
+        mode="full"
+        layout="modal"
         entityType="institution"
         open={counterpartyNestedOpen}
         onClose={() => setCounterpartyNestedOpen(false)}
         defaultType="person"
-        extraFields={{ type: "person" }}
-        hiddenFields={["type"]}
+        allowedInstitutionTypes={["person", "debt", "other"]}
         existingNames={(localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => item.name)}
         onCreated={(id, name, extra) => {
           const next = { id, name, type: extra?.type ?? "person" };
