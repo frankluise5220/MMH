@@ -64,9 +64,58 @@ import { addDaysUtc, toStatementMonth, creditCardCycle, toNumber, addWorkdaysUtc
 function formatType(type: string) {
   if (type === "expense") return "支出";
   if (type === "income") return "收入";
+  if (type === "advance") return "代付";
   if (type === "transfer") return "转账";
   if (type === "investment") return "投资";
   return type;
+}
+
+async function resolveOrCreateAdvanceAccount(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  householdId: string,
+  institutionId: string,
+) {
+  const institution = await tx.institution.findFirst({
+    where: {
+      id: institutionId,
+      householdId,
+      type: { in: ["family_member", "person", "debt", "other"] },
+    },
+    select: { id: true, name: true, shortName: true },
+  });
+  if (!institution) throw new Error("请选择往来对象");
+
+  const existing = await tx.account.findFirst({
+    where: {
+      householdId,
+      institutionId: institution.id,
+      kind: AccountKind.loan,
+      debtDirection: "receivable",
+      isPlaceholder: { not: true },
+    },
+    orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
+    select: { id: true, name: true },
+  });
+  if (existing) return existing;
+
+  const group =
+    (await tx.accountGroup.findFirst({ where: { householdId, name: { in: ["往来款", "借入/借出", "负债"] } }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] })) ??
+    (await tx.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }));
+  if (!group) throw new Error("缺少账户分组，无法创建往来款账户");
+
+  return tx.account.create({
+    data: {
+      name: institution.shortName?.trim() || institution.name,
+      kind: AccountKind.loan,
+      debtDirection: "receivable",
+      currency: "CNY",
+      groupId: group.id,
+      institutionId: institution.id,
+      householdId,
+      isActive: true,
+    },
+    select: { id: true, name: true },
+  });
 }
 
 function parseDateOnlyUtc(value: string): Date | null {
@@ -484,6 +533,48 @@ async function createTransaction(formData: FormData) {
       });
 
       await recalcAndSaveAccountBalance(accountId).catch(() => {});
+    } else if (type === "advance") {
+      const accountId = String(formData.get("accountId") ?? "").trim();
+      const categoryId = String(formData.get("categoryId") ?? "").trim();
+      const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
+      if (!accountId) return { ok: false as const, error: "请选择资金账户" };
+      if (!counterpartyInstitutionId) return { ok: false as const, error: "请选择往来对象" };
+
+      let advanceAccountId = "";
+      await prisma.$transaction(async (tx) => {
+        const [acc, cat] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
+          categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+        ]);
+        if (!acc) throw new Error("账户不存在");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        const advanceAccount = await resolveOrCreateAdvanceAccount(tx, householdId, counterpartyInstitutionId);
+        if (advanceAccount.id === acc.id) throw new Error("资金账户不能和往来款账户相同");
+        advanceAccountId = advanceAccount.id;
+
+        const created = await tx.txRecord.create({
+          data: {
+            accountId: acc.id,
+            accountName: acc.name,
+            toAccountId: advanceAccount.id,
+            toAccountName: advanceAccount.name,
+            categoryId: cat?.id ?? null,
+            categoryName: cat?.name ?? null,
+            amount: -amountAbs,
+            type: TransactionType.transfer,
+            date,
+            note: note || "代付",
+            toNote: toNote || null,
+            householdId,
+          },
+        });
+        if (tagIds.length > 0) {
+          await tx.entryTag.createMany({ data: tagIds.map(tagId => ({ entryId: created.id, tagId })) });
+        }
+      });
+
+      await recalcAndSaveAccountBalance(accountId).catch(() => {});
+      if (advanceAccountId) await recalcAndSaveAccountBalance(advanceAccountId).catch(() => {});
     } else if (type === "income") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -2264,6 +2355,10 @@ export default async function Home({
     .filter((c) => c.type === "income")
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+  const advanceCategories = categories
+    .filter((c) => c.type === "advance")
+    .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
+    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
 
   const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
     accounts
@@ -2492,6 +2587,9 @@ export default async function Home({
   const nestedFieldData = {
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
+    counterpartyId: institutions
+      .filter(it => ["family_member", "person", "debt", "other"].includes(it.type ?? "other"))
+      .map(it => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "other" })),
   };
 
   const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
@@ -3844,6 +3942,7 @@ export default async function Home({
                 }}
                 actions={[
                   { key: "transaction", label: "收支记账" },
+                  { key: "advance", label: "代付" },
                   { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
                   { key: "investment", label: "开放式基金 / 货币基金" },
                   { key: "wealth", label: "银行理财" },
@@ -3861,6 +3960,7 @@ export default async function Home({
                 nestedFieldData={nestedFieldData}
                 expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
                 incomeCategories={incomeCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
+                advanceCategories={advanceCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
                 defaultAccountId={accountId || undefined}
                 lastRepayToAccountId={lastRepayToAccountId} lastRepayFromAccountId={lastRepayFromAccountId}
                 isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}

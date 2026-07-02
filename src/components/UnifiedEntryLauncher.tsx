@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 
 type EntryKind =
   | "transaction"
+  | "advance"
   | "transfer"
   | "investment"
   | "wealth"
@@ -51,6 +52,17 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
           detail: {
             requestId,
             item: { type: "expense" },
+            defaultAccountId: context?.defaultAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "advance":
+      window.dispatchEvent(
+        new CustomEvent("mmh:create-transaction:open", {
+          detail: {
+            requestId,
+            item: { type: "advance" },
             defaultAccountId: context?.defaultAccountId ?? "",
           },
         }),

@@ -15,7 +15,7 @@ async function updateCounterpartyRow(formData: FormData) {
   const type = String(formData.get("type") ?? "").trim();
   if (!institutionId || !name) return;
 
-  const safeType = ["family_member", "person", "organization", "debt", "other"].includes(type) ? type : "person";
+  const safeType = ["family_member", "person", "debt", "other"].includes(type) ? type : "person";
   await prisma.institution
     .updateMany({
       where: { id: institutionId, householdId },
@@ -31,7 +31,7 @@ async function updateCounterpartyRow(formData: FormData) {
 export default async function SettingsCounterpartiesPage() {
   const { hidFilter } = await getHouseholdScope();
   const counterparties = await prisma.institution.findMany({
-    where: { ...hidFilter, type: { in: ["family_member", "person", "organization", "debt", "other"] } },
+    where: { ...hidFilter, type: { in: ["family_member", "person", "debt", "other"] } },
     orderBy: [{ type: "asc" }, { name: "asc" }],
   });
 

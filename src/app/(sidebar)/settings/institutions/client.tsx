@@ -17,12 +17,12 @@ type Institution = {
 type InstitutionSettingMode = "institution" | "counterparty";
 
 const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "payment", "ewallet"] as const;
-const COUNTERPARTY_TYPES = ["family_member", "person", "organization", "debt", "other"] as const;
+const COUNTERPARTY_TYPES = ["family_member", "person", "debt", "other"] as const;
 
 const typeLabelMap: Record<string, string> = {
   family_member: "家庭成员",
   person: "往来人员",
-  organization: "往来机构",
+  organization: "机构",
   bank: "银行",
   insurance: "保险公司",
   brokerage: "证券",

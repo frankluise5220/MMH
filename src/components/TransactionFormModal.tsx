@@ -57,7 +57,7 @@ export function useAccountSSFilter(accountSSOptions?: SmartSelectOption[], contr
   return { ownerFilter, setOwnerFilter, ownerFilterLabel, cycleOwnerFilter, filteredOptions, visibleOptionIds, ownerNames };
 }
 
-type TxType = "expense" | "income" | "transfer" | "investment";
+type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
 
 type AccountOption = {
   id: string;
@@ -131,12 +131,14 @@ type TagOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
+const COUNTERPARTY_TYPES = new Set(["family_member", "person", "debt", "other"]);
 
 export function TransactionFormModal({
   accounts,
   transferAccounts,
   expenseCategories,
   incomeCategories,
+  advanceCategories,
   defaultAccountId,
   lastRepayToAccountId,
   lastRepayFromAccountId,
@@ -154,6 +156,7 @@ export function TransactionFormModal({
   transferAccounts: AccountOption[];
   expenseCategories: CategoryOption[];
   incomeCategories: CategoryOption[];
+  advanceCategories?: CategoryOption[];
   defaultAccountId?: string;
   lastRepayToAccountId?: string;
   lastRepayFromAccountId?: string;
@@ -181,6 +184,7 @@ export function TransactionFormModal({
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
   const [accountNestedOpen, setAccountNestedOpen] = useState(false);
+  const [counterpartyNestedOpen, setCounterpartyNestedOpen] = useState(false);
   const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to">("account");
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
@@ -237,6 +241,13 @@ export function TransactionFormModal({
               name: institution.shortName?.trim() || institution.name,
               type: institution.type ?? "",
             })),
+            counterpartyId: (data.institutions ?? [])
+              .filter((institution: { type?: string | null }) => COUNTERPARTY_TYPES.has(institution.type ?? "other"))
+              .map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
+                id: institution.id,
+                name: institution.shortName?.trim() || institution.name,
+                type: institution.type ?? "other",
+              })),
           });
         }
       }
@@ -280,6 +291,7 @@ export function TransactionFormModal({
 
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
+    txType === "advance" ? "advance" :
     txType === "investment" ? "investment" : "expense",
   [txType]);
 
@@ -375,10 +387,10 @@ export function TransactionFormModal({
   }, [categoryList]);
 
   useEffect(() => {
-    const nextCategoryList = txType === "income" ? incomeCategories : expenseCategories;
+    const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
     setCategoryList(nextCategoryList);
     setCategoryId((current) => current && nextCategoryList.some((c) => c.id === current) ? current : "");
-  }, [txType, incomeCategories, expenseCategories]);
+  }, [txType, incomeCategories, advanceCategories, expenseCategories]);
 
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -695,13 +707,17 @@ export function TransactionFormModal({
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
         formData.set("toAccountId", toAccountId);
-      } else if (txType === "income") {
-        formData.set("accountId", accountId);
-        formData.set("categoryId", categoryId);
-        if (toAccountId) formData.set("toAccountId", toAccountId);
-      } else {
-        formData.set("accountId", accountId);
-        formData.set("categoryId", categoryId);
+        } else if (txType === "income") {
+          formData.set("accountId", accountId);
+          formData.set("categoryId", categoryId);
+          if (toAccountId) formData.set("toAccountId", toAccountId);
+        } else if (txType === "advance") {
+          formData.set("accountId", accountId);
+          formData.set("categoryId", categoryId);
+          formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
+        } else {
+          formData.set("accountId", accountId);
+          formData.set("categoryId", categoryId);
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
     }
@@ -901,6 +917,17 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
+                      onClick={() => setTxType("advance")}
+                      className={`segment-button h-9 flex-1 ${
+                        txType === "advance"
+                          ? "segment-button-active"
+                          : ""
+                      }`}
+                    >
+                      代付
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
                         setTxType("transfer");
                         setFromAccountId(defaultAccountId ?? "");
@@ -977,7 +1004,7 @@ export function TransactionFormModal({
                 </div>
               )}
 
-              {(txType === "expense" || txType === "income") && (
+              {(txType === "expense" || txType === "income" || txType === "advance") && (
                 <div className="space-y-3">
                   {/* 第一行：日期 | 账户 */}
                   <div className="grid grid-cols-2 gap-3">
@@ -1037,15 +1064,17 @@ export function TransactionFormModal({
                       <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">收支机构</div>
+                      <div className="form-label">{txType === "advance" ? "往来对象" : "收支机构"}</div>
                       <SmartSelect
                         mode="single"
                         value={counterpartyInstitutionId}
                         onChange={setCounterpartyInstitutionId}
-                        options={(nestedFieldData?.institutionId ?? [])
-                          .filter((item) => (item.type ?? "") !== "insurance")
+                        options={((txType === "advance" ? localNestedFieldData?.counterpartyId : localNestedFieldData?.institutionId) ?? [])
+                          .filter((item) => txType !== "advance" || COUNTERPARTY_TYPES.has(item.type ?? "other"))
                           .map((item) => ({ id: item.id, label: item.name }))}
-                        placeholder="可选"
+                        placeholder={txType === "advance" ? "请选择" : "可选"}
+                        onCreateClick={txType === "advance" ? () => setCounterpartyNestedOpen(true) : undefined}
+                        createLabel="新增往来对象"
                         searchable
                       />
                     </div>
@@ -1245,6 +1274,28 @@ export function TransactionFormModal({
           setAccountCreateTarget("account");
         }}
         nestedFieldData={localNestedFieldData ?? nestedFieldData}
+      />,
+      document.body,
+    )}
+    {open && counterpartyNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="institution"
+        open={counterpartyNestedOpen}
+        onClose={() => setCounterpartyNestedOpen(false)}
+        defaultType="person"
+        extraFields={{ type: "person" }}
+        hiddenFields={["type"]}
+        existingNames={(localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => item.name)}
+        onCreated={(id, name, extra) => {
+          const next = { id, name, type: extra?.type ?? "person" };
+          setLocalNestedFieldData((prev) => ({
+            ...(prev ?? nestedFieldData ?? {}),
+            counterpartyId: [...((prev ?? nestedFieldData)?.counterpartyId ?? []), next],
+          }));
+          setCounterpartyInstitutionId(id);
+          setCounterpartyNestedOpen(false);
+        }}
       />,
       document.body,
     )}
