@@ -1,11 +1,64 @@
 import { NextResponse } from "next/server";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
+
+export const runtime = "nodejs";
 
 /**
- * 获取Prisma schema的所有模型列表
+ * 获取 Prisma schema 的 Agent 可访问模型列表。
+ *
+ * Auth: browser session cookie, Authorization: Bearer <admin password>, or X-Api-Key.
+ *
  * GET /api/v1/db/models
  */
-export async function GET() {
+
+const BLOCKED_MODELS = new Set([
+  "AccessKey",
+  "AiChannel",
+  "ApiKey",
+  "EmailAccount",
+  "FundQueryApi",
+  "PasswordResetToken",
+  "SystemSetting",
+  "User",
+  "UserSettings",
+]);
+
+const READ_ALLOWED_MODELS = new Set([
+  "Account",
+  "AccountAlias",
+  "AccountGroup",
+  "BillOverride",
+  "Category",
+  "CommandAlias",
+  "CreditCardCycle",
+  "FundConfirmDays",
+  "FundFeeRate",
+  "FundHolding",
+  "FundNavCache",
+  "FundSnapshot",
+  "Institution",
+  "InsuranceProduct",
+  "RegularInvestPlan",
+  "Tag",
+  "TxRecord",
+]);
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
+  } as const;
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+export async function GET(req: Request) {
   try {
+    await getApiHouseholdScope(req);
+
     // 使用Prisma的DMMF API动态获取所有模型信息
     const { Prisma } = await import("@prisma/client");
     const dmmf = Prisma?.dmmf?.datamodel?.models || [];
@@ -40,34 +93,34 @@ export async function GET() {
       ApiKey: "API密钥",
     };
 
-    const models = dmmf.map((model: any) => ({
-      name: model.name,
-      dbName: model.dbName || model.name,
-      title: MODEL_CN[model.name] || model.name,
-      fields: model.fields.map((field: any) => ({
-        name: field.name,
-        type: field.type,
-        kind: field.kind,
-        isRequired: field.isRequired,
-        isId: field.isId,
-        isUnique: field.isUnique,
-        hasDefaultValue: field.hasDefaultValue,
-        default: field.default?.value || field.default,
-      })),
-    }));
+    const models = dmmf
+      .filter((model: any) => !BLOCKED_MODELS.has(model.name) && READ_ALLOWED_MODELS.has(model.name))
+      .map((model: any) => ({
+        name: model.name,
+        dbName: model.dbName || model.name,
+        title: MODEL_CN[model.name] || model.name,
+        fields: model.fields.map((field: any) => ({
+          name: field.name,
+          type: field.type,
+          kind: field.kind,
+          isRequired: field.isRequired,
+          isId: field.isId,
+          isUnique: field.isUnique,
+          hasDefaultValue: field.hasDefaultValue,
+          default: field.default?.value || field.default,
+        })),
+      }));
 
     return NextResponse.json({
       ok: true,
       models,
-    });
+    }, { headers: corsHeaders() });
   } catch (e) {
     console.error("获取模型列表失败:", e);
 
-    // Fallback: 如果DMMF不可用，返回空列表
     return NextResponse.json({
-      ok: true,
-      models: [],
+      ok: false,
       error: e instanceof Error ? e.message : "无法动态获取模型列表，请使用Prisma Studio",
-    });
+    }, { status: 401, headers: corsHeaders() });
   }
 }

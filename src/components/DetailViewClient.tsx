@@ -115,6 +115,8 @@ export function DetailViewClient({
   accountOptions,
   investmentProductTypeByAccountId,
   compactRows = false,
+  storageKey = "mmh_basic_detail_table_v1",
+  refreshOnGlobalEvent = true,
   toolbarMode = "default",
   toolbarTitle,
   toolbarRightContent,
@@ -125,6 +127,8 @@ export function DetailViewClient({
   accountOptions: Array<{ id: string; label: string }>;
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
+  storageKey?: string;
+  refreshOnGlobalEvent?: boolean;
   toolbarMode?: "default" | "custom" | "none";
   toolbarTitle?: ReactNode;
   toolbarRightContent?: ReactNode;
@@ -146,6 +150,7 @@ export function DetailViewClient({
 
   // Listen for mmh:fund:refresh → re-fetch from detail API
   useEffect(() => {
+    if (!refreshOnGlobalEvent) return;
     const handler = () => {
       const url = new URL(window.location.href);
       const detailAll = url.searchParams.get("detailAll") === "1";
@@ -168,7 +173,7 @@ export function DetailViewClient({
     };
     window.addEventListener("mmh:fund:refresh", handler);
     return () => window.removeEventListener("mmh:fund:refresh", handler);
-  }, [accountId, setSelection]);
+  }, [accountId, refreshOnGlobalEvent, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {
@@ -432,7 +437,7 @@ export function DetailViewClient({
 
   return (
     <AdvancedDataTable
-      storageKey="mmh_basic_detail_table_v1"
+      storageKey={storageKey}
       columns={columns}
       rows={entries}
       rowKey={(entry) => entry.id}

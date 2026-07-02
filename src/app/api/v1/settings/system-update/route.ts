@@ -254,13 +254,15 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const checkRemote = searchParams.get("check") === "1";
     const projectRoot = process.cwd();
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
     let imageSourceConfig: ImageSourceConfig | null = null;
-    if (isDockerEnvironment() && getUpdaterConfig().enabled) {
+    if (checkRemote && isDockerEnvironment() && getUpdaterConfig().enabled) {
       try {
         const data = await callUpdater("/config");
         imageSourceConfig = data.config ?? null;
@@ -268,6 +270,23 @@ export async function GET() {
         imageSourceConfig = null;
       }
     }
+    const local = getLocalGitInfo(projectRoot);
+    const localOnlyVersionInfo = {
+      ...local,
+      remoteName: "",
+      remoteBranch: "",
+      remoteUrl: "",
+      remoteCommit: "unknown",
+      remoteCommitMsg: "",
+      remoteCommitDate: "",
+      needsUpdate: false,
+      canCheckUpdate: false,
+      githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubCommit: "unknown",
+      githubCommitMsg: "",
+      githubCommitDate: "",
+      githubCanCheck: false,
+    };
 
     return NextResponse.json({
       ok: true,
@@ -276,7 +295,7 @@ export async function GET() {
       updaterEnabled: getUpdaterConfig().enabled,
       imageSourceConfig,
       localVersion,
-      ...await getGitVersionInfo(projectRoot),
+      ...(checkRemote ? await getGitVersionInfo(projectRoot) : localOnlyVersionInfo),
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS, PATH_PLACEHOLDER } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
@@ -267,19 +267,64 @@ export default function AISettingsPage() {
   const [quickSelected, setQuickSelected] = useState("");
   const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
-    const load = () => {
-      const list = loadModels();
-      setModels(list);
-      setActiveModel(loadActiveModel());
-      setPageReady(true);
-    };
-    load();
+  const syncFromServer = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/v1/settings/ai-config", { cache: "no-store" });
+      const data = await res.json() as {
+        ok: boolean;
+        channels?: Array<{
+          id: string;
+          name: string;
+          channelType: string;
+          baseUrl: string;
+          apiKey: string;
+          AiModel: Array<{ id: string; name: string; model: string; vision: boolean; active: boolean }>;
+        }>;
+        activeModelId?: string | null;
+      };
+      if (!data.ok) return;
 
-    if (!pageReady) return;
+      const merged: ModelEntry[] = [];
+      for (const ch of data.channels ?? []) {
+        for (const m of ch.AiModel ?? []) {
+          const info = detectModelInfo(m.model);
+          merged.push({
+            id: m.id,
+            name: m.name || m.model,
+            channelId: ch.id,
+            channelType: ch.channelType || "custom",
+            channelName: ch.name,
+            baseUrl: ch.baseUrl,
+            apiKey: ch.apiKey ?? "",
+            model: m.model,
+            category: info.category,
+            supportsVision: m.vision || info.supportsVision,
+          });
+        }
+      }
 
-    syncFromServer();
+      setModels(merged);
+      saveModels(merged);
+
+      const activeEntry = merged.find((item) => item.id === data.activeModelId);
+      const nextActive = activeEntry?.name ?? loadActiveModel();
+      if (nextActive) {
+        setActiveModel(nextActive);
+        saveActiveModel(nextActive);
+      }
+    } catch {
+    } finally {
+      setSyncing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    setModels(loadModels());
+    setActiveModel(loadActiveModel());
+    setPageReady(true);
+    void syncFromServer();
+  }, [syncFromServer]);
 
   useEffect(() => {
     if (!pageReady) return;
@@ -295,50 +340,6 @@ export default function AISettingsPage() {
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
   }, [pageReady]);
-
-  async function syncFromServer() {
-    setSyncing(true);
-    try {
-      const res = await fetch("/api/v1/settings/ai-config");
-      const data = await res.json() as { ok: boolean; channels?: Array<{ id: string; name: string; channelType: string; baseUrl: string; apiKey: string; AiModel: Array<{ id: string; name: string; model: string; vision: boolean; active: boolean }> }> };
-      if (data.ok && data.channels?.length) {
-        const merged: ModelEntry[] = [];
-        for (const ch of data.channels) {
-          for (const m of ch.AiModel) {
-            const info = detectModelInfo(m.model);
-            merged.push({
-              id: m.id,
-              name: m.name || m.model,
-              channelId: ch.id,
-              channelType: ch.channelType || "custom",
-              channelName: ch.name,
-              baseUrl: ch.baseUrl,
-              apiKey: ch.apiKey ?? "",
-              model: m.model,
-              category: info.category,
-              supportsVision: m.vision || info.supportsVision,
-            });
-          }
-        }
-
-        const localMap = new Map<string, ModelEntry>(models.map(m => [m.id, m]));
-        for (const m of merged) {
-          const local = localMap.get(m.id);
-          if (!local) {
-            localMap.set(m.id, m);
-          } else {
-            localMap.set(m.id, { ...local, ...m, id: local.id, name: local.name || m.name });
-          }
-        }
-        setModels(Array.from(localMap.values()));
-        setActiveModel(loadActiveModel());
-        saveModels(Array.from(localMap.values()));
-      }
-    } catch {
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   function handleAddModel(entry: ModelEntry) {
     if (models.some(m => m.id !== entry.id && m.model === entry.model && m.channelName === entry.channelName)) {

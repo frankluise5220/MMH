@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 
-export type DefaultCategoryType = "expense" | "income";
+export type DefaultCategoryType = "expense" | "income" | "advance";
 type CategoryMainType = DefaultCategoryType | "investment";
 
 export type DefaultCategoryTemplate = {
@@ -11,6 +11,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-02-advance-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -36,12 +37,14 @@ const sameNameChildFallback: Record<string, string> = {
 const categoryTypeLabels: Record<CategoryMainType, string> = {
   expense: "支出",
   income: "收入",
+  advance: "代付",
   investment: "投资",
 };
 
 const categoryTypeFallbackNames: Record<CategoryMainType, string> = {
   expense: "其他支出",
   income: "其他收入",
+  advance: "其他代付",
   investment: "投资记录",
 };
 
@@ -156,6 +159,16 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     name: "其他收入",
     children: ["意外收入", "未分类收入"],
   },
+  {
+    type: "advance",
+    name: "公司代付",
+    children: ["差旅费", "代购费", "其他"],
+  },
+  {
+    type: "advance",
+    name: "朋友代付",
+    children: ["差旅费", "代购费", "其他"],
+  },
 ];
 
 export async function createDefaultCategoriesForHousehold(writer: CategoryWriter, householdId: string) {
@@ -196,9 +209,22 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
       }
     }
   }
+
+  await writer.systemSetting.upsert({
+    where: { key: categoryNormalizationKey(householdId) },
+    update: { value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+    create: { key: categoryNormalizationKey(householdId), value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+  });
 }
 
 export async function normalizeDefaultCategoryHierarchyForHousehold(writer: CategoryWriter, householdId: string) {
+  const normalizationKey = categoryNormalizationKey(householdId);
+  const marker = await writer.systemSetting.findUnique({
+    where: { key: normalizationKey },
+    select: { value: true },
+  });
+  if (marker?.value === CATEGORY_HIERARCHY_NORMALIZATION_VERSION) return;
+
   await normalizeCategoryTypeLabelNodes(writer, householdId);
 
   for (const item of rootCategoryRenames) {
@@ -210,6 +236,16 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
   for (const category of defaultCategoryTemplates) {
     await normalizeSameNameChild(writer, householdId, category.type, category.name);
   }
+
+  await writer.systemSetting.upsert({
+    where: { key: normalizationKey },
+    update: { value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+    create: { key: normalizationKey, value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+  });
+}
+
+function categoryNormalizationKey(householdId: string) {
+  return `category_hierarchy_normalized:${householdId}`;
 }
 
 async function normalizeCategoryTypeLabelNodes(writer: CategoryWriter, householdId: string) {

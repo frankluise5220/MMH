@@ -33,7 +33,7 @@ export function DailyTaskCheck() {
           headers: { "Content-Type": "application/json" },
         });
 
-        // 2. 获取所有投资账户的基金净值
+        // 2. 获取所有持仓基金的最新净值，并补齐未确认交易净值
         const accRes = await fetch("/api/v1/accounts/internal?balances=false");
         const accData = await accRes.json();
         if (accData.ok && accData.accounts) {
@@ -46,14 +46,14 @@ export function DailyTaskCheck() {
               const shellData = await shellRes.json();
               if (!shellData.ok) return;
 
-              const symbols: string[] = [
+              const symbols = [...new Set([
                 ...(shellData.positions ?? []).map((p: any) => p.fundCode).filter(Boolean),
                 ...(shellData.pendingByCode ? Object.keys(shellData.pendingByCode) : []),
                 // 还包括所有有基金代码但没有净值/份额的记录
                 ...(shellData.allEntries ?? [])
                   .filter((e: any) => e.fundCode && (e.fundNav == null || e.fundUnits == null || Number(e.fundUnits) === 0))
                   .map((e: any) => e.fundCode),
-              ];
+              ].map((code) => String(code).trim()).filter(Boolean))];
               if (symbols.length === 0) return;
 
               await fetch("/api/v1/fund/refresh", {

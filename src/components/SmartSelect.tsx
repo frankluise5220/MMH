@@ -39,6 +39,7 @@ type SmartSelectSharedBehavior = {
   clearable?: boolean;
   cycleSelectionWithArrowKeys?: boolean;
   headerExtra?: ReactNode;
+  minDropdownWidth?: number;
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
@@ -263,6 +264,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     clearable: behavior?.clearable ?? true,
     cycleSelectionWithArrowKeys: behavior?.cycleSelectionWithArrowKeys ?? true,
     headerExtra: behavior?.headerExtra ?? props.headerExtra ?? legacyCycleButton,
+    minDropdownWidth: behavior?.minDropdownWidth,
     create: behavior?.create ?? (props.onCreateClick
       ? {
           type: "button" as const,
@@ -286,6 +288,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     clearable: false,
     cycleSelectionWithArrowKeys: false,
     headerExtra: behavior?.headerExtra,
+    minDropdownWidth: behavior?.minDropdownWidth,
     create: behavior?.create ?? (props.onInlineCreate
       ? {
           type: "inline" as const,
@@ -309,6 +312,7 @@ export function SmartSelect(props: SmartSelectProps) {
     clearable,
     cycleSelectionWithArrowKeys,
     headerExtra,
+    minDropdownWidth,
     create,
   } = normalizedBehavior;
 
@@ -359,7 +363,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const minWidth = isSingleCreateButton ? 300 : 0;
+    const minWidth = Math.max(isSingleCreateButton ? 300 : 0, minDropdownWidth ?? 0);
     const width = Math.min(Math.max(rect.width, minWidth), window.innerWidth - 16);
     const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
     const estimatedHeight = (searchable ? 42 : 0)
@@ -373,7 +377,7 @@ export function SmartSelect(props: SmartSelectProps) {
       ? Math.max(8, rect.top - estimatedHeight - 4)
       : rect.bottom + 4;
     setDropdownPos({ top, left, width });
-  }, [isMultiInlineCreate, isSingleCreateButton, options.length, searchable, visible.length]);
+  }, [isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, options.length, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(

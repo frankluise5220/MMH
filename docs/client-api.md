@@ -138,6 +138,29 @@
 - `/api/v1/transactions/detail`
 - `/api/v1/entries/batch-edit`
 - `/api/v1/entries/batch-update`
+
+### External Agent / DB Maintenance
+
+范围：
+
+- 外部 Agent 受控读取和维护数据库记录。
+- 模型字段发现。
+- 小范围补数据、核对、修正。
+
+相关文档：
+
+- `docs/agent-api.md`
+
+相关路径示例：
+
+- `/api/v1/db/models`
+- `/api/v1/db/data`
+
+注意：
+
+- 这组接口不是普通移动端业务契约，优先使用账户、交易、基金等业务 API。
+- 通用 DB API 必须认证，并屏蔽用户、密钥、邮箱、系统设置等敏感模型。
+- 涉及交易、基金、余额的修改后，应调用对应业务接口或服务做重算。
 - `/api/v1/entries/delete`
 
 ### Fund

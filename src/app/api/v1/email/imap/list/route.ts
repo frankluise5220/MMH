@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { closeImap, connectAndOpenBox, listMails } from "@/lib/mail/imap-client";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
@@ -14,20 +15,24 @@ const BodySchema = z.object({
   password: z.string().optional(),
   mailbox: z.string().min(1).default("INBOX"),
   limit: z.number().int().min(1).max(50).default(10),
+  scanLimit: z.number().int().min(1).max(1000).optional(),
+  sinceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  keyword: z.string().optional(),
   subjectIncludes: z.string().optional(),
   fromIncludes: z.string().optional(),
   debug: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
+  const { householdId } = await getHouseholdScope();
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
 
-  let { host, port, secure, user, password, mailbox, limit, subjectIncludes, fromIncludes, debug } = parsed.data;
+  let { host, port, secure, user, password, mailbox, limit, scanLimit, sinceDate, keyword, subjectIncludes, fromIncludes, debug } = parsed.data;
 
   if (parsed.data.accountId) {
-    const account = await prisma.emailAccount.findUnique({ where: { id: parsed.data.accountId } });
+    const account = await prisma.emailAccount.findFirst({ where: { id: parsed.data.accountId, householdId } });
     if (!account) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
     host = account.imapHost;
     port = account.imapPort;
@@ -42,17 +47,31 @@ export async function POST(req: NextRequest) {
   }
 
   const trace: string[] = [];
-  let imap: Awaited<ReturnType<typeof connectAndOpenBox>>["imap"] | null = null;
+  let client: Awaited<ReturnType<typeof connectAndOpenBox>>["client"] | null = null;
 
   try {
     const opened = await connectAndOpenBox({ host, port, secure, user, password, mailbox }, trace);
-    imap = opened.imap;
-    const items = await listMails(imap, { limit, subjectIncludes, fromIncludes }, trace);
-    return NextResponse.json({ ok: true, items, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, `list ok ${items.length}`] } : {}) });
+    client = opened.client;
+    const result = await listMails(client, { limit, scanLimit, sinceDate, keyword, subjectIncludes, fromIncludes }, trace);
+    return NextResponse.json({ ok: true, items: result.items, meta: result.meta, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, `list ok ${result.items.length}`] } : {}) });
   } catch (e) {
     const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";
-    return NextResponse.json({ ok: false, error: rawMsg, ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: formatImapError(rawMsg), ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });
   } finally {
-    if (imap) await closeImap(imap);
+    if (client) await closeImap(client);
   }
+}
+
+function formatImapError(message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes("authentication") || lower.includes("login") || lower.includes("auth")) {
+    return "邮箱登录失败，请确认 IMAP 已开启，并使用邮箱授权码/应用专用密码，不要使用网页登录密码。";
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "邮箱连接超时，请检查 IMAP 服务器、端口、TLS 设置和网络连接。";
+  }
+  if (lower.includes("mailbox") || lower.includes("not found")) {
+    return "邮箱文件夹打开失败，请确认文件夹名称，通常可先使用 INBOX。";
+  }
+  return message;
 }

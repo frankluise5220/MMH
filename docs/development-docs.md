@@ -43,6 +43,23 @@
 - Web 和移动端都可能使用某个接口，或者移动端新增接入需求。
 - 某个接口从 debug/internal 变为正式客户端契约。
 
+### `docs/agent-api.md`
+
+用途：Hermes、Codex、Claude 等外部 Agent 通过 HTTP 接入 MMH 后端的说明。
+
+记录内容：
+
+- 外部 Agent 可用的 Base URL、认证 header、通用返回格式。
+- 可用的业务 API 和受控通用 DB API。
+- 通用 DB API 的模型白名单、分页、账簿隔离和写入边界。
+- 密钥、密码、token、邮箱账号、系统设置等敏感数据的访问禁区。
+
+更新时机：
+
+- 新增、删除或收紧外部 Agent 可调用接口。
+- 修改 `/api/v1/db/models` 或 `/api/v1/db/data` 的认证、白名单、字段过滤、返回格式。
+- 改变密钥存储、加密、脱敏、轮换或 Agent 权限策略。
+
 ### `docs/nas-install-manual.md`
 
 用途：用户在 NAS 上安装和更新 MMH 的说明。

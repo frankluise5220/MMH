@@ -136,10 +136,11 @@ export default function SystemUpdatePage() {
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
 
-  const loadVersionInfo = useCallback(async () => {
+  const loadVersionInfo = useCallback(async (options?: { checkRemote?: boolean }) => {
     setLoadingVersion(true);
     try {
-      const res = await fetch("/api/v1/settings/system-update", { cache: "no-store" });
+      const query = options?.checkRemote ? "?check=1" : "";
+      const res = await fetch(`/api/v1/settings/system-update${query}`, { cache: "no-store" });
       const data = await res.json();
       setVersionInfo(data);
       if (data?.imageSourceConfig) {
@@ -394,12 +395,12 @@ export default function SystemUpdatePage() {
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-slate-800">软件更新（镜像）</div>
           <button
-            onClick={loadVersionInfo}
+            onClick={() => loadVersionInfo({ checkRemote: true })}
             disabled={loadingVersion || updating}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingVersion ? "animate-spin" : ""}`} />
-            查询
+            查询远端
           </button>
         </div>
 

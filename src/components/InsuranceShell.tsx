@@ -323,8 +323,6 @@ function buildInsuranceHoldings(
 
 export function InsuranceShell({
   accountId,
-  accountLabel,
-  institutionName,
   holdings,
   entries,
   familyMemberOptions = [],
@@ -347,6 +345,7 @@ export function InsuranceShell({
   const [showActiveOnly, setShowActiveOnly] = useState(false);
   const [familyMemberOptionsState, setFamilyMemberOptionsState] =
     useState<SmartSelectOption[]>(familyMemberOptions);
+  const familyMemberOptionsStateRef = useRef<SmartSelectOption[]>(familyMemberOptions);
   const [policyEditValue, setPolicyEditValue] =
     useState<InsurancePolicyEditValue | null>(null);
   const [policyEditMeta, setPolicyEditMeta] =
@@ -376,9 +375,23 @@ export function InsuranceShell({
     readonly insuranceProductName: string;
   } | null>(null);
   const refreshSeq = useRef(0);
+  const currentHoldingsRef = useRef<InsuranceHolding[]>(holdings);
+  const familyMemberOptionsRef = useRef<SmartSelectOption[]>(familyMemberOptions);
 
   const currentEntries = refreshedEntries ?? entries;
   const currentHoldings = refreshedHoldings ?? holdings;
+
+  useEffect(() => {
+    currentHoldingsRef.current = currentHoldings;
+  }, [currentHoldings]);
+
+  useEffect(() => {
+    familyMemberOptionsRef.current = familyMemberOptions;
+  }, [familyMemberOptions]);
+
+  useEffect(() => {
+    familyMemberOptionsStateRef.current = familyMemberOptionsState;
+  }, [familyMemberOptionsState]);
 
   const refreshInsuranceData = useCallback(async () => {
     const seq = ++refreshSeq.current;
@@ -409,7 +422,7 @@ export function InsuranceShell({
         (product) => product.accountId === accountId,
       );
       const previousHoldingsById = new Map(
-        currentHoldings.map((holding) => [holding.id, holding]),
+        currentHoldingsRef.current.map((holding) => [holding.id, holding]),
       );
       const nextHoldings = buildInsuranceHoldings(nextProducts, nextEntries).map((holding) => {
         const previous = previousHoldingsById.get(holding.id);
@@ -438,7 +451,7 @@ export function InsuranceShell({
 
       setFamilyMemberOptionsState(
         mergeFamilyMemberOptions(
-          fetchedFamilyOptions.length > 0 ? fetchedFamilyOptions : familyMemberOptions,
+          fetchedFamilyOptions.length > 0 ? fetchedFamilyOptions : familyMemberOptionsRef.current,
           nextHoldings.flatMap((holding) => [
             { id: holding.policyholderPersonId, name: holding.ownerName },
             { id: holding.insuredPersonId, name: holding.insuredPersonName },
@@ -449,7 +462,7 @@ export function InsuranceShell({
       setRefreshedEntries(nextEntries);
       setRefreshedHoldings(nextHoldings);
     } catch {}
-  }, [accountId, currentHoldings, familyMemberOptions]);
+  }, [accountId]);
 
   useEffect(() => {
     setRefreshedEntries(null);
@@ -901,7 +914,7 @@ export function InsuranceShell({
                   id: holding.id,
                   policyholderPersonId:
                     holding.policyholderPersonId ??
-                    familyMemberOptionsState.find(
+                    familyMemberOptionsStateRef.current.find(
                       (item) => item.label.trim() === (holding.ownerName ?? "").trim(),
                     )?.id ??
                     "",

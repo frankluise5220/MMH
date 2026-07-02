@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { hashPassword } from "@/lib/auth/password";
+import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
@@ -213,7 +213,11 @@ export async function PUT(req: NextRequest) {
   return NextResponse.json({ ok: true, user }, { headers: cors() });
 }
 
-/** DELETE /api/v1/settings/users?id=xxx — 删除当前账簿内的用户 */
+const DeleteSchema = z.object({
+  password: z.string().min(1),
+});
+
+/** DELETE /api/v1/settings/users?id=xxx — 删除当前账簿内的用户，需要当前管理员密码确认 */
 export async function DELETE(req: NextRequest) {
   const currentUser = await getCurrentUser();
   const auth = requireAdmin(currentUser);
@@ -222,9 +226,23 @@ export async function DELETE(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";
+  const body = await req.json().catch(() => null);
+  const parse = DeleteSchema.safeParse(body);
 
   if (!id) {
     return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400, headers: cors() });
+  }
+  if (!parse.success) {
+    return NextResponse.json({ ok: false, error: "请输入当前管理员密码" }, { status: 400, headers: cors() });
+  }
+
+  const operator = await prisma.user.findUnique({ where: { id: currentUser!.id } });
+  if (!operator?.passwordHash) {
+    return NextResponse.json({ ok: false, error: "当前管理员未设置密码，不能执行删除用户操作" }, { status: 403, headers: cors() });
+  }
+  const passwordMatched = await verifyPassword(parse.data.password, operator.passwordHash);
+  if (!passwordMatched) {
+    return NextResponse.json({ ok: false, error: "管理员密码不正确" }, { status: 403, headers: cors() });
   }
 
   const existing = await prisma.user.findUnique({ where: { id } });

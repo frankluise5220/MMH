@@ -80,7 +80,7 @@ const SECTION_ICON: Record<string, React.ElementType> = {
   信用卡: CreditCard,
   投资: BarChart3,
   保险: Shield,
-  负债: Landmark,
+  往来款: Landmark,
 };
 const KIND_SORT_ORDER = new Map<string, number>([
   ["cash", 10],
@@ -130,9 +130,33 @@ function normalizeSidebarItems(items: AccountItem[]) {
       balance: loanBalance,
       kind: "loan_summary",
       groupName: "未设置所有人",
-      institution: "负债",
+      institution: "往来款",
     },
   ];
+}
+
+function toSidebarAccountItem(a: any, creditCardLabelTemplate: string): AccountItem {
+  const display = buildAccountDisplayOption({
+    id: a.id,
+    name: a.name,
+    kind: a.kind,
+    numberMasked: a.numberMasked,
+    groupId: a.groupId ?? "",
+    investProductType: a.investProductType ?? null,
+    Institution: a.Institution ?? null,
+    AccountGroup: a.AccountGroup ?? null,
+  }, creditCardLabelTemplate);
+  return {
+    id: a.id,
+    name: a.name,
+    label: display.label,
+    shortLabel: display.selectorCoreLabel,
+    balance: Number(a.balance ?? 0),
+    kind: a.kind,
+    groupName: display.groupName || "未设置所有人",
+    institution: a.Institution?.name?.trim() || display.institutionName || undefined,
+    investProductType: a.investProductType || undefined,
+  };
 }
 
 export function SidebarClient({
@@ -172,6 +196,7 @@ export function SidebarClient({
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
   const householdDisplayName = getHouseholdDisplayName(household);
+  const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
     () => Array.from(new Set(items.map((item) => item.groupName || "未设置所有人")))
       .filter((name) => name !== "未指定")
@@ -200,6 +225,18 @@ export function SidebarClient({
   // Only updates items whose data actually changed to minimize React re-renders
   const sidebarRefreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const sidebarRefreshBusy = useRef(false);
+
+  useEffect(() => {
+    startTransition(() => {
+      setItems(normalizeSidebarItems(initialItems));
+    });
+    setSelectedOwnerFilter("");
+    setCollapsedSections(new Set());
+    setCollapsedAssetSubgroupKeys(new Set());
+    initializedSectionsRef.current = false;
+    initializedAssetSubgroupsRef.current = false;
+  }, [householdId, initialItems]);
+
   useEffect(() => {
     const debouncedRefresh = () => {
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
@@ -215,31 +252,7 @@ export function SidebarClient({
             const creditCardLabelTemplate = getAppPreferences().creditCardLabelTemplate;
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => ({
-                  ...(() => {
-                    const display = buildAccountDisplayOption({
-                      id: a.id,
-                      name: a.name,
-                      kind: a.kind,
-                      numberMasked: a.numberMasked,
-                      groupId: a.groupId ?? "",
-                      investProductType: a.investProductType ?? null,
-                      Institution: a.Institution ?? null,
-                      AccountGroup: a.AccountGroup ?? null,
-                    }, creditCardLabelTemplate);
-                    return {
-                      label: display.label,
-                      shortLabel: display.selectorCoreLabel,
-                      institution: a.Institution?.name?.trim() || display.institutionName || undefined,
-                      groupName: display.groupName || "未设置所有人",
-                    };
-                  })(),
-                  id: a.id,
-                  name: a.name,
-                  balance: Number(a.balance ?? 0),
-                  kind: a.kind,
-                  investProductType: a.investProductType || undefined,
-                })));
+                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a, creditCardLabelTemplate)));
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;
@@ -258,6 +271,9 @@ export function SidebarClient({
                     changed = true;
                   }
                 }
+                if (next.length !== fresh.length) {
+                  return fresh;
+                }
                 return changed ? next : prev;
               });
             });
@@ -274,7 +290,7 @@ export function SidebarClient({
       window.removeEventListener("mmh:fund:refresh", debouncedRefresh);
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
     };
-  }, []);
+  }, [householdId]);
 
   useEffect(() => {
     const applyPrefs = () => {
@@ -407,7 +423,7 @@ export function SidebarClient({
       { label: "信用卡", kinds: CREDIT_KINDS },
       { label: "投资", kinds: INVEST_KINDS },
       { label: "保险", kinds: INSURANCE_KINDS },
-      { label: "负债", kinds: LIABILITY_KINDS }
+      { label: "往来款", kinds: LIABILITY_KINDS }
     ];
     return groups.map(g => {
       const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
@@ -562,13 +578,13 @@ export function SidebarClient({
           <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
             <BarChart3 size={18} />
           </Link>
-          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="负债">
+          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="往来款">
             <Landmark size={18} />
           </Link>
         </nav>
 
         <div className="flex shrink-0 flex-col items-center gap-1 border-t border-slate-200 pt-3">
-          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="计划">
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="计划任务">
             <CalendarClock size={18} />
           </Link>
           <button
@@ -788,7 +804,7 @@ export function SidebarClient({
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
           <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
             <CalendarClock size={18} />
-            <span className="font-medium">计划</span>
+            <span className="font-medium">计划任务</span>
           </Link>
           <button
             onClick={() => setInitOpen(true)}

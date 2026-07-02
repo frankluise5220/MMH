@@ -1,10 +1,9 @@
-﻿import { redirect } from "next/navigation";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { kindLabel } from "@/lib/account-kinds";
-import { EntryRowActions } from "@/components/EntryRowActions";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
@@ -21,13 +20,13 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
-import { type DetailEntry } from "@/components/DetailViewClient";
+import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { BasicDetailPanel } from "@/components/BasicDetailPanel";
+import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import { CreditBillSummaryTable, type CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
-import EditBillAmount from "@/components/EditBillAmount";
 import Link from "next/link";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -2660,6 +2659,7 @@ export default async function Home({
 
   const creditBillNow = new Date();
   const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 6, 2, 12, 0, 0));
   const persistedCyclesInitial = isBillAccount && selectedAccount
     ? await prisma.creditCardCycle.findMany({
         where: { accountId: selectedAccount.id },
@@ -2695,6 +2695,7 @@ export default async function Home({
       persistedCyclesInitial.length === 0 ||
       !showRecentBillCycles ||
       !latestCycleUpdatedAt ||
+      latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
       latestCycleUpdatedAt < todayUtcStart ||
       (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
       (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)
@@ -3021,11 +3022,11 @@ export default async function Home({
             ]);
 
             const expenseAbs = Math.max(0, -toNumber(expenseAgg._sum.amount ?? 0));
-            const billPeriodTransferIncome = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
+            const billPeriodTransferIncome = Math.max(0, -toNumber(billPeriodTransferAgg._sum.amount ?? 0));
             const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0) + billPeriodTransferIncome);
             const netCycle = toNumber(expenseAgg._sum.amount) + toNumber(incomeAgg._sum.amount) + billPeriodTransferIncome;
             const bill = Math.max(0, -netCycle);
-            const paid = Math.max(0, -toNumber(billPeriodTransferAgg._sum.amount ?? 0));
+            const paid = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
             const remainRaw = bill - paid;
             const remain = Math.max(0, remainRaw);
             const overpaid = Math.max(0, -remainRaw);
@@ -3246,7 +3247,50 @@ export default async function Home({
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
             take: 500,
           });
-          return { cycleEntries };
+          const details: DetailEntry[] = cycleEntries.map((e) => ({
+            id: e.id,
+            date: toYmdOrNull(e.date) ?? "",
+            createdAt: toIsoOrNull(e.createdAt),
+            amount: toNumber(e.type === TransactionType.transfer && !!selectedAccount?.id && e.toAccountId === selectedAccount.id ? Math.abs(toNumber(e.amount)) : e.amount),
+            runningBalance: null,
+            type: e.type,
+            categoryId: e.categoryId,
+            categoryName:
+              e.type === TransactionType.expense || e.type === TransactionType.income
+                ? e.categoryId
+                  ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
+                  : e.categoryName ?? "未分类"
+                : e.type === TransactionType.transfer && !!selectedAccount?.id && e.toAccountId === selectedAccount.id
+                  ? "还款"
+                  : e.categoryName,
+            accountId: e.accountId,
+            accountName: e.accountName,
+            counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
+            counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
+            toAccountId: e.toAccountId,
+            toAccountName: e.toAccountName,
+            note: e.note,
+            toNote: e.toNote,
+            fundSubtype: e.fundSubtype,
+            fundCode: e.fundCode,
+            fundName: e.fundName,
+            source: e.source,
+            insuranceProductId: e.insuranceProductId ?? null,
+            depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
+            depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
+            fundProductType: e.fundProductType,
+            fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
+            fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
+            fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
+            fundConfirmDate: toIsoOrNull(e.fundConfirmDate),
+            fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
+            fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+            entryTags: (e.EntryTag || []).map((et: any) => ({
+              tagId: et.tagId,
+              Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
+            })),
+          }));
+          return { cycleEntries, details };
         })()
       : null;
 
@@ -3960,8 +4004,8 @@ export default async function Home({
               createAction={createTransaction}
             />
           ) : view === "bill" && isBillAccount ? (
-            <div className="flex-1 overflow-auto bg-transparent">
-              <div className="space-y-4 p-4 md:p-5">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-5">
                 {missingBillingDayForBill ? (
                   <div className="panel-surface border-amber-200 bg-amber-50/70">
                     <div className="px-4 py-4">
@@ -3975,172 +4019,54 @@ export default async function Home({
                     </div>
                   </div>
                 ) : null}
-                {billSummariesWithCumulative.length > 0 ? (
-                  <CreditBillSummaryTable
-                    accountId={selectedAccount?.id ?? ""}
-                    rows={creditBillSummaryRows}
-                    initialPage={currentPage}
-                    pageSize={billListPageSize}
-                    selectedBillMonth={selectedBillMonth}
-                    activeStatementMonth={creditCardBill?.statementMonth ?? ""}
-                    settledBillMonth={settledBillMonth}
-                    hideZeroBills={hideZeroBills}
-                    hideSettledBills={hideSettledBills}
-                    showRecentBillCycles={showRecentBillCycles}
-                  />
-                ) : null}
-
-                <div className="panel-surface overflow-hidden">
-                  <div className="panel-header block">
-                    <div className="text-sm font-semibold text-slate-800">
-                      {creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
+                <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
+                  {billSummariesWithCumulative.length > 0 ? (
+                    <CreditBillSummaryTable
+                      accountId={selectedAccount?.id ?? ""}
+                      rows={creditBillSummaryRows}
+                      initialPage={currentPage}
+                      pageSize={billListPageSize}
+                      selectedBillMonth={selectedBillMonth}
+                      activeStatementMonth={creditCardBill?.statementMonth ?? ""}
+                      settledBillMonth={settledBillMonth}
+                      hideZeroBills={hideZeroBills}
+                      hideSettledBills={hideSettledBills}
+                      showRecentBillCycles={showRecentBillCycles}
+                      fillHeight
+                    />
+                  ) : (
+                    <div className="panel-surface flex h-full items-center justify-center text-sm text-slate-400">
+                      暂无账单记录
                     </div>
-                    {creditCardBill ? (
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 tabular-nums">
-                        <span className="whitespace-nowrap">
-                          周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} 共 {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
-                        </span>
-                        <EditBillAmount accountId={selectedAccount?.id ?? ""} statementMonth={creditBillMonth ?? ""} currentAmount={effectiveBillByMonth.get(creditBillMonth ?? "") ?? creditCardBill.bill} hasOverride={billOverrides.some((o) => o.statementMonth === creditBillMonth)} displayMultiplier={-1} />
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="overflow-auto">
-                    <table className="w-full table-fixed border-separate border-spacing-0">
-                      <thead className="sticky top-0 z-10">
-                        <tr className="bg-white">
-                          <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">日期</th>
-                          <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">类别</th>
-                          <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">标签</th>
-                          <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">备注</th>
-                          <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">金额</th>
-                          <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">操作</th>
-                        </tr>
-                      </thead>
-                        <tbody className="text-sm">
-                        {creditCardBillDetails?.cycleEntries?.length ? (
-                          creditCardBillDetails!.cycleEntries.map((e) => {
-                            const date = toYmdOrNull(e.date) ?? "";
-                            const amount = toNumber(e.amount);
-                            const isTransferToCurrentBillAccount =
-                              e.type === "transfer" && !!selectedAccount?.id && e.toAccountId === selectedAccount.id;
-                            const resolvedBillAccountId =
-                              e.accountId ??
-                              ((e.type === "expense" || e.type === "income") ? (selectedAccount?.id ?? "") : "");
-                            const resolvedFromAccountId =
-                              e.accountId ?? (!isTransferToCurrentBillAccount ? (selectedAccount?.id ?? "") : "");
-                            const resolvedToAccountId =
-                              e.toAccountId ?? (isTransferToCurrentBillAccount ? (selectedAccount?.id ?? "") : "");
-                            const displayAmount = isTransferToCurrentBillAccount ? Math.abs(amount) : amount;
-                            const categoryLabel =
-                              e.type === "expense" || e.type === "income"
-                                ? e.categoryId
-                                  ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
-                                  : e.categoryName ?? "未分类"
-                                : isTransferToCurrentBillAccount
-                                  ? "还款" : formatType(e.type);
-                            const editType =
-                              e.type === "investment"
-                                ? ("investment" as const)
-                                : e.type === "transfer"
-                                  ? ("transfer" as const)
-                                  : e.type;
-                            const siblingEntries: any[] = [];
-                            const fundDetailEntry = siblingEntries.find((s) => s.id !== e.id && s.fundSubtype === "buy");
-                            const editPayload =
-                              editType === "investment"
-                                ? {
-                                    type: "investment" as const,
-                                    date,
-                                    amount: Math.abs(amount),
-                                    note: e.note ?? "",
-                                    accountId: (e.fundSubtype === "redeem" || e.fundSubtype === "switch_out")
-                                      ? e.accountId ?? ""   // 赎回：accountId 是投资账户
-                                      : e.toAccountId ?? "", // 买入：toAccountId 是投资账户
-                                    cashAccountId: (e.fundSubtype === "redeem" || e.fundSubtype === "switch_out")
-                                      ? e.toAccountId ?? ""   // 赎回：toAccountId 是资金账户（接收方）
-                                      : e.accountId ?? "",    // 买入：accountId 是资金账户（发起方）
-                                    fundCode: e.fundCode ?? undefined,
-                                    fundName: e.fundName ?? undefined,
-                                    insuranceProductId: e.insuranceProductId ?? undefined,
-                                    fundProductType: e.fundProductType ?? undefined,
-                                    fundSubtype: e.fundSubtype ?? "buy",
-                                    categoryId: "",
-                                    entryId: e.id,
-                                    hasFundDetail: !!fundDetailEntry,
-                                  }
-                                : editType === "transfer"
-                                  ? {
-                                      type: "transfer" as const,
-                                      date,
-                                      amount: Math.abs(amount),
-                                      note: e.note ?? "",
-                                      toNote: e.toNote ?? "",
-                                      fromAccountId: resolvedFromAccountId,
-                                      toAccountId: resolvedToAccountId,
-                                      fromAccountLabel: e.accountName ?? "",
-                                      toAccountLabel: e.toAccountName ?? "",
-                                      categoryId: "",
-                                      entryId: e.id,
-                                      tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [],
-                                    }
-                                  : {
-                                      type: editType as "expense" | "income",
-                                      date,
-                                      amount: Math.abs(amount),
-                                      note: e.note ?? "",
-                                      accountId: resolvedBillAccountId,
-                                      accountLabel: e.accountName ?? selectedAccount?.name ?? "",
-                                      categoryId: e.categoryId ?? "",
-                                      categoryLabel: categoryLabel,
-                                      entryId: e.id,
-                                      tagIds: e.EntryTag?.map((et: any) => et.tagId) ?? [],
-                                    };
-                            return (
-                              <tr key={e.id} className="hover:bg-blue-50/40">
-                                <td className="px-4 py-2 border-b border-slate-100 tabular-nums">
-                                  <span className="text-xs text-slate-700">{date}</span>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100">
-                                  <span className="text-xs text-slate-700">{categoryLabel}</span>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100">
-                                  {e.EntryTag && e.EntryTag.length > 0 ? (
-                                    <span className="inline-flex flex-wrap gap-1">
-                                      {e.EntryTag.map((et: any) => {
-                                        const c = et.Tag?.color || "#3B82F6";
-                                        return <span key={et.tagId} className="text-[10px] px-1 py-0.5 rounded-full border" style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}>{et.Tag?.name}</span>;
-                                      })}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs text-slate-300">-</span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-slate-600 truncate max-w-[520px]" title={getEntryDisplayNote(e)}>
-                                  <span className="text-xs text-slate-600">{getEntryDisplayNote(e)}</span>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-right tabular-nums">
-                                  <span className={`text-xs font-medium ${pnlCls(displayAmount)}`}>
-                                    {formatMoney(displayAmount)}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 border-b border-slate-100 text-right">
-                                  <EntryRowActions
-                                    entryId={e.id}
-                                    edit={editPayload ?? undefined}
-                                  />
-                                </td>
-                              </tr>
-                            );
-                          })) : (
-                          <tr>
-                            <td className="px-4 py-6 text-slate-500" colSpan={6}>
-                              暂无计入本期账单的记录
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  )}
+
+                  <BasicDetailSelectionProvider resetKey={`${selectedAccount?.id ?? ""}:${creditBillMonth || "bill"}:credit-bill-detail`}>
+                    <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
+                      <BasicDetailBatchDeleteMessage />
+                      <DetailViewClient
+                        accountId={selectedAccount?.id ?? ""}
+                        isInvestAccount={false}
+                        initialEntries={creditCardBillDetails?.details ?? []}
+                        accountOptions={accountOptions}
+                        investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
+                        compactRows
+                        storageKey="mmh_credit_bill_detail_table_v1"
+                        refreshOnGlobalEvent={false}
+                        toolbarMode="custom"
+                        toolbarTitle={creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
+                        toolbarRightContent={
+                          creditCardBill ? (
+                            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
+                              <span className="hidden whitespace-nowrap md:inline">
+                                周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
+                              </span>
+                              <span className="whitespace-nowrap text-slate-600">共 {creditCardBillDetails?.details.length ?? 0} 条</span>
+                            </div>
+                          ) : null
+                        }
+                      />
+                    </div>
+                  </BasicDetailSelectionProvider>
                 </div>
               </div>
             </div>

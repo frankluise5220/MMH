@@ -1,5 +1,7 @@
-import Imap from "imap";
+import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import type { Readable } from "stream";
+import { extractPdfText } from "@/lib/mail/pdf";
 
 export type ImapConfig = {
   host: string;
@@ -11,223 +13,246 @@ export type ImapConfig = {
 };
 
 export type MailListItem = { uid: number; subject: string; from: string; date: string };
-export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string };
+export type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
+export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments: MailAttachment[] };
+export type MailListMeta = {
+  total: number;
+  scanned: number;
+  matched: number;
+  limited: number;
+  hasKeyword: boolean;
+  scanLimit: number;
+  sinceDate: string;
+};
 
-function buildImap(config: ImapConfig) {
-  return new Imap({
-    user: config.user,
-    password: config.password,
+type MailClient = {
+  client: InstanceType<typeof ImapFlow>;
+  mailbox: string;
+};
+
+type DownloadedMail = {
+  content: Readable;
+};
+
+const IMAP_OPERATION_TIMEOUT_MS = 15000;
+const IMAP_CLIENT_NAME = "MMH";
+
+function buildClient(config: ImapConfig) {
+  return new ImapFlow({
     host: config.host,
     port: config.port,
-    tls: config.secure,
-    autotls: "never",
-    tlsOptions: { servername: config.host, minVersion: "TLSv1.2" } as object,
-    connTimeout: 15000,
-    authTimeout: 15000,
-    keepalive: { interval: 30000, idleThreshold: 10000 },
+    secure: config.secure,
+    auth: {
+      user: config.user,
+      pass: config.password,
+    },
+    clientInfo: {
+      name: IMAP_CLIENT_NAME,
+      version: "1.0.0",
+    },
+    logger: false,
+    tls: {
+      servername: config.host,
+      minVersion: "TLSv1.2",
+    },
+    socketTimeout: IMAP_OPERATION_TIMEOUT_MS,
+    connectionTimeout: IMAP_OPERATION_TIMEOUT_MS,
+    greetingTimeout: IMAP_OPERATION_TIMEOUT_MS,
   });
 }
 
-function parseAddress(raw: string) {
-  const m = raw.match(/<([^>]+)>/);
-  return (m?.[1] ?? raw).trim();
+function withTimeout<T>(task: Promise<T>, message: string, timeoutMs = IMAP_OPERATION_TIMEOUT_MS) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([task, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
-function toIso(v: Date | string | undefined) {
-  if (!v) return "";
-  if (v instanceof Date) return v.toISOString();
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+function toIso(value: Date | string | undefined) {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
-export async function connectAndOpenBox(config: ImapConfig, trace: string[]) {
+function formatAddress(address?: { name?: string; address?: string }[]) {
+  const first = address?.[0];
+  return (first?.address || first?.name || "").trim();
+}
+
+function buildRecentSequenceRange(total: number, limit: number, hasKeyword: boolean, scanLimit?: number) {
+  const requestedScanLimit = scanLimit && Number.isFinite(scanLimit) ? Math.max(1, Math.floor(scanLimit)) : 0;
+  const effectiveScanLimit = requestedScanLimit > 0
+    ? Math.max(limit, requestedScanLimit)
+    : hasKeyword
+      ? Math.max(limit * 100, 500)
+      : limit;
+  const scanLimitClamped = Math.min(total, effectiveScanLimit);
+  const start = Math.max(1, total - scanLimitClamped + 1);
+  return `${start}:${total}`;
+}
+
+export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
   const mailbox = (config.mailbox ?? "INBOX").trim() || "INBOX";
-  const imap = buildImap(config);
+  const client = buildClient(config);
 
-  return await new Promise<{ imap: Imap; mailbox: string }>((resolve, reject) => {
-    let settled = false;
-    const fail = (err: unknown) => {
-      if (settled) return;
-      settled = true;
-      try {
-        imap.end();
-      } catch {}
-      reject(err);
-    };
-
-    trace.push(`connect ${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`);
-
-    imap.once("error", (err) => fail(err));
-
-    imap.once("ready", () => {
-      trace.push("connect ok");
-      new Promise<void>((resolve) => {
-        try {
-          const imapWithId = imap as Imap & { id: (info: object, cb: (err: Error | null) => void) => void };
-          imapWithId.id({ name: "node-imap", version: "1.0.0" }, (err: Error | null) => {
-            if (err) { trace.push("id err: " + err.message); }
-            else { trace.push("id ok"); }
-            resolve();
-          });
-        } catch (e) {
-          trace.push("id skipped: " + (e instanceof Error ? e.message : String(e)));
-          resolve();
-        }
-      }).then(() => {
-        trace.push(`mailbox open try: ${mailbox}`);
-        imap.openBox(mailbox, true, (err) => {
-          if (err) return fail(err);
-          if (settled) return;
-          settled = true;
-          trace.push(`mailbox open ok: ${mailbox}`);
-          resolve({ imap, mailbox });
-        });
-      });
-    });
-
-    imap.connect();
-  });
+  trace.push(`connect ${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`);
+  try {
+    await withTimeout(client.connect(), "IMAP 连接超时");
+    trace.push("connect ok");
+    await withTimeout(client.mailboxOpen(mailbox, { readOnly: true }), "邮箱文件夹打开超时");
+    trace.push(`mailbox open ok: ${mailbox}`);
+    return { client, mailbox };
+  } catch (error) {
+    client.close();
+    throw error;
+  }
 }
 
-export async function closeImap(imap: Imap) {
-  await new Promise<void>((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    imap.once("end", finish);
-    imap.once("close", finish);
-    try {
-      imap.end();
-    } catch {
-      finish();
+export async function closeImap(target: MailClient["client"] | MailClient) {
+  const client = "client" in target ? target.client : target;
+  try {
+    if (client.usable) {
+      await withTimeout(client.logout(), "IMAP 退出超时", 1000);
+    } else {
+      client.close();
     }
-    setTimeout(finish, 1000);
-  });
+  } catch {
+    client.close();
+  }
 }
 
 export async function listMails(
-  imap: Imap,
-  options: { limit: number; subjectIncludes?: string; fromIncludes?: string },
+  target: MailClient["client"] | MailClient,
+  options: { limit: number; scanLimit?: number; sinceDate?: string; keyword?: string; subjectIncludes?: string; fromIncludes?: string },
   trace: string[] = []
-) {
-  const total = (imap as unknown as { _box?: { messages?: { total?: number } } })._box?.messages?.total ?? 0;
-  trace.push(`total ${total}`);
-  if (!total) return [] as MailListItem[];
+): Promise<{ items: MailListItem[]; meta: MailListMeta }> {
+  const client = "client" in target ? target.client : target;
+  const total = client.mailbox && typeof client.mailbox.exists === "number" ? client.mailbox.exists : 0;
+  trace.push(`box total ${total}`);
+  if (!total) {
+    return { items: [], meta: { total: 0, scanned: 0, matched: 0, limited: options.limit, hasKeyword: false, scanLimit: options.scanLimit ?? options.limit, sinceDate: options.sinceDate ?? "" } };
+  }
 
-  const start = Math.max(1, total - options.limit + 1);
-  const range = `${start}:${total}`;
-  trace.push(`range ${range}`);
+  const keyword = options.keyword?.trim().toLowerCase();
+  const subjectKeyword = options.subjectIncludes?.trim().toLowerCase();
+  const fromKeyword = options.fromIncludes?.trim().toLowerCase();
+  const hasKeyword = Boolean(keyword || subjectKeyword || fromKeyword);
+  const since = options.sinceDate ? new Date(`${options.sinceDate}T00:00:00.000Z`) : null;
+  const sinceValid = since && !Number.isNaN(since.getTime()) ? since : null;
+  const range = buildRecentSequenceRange(total, options.limit, hasKeyword || Boolean(sinceValid), options.scanLimit);
+  let scanned = 0;
+  trace.push(`fetch seq ${range}`);
 
   const rows: MailListItem[] = [];
-  const seenUids = new Set<number>();
+  const task = (async () => {
+    for await (const message of client.fetch(range, { envelope: true, uid: true })) {
+      const subject = (message.envelope?.subject || "无主题").trim();
+      const from = formatAddress(message.envelope?.from);
+      const date = message.envelope?.date instanceof Date ? message.envelope.date : null;
+      if (sinceValid && date && date < sinceValid) {
+        continue;
+      }
+      scanned += 1;
+      const normalizedSubject = subject.toLowerCase();
+      const normalizedFrom = from.toLowerCase();
+      const keywordOk = !keyword || normalizedSubject.includes(keyword) || normalizedFrom.includes(keyword);
+      const subjectOk = !subjectKeyword || normalizedSubject.includes(subjectKeyword);
+      const fromOk = !fromKeyword || normalizedFrom.includes(fromKeyword);
 
-  await new Promise<void>((resolve, reject) => {
-    const f = imap.seq.fetch(range, { bodies: "HEADER.FIELDS (SUBJECT FROM DATE)", struct: false });
-    let pending = 0;
+      if (!keywordOk || !subjectOk || !fromOk) {
+        trace.push(`filter uid=${message.uid} "${subject}" "${from}"`);
+        continue;
+      }
 
-    f.on("message", (msg) => {
-      pending++;
-      let uid = 0;
-      let subject = "";
-      let from = "";
-      let date = "";
-
-      msg.on("attributes", (attrs) => {
-        uid = Number(attrs.uid ?? 0);
+      rows.push({
+        uid: message.uid,
+        subject,
+        from,
+        date: toIso(message.envelope?.date),
       });
+      trace.push(`row ok uid=${message.uid} "${subject}"`);
+    }
+  })();
 
-      msg.on("body", (stream) => {
-        let buf = "";
-        stream.on("data", (chunk) => {
-          buf += chunk.toString("utf8");
-        });
-        stream.on("end", () => {
-          const parsed = Imap.parseHeader(buf);
-          subject = (parsed.subject?.[0] ?? "无主题").toString().trim();
-          from = parseAddress((parsed.from?.[0] ?? "").toString());
-          date = toIso((parsed.date?.[0] ?? "").toString());
-        });
-      });
-
-      msg.once("end", () => {
-        pending--;
-        if (!uid || seenUids.has(uid)) return;
-        seenUids.add(uid);
-        const subjectOk = !options.subjectIncludes || subject.includes(options.subjectIncludes);
-        const fromOk = !options.fromIncludes || from.includes(options.fromIncludes);
-        if (!subjectOk) { trace.push(`filter subject: uid=${uid} "${subject}"`); return; }
-        if (!fromOk) { trace.push(`filter from: uid=${uid} "${from}"`); return; }
-        rows.push({ uid, subject, from, date });
-        trace.push(`row ok uid=${uid} "${subject}"`);
-        if (pending === 0) resolve();
-      });
-    });
-
-    f.on("error", (e) => {
-      trace.push(`fetch err: ${e instanceof Error ? e.message : String(e)}`);
-      reject(e);
-    });
-    f.on("end", () => {
-      trace.push(`fetch end rows=${rows.length}`);
-      resolve();
-    });
-  });
-
-  return rows.sort((a, b) => b.uid - a.uid);
+  await withTimeout(task, "IMAP 读取邮件列表超时");
+  const items = rows.sort((a, b) => b.uid - a.uid).slice(0, options.limit);
+  return {
+    items,
+    meta: {
+      total,
+      scanned,
+      matched: rows.length,
+      limited: options.limit,
+      hasKeyword,
+      scanLimit: options.scanLimit ?? scanned,
+      sinceDate: options.sinceDate ?? "",
+    },
+  };
 }
 
-export async function fetchMailDetail(imap: Imap, uid: number) {
-  return await new Promise<MailDetail>((resolve, reject) => {
-    let done = false;
-    const f = imap.fetch(uid, { bodies: "" });
+export async function fetchMailDetail(target: MailClient["client"] | MailClient, uid: number) {
+  const client = "client" in target ? target.client : target;
+  const downloaded = await withTimeout(
+    client.download(String(uid), undefined, { uid: true }),
+    "IMAP 读取邮件内容超时"
+  ) as DownloadedMail;
+  const chunks: Buffer[] = [];
 
-    f.on("message", (msg) => {
-      let messageUid = uid;
-      let source = Buffer.alloc(0);
-
-      msg.on("attributes", (attrs) => {
-        messageUid = Number(attrs.uid ?? uid);
+  await withTimeout(
+    new Promise<void>((resolve, reject) => {
+      downloaded.content.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
+      downloaded.content.once("error", reject);
+      downloaded.content.once("end", resolve);
+    }),
+    "IMAP 下载邮件内容超时"
+  );
 
-      msg.on("body", (stream) => {
-        const chunks: Buffer[] = [];
-        stream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-        stream.on("end", () => {
-          source = Buffer.concat(chunks);
-        });
-      });
+  const source = Buffer.concat(chunks);
+  if (!source.length) throw new Error("未找到邮件内容");
 
-      msg.once("end", async () => {
-        if (done) return;
-        try {
-          const parsed = await simpleParser(source);
-          done = true;
-          resolve({
-            uid: messageUid,
-            subject: (parsed.subject ?? "").toString(),
-            from: (parsed.from?.value?.[0]?.address ?? parsed.from?.value?.[0]?.name ?? "").toString(),
-            date: toIso(parsed.date),
-            text: (parsed.text ?? "").toString(),
-            html: (parsed.html ?? "").toString(),
-          });
-        } catch (e) {
-          done = true;
-          reject(e);
-        }
-      });
-    });
+  const parsed = await simpleParser(source);
+  const attachments = await Promise.all((parsed.attachments ?? []).map(async (attachment, index): Promise<MailAttachment> => {
+    const filename = (attachment.filename ?? `附件${index + 1}`).toString();
+    const contentType = (attachment.contentType ?? "").toString();
+    const content = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content ?? []);
+    const isPdf = contentType.toLowerCase().includes("pdf") || filename.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      return { id: String(index), filename, contentType, size: attachment.size ?? content.length };
+    }
 
-    f.once("error", (e) => {
-      if (done) return;
-      done = true;
-      reject(e);
-    });
-
-    f.once("end", () => {
-      if (!done) reject(new Error("未找到邮件内容"));
-    });
-  });
+    try {
+      const text = await extractPdfText(content);
+      return {
+        id: String(index),
+        filename,
+        contentType,
+        size: attachment.size ?? content.length,
+        text: text || undefined,
+        parseError: text ? undefined : "PDF 未提取到文字",
+      };
+    } catch {
+      return {
+        id: String(index),
+        filename,
+        contentType,
+        size: attachment.size ?? content.length,
+        parseError: "PDF 文字提取失败，可能是扫描件或加密文件",
+      };
+    }
+  }));
+  return {
+    uid,
+    subject: (parsed.subject ?? "").toString(),
+    from: (parsed.from?.value?.[0]?.address ?? parsed.from?.value?.[0]?.name ?? "").toString(),
+    date: toIso(parsed.date),
+    text: (parsed.text ?? "").toString(),
+    html: (parsed.html ?? "").toString(),
+    attachments,
+  } satisfies MailDetail;
 }

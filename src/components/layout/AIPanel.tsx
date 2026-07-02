@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, ChevronLeft, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
 import {
@@ -727,8 +727,12 @@ export function AIPanel({
   if (collapsed) {
     return (
       <aside className="w-12 bg-background border-l border-foreground/5 flex flex-col items-center py-4 shrink-0 transition-all duration-300">
-        <button onClick={() => setCollapsedPersist(false)} className="w-8 h-8 rounded-lg bg-foreground text-background flex items-center justify-center hover:bg-foreground/80 transition-colors">
-          <ChevronLeft size={16} />
+        <button
+          onClick={() => setCollapsedPersist(false)}
+          className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
+          title="展开记账助手"
+        >
+          <PanelRightOpen size={18} />
         </button>
         <div className="mt-8 flex flex-col gap-4 items-center text-foreground/20">
           <Sparkles size={18} />
@@ -772,8 +776,12 @@ export function AIPanel({
             >
               <Settings size={16} />
             </button>
-            <button onClick={() => setCollapsedPersist(true)} className="w-7 h-7 rounded-md flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-foreground/5 transition-all" title="收起面板">
-              <ChevronRight size={16} />
+            <button
+              onClick={() => setCollapsedPersist(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
+              title="收起记账助手"
+            >
+              <PanelRightClose size={18} />
             </button>
           </div>
         </div>
@@ -1335,6 +1343,14 @@ export function AIPanel({
             <ImagePlus size={12} /> 图片
             <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); e.target.value = ""; }} />
           </label>
+          <button
+            type="button"
+            onClick={() => router.push("/settings/email")}
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold text-foreground/30 hover:text-foreground/60 hover:bg-foreground/5 transition-all"
+            title="邮箱导入账单"
+          >
+            <Mail size={12} /> 邮箱账单
+          </button>
         </div>
       </div>
       </>

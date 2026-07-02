@@ -162,7 +162,20 @@ export function LedgerSwitcher({
       const d = await res.json();
       if (d.ok) {
         setShowCreateDialog(false);
-        await switchTo(d.household.id);
+        const refreshed = await fetch("/api/v1/households", { cache: "no-store" })
+          .then(r => r.json())
+          .catch(() => null);
+        if (refreshed?.ok && Array.isArray(refreshed.households)) {
+          setHouseholds(refreshed.households);
+        } else if (d.household) {
+          setHouseholds(prev => prev.some(h => h.id === d.household.id) ? prev : [...prev, d.household]);
+        }
+        setNewName("");
+        setCreateAdminName("");
+        setCreateAdminPassword("");
+        setCreateAdminPasswordConfirm("");
+        setCreateAdminEmail("");
+        onOpenChange(true);
       } else {
         setCreateDialogError(d.error ?? "创建失败");
       }
@@ -170,7 +183,6 @@ export function LedgerSwitcher({
       setCreateDialogError("网络错误，请重试");
     } finally {
       setAdding(false);
-      if (!showCreateDialog) setNewName("");
     }
   }
 

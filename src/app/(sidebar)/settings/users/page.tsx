@@ -152,6 +152,10 @@ export default function UsersPage() {
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ManagedUser | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const [sessionDays, setSessionDays] = useState(30);
   const [aiPanelEnabled, setAiPanelEnabled] = useState(true);
   const [savingSession, setSavingSession] = useState(false);
@@ -225,13 +229,33 @@ export default function UsersPage() {
     } catch { window.alert(editingUser ? "更新失败" : "添加失败"); }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete() {
+    if (!deleteTarget || deleting) return;
+    if (!deletePassword.trim()) {
+      setDeleteError("请输入当前管理员密码");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError("");
     try {
-      const res = await fetch(`/api/v1/settings/users?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const result = await res.json();
-      if (result.ok) await fetchUsers();
-      else window.alert(result.error || "删除失败");
-    } catch { window.alert("删除失败"); }
+      const res = await fetch(`/api/v1/settings/users?id=${encodeURIComponent(deleteTarget.id)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      const result = await res.json().catch(() => null);
+      if (result?.ok) {
+        setDeleteTarget(null);
+        setDeletePassword("");
+        await fetchUsers();
+      } else {
+        setDeleteError(result?.error || "删除失败");
+      }
+    } catch {
+      setDeleteError("删除失败");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function saveSessionDays(next: number) {
@@ -315,7 +339,18 @@ export default function UsersPage() {
                 </span>
                 {u.isSystem && <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 shrink-0">系统</span>}
                 <button className="text-xs text-slate-400 hover:text-blue-600 shrink-0" onClick={() => { setEditingUser(u); setShowModal(true); }}>编辑</button>
-                {!u.isSystem && <button className="text-xs text-slate-400 hover:text-red-500 shrink-0" onClick={() => handleDelete(u.id)}>删除</button>}
+                {!u.isSystem && (
+                  <button
+                    className="text-xs text-slate-400 hover:text-red-500 shrink-0"
+                    onClick={() => {
+                      setDeleteTarget(u);
+                      setDeletePassword("");
+                      setDeleteError("");
+                    }}
+                  >
+                    删除
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -354,12 +389,6 @@ export default function UsersPage() {
             >
               重新登录
             </a>
-            <a
-              href="/login?reset=1"
-              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-500 hover:text-blue-700 hover:border-blue-200 flex items-center gap-1.5"
-            >
-              找回密码
-            </a>
           </div>
         </div>
       </section>
@@ -395,6 +424,58 @@ export default function UsersPage() {
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
         />
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+            <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <div className="text-sm font-semibold text-slate-800">删除用户</div>
+              <div className="mt-1 text-xs text-slate-500">删除前需要输入当前管理员密码。</div>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                确认删除用户“{deleteTarget.name}”？该操作不可撤销。
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">当前管理员密码</label>
+                <input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(e) => { setDeletePassword(e.target.value); setDeleteError(""); }}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  placeholder="请输入当前管理员密码"
+                  autoFocus
+                />
+              </div>
+              {deleteError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{deleteError}</div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    setDeleteTarget(null);
+                    setDeletePassword("");
+                    setDeleteError("");
+                  }}
+                  disabled={deleting}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+                  onClick={handleDelete}
+                  disabled={deleting || !deletePassword.trim()}
+                >
+                  {deleting ? "删除中..." : "确认删除"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

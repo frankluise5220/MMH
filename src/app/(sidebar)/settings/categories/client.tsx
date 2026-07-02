@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Trash2, ChevronRight, ChevronDown, Plus, Save, Pencil, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { fetchSettingsCategories, getCachedSettingsCategories, setSettingsCategories } from "@/lib/client/settingsCache";
 
 type Category = {
   id: string;
@@ -13,12 +14,12 @@ type Category = {
 };
 
 const typeLabel = (t: string) =>
-  t === "expense" ? "支出" : t === "income" ? "收入" : t === "investment" ? "投资" : t;
+  t === "expense" ? "支出" : t === "income" ? "收入" : t === "advance" ? "代付" : t === "investment" ? "投资" : t;
 
 const typeColor = (t: string) =>
-  t === "expense" ? "text-red-600" : t === "income" ? "text-emerald-600" : "text-blue-600";
+  t === "expense" ? "text-red-600" : t === "income" ? "text-emerald-600" : t === "advance" ? "text-amber-600" : "text-blue-600";
 
-const TYPE_ORDER = ["expense", "income"] as const;
+const TYPE_ORDER = ["expense", "income", "advance"] as const;
 
 export default function SettingsCategoriesClient({ categories: initialCategories }: { categories: Category[] }) {
   const [categories, setCategories] = useState<Category[]>(initialCategories);
@@ -34,6 +35,14 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    const cached = getCachedSettingsCategories();
+    if (cached) setCategories(cached as Category[]);
+    fetchSettingsCategories()
+      .then((next) => setCategories(next as Category[]))
+      .catch(() => null);
+  }, []);
+
   const roots = categories.filter(c => c.parentId === null);
   const childrenMap = new Map<string, Category[]>();
   for (const c of categories) {
@@ -46,7 +55,12 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   function getChildren(id: string) { return childrenMap.get(id) || []; }
 
   function toggleExpand(id: string) {
-    setExpanded(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function select(id: string) {
@@ -63,10 +77,8 @@ export default function SettingsCategoriesClient({ categories: initialCategories
     setTimeout(() => inputRef.current?.focus(), 50);
   }
 
-  function closeAdd() { setAddingUnder(null); }
-
   /** Handle entity creation from EntityCreateForm */
-  function handleCategoryCreated(id: string, name: string, extra?: { parentId?: string; kind?: string }) {
+  function handleCategoryCreated(id: string, name: string) {
     // We need to construct the full category object. The API returns it, but
     // EntityCreateForm only passes id/name/extra. We reconstruct from the form context.
     const parent = addingUnder && addingUnder !== "__root__"
@@ -79,7 +91,11 @@ export default function SettingsCategoriesClient({ categories: initialCategories
       parentId: addingUnder === "__root__" ? null : addingUnder || null,
       isSystem: false,
     };
-    setCategories(prev => [...prev, created]);
+    setCategories(prev => {
+      const next = [...prev, created];
+      setSettingsCategories(next);
+      return next;
+    });
     if (addingUnder && addingUnder !== "__root__") {
       setExpanded(prev => new Set([...prev, addingUnder]));
     }
@@ -95,7 +111,11 @@ export default function SettingsCategoriesClient({ categories: initialCategories
       });
       const data = await res.json();
       if (data.ok) {
-        setCategories(prev => prev.filter(c => c.id !== id));
+        setCategories(prev => {
+          const next = prev.filter(c => c.id !== id);
+          setSettingsCategories(next);
+          return next;
+        });
         if (selectedId === id) setSelectedId(null);
         setExpanded(prev => { const next = new Set(prev); next.delete(id); return next; });
       } else {
@@ -126,7 +146,11 @@ export default function SettingsCategoriesClient({ categories: initialCategories
         setEditError(data.error ?? "修改失败");
         return false;
       }
-      setCategories(prev => prev.map(c => c.id === id ? { ...c, name: data.category.name } : c));
+      setCategories(prev => {
+        const next = prev.map(c => c.id === id ? { ...c, name: data.category.name } : c);
+        setSettingsCategories(next);
+        return next;
+      });
       if (selectedId === id) setEditingName(data.category.name);
       return true;
     } catch {
@@ -295,7 +319,10 @@ export default function SettingsCategoriesClient({ categories: initialCategories
             return (
               <div key={type} className="mb-0.5">
                 <div
-                  onClick={() => { typeRoots.length > 0 ? toggleExpand(typeKey) : openAdd("__root__", type); }}
+                  onClick={() => {
+                    if (typeRoots.length > 0) toggleExpand(typeKey);
+                    else openAdd("__root__", type);
+                  }}
                   className="flex items-center gap-1 px-3 py-1.5 cursor-pointer hover:bg-slate-50 rounded">
                   {typeRoots.length > 0 ? (
                     isExpanded ? <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" /> : <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
@@ -369,6 +396,7 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                   <span className={`text-xs px-1.5 py-0.5 rounded-full ${
                     selectedCategory.type === "expense" ? "bg-red-50 text-red-600" :
                     selectedCategory.type === "income" ? "bg-emerald-50 text-emerald-600" :
+                    selectedCategory.type === "advance" ? "bg-amber-50 text-amber-600" :
                     "bg-blue-50 text-blue-600"}`}>
                     {typeLabel(selectedCategory.type)}
                   </span>
@@ -388,7 +416,7 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                   defaultType={selectedCategory.type}
                   parentCategories={parentCategoryOptions}
                   hiddenFields={["parentId"]}
-                  onCreated={(id, name, extra) => {
+                  onCreated={(id, name) => {
                     const created: Category = {
                       id,
                       name,
@@ -396,7 +424,11 @@ export default function SettingsCategoriesClient({ categories: initialCategories
                       parentId: selectedId,
                       isSystem: false,
                     };
-                    setCategories(prev => [...prev, created]);
+                    setCategories(prev => {
+                      const next = [...prev, created];
+                      setSettingsCategories(next);
+                      return next;
+                    });
                     setExpanded(prev => new Set([...prev, selectedId!]));
                   }}
                   existingNames={selectedChildren.map(c => c.name)}

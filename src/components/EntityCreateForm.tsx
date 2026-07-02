@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
-import { kindLabel, kindOrder, kindHex, institutionTypeLabel } from "@/lib/account-kinds";
+import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
 import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
@@ -81,6 +81,8 @@ type FullModeProps = {
   defaultParentId?: string;
   /** For account: pre-selected kind */
   defaultType?: string;
+  /** For institution pages: restrict type choices to a specific concept group */
+  allowedInstitutionTypes?: string[];
   /** Extra fields to merge into POST body */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI */
@@ -109,6 +111,7 @@ const INSTITUTION_TYPES = [
 const CATEGORY_TYPES = [
   { value: "expense", label: "支出" },
   { value: "income", label: "收入" },
+  { value: "advance", label: "代付" },
 ];
 
 /* ---- Cost basis method options ---- */
@@ -254,6 +257,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const fieldData = mode === "full" ? props.fieldData : undefined;
   const compactNestedFieldData = mode === "compact" ? props.nestedFieldData : undefined;
   const hiddenFields = mode === "compact" ? props.hiddenFields : props.hiddenFields ?? [];
+  const allowedInstitutionTypes =
+    entityType === "institution" && mode === "full" ? props.allowedInstitutionTypes : undefined;
 
   // Compact mode: open/onClose
   const open = mode === "compact" ? props.open : undefined;
@@ -275,6 +280,19 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
 
+  /** Get default type for compact mode */
+  const getDefaultTypeCompact = useCallback((): string => {
+    const typeKey = config.typeKey;
+    if (extraFields && typeKey && extraFields[typeKey]) {
+      if (config.types.some(t => t.value === extraFields[typeKey])) return extraFields[typeKey];
+    }
+    if (defaultType && config.types.some(t => t.value === defaultType)) return defaultType;
+    if (entityType === "institution") return "organization";
+    if (entityType === "category") return "expense";
+    if (entityType === "account") return "bank_debit";
+    return "";
+  }, [config.typeKey, config.types, defaultType, entityType, extraFields]);
+
   /** Initialize form state */
   const initForm = useCallback(() => {
     const initial: Record<string, string> = {};
@@ -291,6 +309,18 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       for (const field of config.fullFields) {
         if (field.condition && !field.condition(initial)) continue;
         if (initial[field.key] !== undefined) continue;
+        if (field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length) {
+          initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
+            ? field.defaultValue!
+            : allowedInstitutionTypes[0];
+          continue;
+        }
+        if (field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length) {
+          initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
+            ? field.defaultValue!
+            : allowedInstitutionTypes[0];
+          continue;
+        }
         if (field.defaultValue) initial[field.key] = field.defaultValue;
         if (field.optionsFromData) initial[field.key] = "";
         if (field.type === "select" && !field.defaultValue && !field.optionsFromData) initial[field.key] = field.options?.[0]?.value ?? "";
@@ -316,6 +346,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }
       // Apply defaultType override
       if (defaultType && typeKey) initial[typeKey] = defaultType;
+      if (
+        entityType === "institution" &&
+        typeKey &&
+        allowedInstitutionTypes?.length &&
+        !allowedInstitutionTypes.includes(initial[typeKey] ?? "")
+      ) {
+        initial[typeKey] = allowedInstitutionTypes[0];
+      }
       // Apply extraFields
       if (extraFields) {
         Object.entries(extraFields).forEach(([k, v]) => {
@@ -328,7 +366,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, entityType, defaultType, extraFields, defaultParentId, typeKey]);
+  }, [mode, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -345,19 +383,6 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       if (fieldData) setNestedFieldData(fieldData);
     }
   }, [mode, initForm, fieldData]);
-
-  /** Get default type for compact mode */
-  function getDefaultTypeCompact(): string {
-    const typeKey = config.typeKey;
-    if (extraFields && typeKey && extraFields[typeKey]) {
-      if (config.types.some(t => t.value === extraFields[typeKey])) return extraFields[typeKey];
-    }
-    if (defaultType && config.types.some(t => t.value === defaultType)) return defaultType;
-    if (entityType === "institution") return "organization";
-    if (entityType === "category") return "expense";
-    if (entityType === "account") return "bank_debit";
-    return "";
-  }
 
   /** Determine if the type selector should be shown in compact mode */
   const shouldHideType = !typeKey
@@ -594,7 +619,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       }))}
                       className="form-input"
                     >
-                      {opts.map((option) => (
+                      {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
+                        ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                        : opts
+                      ).map((option) => (
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
@@ -807,7 +835,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                         className="form-input"
                       >
-                        {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
+                          ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                          : opts
+                        ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                     </div>
                   );
@@ -941,7 +972,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       }))}
                       className="form-input"
                     >
-                      {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
+                        ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                        : opts
+                      ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </div>
                 );

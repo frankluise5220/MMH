@@ -2,14 +2,24 @@
 
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
+export type SettingsUser = { id: string; name: string };
+export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; isSystem?: boolean };
 export type SettingsAccountData = {
   accounts: unknown[];
   groups: SettingsAccountGroup[];
   institutions: SettingsInstitution[];
+  users?: SettingsUser[];
 };
 export type SettingsTag = { id: string; name: string; color: string | null };
+export type SettingsBootstrapData = SettingsAccountData & {
+  users: SettingsUser[];
+  categories: SettingsCategory[];
+  tags: SettingsTag[];
+};
 
 const ACCOUNT_DATA_KEY = "accounts-basic";
+const BOOTSTRAP_KEY = "settings-bootstrap";
+const CATEGORIES_KEY = "categories";
 const TAGS_KEY = "tags";
 const TTL_MS = 60_000;
 
@@ -30,7 +40,70 @@ export function getCachedSettingsAccountData() {
   return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
 }
 
+function setCacheValue<T>(key: string, value: T) {
+  cache.set(key, { value, updatedAt: Date.now() });
+}
+
+function seedBootstrapCaches(value: SettingsBootstrapData) {
+  setCacheValue(BOOTSTRAP_KEY, value);
+  setCacheValue(ACCOUNT_DATA_KEY, {
+    accounts: value.accounts,
+    groups: value.groups,
+    institutions: value.institutions,
+    users: value.users,
+  });
+  setCacheValue(CATEGORIES_KEY, value.categories);
+  setCacheValue(TAGS_KEY, value.tags);
+}
+
+export function getCachedSettingsBootstrap() {
+  const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
+  return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
+}
+
+export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
+  const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
+  if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
+  if (!options?.force && entry?.promise) return entry.promise;
+
+  const promise = fetch("/api/v1/settings/bootstrap", { cache: "no-store" })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data?.ok) throw new Error(data?.error || "读取设置基础资料失败");
+      const value: SettingsBootstrapData = {
+        accounts: data.accounts || [],
+        groups: data.groups || [],
+        institutions: data.institutions || [],
+        users: data.users || [],
+        categories: data.categories || [],
+        tags: data.tags || [],
+      };
+      seedBootstrapCaches(value);
+      return value;
+    })
+    .catch((error) => {
+      const prev = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
+      if (prev?.value) seedBootstrapCaches(prev.value);
+      else cache.delete(BOOTSTRAP_KEY);
+      throw error;
+    });
+
+  cache.set(BOOTSTRAP_KEY, { value: entry?.value, promise, updatedAt: entry?.updatedAt ?? 0 });
+  return promise;
+}
+
 export async function fetchSettingsAccountData(options?: { force?: boolean }) {
+  if (!options?.force) {
+    const bootstrap = getCachedSettingsBootstrap();
+    if (bootstrap) {
+      return {
+        accounts: bootstrap.accounts,
+        groups: bootstrap.groups,
+        institutions: bootstrap.institutions,
+        users: bootstrap.users,
+      };
+    }
+  }
   const entry = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
   if (!options?.force && entry?.promise) return entry.promise;
@@ -43,6 +116,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],
+        users: data.users || [],
       };
       cache.set(ACCOUNT_DATA_KEY, { value, updatedAt: Date.now() });
       return value;
@@ -60,10 +134,55 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
 
 export function setSettingsAccountData(next: SettingsAccountData) {
   cache.set(ACCOUNT_DATA_KEY, { value: next, updatedAt: Date.now() });
+  cache.delete(BOOTSTRAP_KEY);
 }
 
 export function invalidateSettingsAccountData() {
   cache.delete(ACCOUNT_DATA_KEY);
+  cache.delete(BOOTSTRAP_KEY);
+}
+
+export function getCachedSettingsCategories() {
+  const entry = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
+  return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
+}
+
+export async function fetchSettingsCategories(options?: { force?: boolean }) {
+  if (!options?.force) {
+    const bootstrap = getCachedSettingsBootstrap();
+    if (bootstrap) return bootstrap.categories;
+  }
+  const entry = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
+  if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
+  if (!options?.force && entry?.promise) return entry.promise;
+
+  const promise = fetch("/api/v1/category")
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data?.ok) throw new Error(data?.error || "读取分类失败");
+      const value = data.categories || [];
+      setCacheValue(CATEGORIES_KEY, value);
+      return value as SettingsCategory[];
+    })
+    .catch((error) => {
+      const prev = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
+      if (prev?.value) setCacheValue(CATEGORIES_KEY, prev.value);
+      else cache.delete(CATEGORIES_KEY);
+      throw error;
+    });
+
+  cache.set(CATEGORIES_KEY, { value: entry?.value, promise, updatedAt: entry?.updatedAt ?? 0 });
+  return promise;
+}
+
+export function setSettingsCategories(next: SettingsCategory[]) {
+  setCacheValue(CATEGORIES_KEY, next);
+  cache.delete(BOOTSTRAP_KEY);
+}
+
+export function invalidateSettingsCategories() {
+  cache.delete(CATEGORIES_KEY);
+  cache.delete(BOOTSTRAP_KEY);
 }
 
 export function getCachedSettingsTags() {
@@ -97,8 +216,10 @@ export async function fetchSettingsTags(options?: { force?: boolean }) {
 
 export function setSettingsTags(next: SettingsTag[]) {
   cache.set(TAGS_KEY, { value: next, updatedAt: Date.now() });
+  cache.delete(BOOTSTRAP_KEY);
 }
 
 export function invalidateSettingsTags() {
   cache.delete(TAGS_KEY);
+  cache.delete(BOOTSTRAP_KEY);
 }

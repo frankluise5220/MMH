@@ -76,6 +76,7 @@ export default function SettingsAccountsPage() {
       setGroups(cached.groups as Group[]);
       setAccounts(cached.accounts as Account[]);
       setInstitutions(cached.institutions as Institution[]);
+      return;
     }
     loadAll();
   }, []);

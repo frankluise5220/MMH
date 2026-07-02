@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
     const kind = (typeof body?.kind === "string" ? body.kind.trim() : "other") as any;
     const requestedGroupId = String(body.groupId ?? "").trim() || null;
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
+    const requestedUserId = String(body.userId ?? "").trim() || null;
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
@@ -71,6 +72,11 @@ export async function POST(req: NextRequest) {
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
 
+    const owner = requestedUserId
+      ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
+      : null;
+    if (requestedUserId && !owner) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+
     const account = await prisma.account.create({
       data: {
         name,
@@ -79,6 +85,7 @@ export async function POST(req: NextRequest) {
         currency,
         groupId: ensuredGroup.id,
         institutionId: institution?.id ?? null,
+        userId: owner?.id ?? null,
         householdId,
         isActive: true,
         billingDay: isCreditLike ? (parseDay(body.billingDay) ?? null) : null,

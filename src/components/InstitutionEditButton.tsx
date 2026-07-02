@@ -21,9 +21,15 @@ const TYPE_LABELS: Record<InstitutionType, string> = {
 export function InstitutionEditButton({
   institution,
   action,
+  title = "编辑往来对象",
+  nameLabel = "往来对象名称",
+  allowedTypes,
 }: {
   institution: { id: string; name: string; shortName?: string | null; type: string | null };
   action: (formData: FormData) => void | Promise<void>;
+  title?: string;
+  nameLabel?: string;
+  allowedTypes?: string[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -57,7 +63,8 @@ export function InstitutionEditButton({
         onClick={() => {
           setName(institution.name);
           setShortName(institution.shortName ?? "");
-          setType((institution.type as InstitutionType) ?? "other");
+          const initialType = (institution.type as InstitutionType) ?? "other";
+          setType((allowedTypes?.includes(initialType) ? initialType : allowedTypes?.[0] ?? "other") as InstitutionType);
           setOpen(true);
         }}
         className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-blue-600 hover:border-blue-200"
@@ -70,13 +77,13 @@ export function InstitutionEditButton({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="text-sm font-semibold text-slate-800">编辑往来对象</div>
+              <div className="text-sm font-semibold text-slate-800">{title}</div>
               <button type="button" onClick={() => setOpen(false)}
                 className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">往来对象名称</div>
+                <div className="text-xs font-medium text-slate-600">{nameLabel}</div>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -100,7 +107,9 @@ export function InstitutionEditButton({
                   onChange={(e) => setType(e.target.value as InstitutionType)}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 >
-                  {(Object.keys(TYPE_LABELS) as InstitutionType[]).map((t) => (
+                  {(Object.keys(TYPE_LABELS) as InstitutionType[])
+                    .filter((t) => !allowedTypes?.length || allowedTypes.includes(t))
+                    .map((t) => (
                     <option key={t} value={t}>{TYPE_LABELS[t]}</option>
                   ))}
                 </select>

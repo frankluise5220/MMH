@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
       outboundType: "smtp",
       smtpHost: String(body.smtpHost ?? "").trim() || null,
       smtpPort: Number(body.smtpPort) || 465,
+      smtpSecure: body.smtpSecure === undefined ? (Number(body.smtpPort) || 465) === 465 : body.smtpSecure !== false,
       smtpFrom: String(body.smtpFrom ?? "").trim() || null,
       resendApiKey: null,
       resendFrom: null,
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
  * Body: { id, label?, username?, ... }
  */
 export async function PUT(req: NextRequest) {
-  const { user } = await getHouseholdScope();
+  const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
     return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
   }
@@ -80,7 +81,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
   }
 
-  const existing = await prisma.emailAccount.findUnique({ where: { id } });
+  const existing = await prisma.emailAccount.findFirst({ where: { id, householdId } });
   if (!existing) {
     return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
   }
@@ -94,6 +95,7 @@ export async function PUT(req: NextRequest) {
   if (body.smtpFrom !== undefined) data.smtpFrom = String(body.smtpFrom).trim();
   if (body.smtpHost !== undefined) data.smtpHost = String(body.smtpHost).trim();
   if (body.smtpPort !== undefined) data.smtpPort = Number(body.smtpPort) || 465;
+  if (body.smtpSecure !== undefined) data.smtpSecure = body.smtpSecure !== false;
   if (body.password !== undefined) data.password = String(body.password).trim();
   if (body.mailbox !== undefined) data.mailbox = String(body.mailbox).trim() || "INBOX";
 
@@ -107,7 +109,7 @@ export async function PUT(req: NextRequest) {
  * Body: { id }
  */
 export async function DELETE(req: NextRequest) {
-  const { user } = await getHouseholdScope();
+  const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
     return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
   }
@@ -116,7 +118,7 @@ export async function DELETE(req: NextRequest) {
   if (!id) {
     return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
   }
-  const existing = await prisma.emailAccount.findUnique({ where: { id } });
+  const existing = await prisma.emailAccount.findFirst({ where: { id, householdId } });
   if (!existing) {
     return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
   }

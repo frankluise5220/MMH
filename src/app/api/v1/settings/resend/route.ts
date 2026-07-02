@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getEnvResendConfig } from "@/lib/mail/resend";
+import { RESEND_FROM, getEnvResendConfig } from "@/lib/mail/resend";
+import { isAdmin } from "@/lib/server/auth";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
+
+function maskApiKey(apiKey: string) {
+  if (!apiKey) return "";
+  if (apiKey.length <= 10) return "已保存";
+  return `${apiKey.slice(0, 6)}****${apiKey.slice(-4)}`;
+}
 
 /**
  * GET /api/v1/settings/resend
@@ -12,9 +20,11 @@ export async function GET() {
   const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
   const envConfig = getEnvResendConfig();
   const fallback = {
-    apiKey: envConfig?.apiKey ?? "",
-    from: envConfig?.from ?? "",
+    configured: Boolean(envConfig?.apiKey),
+    keyPreview: envConfig?.apiKey ? maskApiKey(envConfig.apiKey) : "",
+    from: envConfig?.from ?? RESEND_FROM,
     source: envConfig ? "env" : "none",
+    canDelete: false,
   };
 
   if (!setting) {
@@ -26,7 +36,16 @@ export async function GET() {
     const apiKey = String(parsed.apiKey ?? "").trim();
     const from = String(parsed.from ?? "").trim();
     if (!apiKey) return NextResponse.json({ ok: true, data: fallback });
-    return NextResponse.json({ ok: true, data: { apiKey, from: from || fallback.from, source: "db" } });
+    return NextResponse.json({
+      ok: true,
+      data: {
+        configured: true,
+        keyPreview: maskApiKey(apiKey),
+        from: from || fallback.from,
+        source: "db",
+        canDelete: true,
+      },
+    });
   } catch {
     return NextResponse.json({ ok: true, data: fallback });
   }
@@ -38,9 +57,18 @@ export async function GET() {
  * Body: { apiKey: string, from: string }
  */
 export async function POST(req: NextRequest) {
+  const { user } = await getHouseholdScope();
+  if (!user || !isAdmin(user)) {
+    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+  }
+
   const body = await req.json().catch(() => ({}));
   const apiKey = String(body.apiKey ?? "").trim();
-  const from = String(body.from ?? "").trim();
+  const from = String(body.from ?? "").trim() || RESEND_FROM;
+
+  if (!apiKey) {
+    return NextResponse.json({ ok: false, error: "请填写 Resend API Key" }, { status: 400 });
+  }
 
   const value = JSON.stringify({ apiKey, from });
   await prisma.systemSetting.upsert({
@@ -49,5 +77,19 @@ export async function POST(req: NextRequest) {
     create: { key: "resend_config", value },
   });
 
+  return NextResponse.json({ ok: true });
+}
+
+/**
+ * DELETE /api/v1/settings/resend
+ * 删除数据库中保存的 Resend 发件配置；环境变量配置不可在页面删除。
+ */
+export async function DELETE() {
+  const { user } = await getHouseholdScope();
+  if (!user || !isAdmin(user)) {
+    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+  }
+
+  await prisma.systemSetting.deleteMany({ where: { key: "resend_config" } });
   return NextResponse.json({ ok: true });
 }

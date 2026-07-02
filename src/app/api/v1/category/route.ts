@@ -10,7 +10,7 @@ export const runtime = "nodejs";
  * 获取分类列表（树形结构支持）
  *
  * Query params:
- *   type? - 可选过滤: "expense" | "income"
+ *   type? - 可选过滤: "expense" | "income" | "advance"
  *
  * 返回: { ok: true, categories: [{ id, name, type, parentId, sortOrder }] }
  */
@@ -31,7 +31,7 @@ export async function GET(req: Request) {
     const typeFilter = url.searchParams.get("type")?.trim();
 
     const where: Record<string, unknown> = { ...hidFilter };
-    if (typeFilter && !["expense", "income"].includes(typeFilter)) {
+    if (typeFilter && !["expense", "income", "advance"].includes(typeFilter)) {
       return NextResponse.json({ ok: true, categories: [] });
     }
     if (typeFilter) {
@@ -51,16 +51,16 @@ export async function GET(req: Request) {
   }
 }
 
-const CATEGORY_TYPES = ["expense", "income"] as const;
-const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "投资"]);
+const CATEGORY_TYPES = ["expense", "income", "advance"] as const;
+const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "代付", "投资"]);
 
 /**
  * POST /api/v1/category
  * 新增分类。
  *
- * Body: { name: string, type?: "expense" | "income", parentId?: string }
+ * Body: { name: string, type?: "expense" | "income" | "advance", parentId?: string }
  * - parentId 存在时，分类类型继承上级分类。
- * - "支出"、"收入"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
+ * - "支出"、"收入"、"代付"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
  * - 投资不使用分类树，投资交易通过产品类型、基金代码、交易子类型等结构化字段区分。
  *
  * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
     }
     if (RESERVED_CATEGORY_NAMES.has(name)) {
-      return NextResponse.json({ ok: false, error: "支出、收入、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "支出、收入、代付、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
     }
     if (!CATEGORY_TYPES.includes(requestedType as typeof CATEGORY_TYPES[number])) {
       return NextResponse.json({ ok: false, error: "分类类型不正确" }, { status: 400 });
@@ -139,7 +139,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
     }
     if (RESERVED_CATEGORY_NAMES.has(name)) {
-      return NextResponse.json({ ok: false, error: "支出、收入、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "支出、收入、代付、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
     }
 
     const current = await prisma.category.findFirst({

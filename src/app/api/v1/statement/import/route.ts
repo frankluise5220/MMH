@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
@@ -42,8 +43,11 @@ const ParsedItemSchema = z.object({
   category: z.string().optional(),
   remark: z.string().optional(),
   counterparty: z.string().optional(),
+  institution: z.string().optional(),
+  postedDate: z.string().optional(),
   _meta: z.object({
     institutionName: z.string().optional(),
+    ownerName: z.string().optional(),
     cardNumberMasked: z.string().optional(),
     creditLimit: z.number().optional(),
     billingDay: z.number().int().min(1).max(31).optional(),
@@ -52,10 +56,24 @@ const ParsedItemSchema = z.object({
 });
 
 type ParsedItem = z.infer<typeof ParsedItemSchema>;
+type ParsedItemMeta = NonNullable<ParsedItem["_meta"]>;
+type ImportOptions = { autoCreateAccounts: boolean };
 
 function parseDate(date?: string) {
-  if (!date) return new Date();
-  const d = new Date(date);
+  const raw = String(date ?? "").trim();
+  if (!raw) return new Date();
+  const match = raw.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日)?(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (match) {
+    return new Date(Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4] ?? 0),
+      Number(match[5] ?? 0),
+      Number(match[6] ?? 0),
+    ));
+  }
+  const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return new Date();
   return d;
 }
@@ -83,6 +101,11 @@ async function statementMonthForAccountId(tx: Db, accountId: string | null, date
   return toStatementMonth(date, acc.billingDay);
 }
 
+function postedDateForStatement(item: ParsedItem, fallbackDate: Date) {
+  const postedDate = item.postedDate ? parseDate(item.postedDate) : null;
+  return postedDate && !Number.isNaN(postedDate.getTime()) ? postedDate : fallbackDate;
+}
+
 function normalizeAccountCell(value?: string) {
   const v = (value ?? "").trim();
   if (!v) return "";
@@ -102,6 +125,34 @@ async function resolveAccountId(tx: Db, householdId: string, accountName?: strin
   if (!accountName) return null;
   const found = await tx.account.findFirst({ where: { householdId, name: accountName } });
   return found?.id ?? null;
+}
+
+function stripOwnerPrefix(value: string) {
+  const match = value.trim().match(/^(.+?)的(.+)$/);
+  return match?.[2]?.trim() || value.trim();
+}
+
+function creditAccountNameCore(meta?: ParsedItemMeta) {
+  const bank = String(meta?.institutionName ?? "").trim();
+  if (!bank) return "";
+  const last4 = String(meta?.cardNumberMasked ?? "").trim();
+  return `${bank}信用卡${last4 ? `(${last4})` : ""}`;
+}
+
+function creditAccountNameCandidates(accountName: string, meta?: ParsedItemMeta) {
+  const names = new Set<string>();
+  const name = normalizeAccountCell(accountName);
+  if (name) {
+    names.add(name);
+    names.add(stripOwnerPrefix(name));
+  }
+  const core = creditAccountNameCore(meta);
+  if (core) {
+    names.add(core);
+    const ownerName = String(meta?.ownerName ?? "").trim();
+    if (ownerName) names.add(`${ownerName}的${core}`);
+  }
+  return Array.from(names).filter(Boolean);
 }
 
 async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
@@ -129,33 +180,165 @@ async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
   }
 }
 
-async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: { institutionName?: string; cardNumberMasked?: string; creditLimit?: number; billingDay?: number; repaymentDay?: number; }) {
+function normalizeInstitutionKey(value: string) {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+
+async function findInstitution(tx: Db, householdId: string, institutionName?: string) {
+  const name = String(institutionName ?? "").trim();
+  if (!name) return null;
+  const key = normalizeInstitutionKey(name);
+  const institutions = await tx.institution.findMany({
+    where: { householdId },
+    select: { id: true, name: true, shortName: true },
+  });
+  return institutions.find((item) =>
+    normalizeInstitutionKey(item.name) === key ||
+    normalizeInstitutionKey(item.shortName ?? "") === key
+  ) ?? null;
+}
+
+async function ensureBankInstitutionId(tx: Db, householdId: string, institutionName?: string) {
+  const name = String(institutionName ?? "").trim();
+  if (!name) return null;
+  const existing = await findInstitution(tx, householdId, name);
+  if (existing) return existing.id;
+  const created = await tx.institution.create({
+    data: {
+      name,
+      shortName: name,
+      type: "bank",
+      householdId,
+    },
+  });
+  return created.id;
+}
+
+async function resolveUserIdByName(tx: Db, householdId: string, ownerName?: string) {
+  const name = String(ownerName ?? "").trim();
+  if (!name) return null;
+  const user = await tx.user.findFirst({
+    where: { householdId, name },
+    select: { id: true },
+  });
+  return user?.id ?? null;
+}
+
+async function findCreditAccount(tx: Db, householdId: string, accountName: string, meta?: ParsedItemMeta) {
+  const names = creditAccountNameCandidates(accountName, meta);
+  if (names.length > 0) {
+    const byName = await tx.account.findFirst({
+      where: { householdId, name: { in: names } },
+      select: {
+        id: true,
+        kind: true,
+        institutionId: true,
+        userId: true,
+        numberMasked: true,
+        creditLimit: true,
+        billingDay: true,
+        repaymentDay: true,
+      },
+    });
+    if (byName) return byName;
+  }
+
+  const last4 = String(meta?.cardNumberMasked ?? "").trim();
+  if (!last4) return null;
+  const bank = await findInstitution(tx, householdId, meta?.institutionName);
+  const matches = await tx.account.findMany({
+    where: {
+      householdId,
+      kind: AccountKind.bank_credit,
+      numberMasked: last4,
+      ...(bank?.id ? { institutionId: bank.id } : {}),
+    },
+    select: {
+      id: true,
+      kind: true,
+      institutionId: true,
+      userId: true,
+      numberMasked: true,
+      creditLimit: true,
+      billingDay: true,
+      repaymentDay: true,
+    },
+    take: 2,
+  });
+  if (bank?.id) return matches[0] ?? null;
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: string, meta?: ParsedItemMeta) {
+  if (!meta) return;
+  const existing = await tx.account.findUnique({
+    where: { id: accountId },
+    select: {
+      kind: true,
+      institutionId: true,
+      userId: true,
+      numberMasked: true,
+      creditLimit: true,
+      billingDay: true,
+      repaymentDay: true,
+    },
+  });
+  if (!existing) return;
+
+  const data: any = {};
+  if (existing.kind !== AccountKind.bank_credit && (meta.institutionName || meta.cardNumberMasked)) {
+    data.kind = AccountKind.bank_credit;
+    data.debtDirection = "payable";
+  }
+  if (!existing.institutionId && meta.institutionName) {
+    data.institutionId = await ensureBankInstitutionId(tx, householdId, meta.institutionName);
+  }
+  if (!existing.userId && meta.ownerName) {
+    data.userId = await resolveUserIdByName(tx, householdId, meta.ownerName);
+  }
+  if (!existing.numberMasked && meta.cardNumberMasked) data.numberMasked = meta.cardNumberMasked;
+  if (existing.creditLimit == null && meta.creditLimit != null) data.creditLimit = String(meta.creditLimit);
+  if (!existing.billingDay && meta.billingDay) data.billingDay = meta.billingDay;
+  if (!existing.repaymentDay && meta.repaymentDay) data.repaymentDay = meta.repaymentDay;
+
+  const filtered = Object.fromEntries(Object.entries(data).filter(([, value]) => value != null && value !== ""));
+  if (Object.keys(filtered).length > 0) {
+    await tx.account.update({ where: { id: accountId }, data: filtered });
+  }
+}
+
+async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  const isCreditCard = !!(_meta?.institutionName || _meta?.cardNumberMasked);
+  const existingCredit = isCreditCard ? await findCreditAccount(tx, householdId, name, _meta) : null;
+  if (existingCredit?.id) {
+    await updateCreditAccountMeta(tx, householdId, existingCredit.id, _meta);
+    return existingCredit.id;
+  }
+
   const existingId = await resolveAccountId(tx, householdId, name);
-  if (existingId) return existingId;
+  if (existingId) {
+    if (isCreditCard) await updateCreditAccountMeta(tx, householdId, existingId, _meta);
+    return existingId;
+  }
+
+  if (!options.autoCreateAccounts) {
+    throw new Error(`账户不存在：${name}`);
+  }
 
   const groupId = await ensureDefaultAccountGroupId(tx, householdId);
   if (!groupId) return null;
 
-  const isCreditCard = !!_meta?.institutionName;
-  const accountData: {
-    name: string;
-    householdId: string;
-    groupId: string;
-    kind?: "bank_credit";
-    institutionId?: string | null;
-    numberMasked?: string | null;
-    creditLimit?: number | null;
-    billingDay?: number | null;
-    repaymentDay?: number | null;
-  } = { name, householdId, groupId };
+  const accountData: any = { name, householdId, groupId };
 
   if (isCreditCard) {
-    accountData.kind = "bank_credit";
-    accountData.institutionId = null;
+    accountData.kind = AccountKind.bank_credit;
+    accountData.debtDirection = "payable";
+    accountData.institutionId = await ensureBankInstitutionId(tx, householdId, _meta?.institutionName);
+    accountData.userId = await resolveUserIdByName(tx, householdId, _meta?.ownerName);
     accountData.numberMasked = _meta.cardNumberMasked ?? null;
-    accountData.creditLimit = _meta.creditLimit ?? null;
+    accountData.creditLimit = _meta.creditLimit != null ? String(_meta.creditLimit) : null;
     accountData.billingDay = _meta.billingDay ?? null;
     accountData.repaymentDay = _meta.repaymentDay ?? null;
   }
@@ -174,9 +357,27 @@ async function resolveCategoryId(tx: Db, householdId: string, categoryName?: str
   return found?.id ?? null;
 }
 
-async function createTransactionFromItem(tx: Db, householdId: string, item: ParsedItem, defaultAccountName?: string) {
+async function resolveInstitution(tx: Db, householdId: string, institutionName?: string) {
+  const name = String(institutionName ?? "").trim();
+  if (!name) return { id: null as string | null, name: null as string | null };
+  const found = await findInstitution(tx, householdId, name);
+  return { id: found?.id ?? null, name };
+}
+
+function buildNote(item: ParsedItem) {
+  const base = (item.remark ?? item.rawText ?? "").trim();
+  if (item.postedDate && !base.includes("入账日") && !base.includes("记账日")) {
+    return `${base}（入账日 ${item.postedDate}）`;
+  }
+  return base;
+}
+
+async function createTransactionFromItem(tx: Db, householdId: string, item: ParsedItem, defaultAccountName?: string, options: ImportOptions = { autoCreateAccounts: true }) {
   const date = parseDate(item.date);
+  const confirmDate = postedDateForStatement(item, date);
   const meta = item._meta;
+  const counterpartyInstitution = await resolveInstitution(tx, householdId, item.institution);
+  const note = buildNote(item);
 
   if (item.type === "transfer") {
     const from = normalizeAccountCell(item.fromAccount);
@@ -197,11 +398,11 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     const toAccountName = normalizeAccountCell(item.toAccount);
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, householdId, fromAccountName),
-      ensureAccountId(tx, householdId, toAccountName),
+      ensureAccountId(tx, householdId, fromAccountName, undefined, options),
+      ensureAccountId(tx, householdId, toAccountName, undefined, options),
     ]);
 
-    const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, date);
+    const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, confirmDate);
 
     // For investment type, query account kinds to determine fund fields
     let fundCode: string | null = null;
@@ -234,7 +435,10 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
         toAccountId: investAccId || toAccountId || undefined,
         toAccountName: investAccName || toAccountName || "未识别账户",
         householdId,
-        note: item.remark ?? item.rawText,
+        note,
+        confirmDate: item.postedDate ? confirmDate : undefined,
+        counterpartyInstitutionId: counterpartyInstitution.id,
+        counterpartyInstitutionName: counterpartyInstitution.name,
         statementMonth: fromStatementMonth ?? undefined,
         // Include fund fields in create if investment account identified
         ...(displayFundCode && item.type === "investment" ? {
@@ -250,10 +454,10 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
 
   const accountName = pickAccountName(item.account, defaultAccountName);
   const [accountId, categoryId] = await Promise.all([
-    ensureAccountId(tx, householdId, accountName, meta),
+    ensureAccountId(tx, householdId, accountName, meta, options),
     resolveCategoryId(tx, householdId, item.category),
   ]);
-  const statementMonth = await statementMonthForAccountId(tx, accountId, date);
+  const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate);
 
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * amountAbs;
@@ -288,7 +492,10 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       toAccountId: isInvestAccount ? accountId : null,
       toAccountName: isInvestAccount ? investAccountName : null,
       householdId,
-      note: item.remark ?? item.rawText,
+      note,
+      confirmDate: item.postedDate ? confirmDate : undefined,
+      counterpartyInstitutionId: counterpartyInstitution.id,
+      counterpartyInstitutionName: counterpartyInstitution.name,
       statementMonth,
       // Include fund fields in create if investment account
       ...(displayFundCode ? {
@@ -307,7 +514,8 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
-  if (!requireApiKey(req).ok) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser && !requireApiKey(req).ok) {
     return NextResponse.json(
       { ok: false, error: "未授权" },
       { status: 401, headers: corsHeaders() },
@@ -317,12 +525,14 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as null | {
     items?: unknown;
     defaultAccountName?: unknown;
+    autoCreateAccounts?: unknown;
   };
 
   const parse = z
     .object({
       items: z.array(ParsedItemSchema).min(1),
       defaultAccountName: z.string().optional(),
+      autoCreateAccounts: z.boolean().optional().default(true),
     })
     .safeParse(body);
   if (!parse.success) {
@@ -334,6 +544,7 @@ export async function POST(req: Request) {
 
   const items = parse.data.items;
   const defaultAccountName = parse.data.defaultAccountName;
+  const options: ImportOptions = { autoCreateAccounts: parse.data.autoCreateAccounts };
   const { householdId } = await getHouseholdScope();
 
   const created: { id: string }[] = [];
@@ -342,7 +553,7 @@ export async function POST(req: Request) {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     try {
-      const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName);
+      const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName, options);
       created.push({ id: createdRecord.id });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "导入失败";

@@ -14,7 +14,7 @@ import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
 
-import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, SlidersHorizontal, Square, Trash2, Upload } from "lucide-react";
+import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 
@@ -124,8 +124,17 @@ const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
 
 const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
   positions: {
+    fund: 160,
+    units: 64,
     avgCost: 76,
     nav: 118,
+    cost: 78,
+    marketValue: 78,
+    pending: 58,
+    floatingPnL: 76,
+    floatingRate: 64,
+    historical: 78,
+    actions: 88,
   },
   cleared: {},
   details: {
@@ -135,6 +144,10 @@ const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
 
 function minFundColWidth(table: FundTableKey, key: string) {
   return FUND_COL_MIN_WIDTHS[table]?.[key] ?? 44;
+}
+
+function minFundTableWidth(table: FundTableKey, cols: readonly (readonly [string, number])[]) {
+  return cols.reduce((sum, [key]) => sum + minFundColWidth(table, key), 0);
 }
 
 
@@ -195,7 +208,6 @@ export function FundShell(props: Props) {
   const [regularPlanMenu, setRegularPlanMenu] = useState<any | null>(null);
   const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
   const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
-  const regularPlanClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
@@ -338,15 +350,20 @@ export function FundShell(props: Props) {
   ) => {
     const baseWidths = cols.map(([key, fallback]) => [key, colWidth(table, key, fallback)] as const);
     const baseTotal = baseWidths.reduce((sum, [, width]) => sum + width, 0);
-    const targetWidth = Math.max(minTableWidth, viewportWidth || 0, baseTotal);
+    const viewport = viewportWidth || 0;
+    const targetWidth = Math.max(minTableWidth, viewport);
     const scale = baseTotal > 0 && baseTotal < targetWidth ? targetWidth / baseTotal : 1;
-    const colWidths = Object.fromEntries(baseWidths.map(([key, width]) => [key, width * scale]));
+    const compressScale = baseTotal > 0 && baseTotal > targetWidth ? targetWidth / baseTotal : 1;
+    const colWidths = Object.fromEntries(baseWidths.map(([key, width]) => [
+      key,
+      Math.max(minFundColWidth(table, key), width * Math.min(scale, compressScale)),
+    ]));
 
     return { tableWidth: targetWidth, colWidths };
   }, [colWidth]);
 
   const positionLayout = useMemo(
-    () => tableLayout("positions", POSITION_COLS, 1220, tableViewportWidths.summary),
+    () => tableLayout("positions", POSITION_COLS, minFundTableWidth("positions", POSITION_COLS), tableViewportWidths.summary),
     [tableLayout, tableViewportWidths.summary],
   );
   const clearedLayout = useMemo(
@@ -960,34 +977,6 @@ export function FundShell(props: Props) {
     }
   }, [loadRegularPlans, regularPlanActionBusy]);
 
-  const toggleRegularPlanStatus = useCallback((plan: any) => {
-    if (!plan || regularPlanActionBusy) return;
-    if (plan.status === "active") {
-      void updateRegularPlanStatus(plan, "pause");
-    } else if (plan.status === "paused") {
-      void updateRegularPlanStatus(plan, "resume");
-    }
-  }, [regularPlanActionBusy, updateRegularPlanStatus]);
-
-  const clickRegularPlanButton = useCallback((plan: any) => {
-    if (regularPlanClickTimerRef.current) {
-      clearTimeout(regularPlanClickTimerRef.current);
-      regularPlanClickTimerRef.current = null;
-    }
-    regularPlanClickTimerRef.current = setTimeout(() => {
-      regularPlanClickTimerRef.current = null;
-      toggleRegularPlanStatus(plan);
-    }, 220);
-  }, [toggleRegularPlanStatus]);
-
-  const doubleClickRegularPlanButton = useCallback((plan: any) => {
-    if (regularPlanClickTimerRef.current) {
-      clearTimeout(regularPlanClickTimerRef.current);
-      regularPlanClickTimerRef.current = null;
-    }
-    setEditingRegularPlan(plan);
-  }, []);
-
   const regularPlanByFundCode = useMemo(() => {
     const map = new Map<string, any>();
     for (const plan of regularPlans) {
@@ -1575,13 +1564,13 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div ref={summaryTableViewportRef} className="flex-1 min-h-0 overflow-auto">
+        <div ref={summaryTableViewportRef} className="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
 
           {!showCleared ? (
 
             <table
-              className="min-w-[1220px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-              style={{ width: positionLayout.tableWidth }}
+              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+              style={{ minWidth: minFundTableWidth("positions", POSITION_COLS), width: positionLayout.tableWidth }}
             >
               <colgroup>
                 {POSITION_COLS.map(([key, fallback]) => (
@@ -1703,39 +1692,79 @@ export function FundShell(props: Props) {
                             (() => {
                               const plan = regularPlanByFundCode.get(p.fundCode);
                               const isPaused = plan.status === "paused";
+                              const menuOpen = regularPlanMenu?.id === plan.id;
                               return (
-                                <button
-                                  type="button"
-                                  disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    clickRegularPlanButton(plan);
-                                  }}
-                                  onDoubleClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    doubleClickRegularPlanButton(plan);
-                                  }}
-                                  className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
-                                    isPaused
-                                      ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-                                      : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
-                                  }`}
-                                  title={isPaused ? "当前已暂停，单击继续，双击编辑" : "当前执行中，单击暂停，双击编辑"}
-                                >
-                                  <CalendarSync className="h-3.5 w-3.5" />
-                                  {isPaused ? (
-                                    <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
-                                      <span className="h-1 w-[1px] rounded-full bg-white" />
-                                      <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
-                                    </span>
-                                  ) : (
-                                    <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
-                                      <span className="ml-[1px] h-0 w-0 border-y-[2px] border-l-[3px] border-y-transparent border-l-white" />
-                                    </span>
-                                  )}
-                                </button>
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      setRegularPlanMenu(menuOpen ? null : plan);
+                                    }}
+                                    className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
+                                      isPaused
+                                        ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+                                        : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
+                                    }`}
+                                    title={isPaused ? "当前已暂停，点击选择继续或编辑" : "当前执行中，点击选择暂停或编辑"}
+                                    aria-haspopup="menu"
+                                    aria-expanded={menuOpen}
+                                  >
+                                    <CalendarSync className="h-3.5 w-3.5" />
+                                    {isPaused ? (
+                                      <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
+                                        <span className="h-1 w-[1px] rounded-full bg-white" />
+                                        <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
+                                      </span>
+                                    ) : (
+                                      <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
+                                        <span className="ml-[1px] h-0 w-0 border-y-[2px] border-l-[3px] border-y-transparent border-l-white" />
+                                      </span>
+                                    )}
+                                  </button>
+                                  {menuOpen ? (
+                                    <div
+                                      className="absolute right-0 top-8 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                                      role="menu"
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      {plan.status === "active" ? (
+                                        <button
+                                          type="button"
+                                          disabled={regularPlanActionBusy}
+                                          onClick={() => updateRegularPlanStatus(plan, "pause")}
+                                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                                          role="menuitem"
+                                        >
+                                          <Pause className="h-3.5 w-3.5" />暂停
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={regularPlanActionBusy}
+                                          onClick={() => updateRegularPlanStatus(plan, "resume")}
+                                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                                          role="menuitem"
+                                        >
+                                          <Play className="h-3.5 w-3.5" />继续
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingRegularPlan(plan);
+                                          setRegularPlanMenu(null);
+                                        }}
+                                        className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
+                                        role="menuitem"
+                                      >
+                                        <CalendarSync className="h-3.5 w-3.5" />编辑
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
                               );
                             })()
                           ) : null}
@@ -1952,73 +1981,6 @@ export function FundShell(props: Props) {
           }}
         />
       ) : null}
-
-      {regularPlanMenu ? (
-        <div className="fixed inset-0 z-[900] flex items-center justify-center bg-slate-950/30 p-4 backdrop-blur-[2px]" onClick={() => setRegularPlanMenu(null)}>
-          <div className="w-full max-w-sm overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-slate-800">{regularPlanMenu.fundCode} {regularPlanMenu.fundName || ""}</div>
-                <div className="mt-0.5 text-xs text-slate-500">定投计划</div>
-              </div>
-              <button type="button" onClick={() => setRegularPlanMenu(null)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-600 hover:bg-slate-50">
-                关闭
-              </button>
-            </div>
-            <div className="space-y-2 p-4">
-              <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
-                <div>状态：<span className="text-slate-700">{regularPlanMenu.status === "active" ? "执行中" : regularPlanMenu.status === "paused" ? "已暂停" : regularPlanMenu.status}</span></div>
-                <div>金额：<span className="text-slate-700">{formatMoney(Number(regularPlanMenu.amount ?? 0))}</span></div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 pt-2">
-                {regularPlanMenu.status === "active" ? (
-                  <button
-                    type="button"
-                    disabled={regularPlanActionBusy}
-                    onClick={() => updateRegularPlanStatus(regularPlanMenu, "pause")}
-                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 text-sm text-amber-700 hover:bg-amber-100 disabled:opacity-50"
-                  >
-                    <Pause className="h-4 w-4" />暂停
-                  </button>
-                ) : regularPlanMenu.status === "paused" ? (
-                  <button
-                    type="button"
-                    disabled={regularPlanActionBusy}
-                    onClick={() => updateRegularPlanStatus(regularPlanMenu, "resume")}
-                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                  >
-                    <Play className="h-4 w-4" />恢复
-                  </button>
-                ) : (
-                  <button type="button" disabled className="inline-flex h-9 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-sm text-slate-400">
-                    不可操作
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={regularPlanActionBusy || regularPlanMenu.status === "stopped" || regularPlanMenu.status === "completed"}
-                  onClick={() => updateRegularPlanStatus(regularPlanMenu, "stop")}
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
-                >
-                  <Square className="h-4 w-4" />停止
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingRegularPlan(regularPlanMenu);
-                  setRegularPlanMenu(null);
-                }}
-                className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 text-sm text-blue-700 hover:bg-blue-100"
-              >
-                <CalendarSync className="h-4 w-4" />编辑计划
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-
 
       {/* 交易明细 */}
 

@@ -37,6 +37,8 @@ type CreditBillSummaryTableProps = {
   hideZeroBills: boolean;
   hideSettledBills: boolean;
   showRecentBillCycles: boolean;
+  className?: string;
+  fillHeight?: boolean;
 };
 
 function clampPage(page: number, totalPages: number) {
@@ -62,6 +64,8 @@ export function CreditBillSummaryTable({
   hideZeroBills,
   hideSettledBills,
   showRecentBillCycles,
+  className,
+  fillHeight = false,
 }: CreditBillSummaryTableProps) {
   const router = useRouter();
   const [localRows, setLocalRows] = useState(rows);
@@ -188,7 +192,7 @@ export function CreditBillSummaryTable({
   const canNext = safePage < totalPages;
 
   return (
-    <div className="panel-surface overflow-hidden">
+    <div className={["panel-surface overflow-hidden", fillHeight ? "flex h-full min-h-0 flex-col" : "", className ?? ""].filter(Boolean).join(" ")}>
       <div className="panel-header">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-800">账单列表</span>
@@ -271,7 +275,7 @@ export function CreditBillSummaryTable({
           </button>
         </div>
       </div>
-      <div className="overflow-auto">
+      <div className={fillHeight ? "min-h-0 flex-1 overflow-auto" : "overflow-auto"}>
         <table className="w-full table-fixed border-separate border-spacing-0">
           <thead className="sticky top-0 z-10">
             <tr className="bg-white">
