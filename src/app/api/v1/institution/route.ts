@@ -9,18 +9,18 @@ export async function POST(req: NextRequest) {
   const type = typeof body?.type === "string" ? body.type.trim() : "bank";
 
   if (!name) {
-    return NextResponse.json({ ok: false, error: "机构名称不能为空" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "往来对象名称不能为空" }, { status: 400 });
   }
 
   const { hidFilter } = await getHouseholdScope();
 
   const existing = await prisma.institution.findFirst({ where: { name, ...hidFilter } });
   if (existing) {
-    return NextResponse.json({ ok: false, error: `机构“${name}”已存在` }, { status: 409 });
+    return NextResponse.json({ ok: false, error: `往来对象“${name}”已存在` }, { status: 409 });
   }
 
-  const validTypes = ["bank", "insurance", "brokerage", "payment", "ewallet", "other"];
-  const safeType = validTypes.includes(type) ? type : "bank";
+  const validTypes = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"];
+  const safeType = validTypes.includes(type) ? type : "organization";
 
   const created = await prisma.institution.create({
     data: { name, shortName: shortName || null, type: safeType, ...hidFilter },

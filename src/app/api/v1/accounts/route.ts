@@ -33,43 +33,6 @@ function parseDay(raw: unknown) {
   return n;
 }
 
-function normalizeCounterpartyType(type: string | null | undefined) {
-  if (type === "debt") return "organization";
-  if (["family_member", "person", "organization", "other"].includes(type ?? "")) return type;
-  return "other";
-}
-
-async function resolveCounterpartyId(rawId: unknown, householdId: string) {
-  const requestedId = String(rawId ?? "").trim() || null;
-  if (!requestedId) return null;
-
-  const counterparty = await prisma.counterparty.findFirst({ where: { id: requestedId, householdId } });
-  if (counterparty) return counterparty.id;
-
-  const legacyInstitution = await prisma.institution.findFirst({ where: { id: requestedId, householdId } });
-  if (!legacyInstitution || !["debt", "family_member", "person", "organization", "other"].includes(legacyInstitution.type ?? "")) {
-    return null;
-  }
-
-  const migrated = await prisma.counterparty.upsert({
-    where: { id: legacyInstitution.id },
-    update: {
-      name: legacyInstitution.name,
-      shortName: legacyInstitution.shortName,
-      type: normalizeCounterpartyType(legacyInstitution.type),
-      householdId,
-    },
-    create: {
-      id: legacyInstitution.id,
-      name: legacyInstitution.name,
-      shortName: legacyInstitution.shortName,
-      type: normalizeCounterpartyType(legacyInstitution.type),
-      householdId,
-    },
-  });
-  return migrated.id;
-}
-
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -89,10 +52,7 @@ export async function POST(req: NextRequest) {
     const name = String(body.name ?? "").trim();
     const kind = (typeof body?.kind === "string" ? body.kind.trim() : "other") as any;
     const requestedGroupId = String(body.groupId ?? "").trim() || null;
-    const requestedInstitutionId = kind === "loan" ? null : String(body.institutionId ?? "").trim() || null;
-    const requestedCounterpartyId = kind === "loan"
-      ? String(body.counterpartyId ?? body.institutionId ?? "").trim() || null
-      : null;
+    const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
@@ -110,10 +70,6 @@ export async function POST(req: NextRequest) {
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
-    const counterpartyId = requestedCounterpartyId
-      ? await resolveCounterpartyId(requestedCounterpartyId, householdId)
-      : null;
-    if (requestedCounterpartyId && !counterpartyId) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
 
     const account = await prisma.account.create({
       data: {
@@ -123,7 +79,6 @@ export async function POST(req: NextRequest) {
         currency,
         groupId: ensuredGroup.id,
         institutionId: institution?.id ?? null,
-        counterpartyId,
         householdId,
         isActive: true,
         billingDay: isCreditLike ? (parseDay(body.billingDay) ?? null) : null,
@@ -138,7 +93,6 @@ export async function POST(req: NextRequest) {
       include: {
         AccountGroup: { select: { id: true, name: true } },
         Institution: { select: { id: true, name: true, shortName: true, type: true } },
-        Counterparty: { select: { id: true, name: true, shortName: true, type: true } },
       },
     });
     // Client-side handles page refresh
@@ -167,34 +121,13 @@ export async function PUT(req: NextRequest) {
     if (body.kind !== undefined) data.kind = String(body.kind).trim();
     if (body.currency !== undefined) data.currency = String(body.currency ?? "CNY").trim() || "CNY";
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
+    if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
 
     if (body.fundUnitsDecimals !== undefined) {
       data.fundUnitsDecimals = normalizeFundUnitsDecimals(body.fundUnitsDecimals ?? existing.fundUnitsDecimals);
     }
 
     const nextKind = String(data.kind ?? existing.kind);
-    if (nextKind === "loan") {
-      const counterpartyInput = body.counterpartyId !== undefined
-        ? body.counterpartyId
-        : body.institutionId !== undefined
-          ? body.institutionId
-          : existing.kind === "loan"
-            ? existing.counterpartyId
-            : null;
-      const counterpartyId = await resolveCounterpartyId(counterpartyInput, householdId);
-      if (counterpartyInput && !counterpartyId) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
-      data.counterpartyId = counterpartyId;
-      data.institutionId = null;
-    } else {
-      data.counterpartyId = null;
-      if (body.institutionId !== undefined || existing.kind === "loan") {
-        const institutionId = String(body.institutionId ?? "").trim() || null;
-        const institution = institutionId ? await prisma.institution.findFirst({ where: { id: institutionId, householdId } }) : null;
-        if (institutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
-        data.institutionId = institution?.id ?? null;
-      }
-    }
-
     data.debtDirection = nextKind === "bank_credit" ? "payable" : null;
     if (nextKind === "bank_credit") {
       data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
@@ -353,7 +286,6 @@ export async function GET(req: Request) {
     include: {
       AccountGroup: { select: { name: true } },
       Institution: { select: { name: true } },
-      Counterparty: { select: { id: true, name: true } },
     },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
@@ -368,11 +300,7 @@ export async function GET(req: Request) {
       debtDirection: account.debtDirection,
       currency: account.currency,
       groupName: account.AccountGroup?.name ?? "",
-      institutionName: account.kind === "loan"
-        ? account.Counterparty?.name ?? account.Institution?.name ?? ""
-        : account.Institution?.name ?? "",
-      counterpartyId: account.counterpartyId,
-      counterpartyName: account.Counterparty?.name ?? "",
+      institutionName: account.Institution?.name ?? "",
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 

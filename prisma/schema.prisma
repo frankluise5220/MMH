@@ -33,7 +33,6 @@ model Account {
   numberMasked                                               String?
   householdId                                                String
   institutionId                                              String?
-  counterpartyId                                             String?
   userId                                                     String?
   groupId                                                    String
   createdAt                                                  DateTime            @default(now())
@@ -45,7 +44,6 @@ model Account {
   fundUnitsDecimals                                          Int                 @default(3)
   FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
-  Counterparty                                               Counterparty?       @relation(fields: [counterpartyId], references: [id], onDelete: SetNull)
   Household                                                  Household           @relation(fields: [householdId], references: [id])
   Institution                                                Institution?        @relation(fields: [institutionId], references: [id])
   User                                                       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -62,7 +60,6 @@ model Account {
   transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
   transactions_toAccountIdToAccount                          TxRecord[]          @relation("transactions_toAccountIdToAccount")
 
-  @@index([counterpartyId])
   @@index([householdId, kind])
   @@index([householdId, name])
 }
@@ -334,7 +331,6 @@ model Household {
   Account           Account[]
   AccountGroup      AccountGroup[]
   Category          Category[]
-  Counterparty      Counterparty[]
   EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
   ImportBatch       ImportBatch[]
@@ -370,20 +366,6 @@ model Institution {
   InsuranceProductAsPolicyholder InsuranceProduct[] @relation("InsuranceProductPolicyholder")
   InsuranceProductAsInsured InsuranceProduct[] @relation("InsuranceProductInsured")
   Household   Household? @relation(fields: [householdId], references: [id])
-
-  @@index([householdId, name])
-}
-
-model Counterparty {
-  id          String     @id @default(cuid())
-  name        String
-  shortName   String?
-  type        String?
-  householdId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @default(now()) @updatedAt
-  Account     Account[]
-  Household   Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@index([householdId, name])
 }

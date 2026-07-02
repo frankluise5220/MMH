@@ -11,8 +11,7 @@ import {
 const navItems = [
   { href: "/settings/ledgers", label: "账簿", icon: BookOpen },
   { href: "/settings/accounts", label: "账户", icon: Users },
-  { href: "/settings/institutions", label: "机构", icon: Building2 },
-  { href: "/settings/counterparties", label: "往来对象", icon: Users },
+  { href: "/settings/institutions", label: "往来", icon: Building2 },
   { href: "/settings/insurance-products", label: "保险产品", icon: Shield },
   { href: "/settings/categories", label: "收支类别", icon: Tag },
   { href: "/settings/tags", label: "标签", icon: Hash },

@@ -15,6 +15,9 @@ type Institution = {
 };
 
 const typeLabelMap: Record<string, string> = {
+  family_member: "家庭成员",
+  person: "往来人员",
+  organization: "往来机构",
   bank: "银行",
   insurance: "保险公司",
   brokerage: "证券",
@@ -23,7 +26,6 @@ const typeLabelMap: Record<string, string> = {
   debt: "债权债务",
   other: "其他",
 };
-const REAL_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
 
 export function SettingsInstitutionsClient({
   institutions: initialInstitutions,
@@ -40,9 +42,7 @@ export function SettingsInstitutionsClient({
 
   const refreshList = useCallback(async () => {
     const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
-    if (data?.institutions) {
-      setInstitutions((data.institutions as Institution[]).filter((item) => REAL_INSTITUTION_TYPES.has(item.type ?? "other")));
-    }
+    if (data?.institutions) setInstitutions(data.institutions as Institution[]);
   }, []);
 
   function handleCreated() {
@@ -62,7 +62,7 @@ export function SettingsInstitutionsClient({
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div className="text-sm font-semibold text-slate-800">机构列表</div>
+          <div className="text-sm font-semibold text-slate-800">往来对象列表</div>
           <div className="tabular-nums text-xs text-slate-500">{institutions.length} 项</div>
         </div>
         <div className="overflow-auto">
@@ -84,13 +84,13 @@ export function SettingsInstitutionsClient({
                   <td className="border-b border-slate-100 px-3 py-2">
                     <div className="flex items-center gap-1.5">
                       <InstitutionEditButton institution={item} action={updateAction} />
-                      <SettingsDeleteButton label={`机构：${item.name}`} entity="institution" id={item.id} />
+                      <SettingsDeleteButton label={`往来对象：${item.name}`} entity="institution" id={item.id} />
                     </div>
                   </td>
                 </tr>
               )) : (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={4}>暂无机构</td>
+                  <td className="px-4 py-6 text-slate-500" colSpan={4}>暂无往来对象</td>
                 </tr>
               )}
             </tbody>

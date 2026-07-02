@@ -9,7 +9,6 @@ export type AccountDisplaySource = {
   groupId?: string | null;
   investProductType?: string | null;
   Institution?: { name: string | null; shortName?: string | null } | null;
-  Counterparty?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
 };
 
@@ -130,10 +129,7 @@ export function buildAccountDisplayOption(
   account: AccountDisplaySource,
   creditCardLabelTemplateOrMode: string | CreditCardLabelMode = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
 ): AccountDisplayOption {
-  const displayInstitution = account.kind === "loan"
-    ? (account.Counterparty ?? account.Institution)
-    : account.Institution;
-  const institutionName = formatDisplayInstitutionName(displayInstitution, true);
+  const institutionName = formatDisplayInstitutionName(account.Institution, true);
   const groupId = account.groupId ?? account.AccountGroup?.id ?? "";
   const groupName = account.AccountGroup?.name?.trim() ?? "";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -145,7 +141,7 @@ export function buildAccountDisplayOption(
     account.kind === "bank_credit"
       ? formatCreditCardDisplayName({
           accountName: account.name,
-          institution: displayInstitution,
+          institution: account.Institution,
           numberMasked: account.numberMasked,
           template: creditCardLabelTemplate,
         })
@@ -155,7 +151,7 @@ export function buildAccountDisplayOption(
 
   const selectorLabel = formatAccountSelectorLabel({
     accountName: account.name,
-    institution: displayInstitution,
+    institution: account.Institution,
     numberMasked: account.numberMasked,
   });
   const selectorCoreLabel = formatAccountSelectorCoreLabel({

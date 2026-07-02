@@ -62,7 +62,6 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "categories", value: payload.counts.categories },
     { field: "tags", value: payload.counts.tags },
     { field: "institutions", value: payload.counts.institutions },
-    { field: "counterparties", value: payload.counts.counterparties },
     { field: "emailAccounts", value: payload.counts.emailAccounts },
     { field: "regularInvestPlans", value: payload.counts.regularInvestPlans },
   ];
@@ -153,7 +152,6 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     users,
     accountGroups,
     institutions,
-    counterparties,
     categories,
     tags,
     accounts,
@@ -166,7 +164,6 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.accountGroup.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
     prisma.institution.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
-    prisma.counterparty.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
     prisma.category.findMany({ where: { householdId }, orderBy: [{ type: "asc" }, { name: "asc" }] }),
     prisma.tag.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
     prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -243,7 +240,6 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
       categories: categories.length,
       tags: tags.length,
       institutions: institutions.length,
-      counterparties: counterparties.length,
       emailAccounts: emailAccounts.length,
       regularInvestPlans: regularInvestPlans.length,
     },
@@ -253,7 +249,6 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
       userSettings,
       accountGroups,
       institutions,
-      counterparties,
       categories,
       tags,
       accounts,
@@ -285,7 +280,6 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["UserSettings", sheetRows(payload.data.userSettings)],
     ["AccountGroups", sheetRows(payload.data.accountGroups)],
     ["Institutions", sheetRows(payload.data.institutions)],
-    ["Counterparties", sheetRows(payload.data.counterparties)],
     ["Categories", sheetRows(payload.data.categories)],
     ["Tags", sheetRows(payload.data.tags)],
     ["Accounts", sheetRows(payload.data.accounts)],
@@ -337,7 +331,6 @@ export function parseBackupPayload(raw: unknown) {
       userSettings: ensureArray(data.userSettings ?? [], "data.userSettings"),
       accountGroups: ensureArray(data.accountGroups ?? [], "data.accountGroups"),
       institutions: ensureArray(data.institutions ?? [], "data.institutions"),
-      counterparties: ensureArray(data.counterparties ?? [], "data.counterparties"),
       categories: ensureArray(data.categories ?? [], "data.categories"),
       tags: ensureArray(data.tags ?? [], "data.tags"),
       accounts: ensureArray(data.accounts ?? [], "data.accounts"),
@@ -380,7 +373,6 @@ export async function restoreHouseholdBackup(
   const importedUserSet = new Set(importedUsers);
   const importedAccountGroups = new Set(data.accountGroups.map((item) => String(item.id)));
   const importedInstitutions = new Set(data.institutions.map((item) => String(item.id)));
-  const importedCounterparties = new Set(data.counterparties.map((item) => String(item.id)));
   const importedFundQueryApis = new Set(data.fundQueryApis.map((item) => String(item.id)));
   const importedAccounts = new Set(data.accounts.map((item) => String(item.id)));
   const importedCategories = new Set(data.categories.map((item) => String(item.id)));
@@ -433,7 +425,6 @@ export async function restoreHouseholdBackup(
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });
     await tx.category.deleteMany({ where: { householdId } });
-    await tx.counterparty.deleteMany({ where: { householdId } });
     await tx.institution.deleteMany({ where: { householdId } });
     await tx.accountGroup.deleteMany({ where: { householdId } });
 
@@ -516,20 +507,6 @@ export async function restoreHouseholdBackup(
       });
     }
 
-    if (data.counterparties.length > 0) {
-      await tx.counterparty.createMany({
-        data: data.counterparties.map((item) => ({
-          id: String(item.id),
-          name: String(item.name ?? ""),
-          shortName: item.shortName == null ? null : String(item.shortName),
-          type: item.type == null ? null : String(item.type),
-          householdId,
-          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
-          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-        })),
-      });
-    }
-
     if (data.categories.length > 0) {
       await tx.category.createMany({
         data: data.categories.map((item) => ({
@@ -591,8 +568,6 @@ export async function restoreHouseholdBackup(
           householdId,
           institutionId:
             item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null,
-          counterpartyId:
-            item.counterpartyId && importedCounterparties.has(String(item.counterpartyId)) ? String(item.counterpartyId) : null,
           userId: item.userId && importedUserSet.has(String(item.userId)) ? String(item.userId) : null,
           groupId:
             item.groupId && importedAccountGroups.has(String(item.groupId))
@@ -915,7 +890,6 @@ export async function restoreHouseholdBackup(
       categories: data.categories.length,
       tags: data.tags.length,
       institutions: data.institutions.length,
-      counterparties: data.counterparties.length,
       emailAccounts: data.emailAccounts.length,
       regularInvestPlans: data.regularInvestPlans.length,
     },

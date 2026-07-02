@@ -34,7 +34,7 @@ async function getSidebarData() {
 
   const accounts = await prisma.account.findMany({
     where: { isPlaceholder: { not: true }, name: { not: "未指定账户" }, ...hidFilter, isActive: true },
-    include: { AccountGroup: true, Institution: true, Counterparty: true },
+    include: { AccountGroup: true, Institution: true },
     orderBy: [{ name: "asc" }],
   });
 
@@ -90,7 +90,6 @@ async function getSidebarData() {
       groupId: account.groupId,
       investProductType: account.investProductType,
       Institution: account.Institution,
-      Counterparty: account.Counterparty,
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
 

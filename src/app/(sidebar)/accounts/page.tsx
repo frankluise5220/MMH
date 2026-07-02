@@ -29,7 +29,7 @@ const KIND_LABEL: Record<string, string> = {
   cash: "现金",
   deposit: "存款",
   bank_credit: "信用卡",
-  loan: "往来款",
+  loan: "债务/债权",
   other: "其他",
 };
 const KIND_ICON = {
@@ -76,7 +76,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: [...MONEY_KINDS, ...CREDIT_KINDS] }, ...hidFilter },
-    include: { AccountGroup: true, Institution: true, Counterparty: true },
+    include: { AccountGroup: true, Institution: true },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
@@ -107,7 +107,6 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         groupId: account.groupId,
         investProductType: account.investProductType,
         Institution: account.Institution,
-        Counterparty: account.Counterparty,
         AccountGroup: account.AccountGroup,
       }, creditCardLabelTemplate);
       return {
@@ -130,7 +129,6 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         groupId: account.groupId,
         investProductType: account.investProductType,
         Institution: account.Institution,
-        Counterparty: account.Counterparty,
         AccountGroup: account.AccountGroup,
       }, creditCardLabelTemplate);
       const cycle = cycleByAccountId.get(account.id);
@@ -176,7 +174,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">资金账户</div>
-            <div className="text-xs text-slate-500">现金、借记卡、信用卡和往来款</div>
+            <div className="text-xs text-slate-500">现金、借记卡、信用卡和债务/债权</div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <TopEntryLauncher defaultAction={tab === "credit" ? "transfer" : "transaction"} />
@@ -192,13 +190,13 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
             <div className="space-y-2">
               <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Money Accounts</div>
               <h1 className="text-2xl font-semibold tracking-tight text-slate-900">资金账户</h1>
-              <p className="text-sm text-slate-500">现金、借记卡、电子钱包、信用卡和往来款集中在这里；投资账户继续放在投资页。</p>
+              <p className="text-sm text-slate-500">现金、借记卡、电子钱包、信用卡和债务/债权集中在这里；投资账户继续放在投资页。</p>
             </div>
             <div className="grid grid-cols-2 gap-3 md:min-w-[420px]">
               <SummaryCard label="可用资产" value={formatMoneyYuan(assetTotal)} />
               <SummaryCard label="信用卡已用" value={formatMoneyYuan(creditUsedTotal)} />
               <SummaryCard label="信用卡可用" value={formatMoneyYuan(creditAvailableTotal)} />
-              <SummaryCard label="往来款" value={formatMoneyYuan(loanTotal)} />
+              <SummaryCard label="债务/债权" value={formatMoneyYuan(loanTotal)} />
             </div>
           </div>
           <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-3">

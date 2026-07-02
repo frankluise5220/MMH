@@ -29,10 +29,7 @@ async function updateInstitutionRow(formData: FormData) {
 
 export default async function SettingsInstitutionsPage() {
   const { hidFilter } = await getHouseholdScope();
-  const institutions = await prisma.institution.findMany({
-    where: { ...hidFilter, type: { in: ["bank", "insurance", "brokerage", "payment", "ewallet", "other"] } },
-    orderBy: [{ type: "asc" }, { name: "asc" }],
-  });
+  const institutions = await prisma.institution.findMany({ where: hidFilter, orderBy: [{ type: "asc" }, { name: "asc" }] });
 
   return (
     <SettingsInstitutionsClient

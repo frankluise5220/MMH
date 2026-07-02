@@ -2,12 +2,10 @@
 
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
-export type SettingsCounterparty = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsAccountData = {
   accounts: unknown[];
   groups: SettingsAccountGroup[];
   institutions: SettingsInstitution[];
-  counterparties: SettingsCounterparty[];
 };
 export type SettingsTag = { id: string; name: string; color: string | null };
 
@@ -45,7 +43,6 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],
-        counterparties: data.counterparties || [],
       };
       cache.set(ACCOUNT_DATA_KEY, { value, updatedAt: Date.now() });
       return value;

@@ -26,10 +26,10 @@ export async function GET(request: Request) {
     const includeBalances = request.url ? new URL(request.url).searchParams.get("balances") !== "false" : true;
     const { hidFilter } = await getHouseholdScope();
 
-    const [accounts, groups, institutions, counterparties, users] = await Promise.all([
+    const [accounts, groups, institutions, users] = await Promise.all([
       prisma.account.findMany({
         where: { isPlaceholder: { not: true }, ...hidFilter },
-        include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
+        include: { Institution: true, AccountGroup: true, AccountAlias: true },
         orderBy: [{ isActive: "desc" }, { name: "asc" }],
       }),
       prisma.accountGroup.findMany({
@@ -37,12 +37,11 @@ export async function GET(request: Request) {
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       }),
       prisma.institution.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
-      prisma.counterparty.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
       prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
     ]);
 
     if (!includeBalances) {
-      return NextResponse.json({ ok: true, accounts: accounts.map(normalizeReturnedAccountKind), groups, institutions, counterparties, users });
+      return NextResponse.json({ ok: true, accounts: accounts.map(normalizeReturnedAccountKind), groups, institutions, users });
     }
 
     // For investment accounts, use market value instead of raw balance
@@ -98,7 +97,7 @@ export async function GET(request: Request) {
       return displayBalance == null ? a : { ...a, balance: displayBalance };
     });
 
-    return NextResponse.json({ ok: true, accounts: enrichedAccounts.map(normalizeReturnedAccountKind), groups, institutions, counterparties, users });
+    return NextResponse.json({ ok: true, accounts: enrichedAccounts.map(normalizeReturnedAccountKind), groups, institutions, users });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "查询失败" },

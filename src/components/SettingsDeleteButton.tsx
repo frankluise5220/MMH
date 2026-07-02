@@ -12,7 +12,7 @@ export function SettingsDeleteButton({
   refresh,
 }: {
   label: string;
-  entity: "accountGroup" | "account" | "institution" | "counterparty" | "category";
+  entity: "accountGroup" | "account" | "institution" | "category";
   id: string;
   refresh?: boolean;
 }) {
@@ -36,7 +36,7 @@ export function SettingsDeleteButton({
         window.alert(data?.error ?? "删除失败");
         return;
       }
-      if (entity === "account" || entity === "accountGroup" || entity === "institution" || entity === "counterparty") {
+      if (entity === "account" || entity === "accountGroup" || entity === "institution") {
         invalidateSettingsAccountData();
       }
       if (refresh !== false) {

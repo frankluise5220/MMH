@@ -31,8 +31,8 @@ function directionOf(account: { kind: AccountKind; balance: unknown }): "payable
 
 function kindLabel(kind: AccountKind) {
   if (kind === AccountKind.bank_credit) return "信用卡";
-  if (kind === AccountKind.loan) return "往来款";
-  return "往来款账户";
+  if (kind === AccountKind.loan) return "借入/借出";
+  return "借入借出账户";
 }
 
 function dayLabel(day: number | null) {
@@ -49,7 +49,7 @@ export default async function LiabilitiesPage() {
   const { hidFilter } = await getHouseholdScope();
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: DEBT_KINDS }, ...hidFilter },
-    include: { AccountGroup: true, Institution: true, Counterparty: true },
+    include: { AccountGroup: true, Institution: true },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
@@ -64,12 +64,11 @@ export default async function LiabilitiesPage() {
       numberMasked: account.numberMasked,
       groupId: account.groupId,
       Institution: account.Institution,
-      Counterparty: account.Counterparty,
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
-    const institutionName = display.institutionName || "未设置往来对象";
+    const institutionName = display.institutionName || "未设置往来机构/人员";
     const debtPersonKey = institutionName
-      ? `counterparty:${account.counterpartyId ?? account.institutionId ?? institutionName}`
+      ? `institution:${account.institutionId ?? institutionName}`
       : `account:${account.id}`;
     return {
       id: account.id,
@@ -93,6 +92,8 @@ export default async function LiabilitiesPage() {
   const receivableTotal = rows.filter((row) => row.direction === "receivable").reduce((sum, row) => sum + row.amount, 0);
   const creditTotal = rows.filter((row) => row.kind === AccountKind.bank_credit).reduce((sum, row) => sum + row.amount, 0);
   const loanTotal = rows.filter((row) => row.kind === AccountKind.loan && row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
+  const netDebt = payableTotal - receivableTotal;
+
   const institutionRows = Array.from(
     rows.reduce((map, row) => {
       const current = map.get(row.institutionName) ?? {
@@ -115,11 +116,11 @@ export default async function LiabilitiesPage() {
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">往来款</div>
-            <div className="text-xs text-slate-500">往来对象、余额列表和明细</div>
+            <div className="text-sm font-semibold text-slate-900">借入借出</div>
+            <div className="text-xs text-slate-500">往来机构/人员、余额列表和明细</div>
           </div>
           <Link href="/settings/accounts" className="secondary-button h-8 px-3 text-xs">
-            管理往来款账户
+            管理借入借出账户
           </Link>
         </div>
       </header>
@@ -131,7 +132,7 @@ export default async function LiabilitiesPage() {
             <SummaryCard label="借入余额" value={payableTotal} intent="payable" />
             <SummaryCard label="借出余额" value={receivableTotal} intent="receivable" />
             <SummaryCard label="信用卡" value={creditTotal} intent="payable" />
-            <SummaryCard label="往来款" value={loanTotal} intent="payable" />
+            <SummaryCard label="借入/借出" value={loanTotal} intent="payable" />
           </div>
         </section>
 
@@ -140,7 +141,7 @@ export default async function LiabilitiesPage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Building2 className="h-4 w-4 text-blue-500" />
-                往来对象
+                往来机构/人员
               </div>
               <div className="text-xs text-slate-400">{institutionRows.length} 个对象</div>
             </div>
@@ -161,7 +162,7 @@ export default async function LiabilitiesPage() {
                   </Link>
                 ))
               ) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无往来对象</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无往来机构/人员</div>
               )}
             </div>
           </div>
@@ -219,7 +220,7 @@ export default async function LiabilitiesPage() {
                 })
               ) : (
                 <div className="px-4 py-10 text-center text-sm text-slate-400">
-                  暂无信用卡或往来款账户
+                  暂无信用卡或借入借出账户
                 </div>
               )}
             </div>

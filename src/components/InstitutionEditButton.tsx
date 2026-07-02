@@ -4,13 +4,17 @@ import { Pencil } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
-type InstitutionType = "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "other";
+type InstitutionType = "family_member" | "person" | "organization" | "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
 const TYPE_LABELS: Record<InstitutionType, string> = {
+  family_member: "家庭成员",
+  person: "往来人员",
+  organization: "往来机构",
   bank: "银行",
   insurance: "保险公司",
   brokerage: "证券",
   payment: "三方支付",
   ewallet: "钱包",
+  debt: "债权债务",
   other: "其他",
 };
 
@@ -66,13 +70,13 @@ export function InstitutionEditButton({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="text-sm font-semibold text-slate-800">编辑机构</div>
+              <div className="text-sm font-semibold text-slate-800">编辑往来对象</div>
               <button type="button" onClick={() => setOpen(false)}
                 className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">机构名称</div>
+                <div className="text-xs font-medium text-slate-600">往来对象名称</div>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
