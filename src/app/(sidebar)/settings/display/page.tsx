@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
@@ -56,6 +56,30 @@ function previewCreditCardName(value: string) {
     .replaceAll("{账户名称}", "优享白金卡")
     .replaceAll("{信用卡后4位}", "8333")
     .replaceAll("{后4位}", "8333");
+}
+
+function SettingRow({
+  title,
+  desc,
+  children,
+  wide = false,
+}: {
+  title: string;
+  desc: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 lg:flex-row lg:items-center lg:justify-between">
+      <div className="min-w-0 lg:w-56 lg:shrink-0">
+        <div className="text-sm font-medium text-slate-800">{title}</div>
+        <div className="mt-1 text-xs text-slate-500">{desc}</div>
+      </div>
+      <div className={wide ? "min-w-0 flex-1 lg:max-w-3xl" : "min-w-0 lg:min-w-[280px] lg:max-w-xl"}>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 export default function DisplaySettingsPage() {
@@ -243,9 +267,8 @@ export default function DisplaySettingsPage() {
             <div className="mt-1 text-xs text-slate-500">这些属于本机浏览器习惯。</div>
           </div>
         </div>
-        <div className="space-y-4 p-4">
-          <div className="space-y-2">
-            <div className="form-label">账户显示方式</div>
+        <div>
+          <SettingRow title="账户显示方式" desc="控制左侧账户列表按资产类型或机构归类。">
             <div className="flex gap-2">
               <button
                 type="button"
@@ -262,19 +285,15 @@ export default function DisplaySettingsPage() {
                 按机构
               </button>
             </div>
-          </div>
-          <label className="flex items-center justify-between rounded-[10px] border border-slate-200 bg-white px-3 py-3">
-            <div>
-              <div className="text-sm font-medium text-slate-800">隐藏零余额账户</div>
-              <div className="mt-1 text-xs text-slate-500">减少侧边栏噪音。</div>
-            </div>
+          </SettingRow>
+          <SettingRow title="隐藏零余额账户" desc="减少侧边栏噪音。">
             <input
               type="checkbox"
               checked={sidebarHideZero}
               onChange={(e) => updateSidebarHideZero(e.target.checked)}
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
-          </label>
+          </SettingRow>
         </div>
       </section>
 
@@ -285,34 +304,38 @@ export default function DisplaySettingsPage() {
             <div className="mt-1 text-xs text-slate-500">统一收益、净值和盈亏颜色口径。</div>
           </div>
         </div>
-        <div className="space-y-2 p-4">
-          {colorOptions.map((opt) => (
-            <label
-              key={opt.value}
-              className={`flex cursor-pointer items-center gap-3 rounded-[10px] border p-3 transition ${
-                scheme === opt.value ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
-              }`}
-            >
-              <input
-                type="radio"
-                name="colorScheme"
-                value={opt.value}
-                checked={scheme === opt.value}
-                onChange={() => saveScheme(opt.value)}
-                disabled={savingScheme}
-                className="shrink-0"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-slate-800">{opt.label}</div>
-                <div className="text-xs text-slate-500">{opt.desc}</div>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className={opt.preview.up}>+1.23%</span>
-                <span className="text-slate-400">/</span>
-                <span className={opt.preview.down}>-0.56%</span>
-              </div>
-            </label>
-          ))}
+        <div>
+          <SettingRow title="涨跌颜色" desc="统一收益、净值和盈亏颜色口径。" wide>
+            <div className="grid gap-2 lg:grid-cols-2">
+              {colorOptions.map((opt) => (
+                <label
+                  key={opt.value}
+                  className={`flex cursor-pointer items-center gap-3 rounded-[10px] border px-3 py-2 transition ${
+                    scheme === opt.value ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="colorScheme"
+                    value={opt.value}
+                    checked={scheme === opt.value}
+                    onChange={() => saveScheme(opt.value)}
+                    disabled={savingScheme}
+                    className="shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-800">{opt.label}</div>
+                    <div className="text-xs text-slate-500">{opt.desc}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 text-xs">
+                    <span className={opt.preview.up}>+1.23%</span>
+                    <span className="text-slate-400">/</span>
+                    <span className={opt.preview.down}>-0.56%</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </SettingRow>
         </div>
       </section>
 
@@ -323,9 +346,8 @@ export default function DisplaySettingsPage() {
             <div className="mt-1 text-xs text-slate-500">控制基金份额小数位数。</div>
           </div>
         </div>
-        <div className="space-y-4 p-4">
-          <div className="grid gap-2 sm:max-w-xs">
-            <label className="form-label">基金份额小数位</label>
+        <div>
+          <SettingRow title="基金份额小数位" desc="控制基金份额展示的小数位数。">
             <select
               value={fundUnitsDecimals}
               onChange={(e) => saveFundUnitsDecimals(Number(e.target.value))}
@@ -338,7 +360,7 @@ export default function DisplaySettingsPage() {
                 </option>
               ))}
             </select>
-          </div>
+          </SettingRow>
         </div>
       </section>
 
@@ -349,9 +371,8 @@ export default function DisplaySettingsPage() {
             <div className="mt-1 text-xs text-slate-500">后四位为空时只省略后四位；机构简称、机构名称和信用卡名称按模板照常显示。</div>
           </div>
         </div>
-        <div className="space-y-4 p-4">
-          <div className="space-y-2">
-            <div className="form-label">可用字段</div>
+        <div>
+          <SettingRow title="可用字段" desc="点击字段可插入到信用卡显示模板。" wide>
             <div className="flex flex-wrap gap-2">
               {CREDIT_CARD_NAME_FIELDS.map((field) => (
                 <button
@@ -365,10 +386,9 @@ export default function DisplaySettingsPage() {
                 </button>
               ))}
             </div>
-          </div>
+          </SettingRow>
 
-          <div className="space-y-2">
-            <div className="form-label">预设</div>
+          <SettingRow title="预设模板" desc="选择常用命名格式后仍可继续微调。" wide>
             <div className="flex flex-wrap gap-2">
               {CREDIT_CARD_NAME_PRESETS.map((preset) => (
                 <button
@@ -382,34 +402,43 @@ export default function DisplaySettingsPage() {
                 </button>
               ))}
             </div>
-          </div>
+          </SettingRow>
 
-          <div className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-3">
-            <div className="text-[11px] font-medium text-slate-500">当前内容</div>
-            <div className="mt-1 text-sm font-medium text-slate-900 break-all">{creditCardDisplayName || "已清空"}</div>
-            <div className="mt-3 text-[11px] font-medium text-slate-500">预览</div>
-            <div className="mt-1 text-sm font-medium text-slate-900">{preview || "请输入显示名称"}</div>
-          </div>
+          <SettingRow title="当前模板" desc="保存后只更新相关显示字段，不整页刷新。" wide>
+            <div className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="grid gap-3 lg:grid-cols-[1fr_180px]">
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500">当前内容</div>
+                  <div className="mt-1 break-all text-sm font-medium text-slate-900">{creditCardDisplayName || "已清空"}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500">预览</div>
+                  <div className="mt-1 text-sm font-medium text-slate-900">{preview || "请输入显示名称"}</div>
+                </div>
+              </div>
+            </div>
+          </SettingRow>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={savingCreditCardDisplayName}
-              onClick={() => setCreditCardDisplayName("")}
-              className="secondary-button h-9 px-4 text-sm"
-            >
-              清除
-            </button>
-            <button
-              type="button"
-              disabled={savingCreditCardDisplayName}
-              onClick={() => void saveCreditCardDisplayName(creditCardDisplayName)}
-              className="primary-button h-9 px-4 text-sm"
-            >
-              保存
-            </button>
-            <span className="text-xs text-slate-500">保存后只更新相关显示字段，不整页刷新。</span>
-          </div>
+          <SettingRow title="保存模板" desc="清空或保存当前信用卡显示模板。">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={savingCreditCardDisplayName}
+                onClick={() => setCreditCardDisplayName("")}
+                className="secondary-button h-9 px-4 text-sm"
+              >
+                清除
+              </button>
+              <button
+                type="button"
+                disabled={savingCreditCardDisplayName}
+                onClick={() => void saveCreditCardDisplayName(creditCardDisplayName)}
+                className="primary-button h-9 px-4 text-sm"
+              >
+                保存
+              </button>
+            </div>
+          </SettingRow>
         </div>
       </section>
 
@@ -420,29 +449,30 @@ export default function DisplaySettingsPage() {
             <div className="mt-1 text-xs text-slate-500">控制页面日期与版本信息的显示时区。</div>
           </div>
         </div>
-        <div className="space-y-4 p-4">
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => saveTimeZone("system", timeZone)}
-              disabled={savingTimeZone}
-              className={`segment-button h-9 px-4 ${timeZoneMode === "system" ? "segment-button-active font-medium" : ""}`}
-            >
-              跟随系统
-            </button>
-            <button
-              type="button"
-              onClick={() => saveTimeZone("specified", timeZone)}
-              disabled={savingTimeZone}
-              className={`segment-button h-9 px-4 ${timeZoneMode === "specified" ? "segment-button-active font-medium" : ""}`}
-            >
-              指定时区
-            </button>
-          </div>
+        <div>
+          <SettingRow title="时区模式" desc="控制页面日期与版本信息的显示时区。">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => saveTimeZone("system", timeZone)}
+                disabled={savingTimeZone}
+                className={`segment-button h-9 px-4 ${timeZoneMode === "system" ? "segment-button-active font-medium" : ""}`}
+              >
+                跟随系统
+              </button>
+              <button
+                type="button"
+                onClick={() => saveTimeZone("specified", timeZone)}
+                disabled={savingTimeZone}
+                className={`segment-button h-9 px-4 ${timeZoneMode === "specified" ? "segment-button-active font-medium" : ""}`}
+              >
+                指定时区
+              </button>
+            </div>
+          </SettingRow>
 
           {timeZoneMode === "specified" ? (
-            <div className="grid gap-2 sm:max-w-sm">
-              <label className="form-label">时区</label>
+            <SettingRow title="指定时区" desc="选择固定时区，避免跨设备显示不一致。">
               <select
                 value={timeZone}
                 onChange={(e) => saveTimeZone("specified", e.target.value)}
@@ -455,7 +485,7 @@ export default function DisplaySettingsPage() {
                   </option>
                 ))}
               </select>
-            </div>
+            </SettingRow>
           ) : null}
         </div>
       </section>
