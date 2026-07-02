@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getEnvResendConfig } from "@/lib/mail/resend";
+import { formatResendSendError, getEnvResendConfig } from "@/lib/mail/resend";
 
 export const runtime = "nodejs";
 
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   if (!res.ok) {
     const data = await res.json().catch(() => null) as { message?: string; error?: string } | null;
-    return NextResponse.json({ ok: false, error: data?.message || data?.error || `Resend 发信失败：${res.status}` });
+    return NextResponse.json({ ok: false, error: formatResendSendError(data, res.status) });
   }
 
   return NextResponse.json({ ok: true });

@@ -8,6 +8,18 @@ type ResendConfig = {
   from: string;
 };
 
+function normalizeResendError(input: { message?: string; name?: string; error?: string } | null, status: number) {
+  const raw = (input?.message || input?.error || "").trim();
+  const lower = raw.toLowerCase();
+  if (status === 401 || lower.includes("api key is invalid") || lower.includes("invalid api key")) {
+    return "Resend API Key 无效，请到系统设置 > 邮箱账户重新验证并保存有效的 API Key，或改用 SMTP 发件。";
+  }
+  if (status === 403 || lower.includes("domain") || lower.includes("from")) {
+    return "Resend 发件地址或域名未通过验证，请检查系统设置里的 Resend 发件配置。";
+  }
+  return raw || `Resend 发信失败：${status}`;
+}
+
 function allowEnvResendConfig() {
   const explicit = (process.env.MMH_ALLOW_ENV_RESEND_CONFIG ?? "").trim().toLowerCase();
   if (explicit === "1" || explicit === "true" || explicit === "yes") return true;
@@ -84,8 +96,12 @@ export async function sendEmailByResend(params: {
 
   const data = await res.json().catch(() => null) as { message?: string; name?: string; error?: string } | null;
   if (!res.ok) {
-    return { ok: false as const, error: data?.message || data?.error || `Resend 发信失败：${res.status}` };
+    return { ok: false as const, error: normalizeResendError(data, res.status) };
   }
 
   return { ok: true as const };
+}
+
+export function formatResendSendError(input: { message?: string; name?: string; error?: string } | null, status: number) {
+  return normalizeResendError(input, status);
 }
