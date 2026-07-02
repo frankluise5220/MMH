@@ -53,6 +53,22 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [resetLoading, setResetLoading] = useState(false);
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
 
+  function openPasswordReset() {
+    setResetStep("request");
+    setResetInfo("");
+    if (!passwordResetEnabled) {
+      setResetError("当前未配置可用的发件服务，无法发送密码找回验证码。请先在系统设置里配置 SMTP 或 Resend。");
+      setShowReset(true);
+      setResetUsername(username);
+      cancelHouseholdChoice();
+      return;
+    }
+    setResetError("");
+    setShowReset(true);
+    setResetUsername(username);
+    cancelHouseholdChoice();
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 5000);
@@ -378,19 +394,13 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 )}
 
                 {error && <div className="text-sm text-red-600">{error}</div>}
-                {passwordResetEnabled && (
-                  <button
-                    type="button"
-                    className="text-xs text-slate-500 transition-colors hover:text-blue-700"
-                    onClick={() => {
-                      setShowReset(true);
-                      setResetUsername(username);
-                      cancelHouseholdChoice();
-                    }}
-                  >
-                    忘记密码？通过邮箱找回
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="text-xs text-slate-500 transition-colors hover:text-blue-700"
+                  onClick={openPasswordReset}
+                >
+                  忘记密码？通过邮箱找回
+                </button>
                 <button
                   type="button"
                   className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
@@ -402,21 +412,23 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               </>
             )}
 
-            {passwordResetEnabled && (
-              <button
-                type="button"
-                className="w-full text-xs text-slate-500 hover:text-slate-700"
-                onClick={() => {
-                  setShowReset(!showReset);
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              onClick={() => {
+                if (showReset) {
+                  setShowReset(false);
                   setResetStep("request");
                   setResetError("");
                   setResetInfo("");
-                }}
-                disabled={loading || resetLoading}
-              >
-                {showReset ? "收起找回密码" : "忘记密码？"}
-              </button>
-            )}
+                  return;
+                }
+                openPasswordReset();
+              }}
+              disabled={loading || resetLoading}
+            >
+              {showReset ? "收起找回密码" : "忘记密码？"}
+            </button>
 
             {showReset && (
               <div className="space-y-3 border-t border-slate-100 pt-2">
