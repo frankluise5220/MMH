@@ -77,7 +77,6 @@ export function InsuranceOverviewCard({
                   <tr key={person.insuredPersonKey} className="group">
                     <td className="sticky left-0 z-10 max-w-[120px] bg-white py-2 pr-3 align-middle group-hover:bg-slate-50">
                       <div className="truncate font-semibold text-slate-800">{person.insuredPersonName}</div>
-                      <div className="mt-0.5 text-[10px] text-slate-400">{person.productCount} 个产品</div>
                     </td>
                     {coverageColumns.map((column) => {
                       const item = person.categories.find((category) => category.key === column.key);
@@ -87,7 +86,6 @@ export function InsuranceOverviewCard({
                           {coverage > 0 ? (
                             <div>
                               <div className="font-semibold text-slate-800">{formatCompactMoney(coverage)}</div>
-                              <div className="mt-0.5 text-[10px] text-slate-400">{item?.productCount ?? 0} 份</div>
                             </div>
                           ) : (
                             <span className="text-slate-300">-</span>
