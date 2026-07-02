@@ -54,7 +54,7 @@ export function institutionTypeLabel(t: string | null): string {
   const map: Record<string, string> = {
     family_member: "家庭成员",
     person: "往来人员",
-    organization: "往来机构",
+    organization: "往来组织",
     bank: "银行",
     insurance: "保险公司",
     brokerage: "证券",

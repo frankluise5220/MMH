@@ -20,6 +20,8 @@ type AccountKindValue =
   | "other";
 type FundProductTypeValue = "fund" | "money" | "wealth";
 type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
+const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
+const ACCOUNT_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
 
 const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   fund: "开放式基金",
@@ -92,7 +94,8 @@ export function AccountEditModalButton({
 
   function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
     setInstitutionList((prev) => [...prev, { id, name, type: extra?.type }]);
-    if (kind === "loan" ? extra?.type === "debt" : extra?.type !== "debt") {
+    const createdType = extra?.type ?? "";
+    if (kind === "loan" ? COUNTERPARTY_TYPES.has(createdType) : ACCOUNT_INSTITUTION_TYPES.has(createdType)) {
       setInstitutionId(id);
     }
     setNestedEntityType(null);
@@ -105,7 +108,7 @@ export function AccountEditModalButton({
   }
 
   const filteredInstitutionList = institutionList.filter((it) =>
-    kind === "loan" ? it.type === "debt" : it.type !== "debt",
+    kind === "loan" ? COUNTERPARTY_TYPES.has(it.type ?? "") : ACCOUNT_INSTITUTION_TYPES.has(it.type ?? ""),
   );
 
   const institutionOptions: SmartSelectOption[] = filteredInstitutionList.map((it) => ({
@@ -172,16 +175,16 @@ export function AccountEditModalButton({
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs text-slate-500">往来机构/人员</div>
+                  <div className="mb-1 text-xs text-slate-500">往来对象</div>
                   <SmartSelect
                     mode="single"
                     value={institutionId}
                     onChange={setInstitutionId}
                     options={institutionOptions}
-                    placeholder="选择往来机构/人员"
+                    placeholder="选择往来对象"
                     searchable
                     onCreateClick={() => setNestedEntityType("institution")}
-                    createLabel="新增往来机构/人员"
+                    createLabel="新增往来对象"
                   />
                 </div>
 
@@ -333,7 +336,8 @@ export function AccountEditModalButton({
           open
           onClose={() => setNestedEntityType(null)}
           onCreated={nestedEntityType === "institution" ? handleInstitutionCreated : handleGroupCreated}
-          defaultType={kind === "loan" && nestedEntityType === "institution" ? "debt" : undefined}
+          defaultType={kind === "loan" && nestedEntityType === "institution" ? "person" : undefined}
+          allowedInstitutionTypes={kind === "loan" && nestedEntityType === "institution" ? ["person", "organization"] : undefined}
         />
       ) : null}
     </>

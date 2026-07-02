@@ -8,7 +8,7 @@ type InstitutionType = "family_member" | "person" | "organization" | "bank" | "i
 const TYPE_LABELS: Record<InstitutionType, string> = {
   family_member: "家庭成员",
   person: "往来人员",
-  organization: "往来机构",
+  organization: "往来组织",
   bank: "银行",
   insurance: "保险公司",
   brokerage: "证券",

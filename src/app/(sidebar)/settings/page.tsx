@@ -15,7 +15,7 @@ import {
 const quickSettings = [
   { href: "/settings/accounts", label: "账户", desc: "账户、所有人、账户类型", icon: Users },
   { href: "/settings/institutions", label: "机构", desc: "银行、保险、券商和支付机构", icon: Building2 },
-  { href: "/settings/counterparties", label: "往来对象", desc: "往来人员、债权债务和其他对象", icon: Handshake },
+  { href: "/settings/counterparties", label: "往来对象", desc: "往来人员和往来组织", icon: Handshake },
   { href: "/settings/categories", label: "收支类别", desc: "收入、支出、代付分类", icon: Tag },
   { href: "/settings/email", label: "邮箱账户", desc: "账单读取和发件账户", icon: Mail },
   { href: "/settings/password-recovery", label: "密码找回", desc: "找回密码开关和发件设置", icon: Shield },

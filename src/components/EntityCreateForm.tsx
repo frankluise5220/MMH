@@ -47,6 +47,8 @@ type CompactModeProps = {
   onClose: () => void;
   onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
   defaultType?: string;
+  /** For institution creation: restrict type choices to a specific concept group */
+  allowedInstitutionTypes?: string[];
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI (e.g. ["kind"] when extraFields already specifies it) */
@@ -96,7 +98,7 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 const INSTITUTION_TYPES = [
   { value: "family_member", label: "家庭成员" },
   { value: "person", label: "往来人员" },
-  { value: "organization", label: "往来机构" },
+  { value: "organization", label: "往来组织" },
   { value: "bank", label: "银行" },
   { value: "insurance", label: "保险公司" },
   { value: "brokerage", label: "证券" },
@@ -258,7 +260,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const compactNestedFieldData = mode === "compact" ? props.nestedFieldData : undefined;
   const hiddenFields = mode === "compact" ? props.hiddenFields : props.hiddenFields ?? [];
   const allowedInstitutionTypes =
-    entityType === "institution" && mode === "full" ? props.allowedInstitutionTypes : undefined;
+    entityType === "institution" ? props.allowedInstitutionTypes : undefined;
 
   // Compact mode: open/onClose
   const open = mode === "compact" ? props.open : undefined;
@@ -309,12 +311,6 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       for (const field of config.fullFields) {
         if (field.condition && !field.condition(initial)) continue;
         if (initial[field.key] !== undefined) continue;
-        if (field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length) {
-          initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
-            ? field.defaultValue!
-            : allowedInstitutionTypes[0];
-          continue;
-        }
         if (field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length) {
           initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
             ? field.defaultValue!
@@ -412,16 +408,16 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (entityType !== "account") return dataList;
     const accountKind = form.kind || form.type;
     if (accountKind === "loan") {
-      return dataList.filter((item) => ["debt", "person", "family_member", "organization", "other"].includes(item.type ?? "other"));
+      return dataList.filter((item) => ["person", "organization"].includes(item.type ?? ""));
     }
-    return dataList.filter((item) => !["debt", "person", "family_member"].includes(item.type ?? ""));
+    return dataList.filter((item) => ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(item.type ?? ""));
   }
 
   function institutionTypeMatchesCurrentAccount(type?: string) {
     if (entityType !== "account") return true;
     const accountKind = form.kind || form.type;
-    if (accountKind === "loan") return ["debt", "person", "family_member", "organization", "other"].includes(type ?? "other");
-    return !["debt", "person", "family_member"].includes(type ?? "");
+    if (accountKind === "loan") return ["person", "organization"].includes(type ?? "");
+    return ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(type ?? "");
   }
 
   /** Build the POST body and submit */
@@ -725,7 +721,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
                 className="form-input"
               >
-                {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
+                  ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                  : opts
+                ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             );
           })}

@@ -131,7 +131,7 @@ type TagOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
-const COUNTERPARTY_TYPES = new Set(["person", "debt", "other"]);
+const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 
 export function TransactionFormModal({
   accounts,
@@ -1285,7 +1285,7 @@ export function TransactionFormModal({
         open={counterpartyNestedOpen}
         onClose={() => setCounterpartyNestedOpen(false)}
         defaultType="person"
-        allowedInstitutionTypes={["person", "debt", "other"]}
+        allowedInstitutionTypes={["person", "organization"]}
         existingNames={(localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => item.name)}
         onCreated={(id, name, extra) => {
           const next = { id, name, type: extra?.type ?? "person" };
