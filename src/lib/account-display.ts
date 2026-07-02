@@ -3,6 +3,7 @@ import { kindLabel } from "@/lib/account-kinds";
 
 export type AccountDisplaySource = {
   id: string;
+  routeKey?: string | null;
   name: string;
   kind: string;
   numberMasked?: string | null;
