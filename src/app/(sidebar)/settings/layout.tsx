@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  BookOpen, Building2, Database, Handshake, KeyRound, Mail, Palette, Settings,
+  BookOpen, Building2, Database, Handshake, HeartHandshake, KeyRound, Mail, Palette, Settings,
   Tag, Users, Cpu, ChevronRight, Key, Globe, Hash,
   Loader2, RefreshCw, Shield,
 } from "lucide-react";
@@ -14,6 +14,7 @@ const navItems = [
   { href: "/settings/accounts", label: "账户", icon: Users },
   { href: "/settings/institutions", label: "机构", icon: Building2 },
   { href: "/settings/counterparties", label: "往来对象", icon: Handshake },
+  { href: "/settings/family-members", label: "家庭成员", icon: HeartHandshake },
   { href: "/settings/insurance-products", label: "保险产品", icon: Shield },
   { href: "/settings/categories", label: "收支类别", icon: Tag },
   { href: "/settings/tags", label: "标签", icon: Hash },

@@ -14,10 +14,11 @@ type Institution = {
   type: string | null;
 };
 
-type InstitutionSettingMode = "institution" | "counterparty";
+type InstitutionSettingMode = "institution" | "counterparty" | "family";
 
 const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "payment", "ewallet"] as const;
 const COUNTERPARTY_TYPES = ["person", "organization"] as const;
+const FAMILY_MEMBER_TYPES = ["family_member"] as const;
 
 const typeLabelMap: Record<string, string> = {
   family_member: "家庭成员",
@@ -42,10 +43,15 @@ export function SettingsInstitutionsClient({
   mode?: InstitutionSettingMode;
 }) {
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
-  const allowedTypes = mode === "institution" ? INSTITUTION_TYPES : COUNTERPARTY_TYPES;
-  const pageTitle = mode === "institution" ? "机构列表" : "往来对象列表";
-  const emptyText = mode === "institution" ? "暂无机构" : "暂无往来对象";
-  const deleteLabel = mode === "institution" ? "机构" : "往来对象";
+  const allowedTypes =
+    mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
+  const pageTitle = mode === "institution" ? "机构列表" : mode === "family" ? "家庭成员列表" : "往来对象列表";
+  const emptyText = mode === "institution" ? "暂无机构" : mode === "family" ? "暂无家庭成员" : "暂无往来对象";
+  const deleteLabel = mode === "institution" ? "机构" : mode === "family" ? "家庭成员" : "往来对象";
+  const createTitle = mode === "institution" ? "新增机构" : mode === "family" ? "新增家庭成员" : "新增往来对象";
+  const createNameLabel = mode === "institution" ? "机构名称" : mode === "family" ? "家庭成员名称" : "往来对象名称";
+  const createNamePlaceholder =
+    mode === "institution" ? "例如：中国银行、平安保险" : mode === "family" ? "例如：张三" : "例如：张三、某某公司";
 
   useEffect(() => {
     setInstitutions(initialInstitutions);
@@ -55,6 +61,7 @@ export function SettingsInstitutionsClient({
     () => institutions.filter((item) => allowedTypes.includes((item.type ?? "other") as never)),
     [allowedTypes, institutions],
   );
+  const createExistingNames = visibleInstitutions.map((item) => item.name);
 
   const refreshList = useCallback(async () => {
     const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
@@ -74,8 +81,11 @@ export function SettingsInstitutionsClient({
         entityType="institution"
         defaultType={allowedTypes[0]}
         allowedInstitutionTypes={[...allowedTypes]}
+        title={createTitle}
+        nameLabel={createNameLabel}
+        namePlaceholder={createNamePlaceholder}
         onCreated={handleCreated}
-        existingNames={visibleInstitutions.map((item) => item.name)}
+        existingNames={createExistingNames}
       />
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -104,8 +114,8 @@ export function SettingsInstitutionsClient({
                       <InstitutionEditButton
                         institution={item}
                         action={updateAction}
-                        title={mode === "institution" ? "编辑机构" : "编辑往来对象"}
-                        nameLabel={mode === "institution" ? "机构名称" : "往来对象名称"}
+                        title={mode === "institution" ? "编辑机构" : mode === "family" ? "编辑家庭成员" : "编辑往来对象"}
+                        nameLabel={mode === "institution" ? "机构名称" : mode === "family" ? "家庭成员名称" : "往来对象名称"}
                         allowedTypes={[...allowedTypes]}
                       />
                       <SettingsDeleteButton label={`${deleteLabel}：${item.name}`} entity="institution" id={item.id} />

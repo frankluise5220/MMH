@@ -47,6 +47,12 @@ type CompactModeProps = {
   onClose: () => void;
   onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
   defaultType?: string;
+  /** Optional UI title override for reused entity concepts */
+  title?: string;
+  /** Optional name field label override */
+  nameLabel?: string;
+  /** Optional name field placeholder override */
+  namePlaceholder?: string;
   /** For institution creation: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
@@ -83,6 +89,12 @@ type FullModeProps = {
   defaultParentId?: string;
   /** For account: pre-selected kind */
   defaultType?: string;
+  /** Optional UI title override for reused entity concepts */
+  title?: string;
+  /** Optional name field label override */
+  nameLabel?: string;
+  /** Optional name field placeholder override */
+  namePlaceholder?: string;
   /** For institution pages: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
   /** Extra fields to merge into POST body */
@@ -249,6 +261,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const entityType = props.entityType;
   const config = ENTITY_CONFIG[entityType];
   const layout = mode === "full" ? (props.layout ?? "card") : "modal";
+  const displayTitle = props.title ?? config.title;
+  const displayNameLabel = props.nameLabel ?? config.nameLabel;
+  const displayNamePlaceholder = props.namePlaceholder ?? config.namePlaceholder;
 
   // Unpack mode-specific props
   const onCreated = props.onCreated;
@@ -517,7 +532,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         <div className="app-modal-backdrop z-[1200]">
           <div className="app-modal-panel max-w-sm">
             <div className="modal-header">
-              <div className="text-sm font-semibold text-slate-800">{config.title}</div>
+              <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
               <button type="button" onClick={onClose}
                 className="secondary-button h-8 px-2">
                 关闭
@@ -525,11 +540,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="form-label">{config.nameLabel}</div>
+                <div className="form-label">{displayNameLabel}</div>
                 <input
                   value={form.name ?? ""}
                   onChange={(e) => { setForm(prev => ({ ...prev, name: e.target.value })); checkDuplicate(e.target.value); }}
-                  placeholder={config.namePlaceholder}
+                  placeholder={displayNamePlaceholder}
                   className="form-input"
                   autoFocus
                   required
@@ -558,7 +573,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <input
                         value={form[field.key] ?? field.defaultValue ?? ""}
                         onChange={(e) => setForm((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                        placeholder={field.placeholder ?? ""}
+                        placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
                         className="form-input"
                         inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
                       />
@@ -705,7 +720,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   key={field.key}
                   value={form[field.key] ?? field.defaultValue ?? ""}
                   onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                  placeholder={field.placeholder ?? field.label}
+                  placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? field.label}
                   className="form-input flex-1 min-w-[120px]"
                   required={field.key === "name"}
                 />
@@ -760,7 +775,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         <div className="app-modal-backdrop z-[60]">
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{config.title}</div>
+              <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
               <button
                 type="button"
                 onClick={() => { props.onClose?.(); setError(""); initForm(); }}
@@ -780,7 +795,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         <input
                           value={form[field.key] ?? field.defaultValue ?? ""}
                           onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                          placeholder={field.placeholder ?? ""}
+                          placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
                           className="form-input"
                           inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
                           required={field.key === "name"}
@@ -886,12 +901,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           onClick={() => setExpanded(true)}
           className="primary-button h-9 shrink-0 gap-1.5"
         >
-          <Plus className="h-3.5 w-3.5" />{config.title}
+          <Plus className="h-3.5 w-3.5" />{displayTitle}
         </button>
       ) : (
         <div className="panel-surface overflow-hidden">
           <div className="panel-header">
-            <div className="text-sm font-medium text-slate-700">{config.title}</div>
+            <div className="text-sm font-medium text-slate-700">{displayTitle}</div>
             {error && <div className="text-xs text-red-600">{error}</div>}
           </div>
           <form className="p-4 space-y-3" onSubmit={onSubmit}>
@@ -904,7 +919,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <input
                         value={form[field.key] ?? field.defaultValue ?? ""}
                         onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                        placeholder={field.placeholder ?? ""}
+                        placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
                         className="form-input"
                         inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
                         required={field.key === "name"}
