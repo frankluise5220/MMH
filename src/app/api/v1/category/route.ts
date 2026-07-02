@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 
@@ -16,16 +17,21 @@ export const runtime = "nodejs";
  */
 export async function GET(req: Request) {
   try {
+    let householdId = "";
     let hidFilter: { householdId: string };
 
     // Try cookie auth first, fall back to X-Api-Key
     try {
       const ctx = await getHouseholdScope();
+      householdId = ctx.householdId;
       hidFilter = ctx.hidFilter;
     } catch {
       const ctx = await getApiHouseholdScope(req);
+      householdId = ctx.householdId;
       hidFilter = ctx.hidFilter;
     }
+
+    await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
 
     const url = new URL(req.url);
     const typeFilter = url.searchParams.get("type")?.trim();

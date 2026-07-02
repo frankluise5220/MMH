@@ -38,7 +38,7 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   useEffect(() => {
     const cached = getCachedSettingsCategories();
     if (cached) setCategories(cached as Category[]);
-    fetchSettingsCategories()
+    fetchSettingsCategories({ force: true })
       .then((next) => setCategories(next as Category[]))
       .catch(() => null);
   }, []);

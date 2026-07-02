@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
@@ -20,7 +21,8 @@ function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProdu
  */
 export async function GET() {
   try {
-    const { hidFilter } = await getHouseholdScope();
+    const { householdId, hidFilter } = await getHouseholdScope();
+    await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
     const [accounts, groups, institutions, users, categories, tags] = await Promise.all([
       prisma.account.findMany({
         where: { isPlaceholder: { not: true }, ...hidFilter },

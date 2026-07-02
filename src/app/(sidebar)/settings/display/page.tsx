@@ -305,7 +305,7 @@ export default function DisplaySettingsPage() {
           </div>
         </div>
         <div>
-          <SettingRow title="涨跌颜色" desc="统一收益、净值和盈亏颜色口径。" wide>
+          <SettingRow title="选择颜色规则" desc="设置红涨绿跌或绿涨红跌，并显示示例效果。" wide>
             <div className="grid gap-2 lg:grid-cols-2">
               {colorOptions.map((opt) => (
                 <label
@@ -347,7 +347,7 @@ export default function DisplaySettingsPage() {
           </div>
         </div>
         <div>
-          <SettingRow title="基金份额小数位" desc="控制基金份额展示的小数位数。">
+          <SettingRow title="选择小数位" desc="设置基金份额展示精度。">
             <select
               value={fundUnitsDecimals}
               onChange={(e) => saveFundUnitsDecimals(Number(e.target.value))}
@@ -450,7 +450,7 @@ export default function DisplaySettingsPage() {
           </div>
         </div>
         <div>
-          <SettingRow title="时区模式" desc="控制页面日期与版本信息的显示时区。">
+          <SettingRow title="选择时区模式" desc="设置为跟随系统或固定时区。">
             <div className="flex gap-2">
               <button
                 type="button"
