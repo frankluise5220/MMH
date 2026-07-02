@@ -5,7 +5,7 @@ import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
-import { isDepositAccount, isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export const KIND_LABEL: Record<string, string> = {
   cash: "现金",
@@ -174,7 +174,8 @@ export async function computeOverviewSummary(
       !isPureInvestmentAccount(account) &&
       !isLegacyDepositAccount(account) &&
       account.kind !== AccountKind.bank_credit &&
-      account.kind !== AccountKind.loan,
+      account.kind !== AccountKind.loan &&
+      account.kind !== AccountKind.insurance,
   );
 
   const dailyAccounts = [

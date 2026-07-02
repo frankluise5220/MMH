@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
-export type InsuranceOverviewCategoryKey = "critical_illness" | "accident" | "annuity" | "other";
+export type InsuranceOverviewCategoryKey = "critical_illness" | "medical" | "accident" | "life_annuity" | "other";
 
 export type InsuranceOverviewCategoryRow = {
   key: InsuranceOverviewCategoryKey;
@@ -41,23 +41,21 @@ type InsuranceOverviewProduct = {
   InsuredUser: { id: string; name: string | null } | null;
 };
 
-type InsuranceOverviewEntry = {
-  insuranceProductId: string | null;
-  amount: unknown;
-  fundSubtype: string | null;
-};
-
-const CATEGORY_ORDER: ReadonlyArray<InsuranceOverviewCategoryKey> = ["critical_illness", "accident", "annuity", "other"];
+const CATEGORY_ORDER: ReadonlyArray<InsuranceOverviewCategoryKey> = ["critical_illness", "medical", "accident", "life_annuity", "other"];
+const OVERVIEW_COLUMN_KEYS: ReadonlySet<InsuranceOverviewCategoryKey> = new Set(["critical_illness", "medical", "accident", "life_annuity"]);
 
 function classifyInsuranceProductType(productType: string | null): InsuranceOverviewCategoryRow["key"] {
   switch (productType) {
     case "critical_illness":
-    case "medical":
       return "critical_illness";
+    case "medical":
+      return "medical";
     case "accident":
       return "accident";
     case "annuity":
-      return "annuity";
+    case "term_life":
+    case "whole_life":
+      return "life_annuity";
     default:
       return "other";
   }
@@ -66,11 +64,13 @@ function classifyInsuranceProductType(productType: string | null): InsuranceOver
 function categoryLabel(key: InsuranceOverviewCategoryKey) {
   switch (key) {
     case "critical_illness":
-      return "重疾险";
+      return "重疾";
+    case "medical":
+      return "医疗";
     case "accident":
-      return "意外险";
-    case "annuity":
-      return "年金类";
+      return "意外";
+    case "life_annuity":
+      return "寿险/年金";
     case "other":
       return "其他";
   }
@@ -204,7 +204,9 @@ export async function computeInsuranceOverviewSummary(
 
   const categoryRows = CATEGORY_ORDER.flatMap((key) => {
     const row = categoryByKey.get(key);
-    return row && (row.productCount > 0 || row.premium > 0 || row.coverage > 0) ? [row] : [];
+    if (!row) return [];
+    if (OVERVIEW_COLUMN_KEYS.has(key)) return [row];
+    return row.productCount > 0 || row.premium > 0 || row.coverage > 0 ? [row] : [];
   });
   const personRows = Array.from(personByKey.values())
     .sort((a, b) => b.premium - a.premium || b.coverage - a.coverage || a.insuredPersonName.localeCompare(b.insuredPersonName, "zh-CN"));
