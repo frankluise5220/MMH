@@ -12,7 +12,7 @@ function toNum(v: unknown): number {
 type Lot = { units: number; costPerUnit: number };
 
 // Calculation input intentionally excludes display metadata such as fundName.
-type EntryLike = {
+export type FundPositionEntryLike = {
   id: string;
   fundCode: string | null;
   amount: number;
@@ -26,25 +26,25 @@ type EntryLike = {
   arrivalDate: string | null;
 };
 
-function entryCalcDate(e: EntryLike): string {
+function entryCalcDate(e: FundPositionEntryLike): string {
   const subtype = e.subtype ?? (e.amount < 0 ? "buy" : "redeem");
   return subtype === "buy" || subtype === "dividend_reinvest"
     ? (e.confirmDate ?? e.arrivalDate ?? "")
     : (e.confirmDate ?? "");
 }
 
-function buyAvailableDate(e: EntryLike): string {
+function buyAvailableDate(e: FundPositionEntryLike): string {
   return e.confirmDate ?? e.arrivalDate ?? "";
 }
 
-type HoldingCalc = { units: number; cost: number; pendingCost: number; historicalProfit: number };
+export type FundHoldingCalc = { units: number; cost: number; pendingCost: number; historicalProfit: number };
 
-function emptyHolding(): HoldingCalc {
+function emptyHolding(): FundHoldingCalc {
   return { units: 0, cost: 0, pendingCost: 0, historicalProfit: 0 };
 }
 
-type PositionCalcResult = {
-  holdings: Map<string, HoldingCalc>;
+export type FundPositionCalcResult = {
+  holdings: Map<string, FundHoldingCalc>;
   realizedProfitByEntryId: Map<string, number>;
 };
 
@@ -53,8 +53,8 @@ function buyCostBasis(amount: number): number {
   return a > 0 ? a : 0;
 }
 
-function calcByMovingAvg(entries: EntryLike[], fundUnitsDecimals: number): PositionCalcResult {
-  const map = new Map<string, HoldingCalc>();
+function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: number): FundPositionCalcResult {
+  const map = new Map<string, FundHoldingCalc>();
   const realizedProfitByEntryId = new Map<string, number>();
 
   const sorted = [...entries].sort((a, b) => entryCalcDate(a).localeCompare(entryCalcDate(b)));
@@ -108,9 +108,9 @@ function calcByMovingAvg(entries: EntryLike[], fundUnitsDecimals: number): Posit
   return { holdings: map, realizedProfitByEntryId };
 }
 
-function calcByFifo(entries: EntryLike[], fundUnitsDecimals: number, lifo = false): PositionCalcResult {
+function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number, lifo = false): FundPositionCalcResult {
   const lots = new Map<string, Lot[]>();
-  const result = new Map<string, HoldingCalc>();
+  const result = new Map<string, FundHoldingCalc>();
   const realizedProfitByEntryId = new Map<string, number>();
 
   const sorted = [...entries].sort((a, b) => entryCalcDate(a).localeCompare(entryCalcDate(b)));
@@ -190,6 +190,16 @@ function calcByFifo(entries: EntryLike[], fundUnitsDecimals: number, lifo = fals
   return { holdings: result, realizedProfitByEntryId };
 }
 
+export function calculateFundPositionsFromEntries(
+  entries: FundPositionEntryLike[],
+  fundUnitsDecimals: number,
+  costBasisMethod: string | null | undefined = "moving_avg",
+): FundPositionCalcResult {
+  if (costBasisMethod === "fifo") return calcByFifo(entries, fundUnitsDecimals, false);
+  if (costBasisMethod === "lifo") return calcByFifo(entries, fundUnitsDecimals, true);
+  return calcByMovingAvg(entries, fundUnitsDecimals);
+}
+
 export async function recalcFundPositions(accountId: string, fundCodes?: string[]) {
   const account = await prisma.account.findUnique({ where: { id: accountId } });
   if (!account) return;
@@ -211,7 +221,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     orderBy: [{ fundConfirmDate: "asc" }, { date: "asc" }, { createdAt: "asc" }],
   });
 
-  const entries: EntryLike[] = rawEntries
+  const entries: FundPositionEntryLike[] = rawEntries
     .filter(e => !fundCodes || (e.fundCode && fundCodes.includes(e.fundCode)))
     .map(e => ({
       id: e.id,
@@ -229,15 +239,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
 
   const codesToCalc = fundCodes ?? [...new Set(entries.map(e => e.fundCode).filter(Boolean))] as string[];
 
-  const costBasisMethod = account.costBasisMethod ?? "moving_avg";
-  let calcResult: PositionCalcResult;
-  if (costBasisMethod === "fifo") {
-    calcResult = calcByFifo(entries, fundUnitsDecimals, false);
-  } else if (costBasisMethod === "lifo") {
-    calcResult = calcByFifo(entries, fundUnitsDecimals, true);
-  } else {
-    calcResult = calcByMovingAvg(entries, fundUnitsDecimals);
-  }
+  const calcResult = calculateFundPositionsFromEntries(entries, fundUnitsDecimals, account.costBasisMethod);
   const symbolMap = calcResult.holdings;
 
   for (const e of rawEntries) {
