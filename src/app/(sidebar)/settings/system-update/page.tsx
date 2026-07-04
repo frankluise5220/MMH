@@ -400,14 +400,18 @@ export default function SystemUpdatePage() {
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingVersion ? "animate-spin" : ""}`} />
-            查询远端
+            刷新
           </button>
         </div>
 
-        {loadingVersion && !versionInfo ? (
+        {!loadingVersion && !versionInfo ? (
+          <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">
+            读取当前版本失败，请点击“刷新”重试并查询远端版本。
+          </div>
+        ) : loadingVersion && !versionInfo ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在读取版本...
+            正在读取当前版本...
           </div>
         ) : versionInfo?.ok ? (
           <div className="space-y-3 text-sm">
