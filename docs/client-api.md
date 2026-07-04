@@ -232,6 +232,7 @@ Success:
 
 Notes:
 
+- 月度浮盈计算归属在 `src/lib/invest/monthlyFloatingPnl.ts`；API route 只负责参数解析、上下文获取和 JSON 输出，不维护计算公式。
 - 接口从 `TxRecord` 重建月初和月末持仓，并使用 `FundNavCache` 中目标日期当天或之前最近一条净值估值，不依赖 `FundSnapshot`。
 - `floatingPnLRate = floatingPnL / totalCost`；`floatingPnLRateChange = endFloatingPnLRate - baselineFloatingPnLRate`。
 - `monthlyBuy` 统计确认日期落在目标月份内的基金申购交易，不包含红利再投资。
