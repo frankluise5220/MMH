@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { AccountKind } from "@prisma/client";
 
 import { SidebarClient } from "@/components/layout/SidebarClient";
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
@@ -20,11 +20,6 @@ async function getSidebarData() {
 
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as string;
-  const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
-  const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
-    cookieStore.get("mmh_credit_card_label_template")?.value,
-    creditCardLabelMode,
-  );
   const isRedUp = colorScheme === "red_up_green_down";
 
   const household = await prisma.household.findUnique({
@@ -91,7 +86,7 @@ async function getSidebarData() {
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate);
+    }, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, { suppressDuplicateCreditCardLast4: true });
 
     return {
       id: account.id,

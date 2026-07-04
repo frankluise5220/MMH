@@ -47,6 +47,17 @@ function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
+function parseOptionalPositiveNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = typeof value === "number" ? value : parseFloat(String(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parsePositiveInteger(value: unknown, fallback = 1): number {
+  const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { hidFilter } = await getHouseholdScope();
@@ -107,12 +118,20 @@ export async function POST(req: NextRequest) {
       feeRate,
       confirmDays,
       arrivalDays,
+      annualRate,
+      repaymentMethod,
+      repaymentIntervalMonths,
       skipPendingPreceding,
     } = body;
 
     const scheduledTaskType = normalizeScheduledTaskType(taskType);
     const isFundTask = scheduledTaskType === "fund_regular_invest";
     const isInsuranceTask = scheduledTaskType === "insurance_premium";
+    const isLoanTask = scheduledTaskType === "loan_repayment";
+    const requiresCashAccount = scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask;
+    const loanAnnualRate = parseOptionalPositiveNumber(annualRate);
+    const loanRepaymentMethod = typeof repaymentMethod === "string" && repaymentMethod.trim() ? repaymentMethod.trim() : "自由还款";
+    const loanRepaymentIntervalMonths = parsePositiveInteger(repaymentIntervalMonths, 1);
 
     // 保险任务需要 insuranceProductId 或 accountId
     if (!amount || !startDate || (isFundTask && (!accountId || !fundCode))) {
@@ -123,6 +142,9 @@ export async function POST(req: NextRequest) {
     }
     if (!isInsuranceTask && !isFundTask && !accountId) {
       return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    }
+    if (requiresCashAccount && !cashAccountId) {
+      return NextResponse.json({ ok: false, error: "请选择资金账户" }, { status: 400 });
     }
 
     // 为 insurance_premium 解析目标账户
@@ -151,6 +173,18 @@ export async function POST(req: NextRequest) {
       ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
       : null;
     if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "资金账户不属于当前账簿" }, { status: 403 });
+    if (requiresCashAccount && !cashAcc) return NextResponse.json({ ok: false, error: "资金账户不存在" }, { status: 400 });
+    if (scheduledTaskType === "transfer" && cashAccountId === effectiveAccountId) {
+      return NextResponse.json({ ok: false, error: "转出/转入账户不能相同" }, { status: 400 });
+    }
+
+    const taskTitle =
+      fundName ||
+      (isFundTask
+        ? fundCode
+        : scheduledTaskType === "transfer" && cashAcc
+          ? `${cashAcc.name} -> ${targetAcc.name}`
+          : targetAcc.name || scheduledTaskTypeLabel(scheduledTaskType));
 
     const totalRunsInt = totalRuns ? parseInt(totalRuns) : null;
     const normalizedInterval = normalizeIntervalSchedule(normalizeIntervalUnit(intervalUnit), parseInt(intervalValue) || 1);
@@ -184,7 +218,7 @@ export async function POST(req: NextRequest) {
           cashAccountId: cashAccountId || null,
           cashAccountName: cashAcc?.name || null,
           fundCode: isFundTask ? fundCode : scheduledTaskType,
-          fundName: fundName || (isFundTask ? fundCode : scheduledTaskTypeLabel(scheduledTaskType)),
+          fundName: taskTitle,
           fundProductType: isFundTask ? (fundProductType || targetAcc.investProductType || null) : null,
           amount: amountNum,
           intervalUnit: intervalUnitValue,
@@ -201,10 +235,13 @@ export async function POST(req: NextRequest) {
           arrivalDays: safeArrivalDays,
           memo: encodeScheduledTaskMemo({
             type: scheduledTaskType,
-            title: fundName || (isFundTask ? fundCode : scheduledTaskTypeLabel(scheduledTaskType)),
+            title: taskTitle,
             fromAccountId: cashAccountId || null,
             toAccountId: effectiveAccountId,
             insuranceProductId: insuranceProductId || null,
+            annualRate: isLoanTask ? loanAnnualRate : null,
+            repaymentMethod: isLoanTask ? loanRepaymentMethod : null,
+            repaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding !== false : false,
         },
@@ -268,6 +305,9 @@ export async function PUT(req: NextRequest) {
       arrivalDays,
       cashAccountId,
       memo,
+      annualRate,
+      repaymentMethod,
+      repaymentIntervalMonths,
       skipPendingPreceding,
     } = body;
 
@@ -333,6 +373,25 @@ export async function PUT(req: NextRequest) {
     const existingTask = decodeScheduledTaskMemo(existing.memo);
     const nextTaskType = normalizeScheduledTaskType(taskType || existingTask.type);
     const isFundTask = nextTaskType === "fund_regular_invest";
+    const isLoanTask = nextTaskType === "loan_repayment";
+    const nextAnnualRate =
+      annualRate !== undefined ? parseOptionalPositiveNumber(annualRate) : existingTask.annualRate ?? null;
+    const nextRepaymentMethod =
+      repaymentMethod !== undefined && String(repaymentMethod).trim()
+        ? String(repaymentMethod).trim()
+        : existingTask.repaymentMethod ?? "自由还款";
+    const nextRepaymentIntervalMonths =
+      repaymentIntervalMonths !== undefined ? parsePositiveInteger(repaymentIntervalMonths, 1) : existingTask.repaymentIntervalMonths ?? 1;
+    const requiresCashAccount = nextTaskType === "transfer" || nextTaskType === "loan_repayment" || nextTaskType === "insurance_premium";
+    const effectiveAccountIdForValidation = accountId || existing.accountId;
+    const effectiveCashAccountIdForValidation =
+      cashAccountId != null ? cashAccountId || null : existing.cashAccountId;
+    if (requiresCashAccount && !effectiveCashAccountIdForValidation) {
+      return NextResponse.json({ ok: false, error: "请选择资金账户" }, { status: 400 });
+    }
+    if (nextTaskType === "transfer" && effectiveCashAccountIdForValidation === effectiveAccountIdForValidation) {
+      return NextResponse.json({ ok: false, error: "转出/转入账户不能相同" }, { status: 400 });
+    }
 
     if (accountId != null) {
       updateData.accountId = accountId;
@@ -434,6 +493,9 @@ export async function PUT(req: NextRequest) {
       fromAccountId: cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
       toAccountId: accountId || existing.accountId,
       insuranceProductId: insuranceProductId || existingTask.insuranceProductId || null,
+      annualRate: isLoanTask ? nextAnnualRate : null,
+      repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
+      repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
     });
     if (!isFundTask) {
       updateData.fundCode = nextTaskType;

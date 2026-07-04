@@ -6,7 +6,7 @@ import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
-import { useAccountSSFilter } from "./TransactionFormModal";
+import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -379,13 +379,17 @@ export function WealthFormModal({
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name, extra) => {
-            const kind = extra?.kind || "investment";
-            setCashAccountList((prev) => [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }]);
-            setInvestmentAccountList((prev) => [...prev, { id, label: name, subLabel: kindLabel(kind) }]);
-            setLocalCashSSOpts((prev) => (prev ? [...prev, { id, label: name, subLabel: kindLabel("bank_debit") }] : prev));
-            setLocalInvestSSOpts((prev) => (prev ? [...prev, { id, label: name, subLabel: kindLabel(kind) }] : prev));
-            if (nestedEntityType === "cash-account") setCashAccountId(id);
-            else setToAccountId(id);
+            const kind = extra?.kind || (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
+            const option = { id, label: name, subLabel: kindLabel(kind) };
+            if (nestedEntityType === "cash-account") {
+              setCashAccountList((prev) => [...prev, option]);
+              setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
+              setCashAccountId(id);
+            } else {
+              setInvestmentAccountList((prev) => [...prev, option]);
+              setLocalInvestSSOpts((prev) => (prev ? [...prev, option] : prev));
+              setToAccountId(id);
+            }
             setNestedEntityType(null);
           }}
           extraFields={{

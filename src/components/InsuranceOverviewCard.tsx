@@ -53,7 +53,7 @@ export function InsuranceOverviewCard({
         </div>
         <Link href="/insurance" className="text-xs text-blue-600 hover:text-blue-800">查看保险</Link>
       </div>
-      <div className="grid grid-cols-2 gap-3 px-4 py-4">
+      <div className="grid grid-cols-2 gap-3 px-4 py-4 lg:grid-cols-4">
         <MetricCard label="被保险人数" value={insuranceOverview ? `${insuranceOverview.insuredPersonCount} 人` : "0 人"} />
         <MetricCard label="保险产品" value={insuranceOverview ? `${insuranceOverview.productCount} 个` : "0 个"} />
         <MetricCard label="投保金额" value={formatMoneyYuan(insuranceOverview?.totalPremium ?? 0)} valueClass={directionalClass(-(insuranceOverview?.totalPremium ?? 0), isRedUp)} />

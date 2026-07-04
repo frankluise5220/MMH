@@ -5,8 +5,9 @@ import { useState, useEffect, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { CalcInput } from "./CalcInput";
+import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
-import { useAccountSSFilter } from "./TransactionFormModal";
+import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
@@ -36,6 +37,9 @@ const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; label: string }> = [
   { value: "transfer", label: "转账" },
   { value: "insurance_premium", label: "保费缴费" },
 ];
+
+const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", "自由还款", "先还利息一次性还本"];
+const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", "先还利息一次性还本"]);
 
 type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string }>;
@@ -78,7 +82,7 @@ function positiveIntervalValue(value: string) {
 }
 
 function schedulePreview(unit: string, value: string, executionDay: string, locked = false) {
-  if (locked) return "每年一次";
+  if (locked && unit === "year") return "每年一次";
   const interval = positiveIntervalValue(value);
   const weekday = WEEKDAY_OPTIONS.find((option) => option.value === executionDay)?.label ?? "";
 
@@ -148,6 +152,9 @@ interface RegularInvestFormData {
   feeRate: string;
   confirmDays: string;
   arrivalDays: string;
+  annualRate: string;
+  repaymentMethod: string;
+  repaymentIntervalMonths: string;
   skipPendingPreceding: boolean;
 }
 
@@ -172,6 +179,9 @@ interface EditData {
   feeRate: number | null;
   confirmDays: number | null;
   arrivalDays: number | null;
+  annualRate?: number | null;
+  repaymentMethod?: string | null;
+  repaymentIntervalMonths?: number | null;
   skipPendingPreceding: boolean;
 }
 
@@ -310,6 +320,9 @@ export function RegularInvestForm({
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "1",
         arrivalDays: editData.arrivalDays != null ? String(editData.arrivalDays) : "2",
+        annualRate: editData.annualRate != null ? String(editData.annualRate) : "",
+        repaymentMethod: editData.repaymentMethod || "自由还款",
+        repaymentIntervalMonths: editData.repaymentIntervalMonths != null ? String(editData.repaymentIntervalMonths) : "1",
         skipPendingPreceding: editData.skipPendingPreceding !== undefined ? editData.skipPendingPreceding : true,
       };
     }
@@ -332,6 +345,9 @@ export function RegularInvestForm({
       feeRate: prefilledFeeRate != null ? String(prefilledFeeRate) : "0",
       confirmDays: prefilledConfirmDays != null ? String(prefilledConfirmDays) : "1",
       arrivalDays: prefilledArrivalDays != null ? String(prefilledArrivalDays) : "2",
+      annualRate: "",
+      repaymentMethod: "自由还款",
+      repaymentIntervalMonths: "1",
       skipPendingPreceding: true,
     };
   }
@@ -509,12 +525,33 @@ export function RegularInvestForm({
       window.alert("请选择资金账户");
       return;
     }
+    if (formData.taskType === "transfer" && formData.accountId === formData.cashAccountId) {
+      window.alert("转出/转入账户不能相同");
+      return;
+    }
+    const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod);
+    const loanAnnualRate = formData.annualRate.trim() ? parseFloat(formData.annualRate) : null;
+    const loanRepaymentIntervalMonths = parseInt(formData.repaymentIntervalMonths || "1", 10);
+    if (isFixedLoanRepayment) {
+      if (loanAnnualRate == null || !Number.isFinite(loanAnnualRate) || loanAnnualRate <= 0) {
+        window.alert("固定还款方式需要填写年利率");
+        return;
+      }
+      if (!Number.isFinite(loanRepaymentIntervalMonths) || loanRepaymentIntervalMonths <= 0) {
+        window.alert("请填写正确的还款周期");
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
       const normalizedInterval = normalizeBiweekFormData(formData.intervalUnit, formData.intervalValue);
-      const effectiveIntervalUnit = formData.taskType === "insurance_premium" ? "year" : normalizedInterval.intervalUnit;
-      const effectiveIntervalValue = formData.taskType === "insurance_premium" ? "1" : normalizedInterval.intervalValue;
+      const effectiveIntervalUnit = formData.taskType === "insurance_premium" ? "year" : formData.taskType === "loan_repayment" ? "month" : normalizedInterval.intervalUnit;
+      const effectiveIntervalValue = formData.taskType === "insurance_premium"
+        ? "1"
+        : formData.taskType === "loan_repayment"
+          ? String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1)
+          : normalizedInterval.intervalValue;
       const serializedExecutionDay = serializeExecutionDay(effectiveIntervalUnit, formData.executionDay);
       const serializedTotalRuns = serializeTotalRunsFromRemaining(
         formData.totalRuns,
@@ -544,6 +581,9 @@ export function RegularInvestForm({
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
           fd.set("arrivalDays", formData.arrivalDays.trim() ? formData.arrivalDays : "");
+          fd.set("annualRate", formData.annualRate.trim());
+          fd.set("repaymentMethod", formData.repaymentMethod);
+          fd.set("repaymentIntervalMonths", String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1));
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
           const res = await action(fd);
           if (!res.ok) {
@@ -571,6 +611,9 @@ export function RegularInvestForm({
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
             arrivalDays: formData.arrivalDays !== "" ? parseInt(formData.arrivalDays) : 2,
+            annualRate: loanAnnualRate,
+            repaymentMethod: formData.repaymentMethod,
+            repaymentIntervalMonths: Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1,
             skipPendingPreceding: formData.skipPendingPreceding,
             action: "update",
           };
@@ -611,6 +654,9 @@ export function RegularInvestForm({
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", formData.confirmDays.trim() ? formData.confirmDays : "");
           fd.set("arrivalDays", formData.arrivalDays.trim() ? formData.arrivalDays : "");
+          fd.set("annualRate", formData.annualRate.trim());
+          fd.set("repaymentMethod", formData.repaymentMethod);
+          fd.set("repaymentIntervalMonths", String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1));
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
 
           const res = await action(fd);
@@ -640,6 +686,9 @@ export function RegularInvestForm({
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: formData.confirmDays !== "" ? parseInt(formData.confirmDays) : 1,
             arrivalDays: formData.arrivalDays !== "" ? parseInt(formData.arrivalDays) : 2,
+            annualRate: loanAnnualRate,
+            repaymentMethod: formData.repaymentMethod,
+            repaymentIntervalMonths: Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1,
             skipPendingPreceding: formData.skipPendingPreceding,
           };
 
@@ -688,9 +737,10 @@ export function RegularInvestForm({
   const isLoanTask = formData.taskType === "loan_repayment";
   const isTransferTask = formData.taskType === "transfer";
   const isInsuranceTask = formData.taskType === "insurance_premium";
-  const scheduleLocked = isInsuranceTask;
-  const displayedIntervalUnit = scheduleLocked ? "year" : formData.intervalUnit;
-  const scheduleText = schedulePreview(displayedIntervalUnit, scheduleLocked ? "1" : formData.intervalValue, formData.executionDay, scheduleLocked);
+  const scheduleLocked = isInsuranceTask || isLoanTask;
+  const displayedIntervalUnit = isInsuranceTask ? "year" : isLoanTask ? "month" : formData.intervalUnit;
+  const displayedIntervalValue = isInsuranceTask ? "1" : isLoanTask ? formData.repaymentIntervalMonths || "1" : formData.intervalValue;
+  const scheduleText = schedulePreview(displayedIntervalUnit, displayedIntervalValue, formData.executionDay, scheduleLocked);
   const startDateLocked = mode === "edit" && !!editData && ((editData.executedRuns ?? 0) > 0 || !!editData.lastRunDate);
   const readonlyTransferFromLabel =
     cashOptions.find((option) => option.id === formData.cashAccountId)?.label
@@ -715,6 +765,9 @@ export function RegularInvestForm({
       feeRate: taskType === "fund_regular_invest" ? prev.feeRate : "0",
       confirmDays: taskType === "fund_regular_invest" ? prev.confirmDays : "0",
       arrivalDays: taskType === "fund_regular_invest" ? prev.arrivalDays : "0",
+      annualRate: taskType === "loan_repayment" ? prev.annualRate : "",
+      repaymentMethod: taskType === "loan_repayment" ? prev.repaymentMethod : "自由还款",
+      repaymentIntervalMonths: taskType === "loan_repayment" ? prev.repaymentIntervalMonths : "1",
       skipPendingPreceding: taskType === "fund_regular_invest" ? prev.skipPendingPreceding : false,
     }));
   }
@@ -1051,7 +1104,7 @@ export function RegularInvestForm({
                     <input
                       inputMode="numeric"
                       min="1"
-                      value={scheduleLocked ? "1" : formData.intervalValue}
+                      value={scheduleLocked ? displayedIntervalValue : formData.intervalValue}
                       onChange={(e) => setFormData(d => ({ ...d, intervalValue: e.target.value }))}
                       disabled={scheduleLocked}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
@@ -1099,23 +1152,19 @@ export function RegularInvestForm({
               <div className={`grid gap-3 ${mode === "edit" ? "grid-cols-2" : "grid-cols-1"}`}>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">生效日期</div>
-                  <input
-                    type="date"
+                  <DateStepper
                     value={formData.startDate}
-                    onChange={(e) => setFormData(d => ({ ...d, startDate: e.target.value }))}
+                    onChange={(value) => setFormData(d => ({ ...d, startDate: value }))}
                     disabled={startDateLocked}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                   />
                   {startDateLocked ? <div className="text-[11px] text-slate-400">已生成记录后不可修改生效日期。</div> : null}
                 </div>
                 {mode === "edit" ? (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{isInsuranceTask ? "下次缴费日期" : "下次执行日期"}</div>
-                    <input
-                      type="date"
+                    <DateStepper
                       value={formData.nextRunDate}
-                      onChange={(e) => setFormData(d => ({ ...d, nextRunDate: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      onChange={(value) => setFormData(d => ({ ...d, nextRunDate: value }))}
                     />
                   </div>
                 ) : null}
@@ -1124,11 +1173,9 @@ export function RegularInvestForm({
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">停止日期（可选）</div>
-                  <input
-                    type="date"
+                  <DateStepper
                     value={formData.endDate}
-                    onChange={(e) => setFormData(d => ({ ...d, endDate: e.target.value }))}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    onChange={(value) => setFormData(d => ({ ...d, endDate: value }))}
                   />
                 </div>
                 <div className="space-y-1">
@@ -1153,6 +1200,45 @@ export function RegularInvestForm({
                     className="w-3.5 h-3.5 accent-blue-600" />
                   跳过暂停申购与无净值间隙
                 </label>
+              )}
+
+              {isLoanTask && (
+                <div className="grid grid-cols-3 gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">还款方式</div>
+                    <select
+                      value={formData.repaymentMethod}
+                      onChange={(e) => setFormData(d => ({ ...d, repaymentMethod: e.target.value }))}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    >
+                      {LOAN_REPAYMENT_METHOD_OPTIONS.map((method) => (
+                        <option key={method} value={method}>{method}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">年利率 (%)</div>
+                    <input
+                      inputMode="decimal"
+                      step="0.001"
+                      value={formData.annualRate}
+                      onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
+                      placeholder={FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? "必填" : "可选"}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">还款周期（月）</div>
+                    <input
+                      inputMode="numeric"
+                      min="1"
+                      value={formData.repaymentIntervalMonths}
+                      onChange={(e) => setFormData(d => ({ ...d, repaymentIntervalMonths: e.target.value }))}
+                      placeholder="1"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                </div>
               )}
 
               <div className={`grid gap-3 ${isFundTask ? "grid-cols-2" : "grid-cols-1"}`}>

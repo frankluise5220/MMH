@@ -63,6 +63,9 @@ type RegularInvestPlanView = {
   taskFromAccountId?: string | null;
   taskToAccountId?: string | null;
   taskInsuranceProductId?: string | null;
+  taskAnnualRate?: number | null;
+  taskRepaymentMethod?: string | null;
+  taskRepaymentIntervalMonths?: number | null;
   accountId: string;
   accountName?: string | null;
   accountLabel?: string | null;
@@ -1165,6 +1168,9 @@ export function RegularInvestClient({
           feeRate: editPlan.feeRate ?? null,
           confirmDays: editPlan.confirmDays ?? null,
           arrivalDays: editPlan.arrivalDays ?? null,
+          annualRate: editPlan.taskAnnualRate ?? null,
+          repaymentMethod: editPlan.taskRepaymentMethod ?? null,
+          repaymentIntervalMonths: editPlan.taskRepaymentIntervalMonths ?? null,
           skipPendingPreceding: editPlan.skipPendingPreceding ?? true,
         } : undefined}
         accountId={editPlan?.accountId ?? investmentAccounts[0]?.id ?? ""}

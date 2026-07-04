@@ -1,10 +1,12 @@
 import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type Account, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
+import { formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
+import { calcLoanRunPartsWithRateAdjustments, calcLoanScheduledAmountForPeriodStart, roundLoanMoney } from "@/lib/loan-repayment";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel, type ScheduledTaskPayload, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 type AccountRef = Pick<Account, "id" | "name">;
@@ -81,6 +83,15 @@ export async function executeNonFundScheduledTaskPlan(params: {
   if (!isNonFundScheduledTask(task.type)) {
     throw new Error("executeNonFundScheduledTaskPlan only accepts non-fund scheduled tasks");
   }
+  const loanRateAdjustments = task.type === "loan_repayment"
+    ? resolveLoanRateAdjustments({
+        tableAdjustments: (await listLoanRateAdjustmentsByAccountIds({
+          householdId,
+          accountIds: [plan.accountId],
+        })).get(plan.accountId),
+        memoAdjustments: task.loanRateAdjustments,
+      })
+    : [];
 
   const { targetAcc, cashAcc } = await loadTaskAccounts(plan);
   if (!targetAcc) throw new Error("目标账户不存在");
@@ -175,10 +186,98 @@ export async function executeNonFundScheduledTaskPlan(params: {
   );
   const nextStatus = willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active;
 
+  const initialDebtAccount =
+    task.type === "loan_repayment"
+      ? await prisma.account.findUnique({
+          where: { id: targetAcc.id },
+          select: { balance: true },
+        })
+      : null;
+  let rollingRemainingPrincipal = Math.abs(toNumber(initialDebtAccount?.balance ?? 0));
+  let rollingPreviousRunDate = latestExistingDate
+    ? startOfDayUtc(latestExistingDate)
+    : plan.lastRunDate
+      ? startOfDayUtc(plan.lastRunDate)
+      : startOfDayUtc(plan.startDate);
+  let rollingScheduledAmount = task.type === "loan_repayment"
+    ? calcLoanScheduledAmountForPeriodStart({
+        repaymentMethod: task.repaymentMethod,
+        baseAnnualRate: task.annualRate,
+        adjustments: loanRateAdjustments,
+        intervalMonths: task.repaymentIntervalMonths,
+        scheduledAmount: amountNum,
+        remainingPrincipal: rollingRemainingPrincipal,
+        remainingRuns: plan.totalRuns ? Math.max(1, plan.totalRuns - plan.executedRuns) : 1,
+        periodStartDate: formatDateUtc(rollingPreviousRunDate),
+      })
+    : amountNum;
   const affectedAccountIds = new Set<string>([cashAcc.id, targetAcc.id]);
   await prisma.$transaction(async (tx) => {
-    for (const runDate of datesToProcess) {
-      if (task.type === "transfer" || task.type === "loan_repayment") {
+    for (const [runIndex, runDate] of datesToProcess.entries()) {
+      if (task.type === "loan_repayment") {
+        const remainingRunsForThisRun = plan.totalRuns
+          ? Math.max(1, plan.totalRuns - plan.executedRuns - runIndex)
+          : 1;
+        const runDateKey = formatDateUtc(runDate);
+        const parts = calcLoanRunPartsWithRateAdjustments({
+          repaymentMethod: task.repaymentMethod,
+          baseAnnualRate: task.annualRate,
+          adjustments: loanRateAdjustments,
+          intervalMonths: task.repaymentIntervalMonths,
+          scheduledAmount: rollingScheduledAmount,
+          remainingPrincipal: rollingRemainingPrincipal,
+          remainingRuns: remainingRunsForThisRun,
+          previousRunDate: formatDateUtc(rollingPreviousRunDate),
+          runDate: runDateKey,
+        });
+        rollingScheduledAmount = parts.scheduledAmount;
+        rollingRemainingPrincipal = Math.max(0, roundLoanMoney(rollingRemainingPrincipal - parts.principal));
+        rollingPreviousRunDate = runDate;
+
+        if (parts.principal > 0) {
+          await tx.txRecord.create({
+            data: {
+              householdId,
+              type: TransactionType.transfer,
+              date: runDate,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              toAccountId: targetAcc.id,
+              toAccountName: targetAcc.name,
+              amount: -parts.principal,
+              source: "scheduled_task",
+              regularInvestPlanId: plan.id,
+              note: `${getTaskNote(task.type)}：本金`,
+            },
+          });
+        }
+
+        if (parts.interest > 0) {
+          const interestCategory = await tx.category.findFirst({
+            where: {
+              householdId,
+              type: "expense",
+              name: "利息支出",
+            },
+            select: { id: true, name: true },
+          });
+          await tx.txRecord.create({
+            data: {
+              householdId,
+              type: TransactionType.expense,
+              date: runDate,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              amount: -parts.interest,
+              categoryId: interestCategory?.id ?? null,
+              categoryName: interestCategory?.name ?? "利息支出",
+              source: "scheduled_task",
+              regularInvestPlanId: plan.id,
+              note: `${getTaskNote(task.type)}：利息`,
+            },
+          });
+        }
+      } else if (task.type === "transfer") {
         await tx.txRecord.create({
           data: {
             householdId,

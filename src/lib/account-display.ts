@@ -16,6 +16,7 @@ export type CreditCardLabelMode = "short_last4" | "full_name";
 
 export const DEFAULT_CREDIT_CARD_LABEL_TEMPLATE = "{机构简称}·{信用卡后4位}";
 export const FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE = "{机构名称}·{信用卡名称}";
+export const SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE = "{机构简称}·{信用卡名称}·{信用卡后4位}";
 
 export type AccountDisplayOption = {
   id: string;
@@ -93,6 +94,7 @@ export function formatCreditCardDisplayName(input: {
   numberMasked?: string | null;
   template?: string | null;
   mode?: CreditCardLabelMode;
+  suppressDuplicateLast4?: boolean;
 }) {
   const accountName = input.accountName.trim();
   const shortInstitutionNameRaw = input.institution?.shortName?.trim() ?? "";
@@ -100,6 +102,7 @@ export function formatCreditCardDisplayName(input: {
   const shortInstitutionName = shortInstitutionNameRaw || fullInstitutionName;
   const institutionName = fullInstitutionName || shortInstitutionNameRaw;
   const last4Raw = (input.numberMasked ?? "").trim();
+  const last4 = input.suppressDuplicateLast4 && last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
   const template = normalizeCreditCardLabelTemplate(input.template, input.mode);
 
   const rendered = template
@@ -108,8 +111,8 @@ export function formatCreditCardDisplayName(input: {
     .replaceAll("{机构名称}", institutionName)
     .replaceAll("{信用卡名称}", accountName)
     .replaceAll("{账户名称}", accountName)
-    .replaceAll("{信用卡后4位}", last4Raw)
-    .replaceAll("{后4位}", last4Raw)
+    .replaceAll("{信用卡后4位}", last4)
+    .replaceAll("{后4位}", last4)
     .replace(/[·]{2,}/g, "·")
     .replace(/(^[·\s]+|[·\s]+$)/g, "")
     .replace(/\s{2,}/g, " ")
@@ -118,7 +121,7 @@ export function formatCreditCardDisplayName(input: {
   if (rendered) return rendered;
 
   if (input.mode === "short_last4") {
-    if (shortInstitutionName && last4Raw) return `${shortInstitutionName}·${last4Raw}`;
+    if (shortInstitutionName && last4) return `${shortInstitutionName}·${last4}`;
     return accountName || shortInstitutionName || institutionName;
   }
 
@@ -128,6 +131,7 @@ export function formatCreditCardDisplayName(input: {
 export function buildAccountDisplayOption(
   account: AccountDisplaySource,
   creditCardLabelTemplateOrMode: string | CreditCardLabelMode = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  options?: { suppressDuplicateCreditCardLast4?: boolean },
 ): AccountDisplayOption {
   const institutionName = formatDisplayInstitutionName(account.Institution, true);
   const groupId = account.groupId ?? account.AccountGroup?.id ?? "";
@@ -144,6 +148,7 @@ export function buildAccountDisplayOption(
           institution: account.Institution,
           numberMasked: account.numberMasked,
           template: creditCardLabelTemplate,
+          suppressDuplicateLast4: options?.suppressDuplicateCreditCardLast4,
         })
       : account.kind === "insurance"
         ? account.name.trim()

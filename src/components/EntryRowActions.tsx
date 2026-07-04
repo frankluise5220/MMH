@@ -38,14 +38,20 @@ type EditPayload = {
 export function EntryRowActions({
   entryId,
   edit,
+  customEditEvent,
 }: {
   entryId: string;
   edit?: Omit<EditPayload, "entryId">;
+  customEditEvent?: { name: string; detail: Record<string, unknown> };
 }) {
   const [deleting, setDeleting] = useState(false);
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
+    if (customEditEvent) {
+      window.dispatchEvent(new CustomEvent(customEditEvent.name, { detail: customEditEvent.detail }));
+      return;
+    }
     if (!edit) return;
     const requestId = `edit-${entryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const detail = { requestId, entryId, ...edit } satisfies EditPayload;
@@ -103,7 +109,7 @@ export function EntryRowActions({
 
   return (
     <div className="flex items-center gap-1">
-      {edit ? (
+      {edit || customEditEvent ? (
         <button
           className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
           type="button"

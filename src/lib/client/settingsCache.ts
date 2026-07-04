@@ -2,12 +2,14 @@
 
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
+export type SettingsCounterparty = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsUser = { id: string; name: string };
 export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; isSystem?: boolean };
 export type SettingsAccountData = {
   accounts: unknown[];
   groups: SettingsAccountGroup[];
   institutions: SettingsInstitution[];
+  counterparties?: SettingsCounterparty[];
   users?: SettingsUser[];
 };
 export type SettingsTag = { id: string; name: string; color: string | null };
@@ -50,6 +52,7 @@ function seedBootstrapCaches(value: SettingsBootstrapData) {
     accounts: value.accounts,
     groups: value.groups,
     institutions: value.institutions,
+    counterparties: value.counterparties,
     users: value.users,
   });
   setCacheValue(CATEGORIES_KEY, value.categories);
@@ -74,6 +77,7 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],
+        counterparties: data.counterparties || [],
         users: data.users || [],
         categories: data.categories || [],
         tags: data.tags || [],
@@ -100,6 +104,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
         accounts: bootstrap.accounts,
         groups: bootstrap.groups,
         institutions: bootstrap.institutions,
+        counterparties: bootstrap.counterparties,
         users: bootstrap.users,
       };
     }
@@ -116,6 +121,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],
+        counterparties: data.counterparties || [],
         users: data.users || [],
       };
       cache.set(ACCOUNT_DATA_KEY, { value, updatedAt: Date.now() });

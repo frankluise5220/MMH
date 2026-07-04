@@ -5,7 +5,6 @@ import type { ElementType } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
-  Banknote,
   CreditCard,
   HandCoins,
   PiggyBank,
@@ -173,9 +172,10 @@ export function OverviewDashboard({
                 {formatMoneyYuan(netWorth)}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
               <MetricCard label="总负债" value={formatMoneyYuan(totals.liabilities)} valueClass={liabilityClass(totals.liabilities, isRedUp)} />
+              <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
               <MetricCard label="本月净流入" value={formatMoneyYuan(monthNet)} valueClass={directionalClass(monthNet, isRedUp)} />
             </div>
           </div>
@@ -195,7 +195,7 @@ export function OverviewDashboard({
                 cost={investCost}
                 floatingPnL={investFloatingPnL}
               />
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
                 <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
                 <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
@@ -243,7 +243,7 @@ export function OverviewDashboard({
                   />
                 ))}
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
                 {assetDistribution.map((item, index) => (
                   <div key={item.kind} className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
                     <span className={`h-2.5 w-2.5 rounded-full ${distributionBarClass(index)}`} />
@@ -255,7 +255,7 @@ export function OverviewDashboard({
                   </div>
                 ))}
                 {assetDistribution.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-400 sm:col-span-2">
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-400 lg:col-span-4">
                     暂无可统计的日常账户
                   </div>
                 )}
@@ -374,9 +374,9 @@ export function OverviewDashboard({
 
 function MetricCard({ label, value, valueClass = "text-slate-900" }: { label: string; value: string; valueClass?: string }) {
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3">
+    <div className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3">
       <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
+      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
     </div>
   );
 }
@@ -395,7 +395,6 @@ function InvestmentCostProfitBar({
   const isLoss = floatingPnL < 0;
   const pnlLabel = isLoss ? "亏损" : "收益";
   const pnlClass = isLoss ? "bg-emerald-500" : "bg-red-500";
-  const pnlTextClass = isLoss ? "text-emerald-700" : "text-red-600";
 
   if (total <= 0) {
     return (

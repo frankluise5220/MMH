@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
 export type SmartSelectOption = {
+  /** Selectable option IDs should be real entity IDs. Use synthetic IDs only for non-selectable headers/groups. */
   id: string;
   label: string;
   subLabel?: string;
@@ -28,6 +29,25 @@ export type SmartSelectOption = {
   isGroup?: boolean;
   parentId?: string;
 };
+
+const SMART_SELECT_CREATED_EVENT = "mmh:smart-select:created";
+
+function mergeSmartSelectOptions(base: SmartSelectOption[], extra: SmartSelectOption[]) {
+  const merged = [...base];
+  const seen = new Set(merged.map((option) => option.id));
+  for (const option of extra) {
+    if (!seen.has(option.id)) {
+      merged.push(option);
+      seen.add(option.id);
+    }
+  }
+  return merged;
+}
+
+export function notifySmartSelectOptionCreated(option: SmartSelectOption) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<SmartSelectOption>(SMART_SELECT_CREATED_EVENT, { detail: option }));
+}
 
 type SearchBehavior = boolean | "auto";
 type HierarchyBehavior = boolean | "auto";
@@ -301,9 +321,23 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
 
 export function SmartSelect(props: SmartSelectProps) {
   const { mode, value, onChange, options, placeholder } = props;
+  const [createdOptions, setCreatedOptions] = useState<SmartSelectOption[]>([]);
+  const selectedCreatedOptions = useMemo(() => {
+    const selectedIds = new Set(
+      mode === "single"
+        ? (value ? [value] : [])
+        : (value as string[]),
+    );
+    if (selectedIds.size === 0) return [];
+    return createdOptions.filter((option) => selectedIds.has(option.id));
+  }, [createdOptions, mode, value]);
+  const effectiveOptions = useMemo(
+    () => mergeSmartSelectOptions(options, selectedCreatedOptions),
+    [options, selectedCreatedOptions],
+  );
   const normalizedBehavior = mode === "single"
-    ? normalizeSingleBehavior(props, options)
-    : normalizeMultiBehavior(props, options);
+    ? normalizeSingleBehavior(props, effectiveOptions)
+    : normalizeMultiBehavior(props, effectiveOptions);
 
   const {
     hierarchy,
@@ -321,11 +355,11 @@ export function SmartSelect(props: SmartSelectProps) {
 
   const listId = useId();
   const selectedOption = mode === "single"
-    ? options.find((option) => option.id === value)
+    ? effectiveOptions.find((option) => option.id === value)
     : undefined;
   const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : "";
-  const groupChildCounts = useMemo(() => buildGroupChildCounts(options), [options]);
-  const selectableOptions = useMemo(() => options.filter(isSelectable), [options]);
+  const groupChildCounts = useMemo(() => buildGroupChildCounts(effectiveOptions), [effectiveOptions]);
+  const selectableOptions = useMemo(() => effectiveOptions.filter(isSelectable), [effectiveOptions]);
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -344,9 +378,9 @@ export function SmartSelect(props: SmartSelectProps) {
   const inlineCreateInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(() => {
-    if (!searchable) return options;
-    return hierarchy ? filterWithGroups(options, search) : filterFlatOptions(options, search);
-  }, [hierarchy, options, search, searchable]);
+    if (!searchable) return effectiveOptions;
+    return hierarchy ? filterWithGroups(effectiveOptions, search) : filterFlatOptions(effectiveOptions, search);
+  }, [effectiveOptions, hierarchy, search, searchable]);
 
   const visible = useMemo(
     () => buildVisibleOptions(filtered, collapsedGroups, search.trim().length > 0, hierarchy),
@@ -368,7 +402,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
     const estimatedHeight = (searchable ? 42 : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? 42 : 0)
-      + Math.min(visible.length || options.length || 1, 7) * 36
+      + Math.min(visible.length || effectiveOptions.length || 1, 7) * 36
       + 16;
     const below = window.innerHeight - rect.bottom;
     const above = rect.top;
@@ -377,17 +411,17 @@ export function SmartSelect(props: SmartSelectProps) {
       ? Math.max(8, rect.top - estimatedHeight - 4)
       : rect.bottom + 4;
     setDropdownPos({ top, left, width });
-  }, [isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, options.length, searchable, visible.length]);
+  }, [effectiveOptions.length, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
-      options,
+      effectiveOptions,
       mode === "single" ? value : "",
       hierarchy && collapsibleGroups,
     );
     const nextFiltered = searchable
-      ? (hierarchy ? filterWithGroups(options, "") : filterFlatOptions(options, ""))
-      : options;
+      ? (hierarchy ? filterWithGroups(effectiveOptions, "") : filterFlatOptions(effectiveOptions, ""))
+      : effectiveOptions;
     const nextVisible = buildVisibleOptions(nextFiltered, nextCollapsed, false, hierarchy);
 
     setCollapsedGroups(nextCollapsed);
@@ -396,7 +430,7 @@ export function SmartSelect(props: SmartSelectProps) {
     setOpen(true);
     setFocusedIndex(findInitialFocusedIndex(nextVisible, mode, value, preferredIndex));
     window.requestAnimationFrame(() => calcPosition());
-  }, [calcPosition, collapsibleGroups, hierarchy, mode, options, searchable, value]);
+  }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, mode, searchable, value]);
 
   const toggleGroup = useCallback((groupId: string) => {
     setCollapsedGroups((prev) => {
@@ -448,6 +482,16 @@ export function SmartSelect(props: SmartSelectProps) {
     input?.focus();
   }, [open, searchable]);
 
+  useEffect(() => {
+    const handleCreated = (event: Event) => {
+      const option = (event as CustomEvent<SmartSelectOption>).detail;
+      if (!option?.id || !option.label) return;
+      setCreatedOptions((prev) => mergeSmartSelectOptions(prev, [option]));
+    };
+    window.addEventListener(SMART_SELECT_CREATED_EVENT, handleCreated);
+    return () => window.removeEventListener(SMART_SELECT_CREATED_EVENT, handleCreated);
+  }, []);
+
   function selectSingle(id: string) {
     (onChange as (id: string) => void)(id);
     closeDropdown();
@@ -467,6 +511,7 @@ export function SmartSelect(props: SmartSelectProps) {
     try {
       if (isMultiInlineCreate) {
         const newOption = await isMultiInlineCreate.onCreate(newName.trim(), newColor);
+        setCreatedOptions((prev) => mergeSmartSelectOptions(prev, [newOption]));
         toggleMulti(newOption.id);
         isMultiInlineCreate.onCreated?.(newOption);
       } else {
@@ -916,7 +961,7 @@ export function SmartSelect(props: SmartSelectProps) {
         ) : (
           <MultiTriggerDisplay
             value={value as string[]}
-            options={options}
+            options={effectiveOptions}
             placeholder={placeholder}
           />
         )}

@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
-import { useAccountSSFilter } from "@/components/TransactionFormModal";
+import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { fetchSettingsAccountData, fetchSettingsCategories } from "@/lib/client/settingsCache";
 
@@ -52,6 +52,12 @@ type BookAccount = {
 type BookInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 type BookUser = { id: string; name: string };
 type BookCategory = { id: string; name: string; type: string; parentId?: string | null };
+type BookLookups = {
+  accounts: BookAccount[];
+  institutions: BookInstitution[];
+  users: BookUser[];
+  categories: BookCategory[];
+};
 type MailItem = { uid: number; subject: string; from: string; date: string };
 type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
 type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[] };
@@ -203,6 +209,7 @@ export default function EmailSettingsPage() {
   const [bookInstitutions, setBookInstitutions] = useState<BookInstitution[]>([]);
   const [bookUsers, setBookUsers] = useState<BookUser[]>([]);
   const [bookCategories, setBookCategories] = useState<BookCategory[]>([]);
+  const bookLookupsRef = useRef<BookLookups>({ accounts: [], institutions: [], users: [], categories: [] });
   const [accountDraft, setAccountDraft] = useState<AccountCreateDraft | null>(null);
   const [savingAccountDraft, setSavingAccountDraft] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -215,7 +222,6 @@ export default function EmailSettingsPage() {
 
   useEffect(() => {
     loadAccounts();
-    loadBookLookups();
   }, []);
 
   async function loadAccounts() {
@@ -232,11 +238,20 @@ export default function EmailSettingsPage() {
         fetchSettingsAccountData(),
         fetchSettingsCategories(),
       ]);
-      setBookAccounts(Array.isArray(accountData.accounts) ? accountData.accounts as BookAccount[] : []);
-      setBookInstitutions(Array.isArray(accountData.institutions) ? accountData.institutions : []);
-      setBookUsers(Array.isArray(accountData.users) ? accountData.users : []);
-      setBookCategories(Array.isArray(categories) ? categories : []);
+      const lookups: BookLookups = {
+        accounts: Array.isArray(accountData.accounts) ? accountData.accounts as BookAccount[] : [],
+        institutions: Array.isArray(accountData.institutions) ? accountData.institutions : [],
+        users: Array.isArray(accountData.users) ? accountData.users : [],
+        categories: Array.isArray(categories) ? categories : [],
+      };
+      bookLookupsRef.current = lookups;
+      setBookAccounts(lookups.accounts);
+      setBookInstitutions(lookups.institutions);
+      setBookUsers(lookups.users);
+      setBookCategories(lookups.categories);
+      return lookups;
     } catch {}
+    return bookLookupsRef.current;
   }
 
   function resetForm() {
@@ -478,7 +493,10 @@ export default function EmailSettingsPage() {
         const items = Array.isArray(data.items) ? data.items.map(normalizeItemForImport) : [];
         setParsedItems(items);
         if (autoOpenPreview) {
-          if (items.length > 0) openImportPreview(items);
+          if (items.length > 0) {
+            await loadBookLookups();
+            openImportPreview(items);
+          }
           else setError("这封邮件没有识别到账单明细，请换一封或检查附件内容。");
         }
       }
@@ -724,17 +742,18 @@ export default function EmailSettingsPage() {
   }
 
   function resolvePreviewAccount(item: ParsedItem) {
+    const accountsForMatch = bookLookupsRef.current.accounts;
     const label = accountLabel(item);
     const labelKey = normalizedKey(label);
     const credit = isCreditStatement(item);
     const last4 = String(item._meta?.cardNumberMasked ?? "").trim();
     const bank = item._meta?.institutionName;
-    const exact = bookAccounts.find((account) =>
+    const exact = accountsForMatch.find((account) =>
       normalizedKey(account.name) === labelKey ||
       normalizedKey(stripOwnerPrefix(account.name)) === normalizedKey(stripOwnerPrefix(label))
     );
     const byCard = credit && last4
-      ? bookAccounts.find((account) =>
+      ? accountsForMatch.find((account) =>
           account.kind === "bank_credit" &&
           String(account.numberMasked ?? "").trim() === last4 &&
           bankMatches(account, bank)
@@ -1036,8 +1055,8 @@ export default function EmailSettingsPage() {
     const item = row.item;
     const bankName = item._meta?.institutionName ?? "";
     const ownerName = item._meta?.ownerName ?? "";
-    const institution = bookInstitutions.find((inst) => normalizedKey(inst.name) === normalizedKey(bankName) || normalizedKey(inst.shortName) === normalizedKey(bankName));
-    const user = bookUsers.find((u) => normalizedKey(u.name) === normalizedKey(ownerName));
+    const institution = bookLookupsRef.current.institutions.find((inst) => normalizedKey(inst.name) === normalizedKey(bankName) || normalizedKey(inst.shortName) === normalizedKey(bankName));
+    const user = bookLookupsRef.current.users.find((u) => normalizedKey(u.name) === normalizedKey(ownerName));
     setAccountDraft({
       rowKey: row.key,
       name: item.account || accountLabel(item),
@@ -1070,8 +1089,8 @@ export default function EmailSettingsPage() {
       setBookInstitutions((current) => [...current, data.institution]);
       return data.institution.id;
     }
-    await loadBookLookups();
-    const retry = bookInstitutions.find((inst) => normalizedKey(inst.name) === normalizedKey(name));
+    const lookups = await loadBookLookups();
+    const retry = lookups.institutions.find((inst) => normalizedKey(inst.name) === normalizedKey(name));
     return retry?.id ?? "";
   }
 

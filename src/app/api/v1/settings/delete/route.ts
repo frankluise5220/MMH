@@ -7,7 +7,7 @@ import { isAdmin } from "@/lib/server/auth";
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
-  entity: z.enum(["accountGroup", "account", "institution", "category"]),
+  entity: z.enum(["accountGroup", "account", "institution", "counterparty", "category"]),
   id: z.string().min(1),
 });
 
@@ -51,6 +51,16 @@ export async function POST(req: Request) {
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该往来对象，无法删除" }, { status: 409 });
     await prisma.institution.delete({ where: { id } });
     // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
+    return NextResponse.json({ ok: true });
+  }
+
+  if (entity === "counterparty") {
+    const counterparty = await prisma.counterparty.findUnique({ where: { id } });
+    if (!counterparty) return NextResponse.json({ ok: false, error: "往来对象不存在" }, { status: 404 });
+    if (!isAdmin(user) && counterparty.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    const used = await prisma.account.count({ where: { counterpartyId: id } });
+    if (used > 0) return NextResponse.json({ ok: false, error: "已有往来款使用该往来对象，无法删除" }, { status: 409 });
+    await prisma.counterparty.delete({ where: { id } });
     return NextResponse.json({ ok: true });
   }
 

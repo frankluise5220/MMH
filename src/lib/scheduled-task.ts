@@ -6,6 +6,14 @@ export type ScheduledTaskPayload = {
   fromAccountId?: string | null;
   toAccountId?: string | null;
   insuranceProductId?: string | null;
+  annualRate?: number | null;
+  mortgageLprDiscount?: number | null;
+  repaymentMethod?: string | null;
+  repaymentIntervalMonths?: number | null;
+  loanRateAdjustments?: Array<{
+    effectiveDate: string;
+    annualRate: number;
+  }>;
 };
 
 const SCHEDULED_TASK_MEMO_PREFIX = "MMH_SCHEDULED_TASK:";
@@ -39,6 +47,15 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
 
   try {
     const parsed = JSON.parse(value.slice(SCHEDULED_TASK_MEMO_PREFIX.length)) as Partial<ScheduledTaskPayload>;
+    const rawMortgageLprDiscount = parsed.mortgageLprDiscount as unknown;
+    const mortgageLprDiscount =
+      typeof rawMortgageLprDiscount === "number" && Number.isFinite(rawMortgageLprDiscount)
+        ? rawMortgageLprDiscount
+        : typeof rawMortgageLprDiscount === "string" &&
+            rawMortgageLprDiscount.trim() &&
+            Number.isFinite(Number(rawMortgageLprDiscount))
+          ? Number(rawMortgageLprDiscount)
+          : null;
     const type = normalizeScheduledTaskType(parsed.type);
     if (type) {
       return {
@@ -47,6 +64,19 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
         fromAccountId: parsed.fromAccountId ?? null,
         toAccountId: parsed.toAccountId ?? null,
         insuranceProductId: parsed.insuranceProductId ?? null,
+        annualRate: typeof parsed.annualRate === "number" && Number.isFinite(parsed.annualRate) ? parsed.annualRate : null,
+        mortgageLprDiscount,
+        repaymentMethod: typeof parsed.repaymentMethod === "string" ? parsed.repaymentMethod : null,
+        repaymentIntervalMonths: typeof parsed.repaymentIntervalMonths === "number" && Number.isFinite(parsed.repaymentIntervalMonths) ? parsed.repaymentIntervalMonths : null,
+        loanRateAdjustments: Array.isArray(parsed.loanRateAdjustments)
+          ? parsed.loanRateAdjustments
+              .map((item) => ({
+                effectiveDate: typeof item?.effectiveDate === "string" ? item.effectiveDate.slice(0, 10) : "",
+                annualRate: typeof item?.annualRate === "number" && Number.isFinite(item.annualRate) ? item.annualRate : NaN,
+              }))
+              .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.effectiveDate) && Number.isFinite(item.annualRate) && item.annualRate > 0)
+              .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
+          : [],
       };
     }
   } catch {

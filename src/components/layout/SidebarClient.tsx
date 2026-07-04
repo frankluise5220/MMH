@@ -26,7 +26,7 @@ import { InitModal } from "../InitModal";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { formatMoney } from "@/lib/format";
 import { getHouseholdDisplayName } from "@/lib/household-display";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
@@ -135,7 +135,7 @@ function normalizeSidebarItems(items: AccountItem[]) {
   ];
 }
 
-function toSidebarAccountItem(a: any, creditCardLabelTemplate: string): AccountItem {
+function toSidebarAccountItem(a: any): AccountItem {
   const display = buildAccountDisplayOption({
     id: a.id,
     name: a.name,
@@ -145,7 +145,7 @@ function toSidebarAccountItem(a: any, creditCardLabelTemplate: string): AccountI
     investProductType: a.investProductType ?? null,
     Institution: a.Institution ?? null,
     AccountGroup: a.AccountGroup ?? null,
-  }, creditCardLabelTemplate);
+  }, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, { suppressDuplicateCreditCardLast4: true });
   return {
     id: a.id,
     name: a.name,
@@ -249,10 +249,9 @@ export function SidebarClient({
           if (!res.ok || !contentType.includes("application/json")) return;
           const data = await res.json().catch(() => null);
           if (data?.ok && Array.isArray(data?.accounts)) {
-            const creditCardLabelTemplate = getAppPreferences().creditCardLabelTemplate;
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a, creditCardLabelTemplate)));
+                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a)));
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;

@@ -5,7 +5,7 @@ import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { HoldingPicker } from "./HoldingPicker";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
-import { useAccountSSFilter } from "./TransactionFormModal";
+import { useAccountSSFilter } from "./accountSSFilter";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";

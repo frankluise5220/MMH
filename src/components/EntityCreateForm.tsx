@@ -4,11 +4,11 @@ import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
 import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
-import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
 /* ---- Types ---- */
 
-type NestedEntityType = "institution" | "account" | "group" | "category";
+type NestedEntityType = "institution" | "counterparty" | "account" | "group" | "category";
 
 type EntityCreatedExtra = {
   parentId?: string;
@@ -165,6 +165,27 @@ const ENTITY_CONFIG = {
       { key: "type", label: "类型", type: "select", options: INSTITUTION_TYPES, defaultValue: "organization" },
     ] as FieldDef[],
   },
+  counterparty: {
+    title: "新增往来对象",
+    namePlaceholder: "例如：张三、某公司",
+    nameLabel: "往来对象名称",
+    typeLabel: "类型",
+    typeKey: "type",
+    types: [
+      { value: "person", label: "往来人员" },
+      { value: "organization", label: "往来组织" },
+    ],
+    apiPath: "/api/v1/counterparty",
+    bodyKey: { name: "name", type: "type" },
+    fullFields: [
+      { key: "name", label: "往来对象名称", type: "text", placeholder: "例如：张三、某公司" },
+      { key: "shortName", label: "简称", type: "text", placeholder: "可选" },
+      { key: "type", label: "类型", type: "select", options: [
+        { value: "person", label: "往来人员" },
+        { value: "organization", label: "往来组织" },
+      ], defaultValue: "person" },
+    ] as FieldDef[],
+  },
   account: {
     title: "新增账户",
     namePlaceholder: "例如：招行卡、微信零钱",
@@ -249,6 +270,7 @@ function buildSelectOptions(
 
 function getSmartSelectCreateLabel(entityType: NestedEntityType) {
   if (entityType === "institution") return "新增机构";
+  if (entityType === "counterparty") return "新增往来对象";
   if (entityType === "group") return "新增所有人";
   if (entityType === "category") return "新增分类";
   return "新增";
@@ -305,6 +327,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     }
     if (defaultType && config.types.some(t => t.value === defaultType)) return defaultType;
     if (entityType === "institution") return "organization";
+    if (entityType === "counterparty") return "person";
     if (entityType === "category") return "expense";
     if (entityType === "account") return "bank_debit";
     return "";
@@ -431,7 +454,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   function institutionTypeMatchesCurrentAccount(type?: string) {
     if (entityType !== "account") return true;
     const accountKind = form.kind || form.type;
-    if (accountKind === "loan") return ["person", "organization"].includes(type ?? "");
+    if (accountKind === "loan") {
+      return ["person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"].includes(type ?? "");
+    }
     return ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(type ?? "");
   }
 
@@ -472,6 +497,17 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       if (data.ok && data[responseKey]?.id) {
         const created = data[responseKey];
         const selectedTypeValue = typeKey ? (form[typeKey] || created[typeKey] || "") : "";
+        notifySmartSelectOptionCreated({
+          id: created.id,
+          label: created.shortName?.trim?.() || created.name,
+          subLabel: entityType === "account"
+            ? (created.AccountGroup?.name || kindLabel(created.kind))
+            : entityType === "institution"
+              ? institutionTypeLabel(selectedTypeValue || created.type)
+              : entityType === "counterparty"
+                ? selectedTypeValue === "person" ? "往来人员" : "往来组织"
+              : undefined,
+        });
         onCreated(created.id, created.name, {
           parentId: form.parentId || undefined,
           kind: entityType === "account" ? (form.kind || created.kind || "") : undefined,
@@ -480,7 +516,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           institutionId: entityType === "account" ? created.institutionId ?? form.institutionId ?? undefined : undefined,
           institutionName: entityType === "account" ? created.Institution?.name : undefined,
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
-          type: entityType === "institution" || entityType === "category" ? selectedTypeValue : undefined,
+          type: entityType === "institution" || entityType === "counterparty" || entityType === "category" ? selectedTypeValue : undefined,
         });
         // Reset form
         if (mode === "compact") {

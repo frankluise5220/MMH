@@ -7,7 +7,7 @@ import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
-import { useAccountSSFilter } from "./TransactionFormModal";
+import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
@@ -259,7 +259,7 @@ function mapInsuranceProduct(item: Record<string, unknown>): InsuranceProductOpt
 function mapInsuranceProductMaster(item: Record<string, unknown>): InsuranceProductOption {
   const id = valueFromRecord(item, "id");
   return {
-    id: `master:${id}`,
+    id,
     isMaster: true,
     productMasterId: id,
     label: valueFromRecord(item, "name"),

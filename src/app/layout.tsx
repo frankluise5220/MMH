@@ -1,5 +1,6 @@
 import "./globals.css";
 import Script from "next/script";
+import { ModalDragController } from "@/components/ModalDragController";
 
 export default function RootLayout({
   children,
@@ -13,6 +14,7 @@ export default function RootLayout({
         className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
       >
         {children}
+        <ModalDragController />
         <Script
           id="performance-measure-guard"
           strategy="beforeInteractive"

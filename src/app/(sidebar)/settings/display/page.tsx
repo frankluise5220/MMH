@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   getCreditCardLabelTemplatePreference,
   getFundUnitsDecimalsPreference,
@@ -56,6 +56,17 @@ function previewCreditCardName(value: string) {
     .replaceAll("{账户名称}", "优享白金卡")
     .replaceAll("{信用卡后4位}", "8333")
     .replaceAll("{后4位}", "8333");
+}
+
+function previewCreditCardListName(accountName = "优享白金卡") {
+  const last4 = accountName.includes("8333") ? "" : "8333";
+  return SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE
+    .replaceAll("{机构简称}", "招行")
+    .replaceAll("{机构名称}", "招商银行")
+    .replaceAll("{信用卡名称}", accountName)
+    .replaceAll("{信用卡后4位}", last4)
+    .replace(/[·]{2,}/g, "·")
+    .replace(/(^[·\s]+|[·\s]+$)/g, "");
 }
 
 function SettingRow({
@@ -367,11 +378,33 @@ export default function DisplaySettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div className="panel-header">
           <div>
-            <div className="text-sm font-medium text-slate-800">信用卡显示名称</div>
-            <div className="mt-1 text-xs text-slate-500">后四位为空时只省略后四位；机构简称、机构名称和信用卡名称按模板照常显示。</div>
+            <div className="text-sm font-medium text-slate-800">账户显示名称</div>
+            <div className="mt-1 text-xs text-slate-500">按使用场景控制账户名称显示，列表场景保持紧凑稳定。</div>
           </div>
         </div>
         <div>
+          <SettingRow title="列表显示" desc="用于侧边栏等账户列表，固定使用机构简称、账户名称和后四位。" wide>
+            <div className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="grid gap-3 lg:grid-cols-[1fr_180px_180px]">
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500">规则</div>
+                  <div className="mt-1 break-all text-sm font-medium text-slate-900">{SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500">普通预览</div>
+                  <div className="mt-1 text-sm font-medium text-slate-900">{previewCreditCardListName()}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500">账户名含后四位</div>
+                  <div className="mt-1 text-sm font-medium text-slate-900">{previewCreditCardListName("优享白金卡8333")}</div>
+                </div>
+              </div>
+              <div className="mt-2 text-[11px] leading-5 text-slate-500">
+                如果后四位已经包含在账户名称里，列表显示会自动省略尾号，避免重复。
+              </div>
+            </div>
+          </SettingRow>
+
           <SettingRow title="可用字段" desc="点击字段可插入到信用卡显示模板。" wide>
             <div className="flex flex-wrap gap-2">
               {CREDIT_CARD_NAME_FIELDS.map((field) => (
@@ -404,7 +437,7 @@ export default function DisplaySettingsPage() {
             </div>
           </SettingRow>
 
-          <SettingRow title="当前模板" desc="保存后只更新相关显示字段，不整页刷新。" wide>
+          <SettingRow title="其他场景模板" desc="用于账户页、概览、业务页面等非列表场景；保存后只更新相关显示字段，不整页刷新。" wide>
             <div className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-3">
               <div className="grid gap-3 lg:grid-cols-[1fr_180px]">
                 <div>

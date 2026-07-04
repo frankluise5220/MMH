@@ -34,6 +34,7 @@ type Props = {
     defaultDepositAccountId?: string;
     defaultInsuranceAccountId?: string;
     defaultDebtAccountId?: string;
+    defaultDebtInstitutionId?: string;
     defaultScheduledTaskType?: "fund_regular_invest" | "loan_repayment" | "transfer" | "insurance_premium";
   };
 };
@@ -143,6 +144,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
           detail: {
             requestId,
             defaultDebtAccountId: context?.defaultDebtAccountId ?? "",
+            defaultDebtInstitutionId: context?.defaultDebtInstitutionId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
           },
         }),

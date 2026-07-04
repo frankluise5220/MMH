@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { AccountKind, RegularInvestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -73,6 +74,7 @@ export async function POST(req: Request) {
       });
 
       if (!txRecord) continue;
+      if (txRecord.deletedAt) continue;
       if (!isAdmin(user) && txRecord.householdId && txRecord.householdId !== householdId) continue;
 
       // 软删除 TxRecord
@@ -86,6 +88,80 @@ export async function POST(req: Request) {
       if (txRecord.accountId) accountsToRecalcBalance.add(txRecord.accountId);
       if (txRecord.toAccountId) accountsToRecalcBalance.add(txRecord.toAccountId);
       if (txRecord.type === "investment" || txRecord.fundProductType) touchedInvestment = true;
+
+      if (txRecord.source === "debt_borrow_in" && txRecord.accountId) {
+        const debtAccount = await prisma.account.findFirst({
+          where: {
+            id: txRecord.accountId,
+            kind: AccountKind.loan,
+            householdId,
+          },
+          select: { id: true },
+        });
+        if (debtAccount) {
+          const remainingPrincipalCount = await prisma.txRecord.count({
+            where: {
+              deletedAt: null,
+              householdId,
+              type: "transfer",
+              OR: [
+                { accountId: debtAccount.id },
+                { toAccountId: debtAccount.id },
+              ],
+            },
+          });
+
+          if (remainingPrincipalCount === 0) {
+            const repaymentPlans = await prisma.regularInvestPlan.findMany({
+              where: {
+                householdId,
+                accountId: debtAccount.id,
+                fundCode: "loan_repayment",
+              },
+              select: { id: true, cashAccountId: true },
+            });
+            const repaymentPlanIds = repaymentPlans.map((plan) => plan.id);
+            const relatedRecords = await prisma.txRecord.findMany({
+              where: {
+                deletedAt: null,
+                householdId,
+                OR: [
+                  { accountId: debtAccount.id },
+                  { toAccountId: debtAccount.id },
+                  ...(repaymentPlanIds.length > 0 ? [{ regularInvestPlanId: { in: repaymentPlanIds } }] : []),
+                ],
+              },
+              select: { id: true, accountId: true, toAccountId: true, type: true, fundProductType: true },
+            });
+            for (const record of relatedRecords) {
+              if (record.accountId) accountsToRecalcBalance.add(record.accountId);
+              if (record.toAccountId) accountsToRecalcBalance.add(record.toAccountId);
+              if (record.type === "investment" || record.fundProductType) touchedInvestment = true;
+            }
+            if (relatedRecords.length > 0) {
+              const relatedDelete = await prisma.txRecord.updateMany({
+                where: { id: { in: relatedRecords.map((record) => record.id) }, deletedAt: null },
+                data: { deletedAt: new Date() },
+              });
+              deletedCount += relatedDelete.count;
+            }
+            if (repaymentPlanIds.length > 0) {
+              await prisma.regularInvestPlan.updateMany({
+                where: { id: { in: repaymentPlanIds } },
+                data: { status: RegularInvestStatus.stopped },
+              });
+            }
+            await prisma.account.update({
+              where: { id: debtAccount.id },
+              data: { isActive: false, balance: 0 },
+            });
+            accountsToRecalcBalance.add(debtAccount.id);
+            for (const plan of repaymentPlans) {
+              if (plan.cashAccountId) accountsToRecalcBalance.add(plan.cashAccountId);
+            }
+          }
+        }
+      }
 
       // 如果是基金交易，记录需要重新计算持仓的账户和基金代码
       // 买入类：accountId=资金账户, toAccountId=投资账户

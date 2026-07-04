@@ -33,6 +33,7 @@ model Account {
   numberMasked                                               String?
   householdId                                                String
   institutionId                                              String?
+  counterpartyId                                             String?
   userId                                                     String?
   groupId                                                    String
   createdAt                                                  DateTime            @default(now())
@@ -46,6 +47,7 @@ model Account {
   AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
   Household                                                  Household           @relation(fields: [householdId], references: [id])
   Institution                                                Institution?        @relation(fields: [institutionId], references: [id])
+  Counterparty                                               Counterparty?       @relation(fields: [counterpartyId], references: [id])
   User                                                       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
   AccountAlias                                               AccountAlias[]
   BillOverride                                               BillOverride[]
@@ -55,6 +57,7 @@ model Account {
   FundHolding                                                FundHolding[]
   FundSnapshot                                               FundSnapshot[]
   InsuranceProduct                                           InsuranceProduct[]
+  LoanRateAdjustment                                         LoanRateAdjustment[]
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[] @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[] @relation("RegularInvestPlan_cashAccountIdToAccount")
   transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
@@ -62,6 +65,7 @@ model Account {
 
   @@index([householdId, kind])
   @@index([householdId, name])
+  @@index([counterpartyId])
 }
 
 model AccountAlias {
@@ -331,16 +335,35 @@ model Household {
   Account           Account[]
   AccountGroup      AccountGroup[]
   Category          Category[]
+  Counterparty      Counterparty[]
   EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
   ImportBatch       ImportBatch[]
   InsuranceProductMaster InsuranceProductMaster[]
   InsuranceProduct  InsuranceProduct[]
   Institution       Institution[]
+  LoanRateAdjustment LoanRateAdjustment[]
   RegularInvestPlan RegularInvestPlan[]
   Tag               Tag[]
   User              User[]
   transactions      TxRecord[]
+}
+
+model Counterparty {
+  id                  String       @id @default(cuid())
+  name                String
+  shortName           String?
+  type                String       @default("organization")
+  householdId          String
+  sourceInstitutionId String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @default(now()) @updatedAt
+  Account             Account[]
+  Household           Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  SourceInstitution   Institution? @relation(fields: [sourceInstitutionId], references: [id], onDelete: SetNull)
+
+  @@index([householdId, name])
+  @@index([sourceInstitutionId])
 }
 
 model ImportBatch {
@@ -365,6 +388,7 @@ model Institution {
   InsuranceProductAsInsurer InsuranceProduct[] @relation("InsuranceProductInsurer")
   InsuranceProductAsPolicyholder InsuranceProduct[] @relation("InsuranceProductPolicyholder")
   InsuranceProductAsInsured InsuranceProduct[] @relation("InsuranceProductInsured")
+  CounterpartyAsSource Counterparty[]
   Household   Household? @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
@@ -422,12 +446,31 @@ model RegularInvestPlan {
   Account_RegularInvestPlan_accountIdToAccount     Account             @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
   Account_RegularInvestPlan_cashAccountIdToAccount Account?            @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
   Household                                        Household?          @relation(fields: [householdId], references: [id])
+  LoanRateAdjustment                               LoanRateAdjustment[]
 
   @@index([accountId])
   @@index([fundCode])
   @@index([nextRunDate])
   @@index([status])
   @@index([householdId])
+}
+
+model LoanRateAdjustment {
+  id                  String             @id @default(cuid())
+  householdId          String
+  accountId            String
+  regularInvestPlanId  String?
+  effectiveDate        DateTime
+  annualRate           Decimal            @db.Decimal(10, 6)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @default(now()) @updatedAt
+  Account              Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household            Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  RegularInvestPlan    RegularInvestPlan? @relation(fields: [regularInvestPlanId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, accountId, effectiveDate])
+  @@index([householdId, accountId])
+  @@index([regularInvestPlanId])
 }
 
 model SystemSetting {

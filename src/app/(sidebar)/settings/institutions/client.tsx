@@ -118,7 +118,7 @@ export function SettingsInstitutionsClient({
                         nameLabel={mode === "institution" ? "机构名称" : mode === "family" ? "家庭成员名称" : "往来对象名称"}
                         allowedTypes={[...allowedTypes]}
                       />
-                      <SettingsDeleteButton label={`${deleteLabel}：${item.name}`} entity="institution" id={item.id} />
+                      <SettingsDeleteButton label={`${deleteLabel}：${item.name}`} entity={mode === "counterparty" ? "counterparty" : "institution"} id={item.id} />
                     </div>
                   </td>
                 </tr>

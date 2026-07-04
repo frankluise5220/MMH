@@ -167,17 +167,40 @@ html {
   }
 
   .modal-header {
-    @apply flex items-center justify-between border-b bg-surface-muted/95 px-4 py-3;
+    @apply flex cursor-move select-none items-center justify-between border-b bg-surface-muted/95 px-4 py-3;
     border-color: var(--line-soft);
   }
 
+  .modal-header button,
+  .modal-header a,
+  .modal-header [role="button"] {
+    cursor: pointer;
+  }
+
+  .modal-header input,
+  .modal-header textarea,
+  .modal-header select {
+    cursor: text;
+  }
+
   .app-modal-backdrop {
-    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/28 p-2 pt-2 backdrop-blur-[2px] sm:items-start sm:p-4;
+    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/28 p-2 backdrop-blur-[2px] sm:items-start sm:p-4;
   }
 
   .app-modal-panel {
     @apply flex h-auto w-full max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-elevated sm:max-h-[calc(100dvh-2rem)];
     border-color: var(--line-strong);
+    margin-top: clamp(1rem, 12dvh, 7rem);
+    max-height: calc(100dvh - clamp(2rem, 16dvh, 8rem));
+  }
+
+  .app-modal-panel-dragging {
+    user-select: none;
+  }
+
+  .modal-dragging,
+  .modal-dragging * {
+    cursor: move !important;
   }
 
   .viewport-floater {

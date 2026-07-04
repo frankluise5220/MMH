@@ -1,61 +1,16 @@
 ﻿"use client";
 
 import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus, Repeat } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
+import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
+import { useAccountSSFilter } from "./accountSSFilter";
 import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-
-/** Shared hook: owner-filter logic for account SS dropdowns */
-export function useAccountSSFilter(accountSSOptions?: SmartSelectOption[], controlledOwnerFilter?: string) {
-  const [internalOwnerFilter, setInternalOwnerFilter] = useState("");
-  const ownerFilter = controlledOwnerFilter ?? internalOwnerFilter;
-  const setOwnerFilter = useCallback((next: string) => {
-    if (controlledOwnerFilter === undefined) setInternalOwnerFilter(next);
-  }, [controlledOwnerFilter]);
-  const ownerFilterLabel = useMemo(() => ownerFilter || "全部", [ownerFilter]);
-  const ownerNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const option of accountSSOptions ?? []) {
-      if (option.isHeader && option.label && option.label !== "未指定") names.add(option.label);
-    }
-    return Array.from(names);
-  }, [accountSSOptions]);
-
-  const cycleOwnerFilter = useCallback(() => {
-    const owners = ownerNames;
-    if (owners.length === 0) return;
-    const current = ownerFilter;
-    const idx = owners.indexOf(current);
-    const next = idx < 0 ? owners[0] : owners[(idx + 1) % owners.length];
-    if (next === owners[0] && current === owners[owners.length - 1]) {
-      setOwnerFilter("");
-    } else {
-      setOwnerFilter(next);
-    }
-  }, [ownerFilter, ownerNames]);
-
-  const filteredOptions = useMemo(() => {
-    if (!accountSSOptions) return undefined;
-    const options = accountSSOptions;
-    const nonHeaderOptions = options.filter((option) => !option.isHeader);
-    if (!ownerFilter) return nonHeaderOptions;
-    const headerId = options.find((option) => option.isHeader && option.label === ownerFilter)?.id;
-    if (!headerId) return nonHeaderOptions;
-    return nonHeaderOptions.filter((option) => option.parentId === headerId);
-  }, [accountSSOptions, ownerFilter]);
-
-  const visibleOptionIds = useMemo(
-    () => (filteredOptions ? new Set(filteredOptions.map((option) => option.id)) : undefined),
-    [filteredOptions],
-  );
-
-  return { ownerFilter, setOwnerFilter, ownerFilterLabel, cycleOwnerFilter, filteredOptions, visibleOptionIds, ownerNames };
-}
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
 
@@ -1010,8 +965,7 @@ export function TransactionFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">日期</div>
-                      <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                      <DateStepper name="date" value={date} onChange={setDate} />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">
@@ -1111,8 +1065,7 @@ export function TransactionFormModal({
                   {/* 第一行：日期 */}
                   <div className="space-y-1">
                     <div className="form-label">日期</div>
-                    <input name="date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    <DateStepper name="date" value={date} onChange={setDate} />
                   </div>
 
                   {/* 第二行：转出账户 | 互换 | 转入账户 */}

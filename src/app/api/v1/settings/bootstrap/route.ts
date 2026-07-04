@@ -17,16 +17,16 @@ function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProdu
  * GET /api/v1/settings/bootstrap
  * 读取设置区常用基础资料，供系统设置页共享缓存使用。
  *
- * 返回: { ok, accounts, groups, institutions, users, categories, tags }
+ * 返回: { ok, accounts, groups, institutions, counterparties, users, categories, tags }
  */
 export async function GET() {
   try {
     const { householdId, hidFilter } = await getHouseholdScope();
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
-    const [accounts, groups, institutions, users, categories, tags] = await Promise.all([
+    const [accounts, groups, institutions, counterparties, users, categories, tags] = await Promise.all([
       prisma.account.findMany({
         where: { isPlaceholder: { not: true }, ...hidFilter },
-        include: { Institution: true, AccountGroup: true, AccountAlias: true },
+        include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
         orderBy: [{ isActive: "desc" }, { name: "asc" }],
       }),
       prisma.accountGroup.findMany({
@@ -34,6 +34,7 @@ export async function GET() {
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       }),
       prisma.institution.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
+      prisma.counterparty.findMany({ where: hidFilter, orderBy: [{ type: "asc" }, { name: "asc" }] }),
       prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
       prisma.category.findMany({
         where: hidFilter,
@@ -51,6 +52,7 @@ export async function GET() {
       accounts: accounts.map(normalizeReturnedAccountKind),
       groups,
       institutions,
+      counterparties,
       users,
       categories,
       tags,
