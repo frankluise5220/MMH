@@ -94,6 +94,12 @@
 - `/api/v1/auth/password-reset/request`
 - `/api/v1/auth/password-reset/confirm`
 
+找回密码规则：
+
+- `/api/v1/auth/password-reset/request` 使用用户名和绑定邮箱定位用户。
+- 如果同一个用户名和邮箱匹配多个账簿，返回 `{ ok:false, code:"AMBIGUOUS_USER", households }`，客户端应让用户选择账簿后携带 `householdId` 重新请求验证码。
+- `/api/v1/auth/password-reset/confirm` 支持携带 `householdId`，确保验证码只重置目标账簿下的同名用户。
+
 ### Overview
 
 范围：

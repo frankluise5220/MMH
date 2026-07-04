@@ -13,6 +13,8 @@ type AuthVerifyResponse = {
   error?: string;
   code?: string;
   households?: HouseholdChoice[];
+  householdId?: string | null;
+  message?: string;
 };
 
 type PasswordStatusResponse = {
@@ -51,11 +53,15 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [resetInfo, setResetInfo] = useState("");
   const [resetError, setResetError] = useState("");
   const [resetLoading, setResetLoading] = useState(false);
+  const [resetHouseholdId, setResetHouseholdId] = useState("");
+  const [resetHouseholdChoices, setResetHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
 
   function openPasswordReset() {
     setResetStep("request");
     setResetInfo("");
+    setResetHouseholdId("");
+    setResetHouseholdChoices([]);
     if (!passwordResetEnabled) {
       setResetError("当前未配置可用的发件服务，无法发送密码找回验证码。请先在系统设置里配置 SMTP 或 Resend。");
       setShowReset(true);
@@ -216,7 +222,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     }
   }
 
-  async function handleResetRequest() {
+  async function handleResetRequest(selectedHouseholdId = resetHouseholdId) {
     if (!resetUsername.trim()) { setResetError("请输入用户名"); return; }
     if (!resetEmail.trim()) { setResetError("请输入找回邮箱"); return; }
 
@@ -227,13 +233,24 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       const res = await fetch("/api/v1/auth/password-reset/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: resetUsername.trim(), email: resetEmail.trim() }),
+        body: JSON.stringify({
+          username: resetUsername.trim(),
+          email: resetEmail.trim(),
+          ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
+        }),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; message?: string } | null;
+      const data = await res.json().catch(() => null) as AuthVerifyResponse | null;
       if (!data?.ok) {
+        if (data?.code === "AMBIGUOUS_USER" && data.households?.length) {
+          setResetHouseholdChoices(data.households);
+          setResetError(data.error ?? "该用户名和邮箱匹配多个账簿，请选择账簿");
+          return;
+        }
         setResetError(data?.error ?? "发送失败");
         return;
       }
+      setResetHouseholdId(data.householdId ?? selectedHouseholdId ?? "");
+      setResetHouseholdChoices([]);
       setResetInfo(data.message ?? "如果该用户已绑定邮箱，将收到一封验证码邮件。");
       setResetStep("confirm");
     } catch {
@@ -243,7 +260,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     }
   }
 
-  async function handleResetConfirm() {
+  async function handleResetConfirm(selectedHouseholdId = resetHouseholdId) {
     if (!resetUsername.trim()) { setResetError("请输入用户名"); return; }
     if (!resetCode.trim()) { setResetError("请输入验证码"); return; }
     if (!resetNewPassword.trim()) { setResetError("请输入新密码"); return; }
@@ -263,16 +280,24 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           username: resetUsername.trim(),
           code: resetCode.trim(),
           newPassword: resetNewPassword.trim(),
+          ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
         }),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      const data = await res.json().catch(() => null) as AuthVerifyResponse | null;
       if (!data?.ok) {
+        if (data?.code === "AMBIGUOUS_USER" && data.households?.length) {
+          setResetHouseholdChoices(data.households);
+          setResetError(data.error ?? "该验证码匹配多个账簿，请选择账簿");
+          return;
+        }
         setResetError(data?.error ?? "重置失败");
         return;
       }
       setResetInfo("密码已重置，请返回登录。");
       setResetStep("request");
       setShowReset(false);
+      setResetHouseholdId("");
+      setResetHouseholdChoices([]);
       setPassword(resetNewPassword.trim());
       setUsername(resetUsername.trim());
     } catch {
@@ -437,7 +462,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   <div className="text-xs font-medium text-slate-600">用户名</div>
                   <input
                     value={resetUsername}
-                    onChange={(event) => setResetUsername(event.target.value)}
+                    onChange={(event) => {
+                      setResetUsername(event.target.value);
+                      setResetHouseholdId("");
+                      setResetHouseholdChoices([]);
+                    }}
                     type="text"
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     placeholder="输入用户名"
@@ -448,7 +477,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     <div className="text-xs font-medium text-slate-600">找回邮箱</div>
                     <input
                       value={resetEmail}
-                      onChange={(event) => setResetEmail(event.target.value)}
+                      onChange={(event) => {
+                        setResetEmail(event.target.value);
+                        setResetHouseholdId("");
+                        setResetHouseholdChoices([]);
+                      }}
                       type="email"
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                       placeholder="该用户绑定的邮箱"
@@ -488,6 +521,29 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                       />
                     </div>
                   </>
+                )}
+                {resetHouseholdChoices.length > 0 && (
+                  <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
+                    <div className="text-xs text-slate-500">请选择要找回密码的账簿。</div>
+                    {resetHouseholdChoices.map((household) => (
+                      <button
+                        key={household.id}
+                        type="button"
+                        className="w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-left text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50"
+                        disabled={resetLoading}
+                        onClick={() => {
+                          setResetHouseholdId(household.id);
+                          if (resetStep === "request") {
+                            void handleResetRequest(household.id);
+                          } else {
+                            void handleResetConfirm(household.id);
+                          }
+                        }}
+                      >
+                        {getHouseholdDisplayName(household)}
+                      </button>
+                    ))}
+                  </div>
                 )}
                 {resetError && <div className="text-sm text-red-600">{resetError}</div>}
                 {resetInfo && <div className="text-sm text-slate-600">{resetInfo}</div>}

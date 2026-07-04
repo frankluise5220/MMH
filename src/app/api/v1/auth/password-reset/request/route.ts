@@ -4,12 +4,14 @@ import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { sendPasswordResetEmail } from "@/lib/mail/passwordReset";
 import { logger } from "@/lib/logger";
+import { getHouseholdDisplayName } from "@/lib/household-display";
 
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
   username: z.string().min(1).max(80),
   email: z.string().email().optional(),
+  householdId: z.string().min(1).optional(),
 });
 
 function getClientIp(req: NextRequest) {
@@ -24,13 +26,36 @@ function normalizeEmail(v: string) {
   return v.trim().toLowerCase();
 }
 
-async function findTargetUser(params: { username: string; householdId?: string | null }) {
+type ResetUser = {
+  id: string;
+  name: string;
+  email: string | null;
+  householdId: string | null;
+  Household: { id: string; name: string } | null;
+};
+
+function householdChoicesForUsers(users: ResetUser[]) {
+  const seen = new Set<string>();
+  return users
+    .map((user) => ({
+      id: user.householdId,
+      name: getHouseholdDisplayName({ id: user.householdId, name: user.Household?.name }, "未命名账簿"),
+    }))
+    .filter((household): household is { id: string; name: string } => {
+      if (!household.id || seen.has(household.id)) return false;
+      seen.add(household.id);
+      return true;
+    });
+}
+
+async function findTargetUser(params: { username: string; email?: string | null; householdId?: string | null }) {
   const username = params.username.trim();
   if (!username) return null;
+  const providedEmail = params.email ? normalizeEmail(params.email) : null;
 
   const users = await prisma.user.findMany({
     where: { name: username },
-    select: { id: true, name: true, email: true, householdId: true, isSystem: true },
+    select: { id: true, name: true, email: true, householdId: true, Household: { select: { id: true, name: true } } },
   });
 
   if (users.length === 0) return null;
@@ -40,13 +65,24 @@ async function findTargetUser(params: { username: string; householdId?: string |
     : null;
   if (byCookie) return byCookie;
 
-  if (users.length === 1) return users[0]!;
+  if (!providedEmail && users.length > 1) return null;
 
-  if (username === "admin") {
-    return users.find((u) => u.isSystem) ?? null;
-  }
+  const emailMatches = providedEmail
+    ? users.filter((u) => u.email && normalizeEmail(u.email) === providedEmail)
+    : users;
 
-  return null;
+  if (emailMatches.length === 0) return null;
+  if (emailMatches.length === 1) return emailMatches[0]!;
+
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "AMBIGUOUS_USER",
+      error: "该用户名和邮箱匹配多个账簿，请选择要找回的账簿",
+      households: householdChoicesForUsers(emailMatches),
+    },
+    { status: 409 },
+  );
 }
 
 function hashCode(params: { userId: string; code: string }) {
@@ -67,9 +103,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
   }
 
-  const { username, email } = parse.data;
-  const cookieHouseholdId = req.cookies.get("householdId")?.value ?? null;
-  const user = await findTargetUser({ username, householdId: cookieHouseholdId });
+  const { username, email, householdId } = parse.data;
+  const cookieHouseholdId = householdId ?? req.cookies.get("householdId")?.value ?? null;
+  const user = await findTargetUser({ username, email, householdId: cookieHouseholdId });
+  if (user instanceof NextResponse) {
+    return user;
+  }
 
   const ip = getClientIp(req);
   const userAgent = req.headers.get("user-agent") ?? null;
@@ -127,6 +166,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "验证码邮件发送失败，请检查 SMTP 配置或邮箱授权码" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。" });
+  return NextResponse.json({ ok: true, message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。", householdId: user.householdId });
 }
-
