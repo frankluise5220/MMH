@@ -22,6 +22,7 @@ type SnapshotPosition = {
   navDate: string | null;
   marketValue: number;
   floatingPnL: number;
+  floatingPnLRate: number;
 };
 
 type AccountSnapshot = {
@@ -31,8 +32,15 @@ type AccountSnapshot = {
   totalCost: number;
   marketValue: number;
   floatingPnL: number;
+  floatingPnLRate: number;
   missingNavCodes: string[];
   positions: SnapshotPosition[];
+};
+
+type MonthlyBuySummary = {
+  amount: number;
+  units: number;
+  count: number;
 };
 
 type AccountMonthlyFloatingPnL = {
@@ -41,6 +49,8 @@ type AccountMonthlyFloatingPnL = {
   baseline: AccountSnapshot;
   end: AccountSnapshot;
   floatingPnLChange: number;
+  floatingPnLRateChange: number;
+  monthlyBuy: MonthlyBuySummary;
 };
 
 function parseTargetMonth(req: NextRequest) {
@@ -62,6 +72,34 @@ function ymd(date: Date) {
 
 function roundMoney(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+function roundRate(value: number) {
+  return Math.round(value * 1000000) / 1000000;
+}
+
+function buildMonthlyBuySummary(entries: FundPositionEntryLike[], monthStart: Date, monthEnd: Date) {
+  const start = ymd(monthStart);
+  const end = ymd(monthEnd);
+  let amount = 0;
+  let units = 0;
+  let count = 0;
+
+  for (const entry of entries) {
+    const subtype = entry.subtype ?? (entry.amount < 0 ? "buy" : "redeem");
+    const confirmDate = entry.confirmDate ?? entry.arrivalDate;
+    if (subtype !== "buy" || !confirmDate || confirmDate < start || confirmDate > end) continue;
+    if (entry.source === "dividend") continue;
+    amount += Math.abs(entry.amount);
+    units += entry.units ?? 0;
+    count += 1;
+  }
+
+  return {
+    amount: roundMoney(amount),
+    units: roundFundUnits(units, 6),
+    count,
+  } satisfies MonthlyBuySummary;
 }
 
 function toEntryLike(row: {
@@ -158,18 +196,21 @@ async function buildAccountSnapshot(params: {
       navDate: navInfo?.navDate ?? null,
       marketValue: rowMarketValue,
       floatingPnL,
+      floatingPnLRate: cost > 0 ? roundRate(floatingPnL / cost) : 0,
     });
   }
 
   const roundedCost = roundMoney(totalCost);
   const roundedMarketValue = roundMoney(marketValue);
+  const roundedFloatingPnL = roundMoney(roundedMarketValue - roundedCost);
   return {
     accountId: params.account.id,
     accountName: params.account.name,
     date: ymd(params.date),
     totalCost: roundedCost,
     marketValue: roundedMarketValue,
-    floatingPnL: roundMoney(roundedMarketValue - roundedCost),
+    floatingPnL: roundedFloatingPnL,
+    floatingPnLRate: roundedCost > 0 ? roundRate(roundedFloatingPnL / roundedCost) : 0,
     missingNavCodes,
     positions: positions.sort((a, b) => b.marketValue - a.marketValue),
   } satisfies AccountSnapshot;
@@ -180,7 +221,9 @@ async function buildAccountSnapshot(params: {
  *
  * Rebuilds investment fund positions from TxRecord at the previous month-end and
  * current month-end, then values positions with FundNavCache on or before each
- * date. This does not require FundSnapshot rows.
+ * date. This does not require FundSnapshot rows. Floating PnL rate is
+ * floatingPnL / totalCost. monthlyBuy counts confirmed buy entries in the
+ * requested month, excluding dividend reinvestment entries.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -216,7 +259,13 @@ export async function GET(req: NextRequest) {
           month: `${parsed.year}-${String(parsed.month).padStart(2, "0")}`,
           baselineDate: ymd(baselineDate),
           endDate: ymd(monthEnd),
+          baselineFloatingPnL: 0,
+          baselineFloatingPnLRate: 0,
+          endFloatingPnL: 0,
+          endFloatingPnLRate: 0,
           floatingPnLChange: 0,
+          floatingPnLRateChange: 0,
+          monthlyBuy: { amount: 0, units: 0, count: 0 },
           accounts: [],
         },
       });
@@ -266,21 +315,37 @@ export async function GET(req: NextRequest) {
 
     const accountResults: AccountMonthlyFloatingPnL[] = [];
     let baselineFloatingPnL = 0;
+    let baselineTotalCost = 0;
     let endFloatingPnL = 0;
+    let endTotalCost = 0;
+    let monthlyBuyAmount = 0;
+    let monthlyBuyUnits = 0;
+    let monthlyBuyCount = 0;
     for (const account of investmentAccounts) {
       const entries = entriesByAccountId.get(account.id) ?? [];
       const baseline = await buildAccountSnapshot({ account, entries, fundNameByCode, date: baselineDate });
       const end = await buildAccountSnapshot({ account, entries, fundNameByCode, date: monthEnd });
+      const monthlyBuy = buildMonthlyBuySummary(entries, monthStart, monthEnd);
       baselineFloatingPnL += baseline.floatingPnL;
+      baselineTotalCost += baseline.totalCost;
       endFloatingPnL += end.floatingPnL;
+      endTotalCost += end.totalCost;
+      monthlyBuyAmount += monthlyBuy.amount;
+      monthlyBuyUnits += monthlyBuy.units;
+      monthlyBuyCount += monthlyBuy.count;
       accountResults.push({
         accountId: account.id,
         accountName: account.name,
         baseline,
         end,
         floatingPnLChange: roundMoney(end.floatingPnL - baseline.floatingPnL),
+        floatingPnLRateChange: roundRate(end.floatingPnLRate - baseline.floatingPnLRate),
+        monthlyBuy,
       });
     }
+
+    const baselineFloatingPnLRate = baselineTotalCost > 0 ? roundRate(baselineFloatingPnL / baselineTotalCost) : 0;
+    const endFloatingPnLRate = endTotalCost > 0 ? roundRate(endFloatingPnL / endTotalCost) : 0;
 
     return NextResponse.json({
       ok: true,
@@ -289,8 +354,16 @@ export async function GET(req: NextRequest) {
         baselineDate: ymd(baselineDate),
         endDate: ymd(monthEnd),
         baselineFloatingPnL: roundMoney(baselineFloatingPnL),
+        baselineFloatingPnLRate,
         endFloatingPnL: roundMoney(endFloatingPnL),
+        endFloatingPnLRate,
         floatingPnLChange: roundMoney(endFloatingPnL - baselineFloatingPnL),
+        floatingPnLRateChange: roundRate(endFloatingPnLRate - baselineFloatingPnLRate),
+        monthlyBuy: {
+          amount: roundMoney(monthlyBuyAmount),
+          units: roundFundUnits(monthlyBuyUnits, 6),
+          count: monthlyBuyCount,
+        },
         accounts: accountResults,
       },
     });

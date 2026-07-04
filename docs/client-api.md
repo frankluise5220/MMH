@@ -187,6 +187,55 @@
 - `/api/v1/fund/confirm-days`
 - `/api/v1/fund/refresh`
 - `/api/v1/fund/sync-position`
+- `/api/v1/invest/monthly-floating-pnl`
+
+#### 月度基金浮盈
+
+- Method: `GET`
+- Path: `/api/v1/invest/monthly-floating-pnl`
+- Auth: required
+- Context: server/book/user/role
+
+Query:
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| month | string | no | 目标月份，格式 `YYYY-MM`；也可用 `year` + `monthNumber` |
+| year | number | no | 目标年份，与 `monthNumber` 一起使用 |
+| monthNumber | number | no | 目标月份，1-12，与 `year` 一起使用 |
+| accounts | string | no | 投资账户 ID 列表，用英文逗号分隔 |
+
+Success:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "month": "2026-06",
+    "baselineDate": "2026-06-01",
+    "endDate": "2026-06-30",
+    "baselineFloatingPnL": 1200,
+    "baselineFloatingPnLRate": 0.08,
+    "endFloatingPnL": 1500,
+    "endFloatingPnLRate": 0.09,
+    "floatingPnLChange": 300,
+    "floatingPnLRateChange": 0.01,
+    "monthlyBuy": {
+      "amount": 2000,
+      "units": 1800.123456,
+      "count": 2
+    },
+    "accounts": []
+  }
+}
+```
+
+Notes:
+
+- 接口从 `TxRecord` 重建月初和月末持仓，并使用 `FundNavCache` 中目标日期当天或之前最近一条净值估值，不依赖 `FundSnapshot`。
+- `floatingPnLRate = floatingPnL / totalCost`；`floatingPnLRateChange = endFloatingPnLRate - baselineFloatingPnLRate`。
+- `monthlyBuy` 统计确认日期落在目标月份内的基金申购交易，不包含红利再投资。
+- 如果缺少净值，账户快照和持仓行会返回 `missingNavCodes`，客户端应提示先补净值再解释结果。
 
 ### Insurance
 
