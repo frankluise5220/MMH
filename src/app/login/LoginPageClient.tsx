@@ -367,7 +367,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">选择账簿</div>
-                      <div className="mt-1 text-xs text-slate-500">多个账簿使用了这个用户名，请选择要进入的账簿后继续验证密码。</div>
+                      <div className="mt-1 text-xs text-slate-500">这个用户名和密码匹配多个账簿，请选择要进入的账簿。</div>
                     </div>
                     <div className="space-y-2">
                       {householdChoices.map((household) => (

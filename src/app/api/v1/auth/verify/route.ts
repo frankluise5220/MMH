@@ -53,54 +53,83 @@ function resolveSessionMaxAge(req: NextRequest) {
   return normalizedDays * 24 * 60 * 60;
 }
 
+function householdChoicesForUsers(users: LoginUser[]) {
+  const seen = new Set<string>();
+  return users
+    .map((user) => ({
+      id: user.householdId,
+      name: getHouseholdDisplayName({ id: user.householdId, name: user.Household?.name }, "未命名账簿"),
+    }))
+    .filter((household): household is { id: string; name: string } => {
+      if (!household.id || seen.has(household.id)) return false;
+      seen.add(household.id);
+      return true;
+    });
+}
+
 function ambiguousUsernameResponse(users: LoginUser[]) {
   return NextResponse.json(
     {
       ok: false,
       code: "AMBIGUOUS_USER",
-      error: "该用户名存在于多个账簿，请先选择账簿后再登录",
-      households: users.map((user) => ({
-        id: user.householdId,
-        name: getHouseholdDisplayName({ id: user.householdId, name: user.Household?.name }, "未命名账簿"),
-      })).filter((household) => Boolean(household.id)),
+      error: "该用户名和密码匹配多个账簿，请选择要进入的账簿",
+      households: householdChoicesForUsers(users),
     },
     { status: 409 },
   );
 }
 
-async function resolveLoginUser(username: string, householdId: string) {
+async function resolveLoginCandidates(username: string, householdId: string): Promise<LoginUser[]> {
   if (username && householdId) {
-    return prisma.user.findFirst({
+    const user = await prisma.user.findFirst({
       where: { name: username, householdId },
       select: userSelect,
     });
+    return user ? [user] : [];
   }
 
   if (username) {
-    const users = await prisma.user.findMany({
+    return prisma.user.findMany({
       where: { name: username },
       select: userSelect,
       orderBy: { createdAt: "asc" },
     });
-
-    if (users.length > 1) {
-      return ambiguousUsernameResponse(users);
-    }
-
-    return users[0] ?? null;
   }
 
   if (householdId) {
-    return prisma.user.findFirst({
+    const user = await prisma.user.findFirst({
       where: { role: "admin", householdId },
       select: userSelect,
     });
+    return user ? [user] : [];
   }
 
-  return prisma.user.findFirst({
+  const user = await prisma.user.findFirst({
     where: { name: "admin", isSystem: true },
     select: userSelect,
   });
+  return user ? [user] : [];
+}
+
+async function findPasswordMatches(users: LoginUser[], password: string) {
+  const legacySetting = users.some((user) => !user.passwordHash)
+    ? await withTimeout(prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY } }), AUTH_LOOKUP_TIMEOUT_MS)
+    : null;
+  const legacyPassword = legacySetting?.value ?? "";
+  const matches: Array<{ user: LoginUser; migrateLegacyPassword: boolean }> = [];
+
+  for (const user of users) {
+    if (user.passwordHash) {
+      const match = await verifyPassword(password, user.passwordHash);
+      if (match) matches.push({ user, migrateLegacyPassword: false });
+      continue;
+    }
+    if (legacyPassword.length > 0 && password === legacyPassword) {
+      matches.push({ user, migrateLegacyPassword: true });
+    }
+  }
+
+  return matches;
 }
 
 /**
@@ -110,9 +139,10 @@ async function resolveLoginUser(username: string, householdId: string) {
  * Body: { password: string, username?: string, householdId?: string, verifySystem?: boolean }
  * - verifySystem=true verifies the DATABASE_URL password and does not create a user session.
  * - username + householdId verifies that exact user inside the target household.
- * - username only verifies only when that username is unique across the whole database.
- *   If the same username exists in multiple households, the API returns
- *   { ok:false, code:"AMBIGUOUS_USER", error, households } and does not pick one silently.
+ * - username only verifies all same-name users first. If exactly one household's
+ *   password matches, that user logs in directly. If multiple households match
+ *   the same username/password, the API returns
+ *   { ok:false, code:"AMBIGUOUS_USER", error, households }.
  */
 export async function POST(req: NextRequest) {
   const body = await req.json() as { password?: string; username?: string; householdId?: string; verifySystem?: boolean };
@@ -141,19 +171,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const resolved = await withTimeout(resolveLoginUser(username, householdId), AUTH_LOOKUP_TIMEOUT_MS);
-  if (!resolved) {
-    const anyUser = await withTimeout(prisma.user.findFirst({ select: { id: true } }), AUTH_LOOKUP_TIMEOUT_MS);
-    if (!anyUser) {
-      return NextResponse.json({ ok: false, error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
-    }
-  }
-  if (resolved instanceof NextResponse) {
-    return resolved;
+  const candidates = await withTimeout(resolveLoginCandidates(username, householdId), AUTH_LOOKUP_TIMEOUT_MS);
+  if (!candidates) {
+    return NextResponse.json({ ok: false, error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
   }
 
-  const user = resolved;
-  if (!user) {
+  if (candidates.length === 0) {
     const anyUser = await prisma.user.findFirst({ select: { id: true } });
     if (!anyUser) {
       return NextResponse.json({ ok: false, error: "请先设置管理员密码" }, { status: 400 });
@@ -161,30 +184,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
   }
 
-  if (user.passwordHash) {
-    const match = await verifyPassword(password, user.passwordHash);
-    if (!match) {
-      return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+  const matches = await findPasswordMatches(candidates, password);
+  if (matches.length === 0) {
+    if (candidates.some((user) => !user.passwordHash)) {
+      const hasAnyPassword = candidates.some((user) => user.passwordHash);
+      if (!hasAnyPassword) return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
     }
-  } else {
-    const legacy = await withTimeout(prisma.systemSetting.findUnique({
-      where: { key: LEGACY_PASSWORD_KEY },
-    }), AUTH_LOOKUP_TIMEOUT_MS);
+    return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+  }
+  if (matches.length > 1 && !householdId) {
+    return ambiguousUsernameResponse(matches.map((match) => match.user));
+  }
 
-    if (legacy && legacy.value.length > 0) {
-      if (password !== legacy.value) {
-        return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
-      }
-
-      const hashed = await hashPassword(password);
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { passwordHash: hashed },
-      });
-      await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("删除旧密码失败", "route.ts"));
-    } else {
-      return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
-    }
+  const { user, migrateLegacyPassword } = matches[0];
+  if (migrateLegacyPassword) {
+    const hashed = await hashPassword(password);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: hashed },
+    });
+    await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("删除旧密码失败", "route.ts"));
   }
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
