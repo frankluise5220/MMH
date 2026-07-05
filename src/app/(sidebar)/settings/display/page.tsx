@@ -5,19 +5,23 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   getCreditCardLabelTemplatePreference,
+  getDisplayLanguagePreference,
   getFundUnitsDecimalsPreference,
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
   setCreditCardLabelTemplatePreference,
+  setDisplayLanguagePreference,
   setFundUnitsDecimalsPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
   setTimeZonePreference,
+  type DisplayLanguage,
   type SidebarGroupMode,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
+import { PRODUCT_INTROS } from "@/lib/product-intro";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
@@ -31,6 +35,7 @@ const TIME_ZONE_OPTIONS = [
 ];
 
 const FUND_UNITS_DECIMAL_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
+const DISPLAY_LANGUAGE_OPTIONS: DisplayLanguage[] = ["zh-CN", "en-US", "ja-JP"];
 
 const CREDIT_CARD_NAME_PRESETS = [
   { value: "{机构简称}{信用卡后4位}", label: "简称+后四位", example: "招行8333" },
@@ -96,6 +101,7 @@ function SettingRow({
 export default function DisplaySettingsPage() {
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [fundUnitsDecimals, setFundUnitsDecimals] = useState(2);
+  const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
   const [creditCardDisplayName, setCreditCardDisplayName] = useState(DEFAULT_CREDIT_CARD_LABEL_TEMPLATE);
@@ -104,6 +110,7 @@ export default function DisplaySettingsPage() {
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingFundUnitsDecimals, setSavingFundUnitsDecimals] = useState(false);
+  const [savingDisplayLanguage, setSavingDisplayLanguage] = useState(false);
   const [savingCreditCardDisplayName, setSavingCreditCardDisplayName] = useState(false);
 
   useEffect(() => {
@@ -122,6 +129,9 @@ export default function DisplaySettingsPage() {
         if (d.ok && Number.isFinite(Number(d.fundUnitsDecimals))) {
           setFundUnitsDecimals(Number(d.fundUnitsDecimals));
         }
+        if (d.ok && (d.displayLanguage === "zh-CN" || d.displayLanguage === "en-US" || d.displayLanguage === "ja-JP")) {
+          setDisplayLanguage(d.displayLanguage);
+        }
         if (d.ok && (d.timeZoneMode === "system" || d.timeZoneMode === "specified")) {
           setTimeZoneMode(d.timeZoneMode);
         }
@@ -137,6 +147,7 @@ export default function DisplaySettingsPage() {
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
     setFundUnitsDecimals(getFundUnitsDecimalsPreference());
+    setDisplayLanguage(getDisplayLanguagePreference());
     setTimeZoneMode(getTimeZoneModePreference());
     setTimeZone(getTimeZonePreference());
     setCreditCardDisplayName(getCreditCardLabelTemplatePreference());
@@ -182,6 +193,30 @@ export default function DisplaySettingsPage() {
       setFundUnitsDecimalsPreference(prev);
     } finally {
       setSavingFundUnitsDecimals(false);
+    }
+  }
+
+  async function saveDisplayLanguage(next: DisplayLanguage) {
+    const prev = displayLanguage;
+    setDisplayLanguage(next);
+    setDisplayLanguagePreference(next);
+    setSavingDisplayLanguage(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayLanguage: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setDisplayLanguage(prev);
+        setDisplayLanguagePreference(prev);
+      }
+    } catch {
+      setDisplayLanguage(prev);
+      setDisplayLanguagePreference(prev);
+    } finally {
+      setSavingDisplayLanguage(false);
     }
   }
 
@@ -346,6 +381,31 @@ export default function DisplaySettingsPage() {
                 </label>
               ))}
             </div>
+          </SettingRow>
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div className="panel-header">
+          <div>
+            <div className="text-sm font-medium text-slate-800">界面语言</div>
+            <div className="mt-1 text-xs text-slate-500">先用于产品介绍和后续可国际化区域，业务数据不受影响。</div>
+          </div>
+        </div>
+        <div>
+          <SettingRow title="显示语言" desc="选择中文、英文或日文显示。">
+            <select
+              value={displayLanguage}
+              onChange={(e) => saveDisplayLanguage(e.target.value as DisplayLanguage)}
+              disabled={savingDisplayLanguage}
+              className="form-input"
+            >
+              {DISPLAY_LANGUAGE_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {PRODUCT_INTROS[value].languageLabel}
+                </option>
+              ))}
+            </select>
           </SettingRow>
         </div>
       </section>

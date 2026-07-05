@@ -4,7 +4,8 @@ services:
     container_name: mmh-db
     restart: unless-stopped
     ports:
-      - "5433:5432"
+      # Bind to localhost only. The app service reaches Postgres through Docker's internal network.
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-mmh}
       POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}

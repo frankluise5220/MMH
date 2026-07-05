@@ -15,6 +15,7 @@ const CREDIT_CARD_LABEL_TEMPLATE_KEY = "mmh_credit_card_label_template";
 const CREDIT_BILL_HIDE_ZERO_KEY = "mmh_credit_hide_zero_bills";
 const CREDIT_BILL_HIDE_SETTLED_KEY = "mmh_credit_hide_settled_bills";
 const CREDIT_BILL_RECENT_CYCLES_KEY = "mmh_credit_recent_cycles";
+const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USERNAME_KEY = "mmh_username";
 const HOUSEHOLD_KEY = "householdId";
@@ -59,6 +60,10 @@ function normalizeCreditCardLabelMode(input: unknown) {
   return input === "full_name" ? "full_name" : "short_last4";
 }
 
+function normalizeDisplayLanguage(input: unknown) {
+  return input === "en-US" || input === "ja-JP" || input === "zh-CN" ? input : "zh-CN";
+}
+
 export async function GET(req: NextRequest) {
   const sessionDays = normalizeSessionDays(req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
@@ -73,6 +78,7 @@ export async function GET(req: NextRequest) {
   const creditBillHideZero = normalizeBoolean(req.cookies.get(CREDIT_BILL_HIDE_ZERO_KEY)?.value, false);
   const creditBillHideSettled = normalizeBoolean(req.cookies.get(CREDIT_BILL_HIDE_SETTLED_KEY)?.value, false);
   const creditBillShowRecentCycles = normalizeBoolean(req.cookies.get(CREDIT_BILL_RECENT_CYCLES_KEY)?.value, true);
+  const displayLanguage = normalizeDisplayLanguage(req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value);
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -85,6 +91,7 @@ export async function GET(req: NextRequest) {
     creditBillHideZero,
     creditBillHideSettled,
     creditBillShowRecentCycles,
+    displayLanguage,
   });
 }
 
@@ -101,6 +108,7 @@ export async function PUT(req: NextRequest) {
     creditBillHideZero?: unknown;
     creditBillHideSettled?: unknown;
     creditBillShowRecentCycles?: unknown;
+    displayLanguage?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -112,6 +120,7 @@ export async function PUT(req: NextRequest) {
   const hasCreditBillHideZero = Object.prototype.hasOwnProperty.call(prefs, "creditBillHideZero");
   const hasCreditBillHideSettled = Object.prototype.hasOwnProperty.call(prefs, "creditBillHideSettled");
   const hasCreditBillShowRecentCycles = Object.prototype.hasOwnProperty.call(prefs, "creditBillShowRecentCycles");
+  const hasDisplayLanguage = Object.prototype.hasOwnProperty.call(prefs, "displayLanguage");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
@@ -134,6 +143,9 @@ export async function PUT(req: NextRequest) {
     hasCreditBillShowRecentCycles ? prefs.creditBillShowRecentCycles : req.cookies.get(CREDIT_BILL_RECENT_CYCLES_KEY)?.value,
     true,
   );
+  const displayLanguage = normalizeDisplayLanguage(
+    hasDisplayLanguage ? prefs.displayLanguage : req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value,
+  );
   const maxAge = sessionDays * 24 * 60 * 60;
 
   const response = NextResponse.json({
@@ -148,6 +160,7 @@ export async function PUT(req: NextRequest) {
     creditBillHideZero,
     creditBillHideSettled,
     creditBillShowRecentCycles,
+    displayLanguage,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
@@ -204,6 +217,12 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(CREDIT_BILL_RECENT_CYCLES_KEY, creditBillShowRecentCycles ? "1" : "0", {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(DISPLAY_LANGUAGE_KEY, displayLanguage, {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

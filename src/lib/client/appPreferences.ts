@@ -16,6 +16,7 @@ export const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template
 export const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
 export const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
 export const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
+export const DISPLAY_LANGUAGE_COOKIE = "mmh_display_language";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
@@ -26,6 +27,7 @@ export const APP_PREFS_EVENT = "mmh:app-preferences";
 export type SidebarGroupMode = "kind" | "institution";
 export type TimeZoneMode = "system" | "specified";
 export type CreditCardLabelMode = "short_last4" | "full_name";
+export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
 
 export type AppPreferencesSnapshot = {
   sessionDays: number;
@@ -38,6 +40,7 @@ export type AppPreferencesSnapshot = {
   creditBillHideZero: boolean;
   creditBillHideSettled: boolean;
   creditBillShowRecentCycles: boolean;
+  displayLanguage: DisplayLanguage;
   sidebarGroupBy: SidebarGroupMode;
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
@@ -48,6 +51,7 @@ const DEFAULT_SESSION_DAYS = 30;
 const DEFAULT_FUND_UNITS_DECIMALS = 2;
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
+const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
@@ -182,6 +186,21 @@ export function setCreditBillShowRecentCyclesPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
+export function normalizeDisplayLanguage(value: unknown): DisplayLanguage {
+  if (value === "en-US" || value === "ja-JP" || value === "zh-CN") return value;
+  return DEFAULT_DISPLAY_LANGUAGE;
+}
+
+export function getDisplayLanguagePreference(): DisplayLanguage {
+  return normalizeDisplayLanguage(parseCookieValue(DISPLAY_LANGUAGE_COOKIE));
+}
+
+export function setDisplayLanguagePreference(value: DisplayLanguage) {
+  if (typeof document === "undefined") return;
+  setCookieValue(DISPLAY_LANGUAGE_COOKIE, normalizeDisplayLanguage(value));
+  emitPreferencesChanged();
+}
+
 export function getSidebarGroupPreference(): SidebarGroupMode {
   try {
     const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY) ?? parseCookieValue(SIDEBAR_GROUP_BY_KEY);
@@ -279,6 +298,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     creditBillHideZero: getCreditBillHideZeroPreference(),
     creditBillHideSettled: getCreditBillHideSettledPreference(),
     creditBillShowRecentCycles: getCreditBillShowRecentCyclesPreference(),
+    displayLanguage: getDisplayLanguagePreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),

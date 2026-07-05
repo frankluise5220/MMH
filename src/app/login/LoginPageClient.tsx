@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import {
+  APP_PREFS_EVENT,
+  getDisplayLanguagePreference,
+  type DisplayLanguage,
+} from "@/lib/client/appPreferences";
+import { useI18n } from "@/lib/i18n";
+import { getProductIntro } from "@/lib/product-intro";
 
 type HouseholdChoice = {
   id: string;
@@ -31,6 +38,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -55,7 +63,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [resetLoading, setResetLoading] = useState(false);
   const [resetHouseholdId, setResetHouseholdId] = useState("");
   const [resetHouseholdChoices, setResetHouseholdChoices] = useState<HouseholdChoice[]>([]);
+  const { t } = useI18n();
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
+  const productIntro = getProductIntro(displayLanguage);
 
   function openPasswordReset() {
     setResetStep("request");
@@ -119,6 +129,15 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       window.clearTimeout(timeoutId);
       controller.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    function syncLanguagePreference() {
+      setDisplayLanguage(getDisplayLanguagePreference());
+    }
+    syncLanguagePreference();
+    window.addEventListener(APP_PREFS_EVENT, syncLanguagePreference);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncLanguagePreference);
   }, []);
 
   async function verifyLogin(params: { username: string; password: string; householdId?: string }) {
@@ -311,30 +330,54 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
         <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-          <div className="p-6 text-center text-sm text-slate-500">加载中...</div>
+          <div className="p-6 text-center text-sm text-slate-500">{t("common.loading")}</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-        <div className="border-b border-slate-200 bg-slate-50 px-6 py-5">
-          {householdName && <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">账簿</div>}
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/58 p-4 backdrop-blur-sm">
+      <div className="grid w-full max-w-5xl overflow-hidden rounded-2xl border border-white/16 bg-white/92 shadow-[0_24px_80px_rgba(15,23,42,0.34)] backdrop-blur-xl lg:grid-cols-[minmax(0,1fr)_390px]">
+        <section className="relative hidden overflow-hidden bg-slate-950 px-8 py-8 text-white lg:block">
+          <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-blue-400/20 blur-3xl" />
+          <div className="absolute -bottom-16 left-8 h-56 w-56 rounded-full bg-emerald-300/15 blur-3xl" />
+          <div className="relative">
+            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-blue-200">MoneyMoneyHome</div>
+            <h1 className="mt-4 text-3xl font-semibold leading-tight">{productIntro.title}</h1>
+            <div className="mt-2 text-sm text-amber-100">{productIntro.mantra}</div>
+            <p className="mt-5 text-base leading-7 text-slate-100">{productIntro.lead}</p>
+            <div className="mt-6 space-y-4 text-sm leading-7 text-slate-300">
+              {productIntro.paragraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+            <div className="mt-7 grid grid-cols-2 gap-2">
+              {productIntro.highlights.map((item) => (
+                <span key={item} className="rounded-xl border border-white/12 bg-white/[0.08] px-3 py-2 text-xs leading-5 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-sm">
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <div className="min-w-0">
+        <div className="border-b border-slate-200/70 bg-white/72 px-6 py-5 shadow-[inset_0_-1px_0_rgba(148,163,184,0.14)] backdrop-blur">
+          {householdName && <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("login.book")}</div>}
           <div className="flex items-center justify-between">
             <div className="text-base font-semibold text-slate-800">{householdName ? currentHouseholdDisplayName : "MMH"}</div>
             <button
               type="button"
               onClick={() => { window.location.href = "/"; }}
-              className="rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              title="返回首页"
+              className="rounded-full border border-slate-200/80 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-700"
+              title={t("login.backHome")}
             >
-              返回
+              {t("login.backHome")}
             </button>
           </div>
-          {mode === "login" && <div className="mt-1 text-xs text-slate-500">输入用户名和密码以继续</div>}
-          {mode === "setup" && <div className="mt-1 text-xs text-slate-500">首次使用，请设置管理员账户</div>}
+          {mode === "login" && <div className="mt-1 text-xs text-slate-500">{t("login.continueHint")}</div>}
+          {mode === "setup" && <div className="mt-1 text-xs text-slate-500">{t("login.setupHint")}</div>}
         </div>
 
         {mode === "login" && (
@@ -342,7 +385,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             {!showReset && (
               <>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">用户名</div>
+                  <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
                   {systemUsers.length > 0 ? (
                     <select
                       value={username}
@@ -366,13 +409,13 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                       type="text"
                       autoComplete="username"
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                      placeholder="输入用户名"
+                      placeholder={t("login.usernamePlaceholder")}
                     />
                   )}
                 </div>
 
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">密码</div>
+                  <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
                   <input
                     value={password}
                     onChange={(event) => {
@@ -382,7 +425,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     type="password"
                     autoComplete="current-password"
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder="输入密码"
+                    placeholder={t("login.passwordPlaceholder")}
                     autoFocus
                     onKeyDown={(event) => { if (event.key === "Enter") void handleLogin(); }}
                   />
@@ -424,7 +467,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   className="text-xs text-slate-500 transition-colors hover:text-blue-700"
                   onClick={openPasswordReset}
                 >
-                  忘记密码？通过邮箱找回
+                  {t("login.forgotByEmail")}
                 </button>
                 <button
                   type="button"
@@ -432,7 +475,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   disabled={loading}
                   onClick={() => void handleLogin()}
                 >
-                  {loading ? "验证中..." : "进入"}
+                  {loading ? t("login.verifying") : t("login.enter")}
                 </button>
               </>
             )}
@@ -452,7 +495,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               }}
               disabled={loading || resetLoading}
             >
-              {showReset ? "收起找回密码" : "忘记密码？"}
+              {showReset ? t("common.collapse") : t("login.forgotPassword")}
             </button>
 
             {showReset && (
@@ -588,38 +631,38 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         {mode === "setup" && (
           <div className="space-y-4 p-6">
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">用户名</div>
+              <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
               <input
                 value={setupUsername}
                 onChange={(event) => setSetupUsername(event.target.value)}
                 type="text"
                 autoComplete="username"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="例如：admin 或张四"
+                placeholder="admin"
                 autoFocus
               />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">设置密码</div>
+              <div className="text-xs font-medium text-slate-600">{t("login.setupPassword")}</div>
               <input
                 value={newPassword}
                 onChange={(event) => setNewPassword(event.target.value)}
                 type="password"
                 autoComplete="new-password"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="输入密码"
+                placeholder={t("login.passwordPlaceholder")}
                 onKeyDown={(event) => { if (event.key === "Enter") void handleSetup(); }}
               />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">确认密码</div>
+              <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
               <input
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 type="password"
                 autoComplete="new-password"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="再次输入密码"
+                placeholder={t("login.confirmPassword")}
                 onKeyDown={(event) => { if (event.key === "Enter") void handleSetup(); }}
               />
             </div>
@@ -630,10 +673,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               disabled={loading}
               onClick={() => void handleSetup()}
             >
-              {loading ? "设置中..." : "设置并进入"}
+              {loading ? t("login.setting") : t("login.setupAndEnter")}
             </button>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

@@ -76,7 +76,7 @@ export function DepositShell({
   );
 
   const visibleEntries = useMemo(() => {
-    if (!selectedLot) return entries;
+    if (!selectedLot) return [];
     const relatedIds = new Set(selectedLot.relatedEntryIds ?? [selectedLot.id]);
     return entries.filter((entry) => relatedIds.has(entry.id));
   }, [entries, selectedLot]);
@@ -187,7 +187,7 @@ export function DepositShell({
               存款明细
             </div>
             <div className="text-xs text-slate-400">
-              {selectedLot ? `当前显示 ${visibleEntries.length} 条关联记录` : `显示全部存入与取出记录，共 ${entries.length} 条`}
+              {selectedLot ? `当前显示 ${visibleEntries.length} 条关联记录` : "请先选择上方存款持仓"}
             </div>
           </div>
           <AdvancedDataTable
@@ -196,7 +196,7 @@ export function DepositShell({
             rows={visibleEntries}
             rowKey={(entry) => entry.id}
             minTableWidth={980}
-            emptyText={selectedLot ? "这笔存单暂时没有关联明细" : "暂无明细"}
+            emptyText={selectedLot ? "这笔存单暂时没有关联明细" : "请先选择上方存款持仓"}
             selectable
             selectedKeys={selectedEntryIds}
             onSelectionChange={setSelectedEntryIds}

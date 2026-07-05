@@ -50,6 +50,7 @@ type ImageSourceConfig = {
 
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
+const IMAGE_FALLBACK_ORDER = ["dockerproxy", "nju", "ghcr", "daocloud", "custom"];
 
 function getUpdaterConfig() {
   const url = String(process.env.MMH_UPDATER_URL ?? "").trim();
@@ -254,6 +255,72 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
   }
 }
 
+function getComparableShortCommit(value: string | undefined) {
+  const commit = String(value ?? "").trim();
+  if (!commit || commit === "unknown") return "";
+  return commit.slice(0, 7);
+}
+
+async function getImageVersionFallback(
+  base: VersionInfo,
+  imageSourceConfig: ImageSourceConfig | null,
+): Promise<Partial<VersionInfo> | null> {
+  if (!getUpdaterConfig().enabled) return null;
+  const configuredSource = imageSourceConfig?.source || "auto";
+  const sourceOrder = configuredSource === "auto" ? IMAGE_FALLBACK_ORDER : [configuredSource];
+
+  try {
+    const data = await callUpdater("/speed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        configuredSource === "auto"
+          ? { customAppImage: imageSourceConfig?.customAppImage || "" }
+          : {
+              source: configuredSource,
+              customAppImage: imageSourceConfig?.customAppImage || "",
+            },
+      ),
+    });
+    const results = Array.isArray(data?.results) ? data.results as Array<{
+      source?: string;
+      image?: string;
+      ok?: boolean;
+      version?: {
+        revision?: string;
+        commit?: string;
+        created?: string;
+        message?: string;
+      };
+    }> : [];
+
+    const resultBySource = new Map(results.map((result) => [String(result.source || ""), result]));
+    const selected = sourceOrder
+      .map((source) => resultBySource.get(source))
+      .find((result) => result?.ok && (result.version?.revision || result.version?.commit));
+    if (!selected) return null;
+
+    const revision = String(selected.version?.revision || selected.version?.commit || "").trim();
+    const remoteCommit = getComparableShortCommit(revision);
+    const localCommit = getComparableShortCommit(base.localCommitFull || base.localCommit);
+    if (!remoteCommit || !localCommit) return null;
+
+    return {
+      remoteName: `image:${selected.source || configuredSource}`,
+      remoteBranch: "latest",
+      remoteUrl: selected.image || imageSourceConfig?.appImage || "",
+      remoteCommit,
+      remoteCommitMsg: String(selected.version?.message || "镜像版本").split("\n")[0],
+      remoteCommitDate: String(selected.version?.created || ""),
+      needsUpdate: localCommit !== remoteCommit,
+      canCheckUpdate: true,
+      fetchError: undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -288,6 +355,17 @@ export async function GET(req: NextRequest) {
       githubCanCheck: false,
     };
 
+    let versionInfo = checkRemote ? await getGitVersionInfo(projectRoot) : localOnlyVersionInfo;
+    if (checkRemote && isDockerEnvironment() && !versionInfo.canCheckUpdate) {
+      const imageFallback = await getImageVersionFallback(versionInfo, imageSourceConfig);
+      if (imageFallback) {
+        versionInfo = {
+          ...versionInfo,
+          ...imageFallback,
+        };
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       isDocker: isDockerEnvironment(),
@@ -295,7 +373,7 @@ export async function GET(req: NextRequest) {
       updaterEnabled: getUpdaterConfig().enabled,
       imageSourceConfig,
       localVersion,
-      ...(checkRemote ? await getGitVersionInfo(projectRoot) : localOnlyVersionInfo),
+      ...versionInfo,
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });

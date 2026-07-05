@@ -77,6 +77,22 @@
 - 安装流程、更新流程、系统更新页面能力发生变化。
 - 发布方式从本地测试源切换或同步到 GitHub/GHCR。
 
+### `docs/security-hardening.md`
+
+用途：远程登录、HTTPS、数据库端口、Prisma Studio、Cookie 和账簿隔离的安全边界说明。
+
+记录内容：
+
+- 哪些入口不能公开暴露。
+- HTTPS、HSTS、Secure Cookie 的部署要求。
+- 业务 API 必须使用当前 session 的账簿上下文进行过滤。
+- 后续安全能力方向，例如登录限流、敏感字段加密、审计日志和会话管理。
+
+更新时机：
+
+- 登录/session Cookie、安全响应头、反向代理、数据库端口、Prisma Studio 暴露策略发生变化。
+- 新增或收紧账簿隔离、审计、加密、限流等安全机制。
+
 ### `docs/android-release.md`
 
 用途：Android 客户端打包、安装、发布说明。

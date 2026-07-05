@@ -3,11 +3,14 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
+import {
+  SESSION_DAYS_COOKIE,
+  USERNAME_COOKIE,
+  VERIFIED_COOKIE,
+  sessionCookieOptions,
+} from "@/lib/server/session-cookies";
 
 const PASSWORD_KEY = "access_password";
-const VERIFIED_KEY = "mmh_access_password_verified";
-const USERNAME_KEY = "mmh_username";
-const SESSION_DAYS_KEY = "mmh_session_days";
 
 async function ensureUser(username: string, isSystem = false) {
   const existing = await prisma.user.findFirst({ where: { name: username } });
@@ -17,7 +20,7 @@ async function ensureUser(username: string, isSystem = false) {
 }
 
 function resolveSessionMaxAge(cookieStore: Awaited<ReturnType<typeof cookies>>) {
-  const raw = cookieStore.get(SESSION_DAYS_KEY)?.value ?? "30";
+  const raw = cookieStore.get(SESSION_DAYS_COOKIE)?.value ?? "30";
   const days = Number(raw);
   const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
   return normalizedDays * 24 * 60 * 60;
@@ -51,18 +54,10 @@ export async function login(_prev: LoginState | undefined, formData: FormData): 
 
   const cookieStore = await cookies();
   const maxAge = resolveSessionMaxAge(cookieStore);
-  cookieStore.set(VERIFIED_KEY, "ok", {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
+  const cookieOptions = sessionCookieOptions(maxAge);
+  cookieStore.set(VERIFIED_COOKIE, "ok", cookieOptions);
   if (username) {
-    cookieStore.set(USERNAME_KEY, username, {
-      sameSite: "lax",
-      path: "/",
-      maxAge,
-    });
+    cookieStore.set(USERNAME_COOKIE, username, cookieOptions);
   }
 
   redirect("/");
@@ -98,17 +93,9 @@ export async function setupPassword(_prev: SetupState | undefined, formData: For
   // 直接写入 cookie 并跳转
   const cookieStore = await cookies();
   const maxAge = resolveSessionMaxAge(cookieStore);
-  cookieStore.set(VERIFIED_KEY, "ok", {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
-  cookieStore.set(USERNAME_KEY, username, {
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
+  const cookieOptions = sessionCookieOptions(maxAge);
+  cookieStore.set(VERIFIED_COOKIE, "ok", cookieOptions);
+  cookieStore.set(USERNAME_COOKIE, username, cookieOptions);
 
   redirect("/");
 }

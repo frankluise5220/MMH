@@ -1,9 +1,10 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
-
-const USERNAME_KEY = "mmh_username";
-const VERIFIED_KEY = "mmh_access_password_verified";
-const HOUSEHOLD_KEY = "householdId";
+import {
+  HOUSEHOLD_COOKIE,
+  USERNAME_COOKIE,
+  VERIFIED_COOKIE,
+} from "@/lib/server/session-cookies";
 
 export type CurrentUser = {
   id: string;
@@ -47,9 +48,9 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const cookieStore = await cookies();
-  const verified = cookieStore.get(VERIFIED_KEY)?.value === "ok";
-  const username = cookieStore.get(USERNAME_KEY)?.value?.trim();
-  const householdId = cookieStore.get(HOUSEHOLD_KEY)?.value?.trim();
+  const verified = cookieStore.get(VERIFIED_COOKIE)?.value === "ok";
+  const username = cookieStore.get(USERNAME_COOKIE)?.value?.trim();
+  const householdId = cookieStore.get(HOUSEHOLD_COOKIE)?.value?.trim();
 
   if (!verified) return null;
 

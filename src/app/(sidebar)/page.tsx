@@ -5404,7 +5404,7 @@ export default async function Home({
                       initialPage={currentPage}
                       pageSize={billListPageSize}
                       selectedBillMonth={selectedBillMonth}
-                      activeStatementMonth={creditCardBill?.statementMonth ?? ""}
+                      activeStatementMonth={selectedBillMonth ? (creditCardBill?.statementMonth ?? "") : ""}
                       settledBillMonth={settledBillMonth}
                       hideZeroBills={hideZeroBills}
                       hideSettledBills={hideSettledBills}
@@ -5417,22 +5417,22 @@ export default async function Home({
                     </div>
                   )}
 
-                  <BasicDetailSelectionProvider resetKey={`${selectedAccount?.id ?? ""}:${creditBillMonth || "bill"}:credit-bill-detail`}>
+                  <BasicDetailSelectionProvider resetKey={`${selectedAccount?.id ?? ""}:${selectedBillMonth || "bill"}:credit-bill-detail`}>
                     <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
                       <BasicDetailBatchDeleteMessage />
                       <DetailViewClient
                         accountId={selectedAccount?.id ?? ""}
                         isInvestAccount={false}
-                        initialEntries={creditCardBillDetails?.details ?? []}
+                        initialEntries={selectedBillMonth ? (creditCardBillDetails?.details ?? []) : []}
                         accountOptions={accountOptions}
                         investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                         compactRows
                         storageKey="mmh_credit_bill_detail_table_v1"
                         refreshOnGlobalEvent={false}
                         toolbarMode="custom"
-                        toolbarTitle={creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
+                        toolbarTitle={selectedBillMonth && creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
                         toolbarRightContent={
-                          creditCardBill ? (
+                          selectedBillMonth && creditCardBill ? (
                             <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
                               <span className="hidden whitespace-nowrap md:inline">
                                 周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
@@ -5441,6 +5441,7 @@ export default async function Home({
                             </div>
                           ) : null
                         }
+                        emptyText={selectedBillMonth ? "暂无记录" : "请先选择上方账单"}
                       />
                     </div>
                   </BasicDetailSelectionProvider>

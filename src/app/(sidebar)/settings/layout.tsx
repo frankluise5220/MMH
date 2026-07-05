@@ -8,30 +8,32 @@ import {
   Tag, Users, Cpu, ChevronRight, Key, Globe, Hash,
   Loader2, RefreshCw, Shield,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 const navItems = [
-  { href: "/settings/ledgers", label: "账簿", icon: BookOpen },
-  { href: "/settings/accounts", label: "账户", icon: Users },
-  { href: "/settings/institutions", label: "机构", icon: Building2 },
-  { href: "/settings/counterparties", label: "往来对象", icon: Handshake },
-  { href: "/settings/family-members", label: "家庭成员", icon: HeartHandshake },
-  { href: "/settings/insurance-products", label: "保险产品", icon: Shield },
-  { href: "/settings/categories", label: "收支类别", icon: Tag },
-  { href: "/settings/tags", label: "标签", icon: Hash },
-  { href: "/settings/email", label: "邮箱账户", icon: Mail },
-  { href: "/settings/password-recovery", label: "密码找回", icon: KeyRound },
-  { href: "/settings/display", label: "显示", icon: Palette },
-  { href: "/settings/ai", label: "AI 模型", icon: Cpu },
-  { href: "/settings/users", label: "用户管理", icon: Users },
-  { href: "/settings/api", label: "外接 API", icon: Key },
-  { href: "/settings/fund-api", label: "基金 API", icon: Globe },
-  { href: "/settings/database", label: "数据库", icon: Database },
-  { href: "/settings/system-update", label: "系统更新", icon: RefreshCw },
+  { href: "/settings/ledgers", labelKey: "settings.ledgers", icon: BookOpen },
+  { href: "/settings/accounts", labelKey: "settings.accounts", icon: Users },
+  { href: "/settings/institutions", labelKey: "settings.institutions", icon: Building2 },
+  { href: "/settings/counterparties", labelKey: "settings.counterparties", icon: Handshake },
+  { href: "/settings/family-members", labelKey: "settings.familyMembers", icon: HeartHandshake },
+  { href: "/settings/insurance-products", labelKey: "settings.insuranceProducts", icon: Shield },
+  { href: "/settings/categories", labelKey: "settings.categories", icon: Tag },
+  { href: "/settings/tags", labelKey: "settings.tags", icon: Hash },
+  { href: "/settings/email", labelKey: "settings.emailAccounts", icon: Mail },
+  { href: "/settings/password-recovery", labelKey: "settings.passwordRecovery", icon: KeyRound },
+  { href: "/settings/display", labelKey: "settings.display", icon: Palette },
+  { href: "/settings/ai", labelKey: "settings.aiModels", icon: Cpu },
+  { href: "/settings/users", labelKey: "settings.users", icon: Users },
+  { href: "/settings/api", labelKey: "settings.externalApi", icon: Key },
+  { href: "/settings/fund-api", labelKey: "settings.fundApi", icon: Globe },
+  { href: "/settings/database", labelKey: "settings.database", icon: Database },
+  { href: "/settings/system-update", labelKey: "settings.systemUpdate", icon: RefreshCw },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     setPendingHref(null);
@@ -43,7 +45,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
       <nav className="w-44 shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="h-12 flex items-center px-4 border-b border-slate-100 shrink-0">
           <Settings className="w-4 h-4 text-slate-500 mr-2" />
-          <span className="font-semibold text-sm text-slate-800">系统设置</span>
+          <span className="font-semibold text-sm text-slate-800">{t("nav.settings")}</span>
         </div>
         <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
           {navItems.map((item) => {
@@ -65,7 +67,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                 }`}
               >
                 <Icon className={`w-4 h-4 shrink-0 ${active ? "text-blue-500" : "text-slate-400"}`} />
-                <span className="truncate">{item.label}</span>
+                <span className="truncate">{t(item.labelKey)}</span>
                 {pending ? (
                   <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin text-blue-400" />
                 ) : active ? (

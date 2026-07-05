@@ -8,7 +8,6 @@ import {
   Users,
   Settings,
   CalendarClock,
-  Leaf,
   ChevronDown,
   Repeat,
   EyeOff,
@@ -18,14 +17,16 @@ import {
   Shield,
   PanelLeftClose,
   PanelLeftOpen,
+  BookOpen,
+  UserRound,
   Plus,
 } from "lucide-react";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { InitModal } from "../InitModal";
 import { DailyTaskCheck } from "../DailyTaskCheck";
+import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatMoney } from "@/lib/format";
-import { getHouseholdDisplayName } from "@/lib/household-display";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   APP_PREFS_EVENT,
@@ -39,6 +40,7 @@ import {
   setSidebarHideZeroPreference,
   setSidebarOwnerFilterPreference,
 } from "@/lib/client/appPreferences";
+import { useI18n } from "@/lib/i18n";
 
 type AccountItem = {
   id?: string | null;
@@ -192,10 +194,10 @@ export function SidebarClient({
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
   const [initOpen, setInitOpen] = useState(false);
-  const footerAvatarRef = useRef<HTMLDivElement>(null);
+  const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
-  const householdDisplayName = getHouseholdDisplayName(household);
+  const { t } = useI18n();
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
     () => Array.from(new Set(items.map((item) => item.groupName || "未设置所有人")))
@@ -204,8 +206,9 @@ export function SidebarClient({
     [items],
   );
 
-  async function handleLogout() {
-    if (!window.confirm("确认退出当前账号吗？")) return;
+  async function handleSwitchUser() {
+    if (!window.confirm("确认切换用户吗？")) return;
+    setSwitcherOpen(false);
     try {
       const res = await fetch("/api/v1/auth/logout", {
         method: "POST",
@@ -217,7 +220,7 @@ export function SidebarClient({
       }
       window.location.assign("/login");
     } catch (error) {
-      window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
+      window.alert(error instanceof Error ? `无法切换用户：${error.message}` : "无法切换用户");
     }
   }
 
@@ -371,6 +374,35 @@ export function SidebarClient({
   const displaySectionTotal = (kind: string, value: number) => kind === "信用卡" ? -value : value;
   const itemBalanceCls = (item: AccountItem) => balCls(displayBalance(item));
   const sectionBalanceCls = (kind: string, value: number) => balCls(displaySectionTotal(kind, value));
+  const sectionLabel = (label: string) => {
+    if (label === "资产") return t("sidebar.section.assets");
+    if (label === "信用卡") return t("sidebar.section.creditCards");
+    if (label === "投资") return t("sidebar.section.investments");
+    if (label === "保险") return t("sidebar.section.insurance");
+    if (label === "往来款") return t("sidebar.section.liabilities");
+    return label;
+  };
+  const assetSubgroupLabel = (label: string) => {
+    if (label === "现金") return t("sidebar.kind.cash");
+    if (label === "借记卡") return t("sidebar.kind.bankDebit");
+    if (label === "电子钱包") return t("sidebar.kind.ewallet");
+    if (label === "定期") return t("sidebar.kind.deposit");
+    if (label === "其他资产") return t("sidebar.kind.other");
+    return label;
+  };
+  const inlineKindLabel = (kind: string) => {
+    if (kind === "cash") return t("sidebar.kind.cash");
+    if (kind === "bank_debit") return t("sidebar.kind.bankDebit");
+    if (kind === "ewallet") return t("sidebar.kind.ewallet");
+    if (kind === "deposit") return t("sidebar.kind.deposit");
+    if (kind === "investment" || kind === "investment_fund") return t("sidebar.kind.investment");
+    if (kind === "investment_money") return t("sidebar.kind.moneyFund");
+    if (kind === "investment_wealth") return t("sidebar.kind.wealth");
+    if (kind === "insurance") return t("sidebar.kind.insurance");
+    if (kind === "bank_credit") return t("sidebar.kind.creditCard");
+    if (kind === "loan_summary" || kind === "loan") return t("sidebar.kind.loan");
+    return t("sidebar.kind.other");
+  };
   const collapsedNavCls = (active: boolean) =>
     `flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 ${
       active
@@ -535,67 +567,76 @@ export function SidebarClient({
   if (sidebarCollapsed) {
     return (
       <aside className="flex h-screen w-16 shrink-0 flex-col items-center overflow-hidden border-r border-slate-200/80 bg-white/84 px-2 py-3 backdrop-blur-xl transition-[width] duration-200">
-        <div className="flex shrink-0 flex-col items-center gap-2">
-          <div ref={footerAvatarRef}>
-            <button
-              onClick={() => setSwitcherOpen(!switcherOpen)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 transition-colors hover:bg-blue-100"
-              title={`${user?.name || "未登录"} · ${householdDisplayName}`}
-            >
-              <Leaf size={18} />
-            </button>
-          </div>
+        <div className="flex shrink-0 flex-col items-center gap-1">
+          <LanguageSwitcher />
+          <button
+            ref={ledgerSwitcherAnchorRef}
+            type="button"
+            onClick={() => setSwitcherOpen((open) => !open)}
+            className={collapsedNavCls(false)}
+            title="切换账簿"
+          >
+            <BookOpen size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={handleSwitchUser}
+            className={collapsedNavCls(false)}
+            title="切换用户"
+          >
+            <UserRound size={18} />
+          </button>
+          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title={t("nav.settings")}>
+            <Users size={18} />
+          </Link>
           <button
             onClick={toggleSidebarCollapsed}
             className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
-            title="展开左侧栏"
+            title={t("common.expand")}
           >
             <PanelLeftOpen size={18} />
           </button>
           <LedgerSwitcher
             current={household}
-            anchorRef={footerAvatarRef}
+            anchorRef={ledgerSwitcherAnchorRef}
             open={switcherOpen}
             onOpenChange={setSwitcherOpen}
           />
         </div>
 
         <nav className="mt-5 flex min-h-0 flex-1 flex-col items-center gap-1">
-          <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title="概览">
+          <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title={t("nav.overview")}>
             <LayoutDashboard size={18} />
           </Link>
-          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title="账户">
+          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
           <Link
             href="/accounts?tab=credit"
             className={collapsedNavCls(pathname.startsWith("/accounts") && searchParams.get("tab") === "credit")}
-            title="信用卡"
+            title={t("nav.creditCards")}
           >
             <CreditCard size={18} />
           </Link>
-          <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title="投资">
+          <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title={t("nav.investments")}>
             <BarChart3 size={18} />
           </Link>
-          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title="往来款">
+          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title={t("nav.liabilities")}>
             <Landmark size={18} />
           </Link>
         </nav>
 
         <div className="flex shrink-0 flex-col items-center gap-1 border-t border-slate-200 pt-3">
-          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title="计划任务">
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
             <CalendarClock size={18} />
           </Link>
           <button
             onClick={() => setInitOpen(true)}
             className={collapsedNavCls(false)}
-            title="初始数据"
+            title={t("nav.initialData")}
           >
             <Plus size={18} />
           </button>
-          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title="系统设置">
-            <Users size={18} />
-          </Link>
         </div>
 
         <NewLedgerSetupCheck />
@@ -608,43 +649,40 @@ export function SidebarClient({
   return (
     <aside className="flex h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl transition-[width] duration-200">
       {/* Fixed Header */}
-      <div className="shrink-0 px-5 pt-5 pb-3">
-        <div
-          ref={footerAvatarRef}
-          onClick={() => setSwitcherOpen(!switcherOpen)}
-          className="group flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-3 shadow-sm transition-colors hover:bg-white"
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-            <Leaf size={18} />
-          </div>
-          <div className="min-w-0 flex-1 text-slate-900">
-            <p className="truncate text-sm font-semibold leading-none">{user?.name || "未登录"}</p>
-            <div className="mt-1 flex items-center gap-2">
-              <p className="truncate text-[11px] text-slate-400">{householdDisplayName}</p>
-              <button
-                onClick={(e) => { e.stopPropagation(); handleLogout(); }}
-                className="whitespace-nowrap rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
-                title="退出当前用户"
-              >
-                退出
-              </button>
-            </div>
-          </div>
-          <ChevronDown size={16} className={`text-slate-300 transition-all duration-200 group-hover:text-slate-500 ${switcherOpen ? "rotate-180" : ""}`} />
+      <div className="shrink-0 px-4 pb-2 pt-4">
+        <div className="flex items-center gap-0.5">
+          <LanguageSwitcher />
           <button
-            onClick={(e) => { e.stopPropagation(); toggleSidebarCollapsed(); }}
-            className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
-            title="收起左侧栏"
+            ref={ledgerSwitcherAnchorRef}
+            type="button"
+            onClick={() => setSwitcherOpen((open) => !open)}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title="切换账簿"
+          >
+            <BookOpen size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={handleSwitchUser}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title="切换用户"
+          >
+            <UserRound size={18} />
+          </button>
+          <Link href="/settings" className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" title={t("nav.settings")}>
+            <Settings size={18} />
+          </Link>
+          <button
+            onClick={toggleSidebarCollapsed}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title={t("common.collapse")}
           >
             <PanelLeftClose size={18} />
           </button>
-          <Link href="/settings" onClick={(e) => e.stopPropagation()} className="rounded-md p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600">
-            <Settings size={18} />
-          </Link>
         </div>
         <LedgerSwitcher
           current={household}
-          anchorRef={footerAvatarRef}
+          anchorRef={ledgerSwitcherAnchorRef}
           open={switcherOpen}
           onOpenChange={setSwitcherOpen}
         />
@@ -656,7 +694,7 @@ export function SidebarClient({
           <nav className="space-y-1">
             <Link href="/overview" className={navItemCls("/overview")}>
               <LayoutDashboard size={18} />
-              <span className="font-medium">概览</span>
+              <span className="font-medium">{t("nav.overview")}</span>
             </Link>
           </nav>
         </div>
@@ -667,20 +705,20 @@ export function SidebarClient({
               type="button"
               onClick={cycleOwnerFilter}
               className="truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 transition-colors hover:text-slate-600"
-              title={`切换所有人筛选：${selectedOwnerFilter || "全部"}`}
+              title={`${t("sidebar.ownerFilterTitle")}：${selectedOwnerFilter || t("common.all")}`}
             >
-              {`账户·${selectedOwnerFilter || "全部"}`}
+              {`${t("common.account")}·${selectedOwnerFilter || t("common.all")}`}
             </button>
           </div>
           <div className="flex items-center gap-1">
             <button type="button"
               onClick={cycleSidebarGroupBy}
               className={`rounded-md p-1 transition-colors ${sidebarGroupBy === "institution" ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`}
-              title={`切换分组：${sidebarGroupBy === "kind" ? "账户类别" : "机构"}`}
+              title={`${t("sidebar.ownerFilterTitle")}：${sidebarGroupBy === "kind" ? t("sidebar.groupByKind") : t("sidebar.groupByInstitution")}`}
             >
               <Repeat size={14} />
             </button>
-            <button onClick={toggleHideZero} className={`rounded-md p-1.5 text-xs transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title="隐藏余额为0的账户">
+            <button onClick={toggleHideZero} className={`rounded-md p-1.5 text-xs transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title={t("sidebar.hideZero")}>
               <EyeOff size={14} />
             </button>
           </div>
@@ -705,7 +743,7 @@ export function SidebarClient({
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                           <SectionIcon size={14} />
                         </span>
-                        <span className="min-w-0 flex-1 truncate">{sec.label}</span>
+                        <span className="min-w-0 flex-1 truncate">{sectionLabel(sec.label)}</span>
                         <span className={`text-xs font-semibold tabular-nums ${sectionBalanceCls(sec.kind, sec.total)}`}>
                           {formatMoney(displaySectionTotal(sec.kind, sec.total))}
                         </span>
@@ -714,7 +752,7 @@ export function SidebarClient({
                         type="button"
                         onClick={() => toggleSection(sec.kind)}
                         className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-300 transition-all duration-200 hover:bg-white hover:text-slate-500"
-                        title={collapsed ? "展开此分组" : "收起此分组"}
+                        title={collapsed ? t("common.expand") : t("common.collapse")}
                       >
                         <ChevronDown
                           size={18}
@@ -732,7 +770,7 @@ export function SidebarClient({
                                 onClick={() => focusAssetSubgroup(group.key, sec.subgroups?.map((subgroup) => subgroup.key) ?? [group.key])}
                                 className="flex w-full items-center gap-1.5 rounded-md px-3 py-0.5 text-left hover:bg-slate-50/80"
                               >
-                                <div className="text-[10px] font-medium text-slate-400">{group.label}</div>
+                                <div className="text-[10px] font-medium text-slate-400">{assetSubgroupLabel(group.label)}</div>
                                 <div className="h-px flex-1 bg-slate-100" />
                                 <div className={`text-[10px] font-medium tabular-nums ${sectionBalanceCls(sec.kind, group.total)}`}>
                                   {formatMoney(displaySectionTotal(sec.kind, group.total))}
@@ -781,7 +819,7 @@ export function SidebarClient({
                                     {sidebarGroupBy === "institution"
                                       ? it.kind === "insurance"
                                         ? (it.shortLabel || it.label)
-                                        : `${KIND_INLINE_LABEL.get(it.kind) ?? "账户"}·${it.shortLabel || it.label}`
+                                        : `${inlineKindLabel(it.kind)}·${it.shortLabel || it.label}`
                                       : it.label}
                                     </span>
                                   </span>
@@ -803,18 +841,18 @@ export function SidebarClient({
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
           <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
             <CalendarClock size={18} />
-            <span className="font-medium">计划任务</span>
+            <span className="font-medium">{t("nav.scheduledTasks")}</span>
           </Link>
           <button
             onClick={() => setInitOpen(true)}
             className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
           >
             <Plus size={18} />
-            <span className="font-medium">初始数据</span>
+            <span className="font-medium">{t("nav.initialData")}</span>
           </button>
           <Link href="/settings" className={navItemCls("/settings")}>
             <Users size={18} />
-            <span className="font-medium">系统设置</span>
+            <span className="font-medium">{t("nav.settings")}</span>
           </Link>
         </div>
       </div>

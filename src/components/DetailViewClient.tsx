@@ -120,6 +120,7 @@ export function DetailViewClient({
   toolbarMode = "default",
   toolbarTitle,
   toolbarRightContent,
+  emptyText = "暂无记录",
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -132,6 +133,7 @@ export function DetailViewClient({
   toolbarMode?: "default" | "custom" | "none";
   toolbarTitle?: ReactNode;
   toolbarRightContent?: ReactNode;
+  emptyText?: string;
 }) {
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
@@ -442,7 +444,7 @@ export function DetailViewClient({
       rows={entries}
       rowKey={(entry) => entry.id}
       minTableWidth={1160}
-      emptyText="暂无记录"
+      emptyText={emptyText}
       selectable
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}

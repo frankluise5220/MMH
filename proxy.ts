@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const LOGIN_PATH = "/login";
 const USERNAME_COOKIE = "mmh_username";
 const VERIFIED_COOKIE = "mmh_access_password_verified";
+const ALLOWED_HOSTS_ENV = "MMH_ALLOWED_HOSTS";
 
 const PUBLIC_PREFIXES = [
   "/api/v1/auth",
@@ -20,7 +21,46 @@ function isPublicPath(pathname: string) {
   return PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
+function normalizeHost(value: string | null) {
+  const raw = value?.split(",")[0]?.trim().toLowerCase() ?? "";
+  if (!raw) return "";
+  if (raw.startsWith("[")) return raw.slice(1, raw.indexOf("]"));
+  return raw.split(":")[0] ?? "";
+}
+
+function parseAllowedHosts() {
+  return (process.env[ALLOWED_HOSTS_ENV] ?? "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function hostMatchesPattern(host: string, pattern: string) {
+  if (pattern === host) return true;
+  if (pattern.startsWith("*.")) {
+    const suffix = pattern.slice(1);
+    return host.endsWith(suffix) && host.length > suffix.length;
+  }
+  return false;
+}
+
+function isAllowedHost(req: NextRequest) {
+  const allowedHosts = parseAllowedHosts();
+  if (allowedHosts.length === 0) return true;
+
+  const forwardedHost = normalizeHost(req.headers.get("x-forwarded-host"));
+  const directHost = normalizeHost(req.headers.get("host"));
+  const requestHost = forwardedHost || directHost;
+  if (!requestHost) return false;
+
+  return allowedHosts.some((pattern) => hostMatchesPattern(requestHost, pattern));
+}
+
 export function proxy(req: NextRequest) {
+  if (!isAllowedHost(req)) {
+    return new NextResponse("Host is not allowed", { status: 421 });
+  }
+
   const { pathname } = req.nextUrl;
   if (isPublicPath(pathname)) return NextResponse.next();
 

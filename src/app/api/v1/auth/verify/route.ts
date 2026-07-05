@@ -3,12 +3,15 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import {
+  HOUSEHOLD_COOKIE,
+  SESSION_DAYS_COOKIE,
+  USERNAME_COOKIE,
+  VERIFIED_COOKIE,
+  sessionCookieOptions,
+} from "@/lib/server/session-cookies";
 
-const VERIFIED_KEY = "mmh_access_password_verified";
-const USERNAME_KEY = "mmh_username";
-const HOUSEHOLD_KEY = "householdId";
 const LEGACY_PASSWORD_KEY = "access_password";
-const SESSION_DAYS_KEY = "mmh_session_days";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -47,7 +50,7 @@ type LoginUser = {
 };
 
 function resolveSessionMaxAge(req: NextRequest) {
-  const raw = req.cookies.get(SESSION_DAYS_KEY)?.value ?? "30";
+  const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
   const days = Number(raw);
   const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
   return normalizedDays * 24 * 60 * 60;
@@ -208,23 +211,11 @@ export async function POST(req: NextRequest) {
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
   const maxAge = resolveSessionMaxAge(req);
-  response.cookies.set(VERIFIED_KEY, "ok", {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
-  response.cookies.set(USERNAME_KEY, user.name, {
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
+  const cookieOptions = sessionCookieOptions(maxAge);
+  response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
+  response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
   if (user.householdId) {
-    response.cookies.set(HOUSEHOLD_KEY, user.householdId, {
-      sameSite: "lax",
-      path: "/",
-      maxAge,
-    });
+    response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
   }
   return response;
 }

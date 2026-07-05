@@ -592,7 +592,7 @@ export function InsuranceShell({
   );
 
   const visibleEntries = useMemo(() => {
-    if (!selectedHolding) return currentEntries;
+    if (!selectedHolding) return [];
     const relatedIds = new Set(selectedHolding.relatedEntryIds);
     return currentEntries.filter((entry) => relatedIds.has(entry.id));
   }, [currentEntries, selectedHolding]);
@@ -1118,7 +1118,7 @@ export function InsuranceShell({
             <div className="text-xs text-slate-400">
               {selectedHolding
                 ? `当前显示 ${visibleEntries.length} 条关联记录`
-                : `显示全部记录，共 ${currentEntries.length} 条`}
+                : "请先选择上方保单"}
             </div>
           </div>
 
@@ -1129,7 +1129,7 @@ export function InsuranceShell({
               rows={visibleEntries}
               rowKey={(entry) => entry.id}
               minTableWidth={980}
-              emptyText={selectedHolding ? "这份保单暂时没有关联记录" : "暂无投保记录"}
+              emptyText={selectedHolding ? "这份保单暂时没有关联记录" : "请先选择上方保单"}
               selectable
               fillHeight
               selectedKeys={selectedEntryIds}

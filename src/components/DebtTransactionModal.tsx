@@ -851,6 +851,9 @@ export function DebtTransactionModal({
                                   套用
                                 </button>
                               </div>
+                              <div className="text-[11px] leading-5 text-slate-500">
+                                仅房贷需要填写 LPR 折扣。普通借款、亲友借款或非银行贷款不涉及 LPR，直接填写上方年利率即可。
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -1049,7 +1052,7 @@ export function DebtTransactionModal({
                 </div>
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm text-slate-700">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    每条利率只填写“生效日期”和“年利率（%）”。例如 2021-01-01 生效 4.015%，会从这个日期起影响后续还款计划。
+                    每条利率只填写“生效日期”和“年利率（%）”。例如 2021-01-01 生效 4.015%，会从这个日期起影响后续还款计划。LPR 折扣只用于房贷，其他借款请直接维护实际年利率。
                   </div>
 
                   <div className="space-y-2">

@@ -737,7 +737,7 @@ export function DebtShell({
 
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                  利率调整会影响生效日之后的还款表和后续自动还款。已执行的还款明细不会自动改写，如需重算历史记录请先确认记录处理方式。
+                  利率调整会影响生效日之后的还款表和后续自动还款。已执行的还款明细不会自动改写，如需重算历史记录请先确认记录处理方式。LPR 生成只适用于房贷；普通借款请直接添加实际年利率。
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -745,7 +745,7 @@ export function DebtShell({
                     <div>
                       <div className="text-xs font-semibold text-slate-700">按 LPR 折扣生成</div>
                       <div className="mt-0.5 text-[11px] leading-5 text-slate-500">
-                        适合老房贷折扣利率。系统按“{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%”计算固定加点，每年 1 月 1 日按上一期 5 年期以上 LPR 重定价。
+                        只适合房贷，尤其是老房贷折扣利率。系统按“{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%”计算固定加点，每年 1 月 1 日按上一期 5 年期以上 LPR 重定价。其他借款不使用 LPR。
                       </div>
                     </div>
                   </div>

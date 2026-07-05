@@ -906,7 +906,7 @@ export function FundShell(props: Props) {
 
 
 
-  const filtered = useMemo(() => fundCode ? d.allEntries.filter((e: any) => e.fundCode === fundCode) : d.allEntries, [d.allEntries, fundCode]);
+  const filtered = useMemo(() => fundCode ? d.allEntries.filter((e: any) => e.fundCode === fundCode) : [], [d.allEntries, fundCode]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => p.fundCode === fundCode) ?? null,
     [d.positions, fundCode],
@@ -1992,7 +1992,7 @@ export function FundShell(props: Props) {
 
             交易明细{fundCode && <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>{fundCode}</span>}
 
-            <span className="ml-2 text-xs text-slate-400 font-normal">{filteredByColumns.length}/{filtered.length}</span>
+            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode ? `${filteredByColumns.length}/${filtered.length}` : "请先选择上方基金持仓"}</span>
 
           </div>
 
@@ -2852,7 +2852,7 @@ export function FundShell(props: Props) {
 
                 );
 
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>暂无交易记录</td></tr>)}
+              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode ? "暂无交易记录" : "请先选择上方基金持仓"}</td></tr>)}
 
             </tbody>
 

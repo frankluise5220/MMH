@@ -381,6 +381,10 @@ export default function SystemUpdatePage() {
   const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate, timeZoneMode, timeZone)]
     .filter(Boolean)
     .join(" · ");
+  const remoteSourceText = [
+    versionInfo?.remoteName,
+    versionInfo?.remoteUrl,
+  ].filter(Boolean).join(" · ");
   const updateStatusText = needsUpdate
     ? "可更新"
     : isLatest
@@ -437,6 +441,15 @@ export default function SystemUpdatePage() {
                   <span className="text-amber-600">未获取，请检查网络后查询</span>
                 )}
               </div>
+
+              {canCheckUpdate && remoteSourceText ? (
+                <>
+                  <div className="text-slate-500">版本来源</div>
+                  <div className="min-w-0 truncate text-xs text-slate-500" title={remoteSourceText}>
+                    {remoteSourceText}
+                  </div>
+                </>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -459,6 +472,12 @@ export default function SystemUpdatePage() {
             {!canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 获取远端版本失败：{versionInfo.fetchError || versionInfo.githubFetchError}
+              </div>
+            ) : null}
+
+            {canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                GitHub 查询失败，已改用镜像源版本判断。
               </div>
             ) : null}
 
