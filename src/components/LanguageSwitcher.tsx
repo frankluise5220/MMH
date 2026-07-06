@@ -14,6 +14,12 @@ const LANGUAGE_OPTIONS: Array<{ value: DisplayLanguage; icon: string; label: str
   { value: "ja-JP", icon: "日", label: "日本語" },
 ];
 
+const TITLE_TEXT: Record<DisplayLanguage, (current: string, next: string) => string> = {
+  "zh-CN": (current, next) => `当前：${current}，点击切换到 ${next}`,
+  "en-US": (current, next) => `Current: ${current}. Click to switch to ${next}.`,
+  "ja-JP": (current, next) => `現在：${current}。クリックして ${next} に切り替えます。`,
+};
+
 function nextLanguage(current: DisplayLanguage) {
   const currentIndex = LANGUAGE_OPTIONS.findIndex((option) => option.value === current);
   return LANGUAGE_OPTIONS[(currentIndex + 1 + LANGUAGE_OPTIONS.length) % LANGUAGE_OPTIONS.length] ?? LANGUAGE_OPTIONS[0];
@@ -46,6 +52,7 @@ export function LanguageSwitcher() {
 
   const current = LANGUAGE_OPTIONS.find((option) => option.value === language) ?? LANGUAGE_OPTIONS[0];
   const next = nextLanguage(language);
+  const title = TITLE_TEXT[language](current.label, next.label);
 
   return (
     <button
@@ -54,8 +61,8 @@ export function LanguageSwitcher() {
         event.stopPropagation();
         switchLanguage(next.value);
       }}
-      title={`当前：${current.label}，点击切换到 ${next.label}`}
-      aria-label={`当前：${current.label}，点击切换到 ${next.label}`}
+      title={title}
+      aria-label={title}
       className="inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-[11px] font-semibold text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
     >
       {current.icon}

@@ -43,8 +43,20 @@ export async function POST(req: Request) {
     const replacementAdjustments = parseAdjustmentList(body?.adjustments);
     const effectiveDate = parseDateOnly(body?.effectiveDate);
     const annualRate = Number(body?.annualRate);
+    const mortgageLprDiscountRaw = body?.mortgageLprDiscount;
+    const mortgageLprDiscount =
+      mortgageLprDiscountRaw == null || mortgageLprDiscountRaw === ""
+        ? null
+        : Number(mortgageLprDiscountRaw);
 
     if (!accountId) return NextResponse.json({ ok: false, error: "缺少贷款账户" }, { status: 400 });
+    if (
+      mortgageLprDiscountRaw != null &&
+      mortgageLprDiscountRaw !== "" &&
+      (mortgageLprDiscount == null || !Number.isFinite(mortgageLprDiscount) || mortgageLprDiscount <= 0)
+    ) {
+      return NextResponse.json({ ok: false, error: "LPR 利率折扣不正确" }, { status: 400 });
+    }
     if (!replacementAdjustments) {
       if (!effectiveDate) return NextResponse.json({ ok: false, error: "生效日期不正确" }, { status: 400 });
       if (!Number.isFinite(annualRate) || annualRate <= 0) {
@@ -115,6 +127,7 @@ export async function POST(req: Request) {
           amount: nextAmount ?? plan.amount,
           memo: encodeScheduledTaskMemo({
             ...memo,
+            mortgageLprDiscount: mortgageLprDiscount ?? memo.mortgageLprDiscount ?? null,
             loanRateAdjustments: [],
           }),
         },

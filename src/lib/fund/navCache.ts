@@ -148,11 +148,13 @@ function utcDate(dateStr: string): Date {
  *
  * @param fundCode 基金代码
  * @param navDate 净值日期（必须用 utcDate 构造的 Date 对象，确保 T00:00:00Z）
+ * @param accountId 资金账户ID（可选，用于账户默认 API 和机构场景优先）
  * @returns 净值信息（nav、cumNav、name、dateMatch、actualDate）或 null
  */
 export async function getFundNav(
   fundCode: string,
-  navDate: Date
+  navDate: Date,
+  accountId?: string,
 ): Promise<{ nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null> {
   // 1. 先查询缓存表
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
@@ -161,7 +163,7 @@ export async function getFundNav(
 
   // 2. 缓存未命中，从外部 API 获取（按配置的优先级尝试）
   const dateStr = navDate.toISOString().slice(0, 10);
-  const apiData = await queryFundNav(fundCode, dateStr);
+  const apiData = await queryFundNav(fundCode, dateStr, accountId);
 
   if (!apiData) return null;
 
@@ -410,8 +412,9 @@ export async function getLatestFundNavMap(
  */
 export async function refreshLatestFundNav(
   fundCode: string,
+  accountId?: string,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
-  const apiData = await queryFundNav(fundCode);
+  const apiData = await queryFundNav(fundCode, undefined, accountId);
   if (!apiData?.date || !Number.isFinite(apiData.nav)) return getLatestFundNav(fundCode);
 
   const navDate = utcDate(apiData.date);

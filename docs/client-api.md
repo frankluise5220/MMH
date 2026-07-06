@@ -366,7 +366,7 @@ Notes:
 - `/api/v1/settings/email`
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
-- `/api/v1/settings/fund-query-api`
+- `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。
 - `/api/v1/settings/backup`
 - `/api/v1/settings/system-update`
 

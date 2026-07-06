@@ -1,5 +1,5 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
-import { InsuranceAccountingType, InsuranceProductType, InsuranceStatus } from "@prisma/client";
+import { FundSubtype, InsuranceAccountingType, InsuranceProductType, InsuranceStatus, Prisma } from "@prisma/client";
 
 import { isInsuranceAccount } from "@/lib/account-kind-utils";
 import { verifyPassword } from "@/lib/auth/password";
@@ -65,6 +65,49 @@ function insurancePlanMemoFilters(productIds: string[]) {
   return productIds.map((productId) => ({
     memo: { contains: `"insuranceProductId":"${productId}"` },
   }));
+}
+
+function insurancePremiumPlanTypeFilter(): Prisma.RegularInvestPlanWhereInput {
+  return {
+    OR: [
+      { taskType: "insurance_premium" },
+      { fundCode: "insurance_premium" },
+      { memo: { contains: `"type":"insurance_premium"` } },
+    ],
+  };
+}
+
+function insurancePremiumPlanProductFilter(productIds: string[]): Prisma.RegularInvestPlanWhereInput {
+  return {
+    AND: [
+      insurancePremiumPlanTypeFilter(),
+      { OR: insurancePlanMemoFilters(productIds) },
+    ],
+  };
+}
+
+function insurancePremiumEntryFilter(): Prisma.TxRecordWhereInput {
+  return {
+    OR: [
+      { insuranceAction: "premium" },
+      {
+        insuranceAction: null,
+        OR: [{ fundSubtype: FundSubtype.buy }, { fundSubtype: null }],
+      },
+    ],
+  };
+}
+
+function insuranceRefundEntryFilter(): Prisma.TxRecordWhereInput {
+  return {
+    OR: [
+      { insuranceAction: "refund" },
+      {
+        insuranceAction: null,
+        fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
+      },
+    ],
+  };
 }
 
 async function ensureFamilyMemberInstitution(input: {
@@ -268,7 +311,7 @@ export async function GET(req: NextRequest) {
             insuranceProductId: { in: productIds },
             source: "insurance",
             type: "investment",
-            fundSubtype: "buy",
+            ...insurancePremiumEntryFilter(),
             deletedAt: null,
           },
           _max: { date: true },
@@ -276,11 +319,11 @@ export async function GET(req: NextRequest) {
       : Promise.resolve([]),
     productIds.length > 0
       ? prisma.regularInvestPlan.findMany({
-          where: {
-            householdId: hidFilter.householdId ?? undefined,
-            fundCode: "insurance_premium",
-            status: { in: ["active", "paused"] },
-          },
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          ...insurancePremiumPlanTypeFilter(),
+          status: { in: ["active", "paused"] },
+        },
           select: { memo: true, nextRunDate: true },
           orderBy: { createdAt: "desc" },
         })
@@ -289,8 +332,8 @@ export async function GET(req: NextRequest) {
 
   const latestPremiumDateByProductId = new Map(
     latestPremiumRows
-      .filter((item) => item.insuranceProductId && item._max.date)
-      .map((item) => [item.insuranceProductId as string, item._max.date!.toISOString().slice(0, 10)]),
+      .filter((item) => item.insuranceProductId && item._max?.date)
+      .map((item) => [item.insuranceProductId as string, item._max!.date!.toISOString().slice(0, 10)]),
   );
   const nextPlannedPremiumDateByProductId = new Map<string, string>();
   for (const plan of activePremiumPlans) {
@@ -712,7 +755,7 @@ export async function PUT(req: NextRequest) {
             householdId,
             source: "insurance",
             insuranceProductId: id,
-            fundSubtype: { in: ["redeem", "switch_out"] },
+            ...insuranceRefundEntryFilter(),
           },
           data: {
             accountId: account.id,
@@ -724,7 +767,7 @@ export async function PUT(req: NextRequest) {
             householdId,
             source: "insurance",
             insuranceProductId: id,
-            OR: [{ fundSubtype: "buy" }, { fundSubtype: null }],
+            ...insurancePremiumEntryFilter(),
           },
           data: {
             toAccountId: account.id,
@@ -934,7 +977,7 @@ export async function PUT(req: NextRequest) {
           householdId,
           source: "insurance",
           insuranceProductId: id,
-          fundSubtype: { in: ["redeem", "switch_out"] },
+          ...insuranceRefundEntryFilter(),
         },
         data: {
           accountId: account.id,
@@ -946,10 +989,7 @@ export async function PUT(req: NextRequest) {
           householdId,
           source: "insurance",
           insuranceProductId: id,
-          OR: [
-            { fundSubtype: "buy" },
-            { fundSubtype: null },
-          ],
+          ...insurancePremiumEntryFilter(),
         },
         data: {
           toAccountId: account.id,
@@ -1077,8 +1117,7 @@ export async function DELETE(req: NextRequest) {
             prisma.regularInvestPlan.count({
               where: {
                 householdId,
-                fundCode: "insurance_premium",
-                OR: insurancePlanMemoFilters(linkedPolicyIds),
+                ...insurancePremiumPlanProductFilter(linkedPolicyIds),
               },
             }),
           ])
@@ -1096,8 +1135,7 @@ export async function DELETE(req: NextRequest) {
           await tx.regularInvestPlan.deleteMany({
             where: {
               householdId,
-              fundCode: "insurance_premium",
-              OR: insurancePlanMemoFilters(linkedPolicyIds),
+              ...insurancePremiumPlanProductFilter(linkedPolicyIds),
             },
           });
           await tx.txRecord.deleteMany({
@@ -1138,8 +1176,7 @@ export async function DELETE(req: NextRequest) {
       prisma.regularInvestPlan.count({
         where: {
           householdId: hidFilter.householdId ?? undefined,
-          fundCode: "insurance_premium",
-          memo: { contains: `"insuranceProductId":"${id}"` },
+          ...insurancePremiumPlanProductFilter([id]),
         },
       }),
     ]);
@@ -1151,8 +1188,7 @@ export async function DELETE(req: NextRequest) {
           await tx.regularInvestPlan.deleteMany({
             where: {
               householdId: hidFilter.householdId ?? undefined,
-              fundCode: "insurance_premium",
-              memo: { contains: `"insuranceProductId":"${id}"` },
+              ...insurancePremiumPlanProductFilter([id]),
             },
           });
         }
@@ -1211,8 +1247,7 @@ export async function DELETE(req: NextRequest) {
         await tx.regularInvestPlan.deleteMany({
           where: {
             householdId: hidFilter.householdId ?? undefined,
-            fundCode: "insurance_premium",
-            memo: { contains: `"insuranceProductId":"${id}"` },
+            ...insurancePremiumPlanProductFilter([id]),
           },
         });
       }

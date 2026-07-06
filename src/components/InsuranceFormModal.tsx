@@ -794,7 +794,6 @@ export function InsuranceFormModal({
         coverageTermYears: parseOptionalNumber(coverageTermYears),
         coverageAmount: parseOptionalNumber(coverageAmount),
         cashValueEnabled: true,
-        fundProductType: "wealth",
         fundSubtype: "buy",
         source: "insurance",
         createInsurancePremiumPlan: options.createPremiumPlan,

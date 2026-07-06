@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/lib/i18n";
 
 type TableColumnFilterProps = {
   label: string;
@@ -35,6 +36,8 @@ export function TableColumnFilter({
   onClose,
   onChange,
 }: TableColumnFilterProps) {
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,27 +68,27 @@ export function TableColumnFilter({
           onToggleOpen();
         }}
         className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={`${label}筛选`}
+        title={filterTitle}
       >
         ▼
       </button>
       {open && (
         <div className="absolute left-0 top-6 z-30 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-            <span className="text-xs font-medium text-slate-700">{label}筛选</span>
+            <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
-              关闭
+              {t("table.close")}
             </button>
           </div>
           <div className="mb-2 flex items-center gap-2">
             <button type="button" onClick={() => onChange([])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
-              全选
+              {t("table.selectAllValues")}
             </button>
             <button type="button" onClick={() => onChange(["__NO_MATCH__"])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
-              全不选
+              {t("table.selectNoValues")}
             </button>
             <button type="button" onClick={() => onChange(undefined)} className="ml-auto text-xs text-blue-600 hover:text-blue-700">
-              清空
+              {t("table.clear")}
             </button>
           </div>
           <div className="max-h-56 space-y-1 overflow-auto pr-1">
@@ -143,6 +146,8 @@ export function DateRangeColumnFilter({
   onClose,
   onChange,
 }: DateRangeColumnFilterProps) {
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
   const [draftFrom, setDraftFrom] = useState(from);
   const [draftTo, setDraftTo] = useState(to);
@@ -182,21 +187,21 @@ export function DateRangeColumnFilter({
           onToggleOpen();
         }}
         className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={`${label}筛选`}
+        title={filterTitle}
       >
         ▼
       </button>
       {open ? (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-            <span className="text-xs font-medium text-slate-700">{label}筛选</span>
+            <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
-              关闭
+              {t("table.close")}
             </button>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-500">从（{"≥"}）</div>
+              <div className="text-[10px] text-slate-500">{t("table.from")}</div>
               <input
                 type="date"
                 value={draftFrom}
@@ -205,7 +210,7 @@ export function DateRangeColumnFilter({
               />
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-500">到（{"≤"}）</div>
+              <div className="text-[10px] text-slate-500">{t("table.to")}</div>
               <input
                 type="date"
                 value={draftTo}
@@ -225,7 +230,7 @@ export function DateRangeColumnFilter({
               }}
               className="text-xs text-blue-600 hover:text-blue-700"
             >
-              清空
+              {t("table.clear")}
             </button>
             <button
               type="button"
@@ -235,7 +240,7 @@ export function DateRangeColumnFilter({
               }}
               className="h-8 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
             >
-              确认
+              {t("table.confirm")}
             </button>
           </div>
         </div>
@@ -256,6 +261,8 @@ export function LinkTableColumnFilter({
   clearHref?: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -284,15 +291,15 @@ export function LinkTableColumnFilter({
         type="button"
         onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
         className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={`${label}筛选`}
+        title={filterTitle}
       >
         {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
       </button>
       {open && (
         <div className="absolute left-0 top-6 z-30 w-48 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
           <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{label}筛选</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">清除</a> : null}
+            <span>{filterTitle}</span>
+            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
           </div>
           <div className="space-y-1">
             {items.map((it) => (
@@ -324,6 +331,8 @@ export function LinkDateRangeFilter({
   hiddenInputs: { name: string; value: string }[];
 }) {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -352,15 +361,15 @@ export function LinkDateRangeFilter({
         type="button"
         onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
         className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={`${label}筛选`}
+        title={filterTitle}
       >
         {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
       </button>
       {open && (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
           <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{label}筛选</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">清除</a> : null}
+            <span>{filterTitle}</span>
+            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
           </div>
           <form method="get" action="/">
             {hiddenInputs.map((h) => (
@@ -368,7 +377,7 @@ export function LinkDateRangeFilter({
             ))}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">从（≥）</div>
+                <div className="text-[10px] text-slate-500">{t("table.from")}</div>
                 <input
                   type="date"
                   name="detailDateFrom"
@@ -377,7 +386,7 @@ export function LinkDateRangeFilter({
                 />
               </div>
               <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">到（≤）</div>
+                <div className="text-[10px] text-slate-500">{t("table.to")}</div>
                 <input
                   type="date"
                   name="detailDateTo"
@@ -387,7 +396,7 @@ export function LinkDateRangeFilter({
               </div>
             </div>
             <div className="mt-2 flex items-center justify-end gap-2">
-              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">确认</button>
+              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">{t("table.confirm")}</button>
             </div>
           </form>
         </div>
@@ -420,6 +429,8 @@ export function LinkNumberRangeFilter({
   toPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -448,15 +459,15 @@ export function LinkNumberRangeFilter({
         type="button"
         onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
         className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={`${label}筛选`}
+        title={filterTitle}
       >
         {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
       </button>
       {open && (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
           <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{label}筛选</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">清除</a> : null}
+            <span>{filterTitle}</span>
+            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
           </div>
           <form method="get" action="/">
             {hiddenInputs.map((h) => (
@@ -464,7 +475,7 @@ export function LinkNumberRangeFilter({
             ))}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">从（≥）</div>
+                <div className="text-[10px] text-slate-500">{t("table.from")}</div>
                 <input
                   inputMode="decimal"
                   name={fromName}
@@ -474,7 +485,7 @@ export function LinkNumberRangeFilter({
                 />
               </div>
               <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">到（≤）</div>
+                <div className="text-[10px] text-slate-500">{t("table.to")}</div>
                 <input
                   inputMode="decimal"
                   name={toName}
@@ -485,7 +496,7 @@ export function LinkNumberRangeFilter({
               </div>
             </div>
             <div className="mt-2 flex items-center justify-end gap-2">
-              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">确认</button>
+              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">{t("table.confirm")}</button>
             </div>
           </form>
         </div>

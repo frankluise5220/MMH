@@ -43,6 +43,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { logger } from "@/lib/logger";
 import { setFundConfirmDaysInTx, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
+import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 
 export async function POST(req: NextRequest) {
   try {
@@ -73,24 +74,21 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          const balance = Math.abs(Number(item.balance ?? 0));
-          if (balance === 0) {
+          const balance = Number(item.balance ?? 0);
+          if (!Number.isFinite(balance) || balance === 0) {
             results.push(`${acc.name} 余额为 0，跳过`);
             continue;
           }
 
           const date = item.date ? new Date(item.date) : new Date();
           const isCredit = acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan;
-          // 借记卡/现金：初始余额为正 → type=income
-          // 信用卡/贷款：初始欠款为正 → type=expense（amount 为负）
-          const signedAmount = isCredit ? -balance : balance;
-          const txType = signedAmount >= 0 ? TransactionType.income : TransactionType.expense;
+          const targetBalance = isCredit ? -Math.abs(balance) : balance;
 
           // 检查是否已有初始化记录
           const existingInit = await tx.txRecord.findFirst({
             where: {
               accountId: acc.id,
-              source: "initialization",
+              source: BALANCE_INITIALIZATION_SOURCE,
               deletedAt: null,
             },
           });
@@ -103,19 +101,21 @@ export async function POST(req: NextRequest) {
             data: {
               householdId,
               date,
-              type: txType,
+              type: TransactionType.income,
               accountId: acc.id,
               accountName: acc.name,
-              amount: signedAmount,
-              source: "initialization",
-              note: "[初始化]初始余额",
+              amount: 0,
+              categoryName: "初始余额",
+              source: BALANCE_INITIALIZATION_SOURCE,
+              note: null,
+              toNote: encodeBalanceReconcileTarget(targetBalance),
             },
           });
 
           // 重算该账户余额
           await recalcAndSaveAccountBalance(acc.id).catch(logger.catchLog("recalc balance", "init"));
 
-          results.push(`${acc.name} 初始余额: ${balance.toFixed(2)} 元`);
+          results.push(`${acc.name} 初始余额: ${targetBalance.toFixed(2)} 元`);
         }
       }
 

@@ -8,6 +8,29 @@ export type LprQuote = {
   fiveYearRate: number;
 };
 
+export type MortgageBankExecutionRate = {
+  date: string;
+  rate: number;
+  source: "benchmark" | "lpr";
+};
+
+// PBOC RMB loan benchmark rates, over-5-year term. Used for pre-LPR mortgage loans.
+export const MORTGAGE_BENCHMARK_RATE_HISTORY: MortgageBankExecutionRate[] = [
+  { date: "2010-10-20", rate: 6.14, source: "benchmark" },
+  { date: "2010-12-26", rate: 6.4, source: "benchmark" },
+  { date: "2011-02-09", rate: 6.6, source: "benchmark" },
+  { date: "2011-04-06", rate: 6.8, source: "benchmark" },
+  { date: "2011-07-07", rate: 7.05, source: "benchmark" },
+  { date: "2012-06-08", rate: 6.8, source: "benchmark" },
+  { date: "2012-07-06", rate: 6.55, source: "benchmark" },
+  { date: "2014-11-22", rate: 6.15, source: "benchmark" },
+  { date: "2015-03-01", rate: 5.9, source: "benchmark" },
+  { date: "2015-05-11", rate: 5.65, source: "benchmark" },
+  { date: "2015-06-28", rate: 5.4, source: "benchmark" },
+  { date: "2015-08-26", rate: 5.15, source: "benchmark" },
+  { date: "2015-10-24", rate: 4.9, source: "benchmark" },
+];
+
 export const FIVE_YEAR_LPR_HISTORY: LprQuote[] = [
   { date: "2019-08-20", fiveYearRate: 4.85 },
   { date: "2019-11-20", fiveYearRate: 4.8 },
@@ -51,6 +74,19 @@ export function getLatestFiveYearLpr(date: string) {
   const target = date.slice(0, 10);
   let latest: LprQuote | null = null;
   for (const quote of FIVE_YEAR_LPR_HISTORY) {
+    if (quote.date <= target) latest = quote;
+    else break;
+  }
+  return latest;
+}
+
+export function getMortgageBankExecutionRate(date: string): MortgageBankExecutionRate | null {
+  const target = date.slice(0, 10);
+  const lpr = getLatestFiveYearLpr(target);
+  if (lpr) return { date: lpr.date, rate: lpr.fiveYearRate, source: "lpr" };
+
+  let latest: MortgageBankExecutionRate | null = null;
+  for (const quote of MORTGAGE_BENCHMARK_RATE_HISTORY) {
     if (quote.date <= target) latest = quote;
     else break;
   }

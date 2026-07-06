@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Upload } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 
 type BasicDetailPanelProps = {
@@ -20,6 +21,9 @@ type BasicDetailPanelProps = {
   accountOptions: Array<{ id: string; label: string }>;
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
+  showBalanceReconcile?: boolean;
+  accountLabel?: string;
+  currentBalance?: number;
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
@@ -50,6 +54,9 @@ export function BasicDetailPanel({
   accountOptions,
   investmentProductTypeByAccountId,
   compactRows = false,
+  showBalanceReconcile = false,
+  accountLabel = "",
+  currentBalance = 0,
 }: BasicDetailPanelProps) {
   const normalizedInitialPageSize = PAGE_SIZE_OPTIONS.includes(initialPageSize as (typeof PAGE_SIZE_OPTIONS)[number])
     ? initialPageSize
@@ -164,6 +171,13 @@ export function BasicDetailPanel({
               <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
                 <Upload className="w-3 h-3" />导入
               </Link>
+              {showBalanceReconcile ? (
+                <DebitBalanceReconcileButton
+                  accountId={accountId}
+                  accountLabel={accountLabel}
+                  currentBalance={currentBalance}
+                />
+              ) : null}
               <a href={normalExportHref} download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
                 <Download className="w-3 h-3" />导出
               </a>

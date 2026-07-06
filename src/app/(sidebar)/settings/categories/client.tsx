@@ -21,7 +21,13 @@ const typeColor = (t: string) =>
 
 const TYPE_ORDER = ["expense", "income", "advance"] as const;
 
-export default function SettingsCategoriesClient({ categories: initialCategories }: { categories: Category[] }) {
+export default function SettingsCategoriesClient({
+  categories: initialCategories,
+  initialLoaded = false,
+}: {
+  categories: Category[];
+  initialLoaded?: boolean;
+}) {
   const [categories, setCategories] = useState<Category[]>(initialCategories);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -36,12 +42,16 @@ export default function SettingsCategoriesClient({ categories: initialCategories
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (initialLoaded) {
+      setSettingsCategories(initialCategories);
+      return;
+    }
     const cached = getCachedSettingsCategories();
     if (cached) setCategories(cached as Category[]);
-    fetchSettingsCategories({ force: true })
+    fetchSettingsCategories()
       .then((next) => setCategories(next as Category[]))
       .catch(() => null);
-  }, []);
+  }, [initialCategories, initialLoaded]);
 
   const roots = categories.filter(c => c.parentId === null);
   const childrenMap = new Map<string, Category[]>();

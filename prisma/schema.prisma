@@ -436,6 +436,9 @@ model RegularInvestPlan {
   endDate                                          DateTime?
   executedRuns                                     Int                 @default(0)
   fundProductType                                  FundProductType?
+  taskType                                         String?
+  targetName                                       String?
+  insuranceProductName                             String?
   memo                                             String?
   startDate                                        DateTime
   status                                           RegularInvestStatus @default(active)
@@ -663,6 +666,9 @@ model TxRecord {
   depositAnnualRate   Decimal?          @db.Decimal(10, 6)
   depositInterest     Decimal?          @db.Decimal(18, 2)
   depositSourceEntryId String?
+  debtPrincipalAmount Decimal?          @db.Decimal(18, 2)
+  debtInterestAmount  Decimal?          @db.Decimal(18, 2)
+  debtFeeAmount       Decimal?          @db.Decimal(18, 2)
   fundConfirmDate     DateTime?
   fundFee             Decimal?          @db.Decimal(18, 2)
   fundNav             Decimal?          @db.Decimal(18, 6)
@@ -672,6 +678,8 @@ model TxRecord {
   regularInvestPlanId String?
   fundName            String?
   insuranceProductId  String?
+  insuranceAction     String?
+  insuranceProductName String?
   source              String?           @default("manual")
   Attachment          Attachment[]
   EntryTag            EntryTag[]

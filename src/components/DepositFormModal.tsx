@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
@@ -136,6 +137,7 @@ export function DepositFormModal({
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
+  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
@@ -754,8 +756,21 @@ export function DepositFormModal({
     setArrivalAmount(arrivalPreview > 0 ? arrivalPreview.toFixed(2) : "");
   }, [arrivalEdited, arrivalPreview, isRedeem]);
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
+  function resetAfterKeepAdding() {
+    setAmount("");
+    setFundName("");
+    setCashAmount("");
+    setInterestAmount("");
+    setArrivalAmount("");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+    setMemo("");
+    if (isRedeem) {
+      setSelectedRedeemLotId("");
+    }
+  }
+
+  async function saveDepositTransaction(keepAdding: boolean) {
     if (submitting) return;
     const amt = parseNumber(amount);
     if (amt <= 0) {
@@ -768,6 +783,10 @@ export function DepositFormModal({
     }
     if (isRedeem && !selectedRedeemLotId) {
       window.alert("请选择要取出的存款单");
+      return;
+    }
+    if (!isRedeem && !cashAccountId) {
+      window.alert("请选择资金来源账户");
       return;
     }
     if (isRedeem && selectedRedeemLot) {
@@ -844,16 +863,26 @@ export function DepositFormModal({
         if (!res.ok) throw new Error(res.error ?? "记账失败");
       }
 
-      setOpen(false);
-      if (mode === "create") reset();
+      if (keepAdding && mode === "create") {
+        resetAfterKeepAdding();
+      } else {
+        setOpen(false);
+        if (mode === "create") reset();
+      }
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event("mmh:fund:refresh"));
       });
+      router.refresh();
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    await saveDepositTransaction(false);
   }
 
   const recentAccountIds = useRecentAccountIds();
@@ -992,9 +1021,6 @@ export function DepositFormModal({
                         },
                       }}
                     />
-                    <div className="text-[11px] text-slate-400">
-                      不选也可以，保存时会按产品名称、所有人和机构自动建立存款账户。
-                    </div>
                   </div>
                 )}
               </div>
@@ -1186,6 +1212,16 @@ export function DepositFormModal({
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
+                {mode === "create" ? (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => { void saveDepositTransaction(true); }}
+                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+                  >
+                    {submitting ? "保存中…" : "保存并再记一笔"}
+                  </button>
+                ) : null}
                 <button
                   type="submit"
                   disabled={submitting}

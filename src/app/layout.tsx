@@ -29,6 +29,7 @@ export default function RootLayout({
                   persist("sidebar_collapsed", localStorage.getItem("sidebar_collapsed"));
                   persist("sidebar_group_by", localStorage.getItem("sidebar_group_by"));
                   persist("sidebar_hide_zero", localStorage.getItem("sidebar_hide_zero"));
+                  persist("sidebar_hide_initial_data", localStorage.getItem("sidebar_hide_initial_data"));
                   persist("sidebar_owner_filter", localStorage.getItem("sidebar_owner_filter"));
                   persist("mmh_ai_panel_collapsed", localStorage.getItem("mmh_ai_panel_collapsed"));
                 } catch (error) {}

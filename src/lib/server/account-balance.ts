@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind } from "@prisma/client";
+import { AccountKind, TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc } from "@/lib/detail-entry-order";
+import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 
 type AccountBalanceLike = {
   id: string;
@@ -97,7 +98,9 @@ export async function computeAccountDisplayBalances(
         amount: true,
         accountId: true,
         toAccountId: true,
+        toNote: true,
         source: true,
+        debtPrincipalAmount: true,
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
@@ -130,9 +133,8 @@ export async function computeAccountDisplayBalances(
       const orderedRows = [...rows].sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
       let runningBalance = 0;
       for (const entry of orderedRows) {
-        runningBalance += entry.toAccountId === account.id
-          ? Math.abs(toNumber(entry.amount))
-          : toNumber(entry.amount);
+        if (account.kind === AccountKind.loan && entry.type !== TransactionType.transfer) continue;
+        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
       }
       result.set(account.id, runningBalance);
     }

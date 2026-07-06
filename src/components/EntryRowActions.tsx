@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Pencil, Trash2 } from "lucide-react";
 
 type EditPayload = {
@@ -21,6 +22,8 @@ type EditPayload = {
   fundCode?: string;
   fundName?: string;
   insuranceProductId?: string | null;
+  insuranceAction?: "premium" | "refund";
+  insuranceProductName?: string;
   fundSubtype?: string;
   fundUnits?: number;
   fundNav?: number;
@@ -44,6 +47,7 @@ export function EntryRowActions({
   edit?: Omit<EditPayload, "entryId">;
   customEditEvent?: { name: string; detail: Record<string, unknown> };
 }) {
+  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
@@ -92,7 +96,8 @@ export function EntryRowActions({
       if (!data?.ok) {
         throw new Error(data?.error ?? `删除失败（HTTP ${res.status}）`);
       }
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      window.dispatchEvent(new CustomEvent("mmh:fund:refresh", { detail: { deletedEntryIds: [entryId] } }));
+      router.refresh();
 
     } catch (e) {
       const msg =

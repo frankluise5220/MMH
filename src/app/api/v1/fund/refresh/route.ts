@@ -97,7 +97,7 @@ export async function POST(req: NextRequest) {
 
         // 如果预加载列表中没有找到，使用原有的查询方式
         if (!navData) {
-          navData = await getFundNav(entry.fundCode, utcDate(confirmDate));
+          navData = await getFundNav(entry.fundCode, utcDate(confirmDate), accountId);
         }
 
         const hasExactNav = !!navData && navData.dateMatch;
@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
       if (!h.fundCode) continue;
       try {
         // 获取最新净值（同时带回基金名称）
-        const latestNav = await refreshLatestFundNav(h.fundCode);
+        const latestNav = await refreshLatestFundNav(h.fundCode, accountId);
         if (!latestNav?.name) continue;
 
         // 直接更新基金名称（如果名称不同）

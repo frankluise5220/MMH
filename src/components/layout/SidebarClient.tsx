@@ -6,7 +6,6 @@ import { useState, useEffect, useMemo, useRef, startTransition } from "react";
 import {
   LayoutDashboard,
   Users,
-  Settings,
   CalendarClock,
   ChevronDown,
   Repeat,
@@ -33,6 +32,7 @@ import {
   getAppPreferences,
   getSidebarCollapsedPreference,
   getSidebarGroupPreference,
+  getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
   getSidebarOwnerFilterPreference,
   setSidebarCollapsedPreference,
@@ -40,6 +40,7 @@ import {
   setSidebarHideZeroPreference,
   setSidebarOwnerFilterPreference,
 } from "@/lib/client/appPreferences";
+import { warmSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 type AccountItem = {
@@ -137,7 +138,7 @@ function normalizeSidebarItems(items: AccountItem[]) {
   ];
 }
 
-function toSidebarAccountItem(a: any): AccountItem {
+function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE): AccountItem {
   const display = buildAccountDisplayOption({
     id: a.id,
     name: a.name,
@@ -147,7 +148,7 @@ function toSidebarAccountItem(a: any): AccountItem {
     investProductType: a.investProductType ?? null,
     Institution: a.Institution ?? null,
     AccountGroup: a.AccountGroup ?? null,
-  }, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, { suppressDuplicateCreditCardLast4: true });
+  }, creditCardSidebarLabelTemplate);
   return {
     id: a.id,
     name: a.name,
@@ -175,6 +176,7 @@ export function SidebarClient({
   initialPreferences?: {
     sidebarOwnerFilter: string;
     sidebarHideZero: boolean;
+    sidebarHideInitialData: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution";
   };
@@ -187,11 +189,13 @@ export function SidebarClient({
 
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
+  const [hideInitialData, setHideInitialData] = useState(() => initialPreferences?.sidebarHideInitialData ?? getSidebarHideInitialDataPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [pendingSettings, setPendingSettings] = useState(false);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
   const [initOpen, setInitOpen] = useState(false);
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
@@ -207,7 +211,7 @@ export function SidebarClient({
   );
 
   async function handleSwitchUser() {
-    if (!window.confirm("确认切换用户吗？")) return;
+    if (!window.confirm("确认退出当前用户吗？")) return;
     setSwitcherOpen(false);
     try {
       const res = await fetch("/api/v1/auth/logout", {
@@ -220,7 +224,7 @@ export function SidebarClient({
       }
       window.location.assign("/login");
     } catch (error) {
-      window.alert(error instanceof Error ? `无法切换用户：${error.message}` : "无法切换用户");
+      window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
     }
   }
 
@@ -254,7 +258,7 @@ export function SidebarClient({
           if (data?.ok && Array.isArray(data?.accounts)) {
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a)));
+                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a, getAppPreferences().creditCardSidebarLabelTemplate)));
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;
@@ -286,7 +290,6 @@ export function SidebarClient({
         }
       }, 100);
     };
-    debouncedRefresh();
     window.addEventListener("mmh:fund:refresh", debouncedRefresh);
     return () => {
       window.removeEventListener("mmh:fund:refresh", debouncedRefresh);
@@ -299,6 +302,7 @@ export function SidebarClient({
       const prefs = getAppPreferences();
       setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
+      setHideInitialData(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
     };
@@ -306,6 +310,22 @@ export function SidebarClient({
     window.addEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
     return () => window.removeEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
   }, []);
+
+  useEffect(() => {
+    if (pathname.startsWith("/settings")) return;
+    const warm = () => warmSettingsBootstrap();
+    const requestIdle = window.requestIdleCallback;
+    if (requestIdle) {
+      const idleId = requestIdle(warm, { timeout: 1500 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(warm, 500);
+    return () => window.clearTimeout(timer);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (pathname.startsWith("/settings")) setPendingSettings(false);
+  }, [pathname]);
 
   function cycleOwnerFilter() {
     const cycle = ["", ...ownerOptions];
@@ -354,9 +374,9 @@ export function SidebarClient({
     });
   }
 
-  const navItemCls = (href: string) => 
+  const navItemCls = (href: string, forceActive = false) =>
     `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-200 ${
-      (href === "/" ? pathname === "/" : pathname.startsWith(href))
+      forceActive || (href === "/" ? pathname === "/" : pathname.startsWith(href))
         ? "sidebar-item-active"
         : "text-slate-600 hover:bg-white hover:text-slate-900"
     }`;
@@ -568,12 +588,11 @@ export function SidebarClient({
     return (
       <aside className="flex h-screen w-16 shrink-0 flex-col items-center overflow-hidden border-r border-slate-200/80 bg-white/84 px-2 py-3 backdrop-blur-xl transition-[width] duration-200">
         <div className="flex shrink-0 flex-col items-center gap-1">
-          <LanguageSwitcher />
           <button
             ref={ledgerSwitcherAnchorRef}
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
-            className={collapsedNavCls(false)}
+            className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-foreground text-accent-clay shadow-lg shadow-foreground/10 transition-colors hover:bg-slate-800"
             title="切换账簿"
           >
             <BookOpen size={18} />
@@ -582,13 +601,11 @@ export function SidebarClient({
             type="button"
             onClick={handleSwitchUser}
             className={collapsedNavCls(false)}
-            title="切换用户"
+            title={`退出${user?.name ? `：${user.name}` : "当前用户"}`}
           >
             <UserRound size={18} />
           </button>
-          <Link href="/settings" className={collapsedNavCls(pathname.startsWith("/settings"))} title={t("nav.settings")}>
-            <Users size={18} />
-          </Link>
+          <LanguageSwitcher />
           <button
             onClick={toggleSidebarCollapsed}
             className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
@@ -608,6 +625,18 @@ export function SidebarClient({
           <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title={t("nav.overview")}>
             <LayoutDashboard size={18} />
           </Link>
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
+            <CalendarClock size={18} />
+          </Link>
+          {!hideInitialData ? (
+            <button
+              onClick={() => setInitOpen(true)}
+              className={collapsedNavCls(false)}
+              title={t("nav.initialData")}
+            >
+              <Plus size={18} />
+            </button>
+          ) : null}
           <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
@@ -626,19 +655,6 @@ export function SidebarClient({
           </Link>
         </nav>
 
-        <div className="flex shrink-0 flex-col items-center gap-1 border-t border-slate-200 pt-3">
-          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
-            <CalendarClock size={18} />
-          </Link>
-          <button
-            onClick={() => setInitOpen(true)}
-            className={collapsedNavCls(false)}
-            title={t("nav.initialData")}
-          >
-            <Plus size={18} />
-          </button>
-        </div>
-
         <NewLedgerSetupCheck />
         <InitModal open={initOpen} onOpenChange={setInitOpen} />
         <DailyTaskCheck />
@@ -650,35 +666,35 @@ export function SidebarClient({
     <aside className="flex h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl transition-[width] duration-200">
       {/* Fixed Header */}
       <div className="shrink-0 px-4 pb-2 pt-4">
-        <div className="flex items-center gap-0.5">
-          <LanguageSwitcher />
+        <div className="flex items-center gap-2">
           <button
             ref={ledgerSwitcherAnchorRef}
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            className="flex h-8 w-8 items-center justify-center rounded-xl bg-foreground text-accent-clay shadow-lg shadow-foreground/10 transition-colors hover:bg-slate-800"
             title="切换账簿"
           >
-            <BookOpen size={18} />
+            <BookOpen size={16} />
           </button>
           <button
             type="button"
             onClick={handleSwitchUser}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-            title="切换用户"
+            className="flex h-7 min-w-0 max-w-[128px] items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            title={`退出${user?.name ? `：${user.name}` : "当前用户"}`}
           >
-            <UserRound size={18} />
+            <UserRound size={15} className="shrink-0" />
+            <span className="truncate">{user?.name || "用户"}</span>
           </button>
-          <Link href="/settings" className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" title={t("nav.settings")}>
-            <Settings size={18} />
-          </Link>
-          <button
-            onClick={toggleSidebarCollapsed}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-            title={t("common.collapse")}
-          >
-            <PanelLeftClose size={18} />
-          </button>
+          <div className="ml-auto flex items-center justify-end gap-1">
+            <LanguageSwitcher />
+            <button
+              onClick={toggleSidebarCollapsed}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+              title={t("common.collapse")}
+            >
+              <PanelLeftClose size={18} />
+            </button>
+          </div>
         </div>
         <LedgerSwitcher
           current={household}
@@ -696,6 +712,19 @@ export function SidebarClient({
               <LayoutDashboard size={18} />
               <span className="font-medium">{t("nav.overview")}</span>
             </Link>
+            <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
+              <CalendarClock size={18} />
+              <span className="font-medium">{t("nav.scheduledTasks")}</span>
+            </Link>
+            {!hideInitialData ? (
+              <button
+                onClick={() => setInitOpen(true)}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
+              >
+                <Plus size={18} />
+                <span className="font-medium">{t("nav.initialData")}</span>
+              </button>
+            ) : null}
           </nav>
         </div>
 
@@ -839,20 +868,19 @@ export function SidebarClient({
         </div>
 
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
-          <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
-            <CalendarClock size={18} />
-            <span className="font-medium">{t("nav.scheduledTasks")}</span>
-          </Link>
-          <button
-            onClick={() => setInitOpen(true)}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
+          <Link
+            href="/settings"
+            prefetch={false}
+            onClick={() => {
+              if (!pathname.startsWith("/settings")) setPendingSettings(true);
+            }}
+            className={navItemCls("/settings", pendingSettings)}
           >
-            <Plus size={18} />
-            <span className="font-medium">{t("nav.initialData")}</span>
-          </button>
-          <Link href="/settings" className={navItemCls("/settings")}>
             <Users size={18} />
             <span className="font-medium">{t("nav.settings")}</span>
+            {pendingSettings ? (
+              <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+            ) : null}
           </Link>
         </div>
       </div>

@@ -1,5 +1,5 @@
 export function roundLoanMoney(value: number) {
-  return Math.round(value * 100) / 100;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 export type LoanRateAdjustment = {
@@ -114,11 +114,39 @@ export function calcLoanScheduledAmount(params: {
   return roundLoanMoney((principal * periodRate * factor) / (factor - 1));
 }
 
+export function calcLoanScheduledAmountExact(params: {
+  repaymentMethod?: string | null;
+  annualRate?: number | null;
+  principal: number;
+  totalRuns: number;
+  intervalMonths?: number | null;
+}) {
+  const method = params.repaymentMethod || "自由还款";
+  const principal = Math.max(0, params.principal);
+  const totalRuns = Math.max(0, params.totalRuns);
+  if (
+    method !== "等额本息" ||
+    principal <= 0 ||
+    totalRuns <= 0 ||
+    params.annualRate == null ||
+    !Number.isFinite(params.annualRate) ||
+    params.annualRate <= 0
+  ) {
+    return null;
+  }
+
+  const periodRate = (params.annualRate / 100 / 12) * Math.max(1, params.intervalMonths || 1);
+  const factor = Math.pow(1 + periodRate, totalRuns);
+  if (!Number.isFinite(periodRate) || periodRate <= 0 || !Number.isFinite(factor) || factor <= 1) return null;
+  return (principal * periodRate * factor) / (factor - 1);
+}
+
 export function calcLoanRunParts(params: {
   repaymentMethod?: string | null;
   annualRate?: number | null;
   intervalMonths?: number | null;
   scheduledAmount: number;
+  scheduledAmountExact?: number | null;
   remainingPrincipal: number;
   remainingRuns: number;
 }) {
@@ -146,8 +174,15 @@ export function calcLoanRunParts(params: {
   }
 
   const scheduledAmount = Math.max(0, params.scheduledAmount);
+  const scheduledAmountExact =
+    params.scheduledAmountExact != null && Number.isFinite(params.scheduledAmountExact) && params.scheduledAmountExact > 0
+      ? params.scheduledAmountExact
+      : scheduledAmount;
+  const principalExact = Math.min(remainingPrincipal, Math.max(0, scheduledAmountExact - interest));
+  const principal = roundLoanMoney(principalExact);
   return {
-    principal: roundLoanMoney(Math.min(remainingPrincipal, Math.max(0, scheduledAmount - interest))),
+    principal,
+    principalExact,
     interest,
   };
 }
@@ -188,6 +223,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
   adjustments?: LoanRateAdjustment[] | null;
   intervalMonths?: number | null;
   scheduledAmount: number;
+  scheduledAmountExact?: number | null;
   remainingPrincipal: number;
   remainingRuns: number;
   previousRunDate?: string | null;
@@ -209,6 +245,14 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
       totalRuns: remainingRuns,
       intervalMonths: params.intervalMonths,
     }) ?? params.scheduledAmount;
+  const scheduledAmountExact =
+    calcLoanScheduledAmountExact({
+      repaymentMethod: params.repaymentMethod,
+      annualRate: effectiveAnnualRate,
+      principal: remainingPrincipal,
+      totalRuns: remainingRuns,
+      intervalMonths: params.intervalMonths,
+    }) ?? params.scheduledAmountExact ?? scheduledAmount;
 
   if (
     params.previousRunDate &&
@@ -218,16 +262,33 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
       endDateInclusive: params.runDate,
     })
   ) {
-    const previousAnnualRate = getEffectiveLoanAnnualRate({
+    const periodStartAnnualRate = getEffectiveLoanAnnualRate({
       baseAnnualRate: params.baseAnnualRate,
       adjustments,
       date: params.previousRunDate,
     });
-    const previousParts = calcLoanRunParts({
+    const periodStartScheduledAmount =
+      calcLoanScheduledAmount({
+        repaymentMethod: params.repaymentMethod,
+        annualRate: periodStartAnnualRate,
+        principal: remainingPrincipal,
+        totalRuns: remainingRuns,
+        intervalMonths: params.intervalMonths,
+      }) ?? params.scheduledAmount;
+    const periodStartScheduledAmountExact =
+      calcLoanScheduledAmountExact({
+        repaymentMethod: params.repaymentMethod,
+        annualRate: periodStartAnnualRate,
+        principal: remainingPrincipal,
+        totalRuns: remainingRuns,
+        intervalMonths: params.intervalMonths,
+      }) ?? params.scheduledAmountExact ?? periodStartScheduledAmount;
+    const periodStartParts = calcLoanRunParts({
       repaymentMethod: params.repaymentMethod,
-      annualRate: previousAnnualRate,
+      annualRate: periodStartAnnualRate,
       intervalMonths: params.intervalMonths,
-      scheduledAmount: params.scheduledAmount,
+      scheduledAmount: periodStartScheduledAmount,
+      scheduledAmountExact: periodStartScheduledAmountExact,
       remainingPrincipal,
       remainingRuns,
     });
@@ -238,13 +299,15 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
       startDateExclusive: params.previousRunDate,
       endDateInclusive: params.runDate,
     });
-    const principal = roundLoanMoney(Math.min(remainingPrincipal, Math.max(0, previousParts.principal)));
+    const principal = roundLoanMoney(Math.min(remainingPrincipal, Math.max(0, periodStartParts.principal)));
     return {
       principal,
       interest,
       payment: roundLoanMoney(principal + interest),
       annualRate: effectiveAnnualRate,
-      scheduledAmount: roundLoanMoney(principal + interest),
+      scheduledAmount,
+      scheduledAmountExact,
+      principalExact: periodStartParts.principalExact,
       usedDailyInterest: true,
     };
   }
@@ -254,6 +317,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
     annualRate: effectiveAnnualRate,
     intervalMonths: params.intervalMonths,
     scheduledAmount,
+    scheduledAmountExact,
     remainingPrincipal,
     remainingRuns,
   });
@@ -263,6 +327,8 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
     payment: roundLoanMoney(parts.principal + parts.interest),
     annualRate: effectiveAnnualRate,
     scheduledAmount,
+    scheduledAmountExact,
+    principalExact: parts.principalExact,
     usedDailyInterest: false,
   };
 }

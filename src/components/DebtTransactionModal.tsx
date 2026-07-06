@@ -16,8 +16,11 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import {
   buildMortgageLprRateAdjustments,
   calcMortgageAnnualRateFromLprDiscount,
+  calcMortgageLprSpreadFromDiscount,
   getLatestFiveYearLpr,
+  getMortgageBankExecutionRate,
   MORTGAGE_BASE_BENCHMARK_RATE,
+  MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
 import { getEffectiveLoanAnnualRate, type LoanRateAdjustment } from "@/lib/loan-repayment";
 
@@ -102,6 +105,10 @@ function parsePositiveNumberText(value: string) {
 function parseMoneyText(value: string) {
   const num = Number(value.replace(/,/g, ""));
   return Number.isFinite(num) ? num : 0;
+}
+
+function roundMoneyValue(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function isValidDateInput(value: string) {
@@ -270,10 +277,14 @@ export function DebtTransactionModal({
   const [debtItemName, setDebtItemName] = useState("");
   const [cashAccountId, setCashAccountId] = useState(defaultCashAccountId ?? cashAccounts[0]?.id ?? "");
   const [principal, setPrincipal] = useState("");
+  const [originalPrincipalForEdit, setOriginalPrincipalForEdit] = useState("");
+  const [editRecalculateStartDate, setEditRecalculateStartDate] = useState("");
   const [interest, setInterest] = useState("");
   const [penalty, setPenalty] = useState("");
-  const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>("reduce_term");
+  const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>("reduce_payment");
+  const [bankExecutionRate, setBankExecutionRate] = useState("");
   const [annualRate, setAnnualRate] = useState("");
+  const [annualRateManuallyEdited, setAnnualRateManuallyEdited] = useState(false);
   const [mortgageLprDiscount, setMortgageLprDiscount] = useState("");
   const [repaymentMethod, setRepaymentMethod] = useState("自由还款");
   const [repaymentIntervalMonths, setRepaymentIntervalMonths] = useState("1");
@@ -329,10 +340,14 @@ export function DebtTransactionModal({
     setDebtItemName("");
     setCashAccountId(defaultCashAccountId ?? cashAccounts[0]?.id ?? "");
     setPrincipal("");
+    setOriginalPrincipalForEdit("");
+    setEditRecalculateStartDate("");
     setInterest("");
     setPenalty("");
-    setPrepayStrategy("reduce_term");
+    setPrepayStrategy("reduce_payment");
+    setBankExecutionRate("");
     setAnnualRate("");
+    setAnnualRateManuallyEdited(false);
     setMortgageLprDiscount("");
     setRepaymentMethod("自由还款");
     setRepaymentIntervalMonths("1");
@@ -372,6 +387,8 @@ export function DebtTransactionModal({
         defaultDate?: string;
         defaultPrincipal?: number | string | null;
         defaultInterest?: number | string | null;
+        defaultPenalty?: number | string | null;
+        defaultRecalculateStartDate?: string | null;
         defaultPrepayStrategy?: PrepayStrategy;
         defaultCurrentAnnualRate?: number | null;
         defaultMortgageLprDiscount?: number | null;
@@ -388,8 +405,14 @@ export function DebtTransactionModal({
         setDebtInstitutionId(normalizeDebtObjectValue(detail.defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData));
       }
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
-      if (detail?.defaultPrincipal != null) setPrincipal(String(detail.defaultPrincipal));
+      if (detail?.defaultPrincipal != null) {
+        const nextPrincipal = String(detail.defaultPrincipal);
+        setPrincipal(nextPrincipal);
+        setOriginalPrincipalForEdit(nextPrincipal);
+      }
+      if (detail?.defaultRecalculateStartDate) setEditRecalculateStartDate(detail.defaultRecalculateStartDate);
       if (detail?.defaultInterest != null) setInterest(String(detail.defaultInterest));
+      if (detail?.defaultPenalty != null) setPenalty(String(detail.defaultPenalty));
       if (detail?.defaultPrepayStrategy) setPrepayStrategy(detail.defaultPrepayStrategy);
       if (detail?.mode === "repay_out" || detail?.mode === "prepay_out") {
         setRepaymentLprCheck({
@@ -485,6 +508,12 @@ export function DebtTransactionModal({
     )
       ? pendingLprAdjustment
       : null;
+    const shouldPromptPrincipalRecalculation =
+      !!editingEntryId &&
+      mode === "repay_out" &&
+      !!debtAccountId &&
+      !!editRecalculateStartDate &&
+      Math.abs(roundMoneyValue(parseMoneyText(principal)) - roundMoneyValue(parseMoneyText(originalPrincipalForEdit))) > 0.005;
 
     const formData = new FormData();
     formData.set("editEntryId", editingEntryId);
@@ -524,12 +553,35 @@ export function DebtTransactionModal({
       if (res.warning) {
         window.alert(res.warning);
       }
+      if (shouldPromptPrincipalRecalculation) {
+        const accepted = window.confirm([
+          "本期还款本金已经修改，这会改变后续剩余本金。",
+          `是否从 ${editRecalculateStartDate} 开始重算后续还款计划？`,
+          "本期本金会作为银行实际值保留；只修改利息不会触发重算。",
+        ].join("\n"));
+        if (accepted) {
+          const recalcResponse = await fetch("/api/v1/loan-repayment/recalculate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              accountId: debtAccountId,
+              startDate: editRecalculateStartDate,
+              strategy: "reduce_payment",
+            }),
+          });
+          const recalcData = await recalcResponse.json().catch(() => null);
+          if (!recalcResponse.ok || !recalcData?.ok) {
+            window.alert(recalcData?.error || "本金已保存，但后续计划重算失败");
+          }
+        }
+      }
       router.refresh();
       if (keepAdding) {
         setPrincipal("");
         setInterest("");
         setPenalty("");
-        setPrepayStrategy("reduce_term");
+        setPrepayStrategy("reduce_payment");
+        setBankExecutionRate("");
         setAnnualRate("");
         setMortgageLprDiscount("");
         setRepaymentMethod("自由还款");
@@ -603,21 +655,55 @@ export function DebtTransactionModal({
   const selectedDebtObjectName = debtObjectById.get(debtInstitutionId)?.name?.trim() || "往来对象";
   const disabled = cashAccounts.length === 0;
   const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
-  function applyMortgageLprDiscount() {
-    const discount = Number(mortgageLprDiscount.trim());
-    if (!Number.isFinite(discount) || discount <= 0) {
-      window.alert("请填写正确的利率折扣，例如 0.85");
+  const formatRateInput = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
+  function computeAnnualRateFromBankExecutionRate(discount: number, baseRate = Number(bankExecutionRate.trim())) {
+    if (!Number.isFinite(baseRate) || baseRate <= 0) return;
+    if (!annualRateManuallyEdited) {
+      setAnnualRate(formatRateInput(baseRate * discount));
+    }
+  }
+  function fetchBankExecutionRate() {
+    const quote = getMortgageBankExecutionRate(date || today);
+    if (!quote) {
+      window.alert("未找到可用的银行执行利率");
       return;
     }
-    setAnnualRate((MORTGAGE_BASE_BENCHMARK_RATE * discount).toFixed(3).replace(/\.?0+$/, ""));
+    const baseRate = quote.rate;
+    setBankExecutionRate(formatRateInput(baseRate));
+    const discount = Number(mortgageLprDiscount.trim());
+    if (Number.isFinite(discount) && discount > 0) {
+      computeAnnualRateFromBankExecutionRate(discount, baseRate);
+    }
+  }
+  function applyMortgageLprDiscount(options?: { silent?: boolean }) {
+    const discount = Number(mortgageLprDiscount.trim());
+    if (!Number.isFinite(discount) || discount <= 0) {
+      if (!options?.silent) window.alert("请填写正确的利率折扣，例如 0.85");
+      return;
+    }
+    const currentBankRate = Number(bankExecutionRate.trim());
+    if (Number.isFinite(currentBankRate) && currentBankRate > 0) {
+      computeAnnualRateFromBankExecutionRate(discount, currentBankRate);
+    } else {
+      const quote = getMortgageBankExecutionRate(date || today);
+      if (!quote) return;
+      const baseRate = quote.rate;
+      setBankExecutionRate(formatRateInput(baseRate));
+      computeAnnualRateFromBankExecutionRate(discount, baseRate);
+    }
     const adjustments = buildMortgageLprRateAdjustments({ discount, throughDate: today });
     if (adjustments.length > 0) {
       setHistoricalRateRows(adjustments.map((item) => createHistoricalRateRow(
         item.effectiveDate,
-        item.annualRate.toFixed(3).replace(/\.?0+$/, ""),
+        formatRateInput(item.annualRate),
       )));
       setShowHistoricalRates(true);
     }
+  }
+
+  function handleMortgageLprDiscountBlur() {
+    if (!mortgageLprDiscount.trim()) return;
+    applyMortgageLprDiscount({ silent: true });
   }
 
   return (
@@ -665,7 +751,7 @@ export function DebtTransactionModal({
                           key={item}
                           type="button"
                           onClick={() => setMode(item)}
-                          disabled={!!editingEntryId && item !== "repay_out" && item !== "prepay_out"}
+                          disabled={!!editingEntryId && item !== "repay_out" && item !== "prepay_out" && item !== "collect_in"}
                           className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
                         >
                           {MODE_LABELS[item]}
@@ -810,7 +896,7 @@ export function DebtTransactionModal({
 
                     {showBorrowPlan ? (
                       <>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                           <div className="space-y-1">
                             <div className="form-label">还款方式</div>
                             <select value={repaymentMethod} onChange={(event) => setRepaymentMethod(event.target.value)} className="form-input">
@@ -822,40 +908,56 @@ export function DebtTransactionModal({
                           </div>
                           <div className="space-y-1">
                             <div className="form-label">
-                              年利率（%） {isFixedRepaymentMethod ? <span className="text-red-500">*</span> : <span className="text-slate-400">可选</span>}
+                              银行执行利率（未折扣 %）
                             </div>
                             <input
-                              value={annualRate}
-                              onChange={(event) => setAnnualRate(event.target.value)}
-                              placeholder="例如：3.45"
+                              value={bankExecutionRate}
+                              onChange={(event) => setBankExecutionRate(event.target.value)}
+                              placeholder="例如：3.5"
                               inputMode="decimal"
                               className="form-input"
                             />
                           </div>
+                          <div className="flex items-end">
+                            <button
+                              type="button"
+                              className="secondary-button h-9 shrink-0 px-3 text-xs"
+                              onClick={fetchBankExecutionRate}
+                              disabled={!isFixedRepaymentMethod}
+                            >
+                              获取
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
                           {isFixedRepaymentMethod ? (
                             <div className="space-y-1">
                               <div className="form-label">房贷 LPR 折扣 <span className="text-slate-400">可选</span></div>
-                              <div className="flex gap-2">
-                                <input
-                                  value={mortgageLprDiscount}
-                                  onChange={(event) => setMortgageLprDiscount(event.target.value)}
-                                  placeholder="例如：0.85"
-                                  inputMode="decimal"
-                                  className="form-input"
-                                />
-                                <button
-                                  type="button"
-                                  className="secondary-button h-9 shrink-0 px-3 text-xs"
-                                  onClick={applyMortgageLprDiscount}
-                                >
-                                  套用
-                                </button>
-                              </div>
-                              <div className="text-[11px] leading-5 text-slate-500">
-                                仅房贷需要填写 LPR 折扣。普通借款、亲友借款或非银行贷款不涉及 LPR，直接填写上方年利率即可。
-                              </div>
+                              <input
+                                value={mortgageLprDiscount}
+                                onChange={(event) => setMortgageLprDiscount(event.target.value)}
+                                onBlur={handleMortgageLprDiscountBlur}
+                                placeholder="例如：0.85"
+                                inputMode="decimal"
+                                className="form-input"
+                              />
                             </div>
                           ) : null}
+                          <div className="space-y-1">
+                            <div className="form-label">
+                              年利率（%） {isFixedRepaymentMethod ? <span className="text-red-500">*</span> : <span className="text-slate-400">可选</span>}
+                            </div>
+                            <input
+                              value={annualRate}
+                              onChange={(event) => {
+                                setAnnualRateManuallyEdited(true);
+                                setAnnualRate(event.target.value);
+                              }}
+                              placeholder="例如：2.975"
+                              inputMode="decimal"
+                              className="form-input"
+                            />
+                          </div>
                         </div>
 
                         {isFixedRepaymentMethod ? (
@@ -911,12 +1013,12 @@ export function DebtTransactionModal({
 
                         <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
                           {mode === "repay_out"
-                            ? "还款会冲减借入本金；如填写利息，会另外记一笔利息支出。"
+                            ? "还款金额包含本金和利息；借记卡端显示一笔贷款还款，贷款端按本金和利息拆分。"
                             : mode === "prepay_out"
                               ? "提前还款只冲减本金，不计入计划任务已执行次数；保存后会按上方选择调整后续还款计划。"
                             : mode === "lend_out"
                               ? "借出会从资金账户转出，同时形成借出余额。"
-                              : "收回会冲减借出本金；如填写利息，会另外记一笔利息收入。"}
+                              : "收回金额包含本金和利息；资金账户端显示一笔收回，往来端按本金和利息拆分。"}
                         </div>
                       </>
                     ) : null}
@@ -987,7 +1089,7 @@ export function DebtTransactionModal({
                     />
                     <span>
                       <span className="block font-medium text-slate-800">有历史利率调整</span>
-                      <span className="block text-xs text-slate-500">在弹窗中逐条填写生效日期和年利率，避免手工文本格式错误。</span>
+                      <span className="block text-xs text-slate-500">打开利率调整界面，可按 LPR 折扣生成，也可维护实际年利率。</span>
                     </span>
                   </label>
 
@@ -1007,7 +1109,7 @@ export function DebtTransactionModal({
                           setHistoricalRatesOpen(true);
                         }}
                       >
-                        编辑历史利率
+                        利率调整
                       </button>
                     </div>
                   ) : null}
@@ -1051,15 +1153,67 @@ export function DebtTransactionModal({
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm text-slate-700">
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    每条利率只填写“生效日期”和“年利率（%）”。例如 2021-01-01 生效 4.015%，会从这个日期起影响后续还款计划。LPR 折扣只用于房贷，其他借款请直接维护实际年利率。
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
+                    利率调整会影响生效日之后的还款计划。新增借款时先在这里维护草稿，保存借入后写入贷款利率调整表。
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2">
+                      <div className="text-xs font-semibold text-slate-700">按 LPR 折扣生成</div>
+                      <div className="mt-0.5 text-[11px] leading-5 text-slate-500">
+                        折扣先换算固定加点：{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%。生成后仍可手工调整。
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_92px] gap-2">
+                      <div className="space-y-1">
+                        <div className="form-label">利率折扣</div>
+                        <input
+                          value={mortgageLprDiscount}
+                          onChange={(event) => setMortgageLprDiscount(event.target.value)}
+                          inputMode="decimal"
+                          placeholder="例如：0.85"
+                          className="form-input"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">固定加点</div>
+                        <input
+                          value={(() => {
+                            const discount = Number(mortgageLprDiscount.trim());
+                            return Number.isFinite(discount) && discount > 0
+                              ? `${calcMortgageLprSpreadFromDiscount(discount).toFixed(3).replace(/\.?0+$/, "")}%`
+                              : "";
+                          })()}
+                          readOnly
+                          placeholder="自动计算"
+                          className="form-input bg-white/70 text-slate-500"
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <button
+                          type="button"
+                          className="inline-flex h-9 w-full items-center justify-center rounded-full border border-blue-600 bg-blue-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                          onClick={() => applyMortgageLprDiscount()}
+                        >
+                          生成
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
-                    {historicalRateRows.map((row, index) => (
-                      <div key={row.key} className="grid grid-cols-[1fr_120px_auto] items-end gap-2 rounded-lg border border-slate-200 bg-white p-2">
-                        <div className="space-y-1">
-                          <div className="form-label">生效日期</div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2 px-1 text-xs font-medium text-slate-500">
+                      <div>生效日期</div>
+                      <div>年利率（%）</div>
+                      <div className="text-right">操作</div>
+                    </div>
+                    <div className="max-h-[230px] space-y-2 overflow-y-auto pr-1">
+                      {historicalRateRows.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center text-sm text-slate-500">
+                          暂无利率调整记录
+                        </div>
+                      ) : historicalRateRows.map((row) => (
+                        <div key={row.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2">
                           <DateStepper
                             value={row.effectiveDate}
                             onChange={(value) => {
@@ -1068,43 +1222,32 @@ export function DebtTransactionModal({
                               )));
                             }}
                           />
-                        </div>
-                        <div className="space-y-1">
-                          <div className="form-label">年利率（%）</div>
                           <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0.001"
-                            step="0.001"
                             value={row.annualRate}
                             onChange={(event) => {
                               setHistoricalRateRows((prev) => prev.map((item) => (
                                 item.key === row.key ? { ...item, annualRate: event.target.value } : item
                               )));
                             }}
-                            placeholder="4.015"
-                            className="form-input text-right"
+                            inputMode="decimal"
+                            placeholder="例如：4.015"
+                            className="form-input"
                           />
+                          <button
+                            type="button"
+                            className="secondary-button h-9 px-2 text-rose-600 hover:bg-rose-50"
+                            onClick={() => {
+                              setHistoricalRateRows((prev) => prev.filter((item) => item.key !== row.key));
+                            }}
+                          >
+                            删除
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          className="secondary-button h-9 px-2 text-xs text-rose-600"
-                          onClick={() => {
-                            setHistoricalRateRows((prev) => {
-                              const next = prev.filter((item) => item.key !== row.key);
-                              return next.length > 0 ? next : [createHistoricalRateRow()];
-                            });
-                          }}
-                          disabled={historicalRateRows.length <= 1 && !row.effectiveDate && !row.annualRate}
-                        >
-                          删除
-                        </button>
-                        <div className="col-span-3 text-[11px] text-slate-400">第 {index + 1} 条</div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 pt-1">
+                  <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
                     <button
                       type="button"
                       className="secondary-button h-9 px-3"
@@ -1128,6 +1271,11 @@ export function DebtTransactionModal({
                         type="button"
                         className="primary-button h-9 px-3"
                         onClick={() => {
+                          if (historicalRateRows.length === 0) {
+                            setShowHistoricalRates(false);
+                            setHistoricalRatesOpen(false);
+                            return;
+                          }
                           const result = serializeHistoricalRateRows(historicalRateRows);
                           if (!result.ok) {
                             window.alert(result.error);

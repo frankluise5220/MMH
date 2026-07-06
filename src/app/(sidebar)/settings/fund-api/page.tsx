@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type DragEvent } from "react";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
 
@@ -38,6 +38,21 @@ function flatForm(f: EditForm): Omit<EditForm, "urlParts"> & { baseUrl: string }
     priority: f.priority,
     isActive: f.isActive,
   };
+}
+
+function sortApis(apis: FundQueryApiRecord[]) {
+  return [...apis].sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name, "zh-Hans-CN"));
+}
+
+function reorderApis(apis: FundQueryApiRecord[], sourceId: string, targetId: string) {
+  const next = [...apis];
+  const from = next.findIndex((api) => api.id === sourceId);
+  const to = next.findIndex((api) => api.id === targetId);
+  if (from < 0 || to < 0 || from === to) return apis;
+  const [moved] = next.splice(from, 1);
+  if (!moved) return apis;
+  next.splice(to, 0, moved);
+  return next.map((api, index) => ({ ...api, priority: index + 1 }));
 }
 
 function UrlInputGroup({
@@ -100,10 +115,12 @@ export default function FundQueryApiPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<EditForm>(makeForm());
   const [saving, setSaving] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   useEffect(() => {
-    // 移除导致无限闪烁或重绘的 debug 上报
-    fetch("/api/v1/settings/fund-query-api")
+    const controller = new AbortController();
+    fetch("/api/v1/settings/fund-query-api", { signal: controller.signal })
       .then(async (r) => {
         const text = await r.text();
         let payload: { ok?: boolean; apis?: FundQueryApiRecord[]; error?: string } | { raw: string } = { raw: "" };
@@ -116,7 +133,7 @@ export default function FundQueryApiPage() {
       })
       .then(({ status, payload }) => {
         if ("ok" in payload && payload.ok) {
-          setApis(Array.isArray(payload.apis) ? payload.apis : []);
+          setApis(sortApis(Array.isArray(payload.apis) ? payload.apis : []));
           setLoadError("");
         } else {
           setApis([]);
@@ -124,11 +141,15 @@ export default function FundQueryApiPage() {
           setLoadError(hint);
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
         setApis([]);
         setLoadError("请求失败（网络或服务异常）");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, []);
 
   function openEdit(api: FundQueryApiRecord) {
@@ -138,7 +159,80 @@ export default function FundQueryApiPage() {
 
   function openCreate() {
     setEditingId("__new__");
-    setForm(makeForm({ code: "", name: "", priority: apis.length, isActive: true }));
+    setForm(makeForm({ code: "", name: "", priority: apis.length + 1, isActive: true }));
+  }
+
+  async function saveOrder(nextApis: FundQueryApiRecord[]) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/v1/settings/fund-query-api", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          priorities: nextApis.map((api, index) => ({ id: api.id, priority: index + 1 })),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setApis(sortApis(Array.isArray(data.apis) ? data.apis : nextApis));
+        return true;
+      } else {
+        alert(data.error || "排序保存失败");
+        return false;
+      }
+    } catch {
+      alert("排序保存失败");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleDragStart(event: DragEvent<HTMLDivElement>, id: string) {
+    setDraggingId(id);
+    setDragOverId(null);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
+    const ghost = event.currentTarget.cloneNode(true) as HTMLElement;
+    ghost.style.width = `${event.currentTarget.offsetWidth}px`;
+    ghost.style.border = "2px solid rgb(37 99 235)";
+    ghost.style.borderRadius = "0.75rem";
+    ghost.style.boxShadow = "0 18px 45px rgba(15, 23, 42, 0.22)";
+    ghost.style.background = "white";
+    ghost.style.opacity = "0.98";
+    ghost.style.position = "fixed";
+    ghost.style.top = "-1000px";
+    ghost.style.left = "-1000px";
+    ghost.style.pointerEvents = "none";
+    document.body.appendChild(ghost);
+    event.dataTransfer.setDragImage(ghost, 28, 28);
+    window.setTimeout(() => ghost.remove(), 0);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>, id: string) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (draggingId && draggingId !== id) setDragOverId(id);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>, id: string) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    if (dragOverId === id) setDragOverId(null);
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>, targetId: string) {
+    event.preventDefault();
+    const sourceId = draggingId || event.dataTransfer.getData("text/plain");
+    setDraggingId(null);
+    setDragOverId(null);
+    if (!sourceId || sourceId === targetId || saving) return;
+    const previous = apis;
+    const next = reorderApis(apis, sourceId, targetId);
+    if (next === apis) return;
+    setApis(next);
+    const saved = await saveOrder(next);
+    if (!saved) setApis(previous);
   }
 
   async function save() {
@@ -203,7 +297,7 @@ export default function FundQueryApiPage() {
           <p className="text-xs text-slate-500 leading-relaxed mt-1">
             请求地址含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 占位符的 API 支持按日期查询历史净值；
             不含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 的 API 仅返回最新净值，查询指定日期时会被自动跳过。
-            优先级数值越小越先执行。
+            拖拽卡片调整全局优先级，越上面越先尝试；账户里单独指定默认 API 时优先于这里的顺序。
           </p>
         </div>
         <button
@@ -231,9 +325,10 @@ export default function FundQueryApiPage() {
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">优先级</div>
-                  <input type="number" value={form.priority ?? 0} onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                  <div className="text-xs font-medium text-slate-600">排序</div>
+                  <div className="h-9 flex items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
+                    创建后可拖拽调整
+                  </div>
                 </div>
               </div>
               <div className="space-y-1">
@@ -265,9 +360,15 @@ export default function FundQueryApiPage() {
             暂无基金查询 API，请点击右上角"添加 API"。
           </div>
         )}
-        {apis.map((api) => (
+        {apis.map((api, index) => (
           <div key={api.id}
-            className={`rounded-lg border p-4 ${api.isActive ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50 opacity-60"}`}
+            draggable={editingId === null && !saving}
+            onDragStart={(event) => handleDragStart(event, api.id)}
+            onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
+            onDragOver={(event) => handleDragOver(event, api.id)}
+            onDragLeave={(event) => handleDragLeave(event, api.id)}
+            onDrop={(event) => handleDrop(event, api.id)}
+            className={`relative rounded-lg border p-4 transition ${api.isActive ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50 opacity-60"} ${draggingId === api.id ? "z-10 border-blue-500 bg-blue-50/70 opacity-95 shadow-xl shadow-blue-100 ring-2 ring-blue-200" : ""} ${dragOverId === api.id && draggingId !== api.id ? "border-blue-400 bg-blue-50/60 shadow-md before:absolute before:-top-1 before:left-4 before:right-4 before:h-1 before:rounded-full before:bg-blue-500" : ""}`}
           >
             {editingId === api.id ? (
               <div className="space-y-3">
@@ -278,9 +379,10 @@ export default function FundQueryApiPage() {
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">优先级</div>
-                    <input type="number" value={form.priority ?? 0} onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                    <div className="text-xs font-medium text-slate-600">排序</div>
+                    <div className="h-9 flex items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
+                      第 {index + 1} 位，退出编辑后可拖拽调整
+                    </div>
                   </div>
                 </div>
                 <div className="space-y-1">
@@ -301,13 +403,20 @@ export default function FundQueryApiPage() {
               </div>
             ) : (
               <div className="flex items-center justify-between">
-                <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="flex h-9 w-9 shrink-0 cursor-grab select-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 active:cursor-grabbing">
+                    {index + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-slate-800">{api.name}</span>
                     <span className="text-[10px] text-slate-400 font-mono">{api.code}</span>
-                    <span className="text-[10px] text-slate-400">优先级:{api.priority}</span>
+                    {api.code === "alipay" && (
+                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">支付宝账户优先</span>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{api.baseUrl}</div>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 ml-4">
                   <button onClick={() => toggleActive(api)} disabled={saving}

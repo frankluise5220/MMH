@@ -63,14 +63,14 @@ export function SettingsInstitutionsClient({
   );
   const createExistingNames = visibleInstitutions.map((item) => item.name);
 
-  const refreshList = useCallback(async () => {
-    const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+  const refreshList = useCallback(async (options?: { force?: boolean }) => {
+    const data = await fetchSettingsAccountData(options).catch(() => null);
     if (data?.institutions) setInstitutions(data.institutions as Institution[]);
   }, []);
 
   function handleCreated() {
     invalidateSettingsAccountData();
-    refreshList();
+    refreshList({ force: true });
   }
 
   return (

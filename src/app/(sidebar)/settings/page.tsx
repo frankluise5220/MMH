@@ -44,6 +44,7 @@ export default function SettingsPage() {
             <Link
               key={item.href}
               href={item.href}
+              prefetch={false}
               className="group rounded-xl border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-blue-200 hover:bg-blue-50/40"
             >
               <div className="flex items-center gap-3">

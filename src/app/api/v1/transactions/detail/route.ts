@@ -33,6 +33,7 @@ import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
+import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 
 export const runtime = "nodejs";
 
@@ -147,14 +148,6 @@ function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: str
   }));
 }
 
-function effectiveAmountForAccount(
-  entry: { amount: unknown; accountId: string | null; toAccountId: string | null },
-  accountId: string,
-) {
-  const amount = toNumber(entry.amount);
-  return entry.toAccountId === accountId ? Math.abs(amount) : amount;
-}
-
 /* ────────────────── GET ────────────────── */
 
 export async function GET(req: Request) {
@@ -201,6 +194,11 @@ export async function GET(req: Request) {
         fundCode: record.fundCode,
         fundName: record.fundName,
         insuranceProductId: record.insuranceProductId ?? null,
+        insuranceAction: record.insuranceAction ?? null,
+        insuranceProductName: record.insuranceProductName ?? record.fundName ?? null,
+        debtPrincipalAmount: record.debtPrincipalAmount ? toNumber(record.debtPrincipalAmount) : null,
+        debtInterestAmount: record.debtInterestAmount ? toNumber(record.debtInterestAmount) : null,
+        debtFeeAmount: record.debtFeeAmount ? toNumber(record.debtFeeAmount) : null,
         fundProductType: record.fundProductType,
         fundNav: record.fundNav ? toNumber(record.fundNav) : null,
         depositAnnualRate: record.depositAnnualRate ? toNumber(record.depositAnnualRate) : null,
@@ -254,7 +252,7 @@ export async function GET(req: Request) {
     const runningBalanceById = new Map<string, number>();
     let runningBalance = 0;
     for (const entry of ascEntries) {
-      runningBalance += effectiveAmountForAccount(entry, accountId);
+      runningBalance = applyBalanceReconcileEntry(runningBalance, entry, accountId);
       runningBalanceById.set(entry.id, runningBalance);
     }
 
@@ -282,6 +280,11 @@ export async function GET(req: Request) {
       fundCode: e.fundCode,
       fundName: e.fundName,
       insuranceProductId: e.insuranceProductId ?? null,
+      insuranceAction: e.insuranceAction ?? null,
+      insuranceProductName: e.insuranceProductName ?? e.fundName ?? null,
+      debtPrincipalAmount: e.debtPrincipalAmount ? toNumber(e.debtPrincipalAmount) : null,
+      debtInterestAmount: e.debtInterestAmount ? toNumber(e.debtInterestAmount) : null,
+      debtFeeAmount: e.debtFeeAmount ? toNumber(e.debtFeeAmount) : null,
       fundProductType: e.fundProductType,
       fundNav: e.fundNav ? toNumber(e.fundNav) : null,
       depositAnnualRate: e.depositAnnualRate ? toNumber(e.depositAnnualRate) : null,
@@ -794,6 +797,9 @@ export async function POST(req: Request) {
             cashAccountName: cashAcc.name,
             fundCode: "insurance_premium",
             fundName: `${insuranceProductForPlan.name} 缴费`,
+            taskType: "insurance_premium",
+            targetName: insuranceProductForPlan.name,
+            insuranceProductName: insuranceProductForPlan.name,
             fundProductType: null,
             amount: premiumAmount,
             intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
@@ -891,7 +897,11 @@ export async function POST(req: Request) {
             fundCode: entryFundCode,
             fundName: entryFundName,
             insuranceProductId: insuranceProductId ?? undefined,
-            fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
+            insuranceAction: isInsurance
+              ? (redeemLike ? "refund" : "premium")
+              : undefined,
+            insuranceProductName: isInsurance ? entryFundName : undefined,
+            fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
             fundUnits: roundedFundUnits ?? undefined,
@@ -927,7 +937,7 @@ export async function POST(req: Request) {
         }
       }
 
-      if (fundProductType !== "deposit" && finalInvestmentAccId) {
+      if (!isInsurance && fundProductType !== "deposit" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
       }
       if (finalInvestmentAccId) {
@@ -1238,7 +1248,13 @@ export async function PUT(req: Request) {
             fundCode: fundCode || null,
             fundName: resolvedInsuranceProductName ?? entry.fundName,
             insuranceProductId,
-            fundProductType: (productType as any) || null,
+            insuranceAction: isInsuranceEdit
+              ? (redeemLike ? "refund" : "premium")
+              : entry.insuranceAction,
+            insuranceProductName: isInsuranceEdit
+              ? (resolvedInsuranceProductName ?? entry.insuranceProductName ?? entry.fundName)
+              : entry.insuranceProductName,
+            fundProductType: isInsuranceEdit ? null : (productType as any) || null,
             fundSubtype: (subtype as any) || null,
             fundConfirmDate: toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: toDateOrNull(body.fundArrivalDate),

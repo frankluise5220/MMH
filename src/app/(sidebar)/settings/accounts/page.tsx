@@ -1,14 +1,15 @@
 ﻿"use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Pencil, Check, X, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Trash2, Pencil, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
-import { kindIconName, kindLabel, kindColor, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
+import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
 import { isDepositAccount } from "@/lib/account-kind-utils";
+import { useI18n } from "@/lib/i18n";
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -38,13 +39,23 @@ type Account = {
 };
 
 const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
-const investmentProductTypeLabel = (value: string | null | undefined) => PRODUCT_LABELS[(value || "fund") as ProductType] || "开放式基金";
 
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
   return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;
 }
 
 export default function SettingsAccountsPage() {
+  const { t } = useI18n();
+  const tf = (key: string, values: Record<string, string | number>) => {
+    let text: string = t(key);
+    for (const [name, value] of Object.entries(values)) {
+      text = text.replaceAll(`{${name}}`, String(value));
+    }
+    return text;
+  };
+  const accountKindLabel = (kind: string) => t(`account.kind.${kind}`);
+  const institutionKindLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
+  const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -89,6 +100,10 @@ export default function SettingsAccountsPage() {
     setInstitutions(data.institutions as Institution[]);
   }
 
+  function notifySidebarChanged() {
+    window.dispatchEvent(new Event("mmh:fund:refresh"));
+  }
+
   // ---- Group handlers ----
   async function createGroup() {
     if (!newGroupName.trim()) return;
@@ -101,6 +116,7 @@ export default function SettingsAccountsPage() {
     setShowNewGroup(false);
     invalidateSettingsAccountData();
     loadAll({ force: true });
+    notifySidebarChanged();
   }
 
   async function updateGroup() {
@@ -113,6 +129,7 @@ export default function SettingsAccountsPage() {
     setEditGroupId(null);
     invalidateSettingsAccountData();
     loadAll({ force: true });
+    notifySidebarChanged();
   }
 
   async function deleteGroup(id: string) {
@@ -122,7 +139,12 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ entity: "accountGroup", id }),
     });
     const data = await res.json();
-    if (data.ok) { setSelectedGroup(""); invalidateSettingsAccountData(); loadAll({ force: true }); }
+    if (data.ok) {
+      setSelectedGroup("");
+      invalidateSettingsAccountData();
+      loadAll({ force: true });
+      notifySidebarChanged();
+    }
     else window.alert(data.error);
   }
 
@@ -155,6 +177,7 @@ export default function SettingsAccountsPage() {
     setEditingId(null);
     invalidateSettingsAccountData();
     loadAll({ force: true });
+    notifySidebarChanged();
   }
 
   async function toggleActive(id: string) {
@@ -165,6 +188,7 @@ export default function SettingsAccountsPage() {
     });
     invalidateSettingsAccountData();
     loadAll({ force: true });
+    notifySidebarChanged();
   }
 
   const accountDisplayName = (account: Account) => {
@@ -189,20 +213,20 @@ export default function SettingsAccountsPage() {
   }
 
   const groupFilterOptions = [
-    { id: "", label: "全部所有人" },
+    { id: "", label: t("settings.accounts.allOwners") },
     ...groups.map((g) => ({ id: g.id, label: g.name })),
   ];
   const institutionFilterOptions = [
-    { id: "", label: "全部机构/人员" },
+    { id: "", label: t("settings.accounts.allInstitutions") },
     ...institutions.map((i) => ({
       id: i.id,
       label: i.shortName?.trim() || i.name,
-      subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
+      subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
     })),
   ];
   const kindFilterOptions = kindOrder.map((kind) => ({
     id: kind,
-    label: kindLabel(kind),
+    label: accountKindLabel(kind),
   }));
 
   return (
@@ -210,15 +234,15 @@ export default function SettingsAccountsPage() {
       <div className="sticky top-0 z-20 space-y-3 border-b border-slate-200 bg-white/95 pb-3 pt-1 backdrop-blur supports-[backdrop-filter]:bg-white/85">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-slate-800">账户管理</h2>
-            <p className="mt-0.5 text-xs text-slate-500">共 {filteredAccounts.length} 个账户</p>
+            <h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.title")}</h2>
+            <p className="mt-0.5 text-xs text-slate-500">{tf("settings.accounts.count", { count: filteredAccounts.length })}</p>
           </div>
           <button
             type="button"
             onClick={() => setShowCreateAccount(true)}
             className="primary-button h-9 shrink-0 gap-1.5"
           >
-            <Plus className="h-3.5 w-3.5" />新增账户
+            <Plus className="h-3.5 w-3.5" />{t("settings.accounts.add")}
           </button>
         </div>
 
@@ -229,7 +253,7 @@ export default function SettingsAccountsPage() {
               value={selectedGroup}
               onChange={setSelectedGroup}
               options={groupFilterOptions}
-              placeholder="筛选所有人"
+              placeholder={t("settings.accounts.filterOwner")}
             />
           </div>
           <div className="w-64 max-w-full">
@@ -238,7 +262,7 @@ export default function SettingsAccountsPage() {
               value={selectedInstitution}
               onChange={setSelectedInstitution}
               options={institutionFilterOptions}
-              placeholder="筛选机构/人员"
+              placeholder={t("settings.accounts.filterInstitution")}
               searchable={true}
             />
           </div>
@@ -248,7 +272,7 @@ export default function SettingsAccountsPage() {
               value={selectedKinds}
               onChange={setSelectedKinds}
               options={kindFilterOptions}
-              placeholder="筛选账户类型"
+              placeholder={t("settings.accounts.filterKind")}
             />
           </div>
         </div>
@@ -266,9 +290,9 @@ export default function SettingsAccountsPage() {
               <div className="flex items-center gap-2">
                 <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${kindColor(kind)}`}>
                   <span className="shrink-0">{kindIcon(kind)}</span>
-                  <span>{kindLabel(kind)}</span>
+                  <span>{accountKindLabel(kind)}</span>
                 </span>
-                <span className="text-xs text-slate-500">{list.length} 个</span>
+                <span className="text-xs text-slate-500">{tf("settings.accounts.kindCount", { count: list.length })}</span>
               </div>
               {collapsed ? <ChevronRight className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
             </button>
@@ -290,12 +314,12 @@ export default function SettingsAccountsPage() {
                         <>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">名称</label>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
                         <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">类型</label>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.type")}</label>
                         <select
                           value={editKind}
                           onChange={e => setEditForm(f => ({
@@ -306,42 +330,42 @@ export default function SettingsAccountsPage() {
                           }))}
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                         >
-                          <option value="cash">现金</option>
-                          <option value="bank_debit">借记卡</option>
-                          <option value="bank_credit">信用卡</option>
-                          <option value="ewallet">电子钱包</option>
-                          <option value="deposit">存款</option>
-                          <option value="investment">投资</option>
-                          <option value="loan">借入/借出</option>
-                          <option value="other">其他</option>
+                          <option value="cash">{t("account.kind.cash")}</option>
+                          <option value="bank_debit">{t("account.kind.bank_debit")}</option>
+                          <option value="bank_credit">{t("account.kind.bank_credit")}</option>
+                          <option value="ewallet">{t("account.kind.ewallet")}</option>
+                          <option value="deposit">{t("account.kind.deposit")}</option>
+                          <option value="investment">{t("account.kind.investment")}</option>
+                          <option value="loan">{t("account.kind.loan")}</option>
+                          <option value="other">{t("account.kind.other")}</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">所有人</label>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.owner")}</label>
                         <SmartSelect mode="single" value={editForm.groupId || ""}
                           onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
                           options={groups.map(g => ({ id: g.id, label: g.name }))}
-                          placeholder="选择所有人"
-                          onCreateClick={() => setNestedEntityType("group")} createLabel="新增所有人" />
+                          placeholder={t("settings.accounts.selectOwner")}
+                          onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">机构</label>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
                         <SmartSelect mode="single" value={editForm.institutionId || ""}
                           onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
                           options={filteredInstitutions.map(i => ({
                             id: i.id,
                             label: i.shortName?.trim() || i.name,
-                            subLabel: [i.shortName?.trim() ? i.name : "", institutionTypeLabel(i.type ?? null)].filter(Boolean).join(" · "),
+                            subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
                           }))}
-                          placeholder="选择机构"
-                          onCreateClick={() => setNestedEntityType("institution")} createLabel="新增机构" />
+                          placeholder={t("settings.accounts.selectInstitution")}
+                          onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
                       </div>
                       {isInvestmentKind && (
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">投资账户类型</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
                           <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                            {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                            {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
                           </select>
                         </div>
                       )}
@@ -350,23 +374,23 @@ export default function SettingsAccountsPage() {
                     {isInvestmentKind && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">成本摊薄方式</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.costBasisMethod")}</label>
                           <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                            <option value="moving_avg">移动平均</option>
-                            <option value="fifo">先进先出</option>
-                            <option value="lifo">后进先出</option>
+                            <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
+                            <option value="fifo">{t("settings.accounts.fifo")}</option>
+                            <option value="lifo">{t("settings.accounts.lifo")}</option>
                           </select>
                         </div>
                         {(editForm.investProductType || "fund") === "fund" && (
                           <div>
-                            <label className="block text-xs text-slate-500 mb-1">份额位数</label>
+                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.fundUnitsDecimals")}</label>
                             <input
                               value={editForm.fundUnitsDecimals || "3"}
                               onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
                               className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                               inputMode="numeric"
-                              placeholder="默认 3"
+                              placeholder={t("settings.accounts.defaultUnitsDecimals")}
                             />
                           </div>
                         )}
@@ -376,22 +400,22 @@ export default function SettingsAccountsPage() {
                     {isBillLikeKind && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">账单日</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
                           <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
                         </div>
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">还款日</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
                           <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
                         </div>
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">额度</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
                           <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
                         </div>
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">卡号后四位</label>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.lastFourLabel")}</label>
                           <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
                         </div>
@@ -400,9 +424,9 @@ export default function SettingsAccountsPage() {
 
                     <div className="flex justify-end gap-2 mt-3">
                       <button onClick={() => setEditingId(null)}
-                        className="h-7 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">取消</button>
+                        className="h-7 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
                       <button onClick={saveEdit}
-                        className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">保存</button>
+                        className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
                     </div>
                         </>
                       );
@@ -414,30 +438,30 @@ export default function SettingsAccountsPage() {
                     <div className="flex-1 min-w-0 flex items-center gap-2">
                       <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                       {a.isPlaceholder && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">占位</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
                       )}
                       {a.AccountGroup && (
                         <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>
                       )}
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
-                        {a.isActive ? "启用" : "停用"}
+                        {a.isActive ? t("common.enabled") : t("common.disabled")}
                       </span>
                       {normalizedAccountKind(a) === "investment" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
-                          {investmentProductTypeLabel(a.investProductType)}
+                          {investmentLabel(a.investProductType)}
                         </span>
                       )}
                       {normalizedAccountKind(a) === "investment" && (a.investProductType ?? "fund") === "fund" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
-                          份额{a.fundUnitsDecimals ?? 3}位
+                          {tf("settings.accounts.unitsDecimals", { count: a.fundUnitsDecimals ?? 3 })}
                         </span>
                       )}
                       {normalizedAccountKind(a) === "bank_credit" && (
                         <>
-                          {a.billingDay && <span className="text-[10px] text-slate-400">账单{a.billingDay}日</span>}
-                          {a.repaymentDay && <span className="text-[10px] text-slate-400">还款{a.repaymentDay}日</span>}
-                          {a.creditLimit && <span className="text-[10px] text-slate-400">额度￥{a.creditLimit}</span>}
-                          {a.numberMasked && <span className="text-[10px] text-slate-400">尾号{a.numberMasked}</span>}
+                          {a.billingDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.billingDay", { day: a.billingDay })}</span>}
+                          {a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
+                          {a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
+                          {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
                         </>
                       )}
                     </div>
@@ -445,23 +469,28 @@ export default function SettingsAccountsPage() {
                       {!a.isPlaceholder && (
                       <button onClick={() => toggleActive(a.id)}
                         className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                        title={a.isActive ? "停用" : "启用"}>
+                        title={a.isActive ? t("common.disabled") : t("common.enabled")}>
                         {a.isActive ? <PowerOff className="w-3 h-3 text-slate-400" /> : <Power className="w-3 h-3 text-amber-500" />}
                       </button>
                       )}
                       {!a.isPlaceholder && (
                       <button onClick={() => openEdit(a)}
                         className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                        title="编辑">
+                        title={t("common.edit")}>
                         <Pencil className="w-3 h-3 text-slate-400" />
                       </button>
                       )}
                       {!a.isPlaceholder && (
                       <button onClick={async () => {
-                        if (!confirm(`删除账户"${a.name}"？`)) return;
+                        if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
                         const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
                         const data = await res.json();
-                        if (data.ok) { invalidateSettingsAccountData(); loadAll({ force: true }); return; }
+                        if (data.ok) {
+                          invalidateSettingsAccountData();
+                          loadAll({ force: true });
+                          notifySidebarChanged();
+                          return;
+                        }
                         if (data.needPassword) {
                           setDeleteTarget(a);
                           setDeletePassword("");
@@ -471,7 +500,7 @@ export default function SettingsAccountsPage() {
                         window.alert(data.error);
                       }}
                         className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200"
-                        title="删除">
+                        title={t("common.delete")}>
                         <Trash2 className="w-3 h-3 text-slate-400" />
                       </button>
                       )}
@@ -487,7 +516,7 @@ export default function SettingsAccountsPage() {
 
       {filteredAccounts.length === 0 && (
         <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
-          暂无账户。点击"新增账户"按钮添加。
+          {t("settings.accounts.empty")}
         </div>
       )}
 
@@ -502,6 +531,7 @@ export default function SettingsAccountsPage() {
           setShowCreateAccount(false);
           invalidateSettingsAccountData();
           loadAll({ force: true });
+          notifySidebarChanged();
         }}
         existingNames={accounts.map(a => a.name)}
       />
@@ -532,9 +562,9 @@ export default function SettingsAccountsPage() {
           onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
           <div className="w-[340px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
             onMouseDown={e => e.stopPropagation()}>
-            <div className="text-sm font-semibold text-slate-800 mb-1">验证密码</div>
+            <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.passwordTitle")}</div>
             <div className="text-xs text-slate-500 mb-3">
-              账户「{deleteTarget.name}」已产生记录，需输入密码确认删除。删除后记录中的账户将变为「空白」。
+              {tf("settings.accounts.passwordDesc", { name: deleteTarget.name })}
             </div>
             <input
               type="password"
@@ -548,18 +578,23 @@ export default function SettingsAccountsPage() {
                     body: JSON.stringify({ password: deletePassword }),
                   });
                   const data = await res.json();
-                  if (data.ok) { setDeleteTarget(null); invalidateSettingsAccountData(); loadAll({ force: true }); }
+                  if (data.ok) {
+                    setDeleteTarget(null);
+                    invalidateSettingsAccountData();
+                    loadAll({ force: true });
+                    notifySidebarChanged();
+                  }
                   else setDeleteError(data.error);
                 }
               }}
-              placeholder="输入密码"
+              placeholder={t("settings.accounts.passwordPlaceholder")}
               autoFocus
               className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
             />
             {deleteError && <div className="text-xs text-red-500 mt-1">{deleteError}</div>}
             <div className="flex justify-end gap-2 mt-3">
               <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
-                className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">取消</button>
+                className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
               <button onClick={async () => {
                 const res = await fetch(`/api/v1/accounts?id=${deleteTarget.id}`, {
                   method: "DELETE",
@@ -567,10 +602,15 @@ export default function SettingsAccountsPage() {
                   body: JSON.stringify({ password: deletePassword }),
                 });
                 const data = await res.json();
-                if (data.ok) { setDeleteTarget(null); invalidateSettingsAccountData(); loadAll({ force: true }); }
+                if (data.ok) {
+                  setDeleteTarget(null);
+                  invalidateSettingsAccountData();
+                  loadAll({ force: true });
+                  notifySidebarChanged();
+                }
                 else setDeleteError(data.error);
               }}
-                className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">确认删除</button>
+                className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
             </div>
           </div>
         </div>

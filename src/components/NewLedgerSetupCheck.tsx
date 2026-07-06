@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
 
 export function NewLedgerSetupCheck() {
@@ -9,21 +10,40 @@ export function NewLedgerSetupCheck() {
   const [error, setError] = useState("");
   const [adminName, setAdminName] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
+  const checkedRef = useRef(false);
+  const pathname = usePathname();
 
   useEffect(() => {
-    fetch("/api/v1/auth/household-password-status")
-      .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; adminUser: { id: string; name: string } | null }>)
-      .then(data => {
-        if (data.ok && !data.hasPassword && data.adminUser) {
-          setAdminName(data.adminUser.name);
-          setShow(true);
-        }
-        setChecking(false);
-      })
-      .catch(() => {
-        setChecking(false);
-      });
-  }, []);
+    if (pathname.startsWith("/settings")) {
+      setChecking(false);
+      return;
+    }
+    if (checkedRef.current) return;
+    const run = () => {
+      checkedRef.current = true;
+      fetch("/api/v1/auth/household-password-status")
+        .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; adminUser: { id: string; name: string } | null }>)
+        .then(data => {
+          if (data.ok && !data.hasPassword && data.adminUser) {
+            setAdminName(data.adminUser.name);
+            setShow(true);
+          }
+          setChecking(false);
+        })
+        .catch(() => {
+          setChecking(false);
+        });
+    };
+
+    const delayMs = pathname.startsWith("/settings") ? 2500 : 800;
+    const requestIdle = window.requestIdleCallback;
+    if (requestIdle) {
+      const idleId = requestIdle(run, { timeout: delayMs });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(run, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [pathname]);
 
   function getSetupValues() {
     const container = dialogRef.current;

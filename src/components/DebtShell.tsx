@@ -329,7 +329,11 @@ export function DebtShell({
       const response = await fetch("/api/v1/loan-rate-adjustments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: selectedRow.accountId, adjustments }),
+        body: JSON.stringify({
+          accountId: selectedRow.accountId,
+          adjustments,
+          mortgageLprDiscount: lprDiscount.trim() ? Number(lprDiscount.trim()) : null,
+        }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
@@ -349,7 +353,7 @@ export function DebtShell({
       recalcStartDate &&
       selectedRow.nextRepaymentDate &&
       recalcStartDate < selectedRow.nextRepaymentDate &&
-      !window.confirm("重算起始日期早于当前下次还款日，将改写这之后由计划任务生成的历史还款记录。本操作不会改写手工录入记录。是否继续？")
+      !window.confirm("重算起始日期早于当前下次还款日，系统会自动删除并重建这之后由计划任务生成的还款记录；手工还款、手工修正和提前还款会保留并参与计算。是否继续？")
     ) {
       return;
     }
@@ -551,7 +555,7 @@ export function DebtShell({
           ? <span className="font-medium text-amber-700">提前还款</span>
           : <span className="text-slate-700">还款</span>,
     },
-    { key: "period", label: "期次", width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
+    { key: "period", label: "期次", width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" || row.eventType === "prepayment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
     { key: "date", label: "日期", width: 110, minWidth: 86, filterText: (row) => row.date, render: (row) => <span className="tabular-nums text-slate-700">{row.date}</span> },
     { key: "principal", label: "本金", width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="tabular-nums text-blue-700">{formatRate(row.annualRate)}</span> : <span className="tabular-nums text-emerald-700">{formatMoney(row.principal)}</span> },
     { key: "interest", label: "利息", width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-amber-700">{formatMoney(row.interest)}</span> },
@@ -745,7 +749,7 @@ export function DebtShell({
                     <div>
                       <div className="text-xs font-semibold text-slate-700">按 LPR 折扣生成</div>
                       <div className="mt-0.5 text-[11px] leading-5 text-slate-500">
-                        只适合房贷，尤其是老房贷折扣利率。系统按“{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%”计算固定加点，每年 1 月 1 日按上一期 5 年期以上 LPR 重定价。其他借款不使用 LPR。
+                        只适合房贷，尤其是老房贷折扣利率。折扣先换算为固定加点：{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%。之后执行利率 = 5 年期以上 LPR + 固定加点，例如 0.85 折对应 -0.635%，LPR 3.50% 时执行 2.865%。其他借款不使用 LPR。
                       </div>
                     </div>
                   </div>
@@ -877,14 +881,14 @@ export function DebtShell({
 
               <div className="space-y-3 p-4 text-sm text-slate-700">
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                  重算只影响起始日期之后的计划金额或剩余期数，不会新增还款记录，也不会改写已经执行的历史明细。起始日期不能早于当前下次还款日。
+                  起始日期早于当前下次还款日时，会自动删除并重建这之后由计划任务生成的还款记录；手工还款、手工修正和提前还款会保留并参与后续计算。
                 </div>
 
                 <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="form-label">重算起始日期（下次还款日）</div>
+                  <div className="form-label">重算起始日期</div>
                   <DateStepper value={recalcStartDate} onChange={setRecalcStartDate} />
                   <div className="text-[11px] text-slate-500">
-                    将从这一天开始使用当前余额和生效利率重算，并把它作为新的下次还款日。
+                    选历史日期会重建该日期之后的自动计划记录；选下次还款日则只调整后续计划。
                   </div>
                 </div>
 
@@ -942,7 +946,7 @@ export function DebtShell({
                     onClick={() => { void recalculateRepaymentPlan(); }}
                     disabled={recalcSaving}
                   >
-                    {recalcSaving ? "重算中..." : "确认重算"}
+                    {recalcSaving ? "重算中..." : "确认重算并重建"}
                   </button>
                 </div>
               </div>

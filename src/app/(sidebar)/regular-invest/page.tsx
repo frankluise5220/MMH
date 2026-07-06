@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
-import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -172,12 +172,15 @@ export default async function RegularInvestPage() {
     const fundAccount = accountById.get(plan.accountId);
     const cashAccount = plan.cashAccountId ? accountById.get(plan.cashAccountId) : null;
     const scheduledTask = scheduledTaskByPlanId.get(plan.id) ?? decodeScheduledTaskMemo(plan.memo);
+    const taskType = normalizeScheduledTaskType(plan.taskType ?? scheduledTask.type);
 
     return {
       ...plan,
-      taskType: scheduledTask.type,
-      taskTypeLabel: scheduledTaskTypeLabel(scheduledTask.type),
-      taskTitle: scheduledTask.title ?? null,
+      taskType,
+      taskTypeLabel: scheduledTaskTypeLabel(taskType),
+      taskTitle: plan.targetName ?? scheduledTask.title ?? null,
+      targetName: plan.targetName ?? null,
+      insuranceProductName: plan.insuranceProductName ?? null,
       taskFromAccountId: scheduledTask.fromAccountId ?? null,
       taskToAccountId: scheduledTask.toAccountId ?? null,
       taskInsuranceProductId: scheduledTask.insuranceProductId ?? null,

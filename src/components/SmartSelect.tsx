@@ -56,10 +56,14 @@ type SmartSelectSharedBehavior = {
   search?: SearchBehavior;
   hierarchy?: HierarchyBehavior;
   collapsibleGroups?: boolean;
+  initialCollapsedAll?: boolean;
+  accordionGroups?: boolean;
+  groupSelectOnDoubleClick?: boolean;
   clearable?: boolean;
   cycleSelectionWithArrowKeys?: boolean;
   headerExtra?: ReactNode;
   minDropdownWidth?: number;
+  dropdownMaxHeight?: number;
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
@@ -196,15 +200,16 @@ function initialCollapsedGroups(
   options: SmartSelectOption[],
   selectedValue: string,
   enabled: boolean,
+  collapseAll = false,
 ) {
   const collapsed = new Set<string>();
   if (!enabled) return collapsed;
 
   for (const option of options) {
-    if (option.isGroup) collapsed.add(option.id);
+    if (option.isGroup || (collapseAll && option.isHeader)) collapsed.add(option.id);
   }
 
-  if (!selectedValue) return collapsed;
+  if (!selectedValue || collapseAll) return collapsed;
 
   const optionById = new Map(options.map((option) => [option.id, option]));
   let current = optionById.get(selectedValue);
@@ -283,8 +288,12 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     collapsibleGroups: behavior?.collapsibleGroups ?? true,
     clearable: behavior?.clearable ?? true,
     cycleSelectionWithArrowKeys: behavior?.cycleSelectionWithArrowKeys ?? true,
+    initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
+    accordionGroups: behavior?.accordionGroups ?? false,
+    groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
     headerExtra: behavior?.headerExtra ?? props.headerExtra ?? legacyCycleButton,
     minDropdownWidth: behavior?.minDropdownWidth,
+    dropdownMaxHeight: behavior?.dropdownMaxHeight,
     create: behavior?.create ?? (props.onCreateClick
       ? {
           type: "button" as const,
@@ -307,8 +316,12 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     collapsibleGroups: behavior?.collapsibleGroups ?? true,
     clearable: false,
     cycleSelectionWithArrowKeys: false,
+    initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
+    accordionGroups: behavior?.accordionGroups ?? false,
+    groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
     headerExtra: behavior?.headerExtra,
     minDropdownWidth: behavior?.minDropdownWidth,
+    dropdownMaxHeight: behavior?.dropdownMaxHeight,
     create: behavior?.create ?? (props.onInlineCreate
       ? {
           type: "inline" as const,
@@ -345,8 +358,12 @@ export function SmartSelect(props: SmartSelectProps) {
     collapsibleGroups,
     clearable,
     cycleSelectionWithArrowKeys,
+    initialCollapsedAll,
+    accordionGroups,
+    groupSelectOnDoubleClick,
     headerExtra,
     minDropdownWidth,
+    dropdownMaxHeight,
     create,
   } = normalizedBehavior;
 
@@ -360,6 +377,10 @@ export function SmartSelect(props: SmartSelectProps) {
   const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : "";
   const groupChildCounts = useMemo(() => buildGroupChildCounts(effectiveOptions), [effectiveOptions]);
   const selectableOptions = useMemo(() => effectiveOptions.filter(isSelectable), [effectiveOptions]);
+  const collapsibleOptionIds = useMemo(
+    () => new Set(effectiveOptions.filter((option) => option.isHeader || option.isGroup).map((option) => option.id)),
+    [effectiveOptions],
+  );
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -402,7 +423,10 @@ export function SmartSelect(props: SmartSelectProps) {
     const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
     const estimatedHeight = (searchable ? 42 : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? 42 : 0)
-      + Math.min(visible.length || effectiveOptions.length || 1, 7) * 36
+      + Math.min(
+        visible.length || effectiveOptions.length || 1,
+        Math.max(4, Math.floor((dropdownMaxHeight ?? 240) / 36)),
+      ) * 36
       + 16;
     const below = window.innerHeight - rect.bottom;
     const above = rect.top;
@@ -411,13 +435,14 @@ export function SmartSelect(props: SmartSelectProps) {
       ? Math.max(8, rect.top - estimatedHeight - 4)
       : rect.bottom + 4;
     setDropdownPos({ top, left, width });
-  }, [effectiveOptions.length, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, searchable, visible.length]);
+  }, [dropdownMaxHeight, effectiveOptions.length, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
       effectiveOptions,
       mode === "single" ? value : "",
       hierarchy && collapsibleGroups,
+      initialCollapsedAll,
     );
     const nextFiltered = searchable
       ? (hierarchy ? filterWithGroups(effectiveOptions, "") : filterFlatOptions(effectiveOptions, ""))
@@ -430,16 +455,28 @@ export function SmartSelect(props: SmartSelectProps) {
     setOpen(true);
     setFocusedIndex(findInitialFocusedIndex(nextVisible, mode, value, preferredIndex));
     window.requestAnimationFrame(() => calcPosition());
-  }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, mode, searchable, value]);
+  }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, initialCollapsedAll, mode, searchable, value]);
 
   const toggleGroup = useCallback((groupId: string) => {
     setCollapsedGroups((prev) => {
+      if (accordionGroups) {
+        const optionById = new Map(effectiveOptions.map((option) => [option.id, option]));
+        if (!prev.has(groupId)) {
+          const next = new Set(collapsibleOptionIds);
+          let current = optionById.get(groupId);
+          while (current) {
+            next.delete(current.id);
+            current = current.parentId ? optionById.get(current.parentId) : undefined;
+          }
+          return next;
+        }
+      }
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
       return next;
     });
-  }, []);
+  }, [accordionGroups, collapsibleOptionIds, effectiveOptions]);
 
   useEffect(() => {
     if (!open) return;
@@ -582,7 +619,9 @@ export function SmartSelect(props: SmartSelectProps) {
           return;
         }
         if (focused.isGroup && hierarchy && collapsibleGroups) {
-          toggleGroup(focused.id);
+          if (groupSelectOnDoubleClick) toggleGroup(focused.id);
+          else if (mode === "single") selectSingle(focused.id);
+          else toggleMulti(focused.id);
           return;
         }
         if (mode === "single") selectSingle(focused.id);
@@ -703,7 +742,8 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className="max-h-[240px] overflow-y-auto"
+            className="overflow-y-auto"
+            style={{ maxHeight: dropdownMaxHeight ?? 240 }}
           >
             {visible.map((option, index) => {
               if (option.isHeader) {
@@ -749,7 +789,16 @@ export function SmartSelect(props: SmartSelectProps) {
                     type="button"
                     role="option"
                     aria-selected={selected}
-                    onClick={() => selectSingle(option.id)}
+                    onClick={() => {
+                      if (groupSelectOnDoubleClick && hierarchy && collapsibleGroups) {
+                        toggleGroup(option.id);
+                        return;
+                      }
+                      selectSingle(option.id);
+                    }}
+                    onDoubleClick={() => {
+                      if (groupSelectOnDoubleClick) selectSingle(option.id);
+                    }}
                     onMouseEnter={() => setFocusedIndex(index)}
                     className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
                       index === focusedIndex ? "bg-blue-50" : ""

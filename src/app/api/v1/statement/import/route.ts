@@ -57,7 +57,21 @@ const ParsedItemSchema = z.object({
 
 type ParsedItem = z.infer<typeof ParsedItemSchema>;
 type ParsedItemMeta = NonNullable<ParsedItem["_meta"]>;
-type ImportOptions = { autoCreateAccounts: boolean };
+type ImportOptions = { autoCreateAccounts: boolean; importBatchId?: string | null };
+
+const MailSourceSchema = z.object({
+  emailAccountId: z.string().min(1),
+  uid: z.number().int().min(1),
+  subject: z.string().optional(),
+  from: z.string().optional(),
+  date: z.string().optional(),
+});
+
+type MailSource = z.infer<typeof MailSourceSchema>;
+
+function buildMailImportNote(mailSource: Pick<MailSource, "emailAccountId" | "uid">) {
+  return `email:${mailSource.emailAccountId}:${mailSource.uid}`;
+}
 
 function parseDate(date?: string) {
   const raw = String(date ?? "").trim();
@@ -440,6 +454,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
         counterpartyInstitutionId: counterpartyInstitution.id,
         counterpartyInstitutionName: counterpartyInstitution.name,
         statementMonth: fromStatementMonth ?? undefined,
+        importBatchId: options.importBatchId ?? undefined,
+        source: options.importBatchId ? "statement_import" : undefined,
         // Include fund fields in create if investment account identified
         ...(displayFundCode && item.type === "investment" ? {
           fundCode: displayFundCode,
@@ -497,6 +513,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       counterpartyInstitutionId: counterpartyInstitution.id,
       counterpartyInstitutionName: counterpartyInstitution.name,
       statementMonth,
+      importBatchId: options.importBatchId ?? undefined,
+      source: options.importBatchId ? "statement_import" : undefined,
       // Include fund fields in create if investment account
       ...(displayFundCode ? {
         fundCode: displayFundCode,
@@ -526,6 +544,7 @@ export async function POST(req: Request) {
     items?: unknown;
     defaultAccountName?: unknown;
     autoCreateAccounts?: unknown;
+    mailSource?: unknown;
   };
 
   const parse = z
@@ -533,6 +552,7 @@ export async function POST(req: Request) {
       items: z.array(ParsedItemSchema).min(1),
       defaultAccountName: z.string().optional(),
       autoCreateAccounts: z.boolean().optional().default(true),
+      mailSource: MailSourceSchema.optional(),
     })
     .safeParse(body);
   if (!parse.success) {
@@ -549,6 +569,28 @@ export async function POST(req: Request) {
 
   const created: { id: string }[] = [];
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
+  const mailSource = parse.data.mailSource;
+  let importBatchId: string | null = null;
+
+  if (mailSource) {
+    const importBatch = await prisma.importBatch.create({
+      data: {
+        source: "credit_bill_mail",
+        note: buildMailImportNote(mailSource),
+        rawText: JSON.stringify({
+          emailAccountId: mailSource.emailAccountId,
+          uid: mailSource.uid,
+          subject: mailSource.subject ?? "",
+          from: mailSource.from ?? "",
+          date: mailSource.date ?? "",
+        }),
+        householdId,
+      },
+      select: { id: true },
+    });
+    importBatchId = importBatch.id;
+    options.importBatchId = importBatch.id;
+  }
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -561,12 +603,18 @@ export async function POST(req: Request) {
     }
   }
 
+  if (importBatchId && created.length === 0) {
+    await prisma.importBatch.delete({ where: { id: importBatchId } }).catch(() => null);
+    importBatchId = null;
+  }
+
   // Client-side handles page refresh
   return NextResponse.json({
     ok: true,
     createdCount: created.length,
     skippedCount: errors.length,
     ids: created.map((t) => t.id),
+    importBatchId,
     errors,
   }, { headers: corsHeaders() });
 }

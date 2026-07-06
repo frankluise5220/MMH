@@ -66,6 +66,8 @@ type RegularInvestPlanView = {
   taskAnnualRate?: number | null;
   taskRepaymentMethod?: string | null;
   taskRepaymentIntervalMonths?: number | null;
+  targetName?: string | null;
+  insuranceProductName?: string | null;
   accountId: string;
   accountName?: string | null;
   accountLabel?: string | null;
@@ -262,7 +264,7 @@ function getPlanTaskLabel(plan: RegularInvestPlanView): string {
 function getPlanTargetLabel(plan: RegularInvestPlanView): string {
   if (getPlanTaskType(plan) === "transfer") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
   if (getPlanTaskType(plan) === "loan_repayment") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
-  if (getPlanTaskType(plan) === "insurance_premium") return plan.fundName || planAccountLabel(plan);
+  if (getPlanTaskType(plan) === "insurance_premium") return plan.insuranceProductName || plan.targetName || plan.taskTitle || plan.fundName || planAccountLabel(plan);
   if (plan.taskTitle) return plan.taskTitle;
   return [plan.fundCode, plan.fundName && plan.fundName !== plan.fundCode ? plan.fundName : ""].filter(Boolean).join(" ");
 }

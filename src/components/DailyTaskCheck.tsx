@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 
 const STORAGE_KEY = "daily_task_last_run";
 
@@ -19,13 +20,15 @@ function isToday(dateStr: string): boolean {
 
 export function DailyTaskCheck() {
   const running = useRef(false);
+  const pathname = usePathname();
 
   useEffect(() => {
+    if (pathname.startsWith("/settings")) return;
     const lastRun = getLastRunDate();
     if (isToday(lastRun) || running.current) return;
-    running.current = true;
 
-    (async () => {
+    const run = async () => {
+      running.current = true;
       try {
         // 1. 执行到期定投计划
         await fetch("/api/v1/regular-invest/auto-execute", {
@@ -71,8 +74,16 @@ export function DailyTaskCheck() {
       } finally {
         running.current = false;
       }
-    })();
-  }, []);
+    };
+
+    const requestIdle = window.requestIdleCallback;
+    if (requestIdle) {
+      const idleId = requestIdle(() => void run(), { timeout: 3000 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => void run(), 1000);
+    return () => window.clearTimeout(timer);
+  }, [pathname]);
 
   return null;
 }

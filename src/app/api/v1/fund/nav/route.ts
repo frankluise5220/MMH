@@ -15,9 +15,9 @@ function utcDate(dateStr: string) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-async function getNav(fundCode: string, dateStr: string) {
+async function getNav(fundCode: string, dateStr: string, accountId?: string) {
   const navDate = utcDate(dateStr);
-  const cached = await getFundNav(fundCode, navDate);
+  const cached = await getFundNav(fundCode, navDate, accountId);
   if (cached) {
     return {
       date: cached.actualDate ?? dateStr,
@@ -109,6 +109,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fundCode = searchParams.get("code")?.trim();
   const date = searchParams.get("date")?.trim();
+  const accountId = searchParams.get("accountId")?.trim() || undefined;
 
   if (!fundCode) {
     return NextResponse.json({ ok: false, error: "缺少基金代码" }, { status: 400 });
@@ -117,7 +118,7 @@ export async function GET(req: NextRequest) {
   try {
     if (date) {
       // 使用 getNav()（包含缓存→东方财富→最新净值回退链），避免未来日期/非交易日无数据时直接报错
-      const data = await getNav(fundCode, date);
+      const data = await getNav(fundCode, date, accountId);
       if (!data) {
         return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
       }
@@ -125,7 +126,7 @@ export async function GET(req: NextRequest) {
     }
 
     // 无日期时：查询实时估值
-    const latest = await refreshLatestFundNav(fundCode);
+    const latest = await refreshLatestFundNav(fundCode, accountId);
     if (!latest) {
       return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
     }
@@ -194,7 +195,7 @@ export async function POST(req: NextRequest) {
       confirmDateObj = utcDate(confirmDate);
     }
 
-    const navData = await getNav(fundCode, confirmDate);
+    const navData = await getNav(fundCode, confirmDate, accountId);
     if (!navData) {
       return NextResponse.json({ ok: false, error: `未找到 ${confirmDate} 的净值，可能是非交易日` }, { status: 404 });
     }

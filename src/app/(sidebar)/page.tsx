@@ -9,6 +9,7 @@ import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } fr
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
+import { InsuranceEntryEditBridge } from "@/components/InsuranceEntryEditBridge";
 import { DepositCreateButton } from "@/components/DepositCreateButton";
 import { FillNavButton } from "@/components/FillNavButton";
 import { DebtShell } from "@/components/DebtShell";
@@ -53,6 +54,7 @@ import {
   resolveLoanRateAdjustments,
 } from "@/lib/server/loan-rate-adjustments";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import {
   calcLoanScheduledAmountForPeriodStart,
   calcLoanRunParts,
@@ -96,6 +98,32 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
   if (!match?.[1]) return null;
   const discount = Number(match[1]);
   return Number.isFinite(discount) && discount > 0 ? discount : null;
+}
+
+function debtPrincipalForAccountSide(
+  entry: { amount: unknown; debtPrincipalAmount?: unknown; toAccountId?: string | null },
+  debtAccountIds: Set<string>,
+) {
+  const amount = toNumber(entry.amount);
+  const isToDebtAccount = debtAccountIds.has(entry.toAccountId ?? "");
+  if (!isToDebtAccount) return amount;
+  return Math.abs(toNumber(entry.debtPrincipalAmount ?? amount));
+}
+
+function debtPaymentTotal(
+  entry: { amount: unknown; debtPrincipalAmount?: unknown; debtInterestAmount?: unknown; debtFeeAmount?: unknown },
+  fallbackInterest = 0,
+  fallbackFee = 0,
+) {
+  const hasStructuredSplit =
+    entry.debtPrincipalAmount != null ||
+    entry.debtInterestAmount != null ||
+    entry.debtFeeAmount != null;
+  const principal = Math.abs(toNumber(entry.debtPrincipalAmount ?? entry.amount));
+  const interest = Math.abs(toNumber(entry.debtInterestAmount));
+  const fee = Math.abs(toNumber(entry.debtFeeAmount));
+  if (!hasStructuredSplit) return principal + fallbackInterest + fallbackFee;
+  return Math.abs(toNumber(entry.amount)) || principal + interest + fee;
 }
 
 async function resolveOrCreateAdvanceAccount(
@@ -152,6 +180,7 @@ async function resolveOrCreateDebtAccount(
   debtObjectId: string,
   direction: "payable" | "receivable",
   itemName?: string,
+  options?: { forceCreate?: boolean },
 ) {
   const debtObject = await resolveDebtObject(tx, householdId, debtObjectId);
 
@@ -160,42 +189,44 @@ async function resolveOrCreateDebtAccount(
   const objectWhere = debtObject.kind === "counterparty"
     ? { counterpartyId: debtObject.id, institutionId: null }
     : { institutionId: debtObject.id, counterpartyId: null };
-  const existing =
-    (await tx.account.findFirst({
-      where: {
-        householdId,
-        ...objectWhere,
-        kind: AccountKind.loan,
-        name: accountName,
-        debtDirection: direction,
-        isPlaceholder: { not: true },
-      },
-      include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-      orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-    })) ??
-    (await tx.account.findFirst({
-      where: {
-        householdId,
-        ...objectWhere,
-        kind: AccountKind.loan,
-        name: accountName,
-        isPlaceholder: { not: true },
-      },
-      include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-      orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-    }));
-  if (existing) {
-    if (!existing.isActive || existing.debtDirection !== direction) {
-      return tx.account.update({
-        where: { id: existing.id },
-        data: {
-          isActive: true,
+  if (!options?.forceCreate) {
+    const existing =
+      (await tx.account.findFirst({
+        where: {
+          householdId,
+          ...objectWhere,
+          kind: AccountKind.loan,
+          name: accountName,
           debtDirection: direction,
+          isPlaceholder: { not: true },
         },
         include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-      });
+        orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
+      })) ??
+      (await tx.account.findFirst({
+        where: {
+          householdId,
+          ...objectWhere,
+          kind: AccountKind.loan,
+          name: accountName,
+          isPlaceholder: { not: true },
+        },
+        include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
+        orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
+      }));
+    if (existing) {
+      if (!existing.isActive || existing.debtDirection !== direction) {
+        return tx.account.update({
+          where: { id: existing.id },
+          data: {
+            isActive: true,
+            debtDirection: direction,
+          },
+          include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
+        });
+      }
+      return existing;
     }
-    return existing;
   }
 
   const group =
@@ -935,7 +966,9 @@ async function createTransaction(formData: FormData) {
             currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
             fundCode: entryFundCode,
             fundName: entryFundName,
-            fundProductType: fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
+            insuranceAction: sourceValue === "insurance" ? (redeemLike ? "refund" : "premium") : undefined,
+            insuranceProductName: sourceValue === "insurance" ? entryFundName : undefined,
+            fundProductType: sourceValue === "insurance" ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
             fundUnits: roundedFundUnits ?? undefined,
@@ -953,7 +986,7 @@ async function createTransaction(formData: FormData) {
         });
       });
 
-      if (fundProductType !== "deposit" && finalInvestmentAccId) {
+      if (sourceValue !== "insurance" && fundProductType !== "deposit" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(() => {});
       }
       const balanceAccountId = finalInvestmentAccId;
@@ -992,7 +1025,7 @@ async function createDebtTransaction(formData: FormData) {
   const prepayStrategyRaw = String(formData.get("prepayStrategy") ?? "").trim();
   const prepayStrategy = ["reduce_term", "reduce_payment", "settle"].includes(prepayStrategyRaw)
     ? prepayStrategyRaw
-    : "reduce_term";
+    : "reduce_payment";
   const annualRateRaw = String(formData.get("annualRate") ?? "").trim();
   const mortgageLprDiscountRaw = String(formData.get("mortgageLprDiscount") ?? "").trim();
   const repaymentMethod = String(formData.get("repaymentMethod") ?? "").trim() || "自由还款";
@@ -1114,7 +1147,7 @@ async function createDebtTransaction(formData: FormData) {
       const debtDirection = mode === "borrow_in" || mode === "repay_out" || mode === "prepay_out" ? "payable" : "receivable";
       const cashAccount = await tx.account.findUnique({ where: { id: cashAccountId } });
       const debtAccount = debtObjectId
-        ? await resolveOrCreateDebtAccount(tx, householdId, debtObjectId, debtDirection, debtItemName)
+        ? await resolveOrCreateDebtAccount(tx, householdId, debtObjectId, debtDirection, debtItemName, { forceCreate: mode === "borrow_in" || mode === "lend_out" })
         : await tx.account.findUnique({
             where: { id: debtAccountId },
             include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
@@ -1173,8 +1206,8 @@ async function createDebtTransaction(formData: FormData) {
         throw new Error(`全部结清时，提前还本金应等于当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
       }
       if (editEntryId) {
-        if (mode !== "repay_out" && mode !== "prepay_out") {
-          throw new Error("只能在还款或提前还款界面编辑还款记录");
+        if (mode !== "repay_out" && mode !== "prepay_out" && mode !== "collect_in") {
+          throw new Error("只能在还款、提前还款或收回界面编辑还款记录");
         }
         const original = await tx.txRecord.findFirst({
           where: {
@@ -1190,18 +1223,27 @@ async function createDebtTransaction(formData: FormData) {
         affectedAccountIds.add(cashAccount.id);
         affectedAccountIds.add(debtAccount.id);
 
+        const isCollectInEdit = mode === "collect_in";
+        const transferFromAccount = isCollectInEdit ? debtAccount : cashAccount;
+        const transferToAccount = isCollectInEdit ? cashAccount : debtAccount;
         const transferStatementMonth =
-          debtAccount.billingDay
-            ? toStatementMonth(date, debtAccount.billingDay)
+          (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
+          transferToAccount.billingDay
+            ? toStatementMonth(date, transferToAccount.billingDay)
             : null;
         await tx.txRecord.update({
           where: { id: original.id },
           data: {
-            accountId: cashAccount.id,
-            accountName: cashAccount.name,
-            toAccountId: debtAccount.id,
-            toAccountName: debtAccount.name,
-            amount: -Math.abs(principal),
+            accountId: transferFromAccount.id,
+            accountName: transferFromAccount.name,
+            toAccountId: transferToAccount.id,
+            toAccountName: transferToAccount.name,
+            amount: isCollectInEdit
+              ? Math.abs(principal + interest)
+              : -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0)),
+            debtPrincipalAmount: Math.abs(principal),
+            debtInterestAmount: Math.abs(interest),
+            debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : 0,
             date,
             note: note || null,
             statementMonth: transferStatementMonth,
@@ -1209,70 +1251,24 @@ async function createDebtTransaction(formData: FormData) {
           },
         });
 
-        const originalDate = original.date;
-        const linkedWhere = original.regularInvestPlanId
-          ? { householdId, regularInvestPlanId: original.regularInvestPlanId, date: originalDate, deletedAt: null }
-          : { householdId, accountId: original.accountId, toAccountId: original.toAccountId, date: originalDate, deletedAt: null };
-        const syncLinkedMoneyEntry = async (params: {
-          amount: number;
-          source: string;
-          categoryName: string;
-          defaultNote: string;
-        }) => {
-          const existing = await tx.txRecord.findFirst({
-            where: {
-              ...linkedWhere,
-              type: TransactionType.expense,
-              source: params.source,
-            },
-            orderBy: { createdAt: "asc" },
-          });
-          if (params.amount <= 0) {
-            if (existing) {
-              await tx.txRecord.update({
-                where: { id: existing.id },
-                data: { deletedAt: new Date() },
-              });
-            }
-            return;
-          }
-          const category = await tx.category.findFirst({
-            where: { householdId, type: "expense", name: params.categoryName },
-          });
-          const data = {
-            accountId: cashAccount.id,
-            accountName: cashAccount.name,
-            toAccountId: debtAccount.id,
-            toAccountName: debtAccount.name,
-            amount: -Math.abs(params.amount),
-            type: TransactionType.expense,
-            date,
-            categoryId: category?.id ?? null,
-            categoryName: category?.name ?? params.categoryName,
-            note: note ? `${note} ${params.defaultNote}` : params.defaultNote,
-            source: params.source,
+        await tx.txRecord.updateMany({
+          where: {
             householdId,
-            regularInvestPlanId: original.regularInvestPlanId,
+            id: { not: original.id },
+            accountId: original.accountId,
+            toAccountId: original.toAccountId,
+            date: original.date,
             deletedAt: null,
-          };
-          if (existing) {
-            await tx.txRecord.update({ where: { id: existing.id }, data });
-          } else {
-            await tx.txRecord.create({ data });
-          }
-        };
-
-        await syncLinkedMoneyEntry({
-          amount: interest,
-          source: mode === "prepay_out" ? "debt_prepay_out_interest" : "debt_repay_out_interest",
-          categoryName: "利息支出",
-          defaultNote: "利息",
-        });
-        await syncLinkedMoneyEntry({
-          amount: mode === "prepay_out" ? penalty : 0,
-          source: "debt_prepay_out_fee",
-          categoryName: "手续费",
-          defaultNote: "手续费/违约金",
+            type: { not: TransactionType.transfer },
+            OR: [
+              { source: { in: ["debt_repay_out_interest", "debt_prepay_out_interest", "debt_collect_in_interest", "debt_prepay_out_fee"] } },
+              { categoryName: { contains: "利息" } },
+              { note: { contains: "利息" } },
+              { categoryName: { contains: "手续费" } },
+              { note: { contains: "违约金" } },
+            ],
+          },
+          data: { deletedAt: new Date() },
         });
         return;
       }
@@ -1304,7 +1300,14 @@ async function createDebtTransaction(formData: FormData) {
           accountName: transferFromAccount.name,
           toAccountId: transferToAccount.id,
           toAccountName: transferToAccount.name,
-          amount: -Math.abs(principal),
+          amount: mode === "repay_out" || mode === "prepay_out"
+            ? -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0))
+            : mode === "collect_in"
+              ? Math.abs(principal + interest)
+              : -Math.abs(principal),
+          debtPrincipalAmount: ["repay_out", "prepay_out", "collect_in"].includes(mode) ? Math.abs(principal) : null,
+          debtInterestAmount: ["repay_out", "prepay_out", "collect_in"].includes(mode) ? Math.abs(interest) : null,
+          debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : null,
           type: TransactionType.transfer,
           date,
           note: mode === "borrow_in"
@@ -1359,6 +1362,7 @@ async function createDebtTransaction(formData: FormData) {
               mortgageLprDiscount: mortgageLprDiscount ?? null,
               repaymentMethod,
               repaymentIntervalMonths,
+              originalTotalRuns: totalRuns,
             }),
             skipPendingPreceding: false,
             householdId,
@@ -1371,62 +1375,6 @@ async function createDebtTransaction(formData: FormData) {
           adjustments: historicalLoanRateAdjustments,
         });
         createdRepaymentPlanId = plan.id;
-      }
-
-      if (interest > 0 && (mode === "repay_out" || mode === "prepay_out" || mode === "collect_in")) {
-        const interestType = mode === "collect_in" ? TransactionType.income : TransactionType.expense;
-        const interestCategoryName = mode === "collect_in" ? "利息" : "利息支出";
-        const interestCategory = await tx.category.findFirst({
-          where: {
-            householdId,
-            type: interestType === TransactionType.expense ? "expense" : "income",
-            name: interestCategoryName,
-          },
-        });
-
-        await tx.txRecord.create({
-          data: {
-            accountId: cashAccount.id,
-            accountName: cashAccount.name,
-            toAccountId: debtAccount.id,
-            toAccountName: debtAccount.name,
-            amount: mode === "collect_in" ? Math.abs(interest) : -Math.abs(interest),
-            type: interestType,
-            date,
-            categoryId: interestCategory?.id ?? null,
-            categoryName: interestCategory?.name ?? interestCategoryName,
-            note: note ? `${note} 利息` : "利息",
-            source: mode === "collect_in" ? "debt_collect_in_interest" : mode === "prepay_out" ? "debt_prepay_out_interest" : "debt_repay_out_interest",
-            householdId,
-          },
-        });
-      }
-
-      if (penalty > 0 && mode === "prepay_out") {
-        const feeCategory = await tx.category.findFirst({
-          where: {
-            householdId,
-            type: "expense",
-            name: "手续费",
-          },
-        });
-
-        await tx.txRecord.create({
-          data: {
-            accountId: cashAccount.id,
-            accountName: cashAccount.name,
-            toAccountId: debtAccount.id,
-            toAccountName: debtAccount.name,
-            amount: -Math.abs(penalty),
-            type: TransactionType.expense,
-            date,
-            categoryId: feeCategory?.id ?? null,
-            categoryName: feeCategory?.name ?? "手续费",
-            note: note ? `${note} 手续费/违约金` : "提前还款手续费/违约金",
-            source: "debt_prepay_out_fee",
-            householdId,
-          },
-        });
       }
 
       if (mode === "prepay_out") {
@@ -1543,6 +1491,7 @@ async function createDebtTransaction(formData: FormData) {
             householdId,
             plan: createdPlan,
             task: decodeScheduledTaskMemo(createdPlan.memo),
+            initialLoanPrincipal: principal,
           });
         } catch (error) {
           historicalGenerationWarning = error instanceof Error ? error.message : "历史还款记录补生成失败";
@@ -1868,7 +1817,7 @@ async function fillFundNavFromCache(formData: FormData) {
       ? ymdUtc(txRecord.fundConfirmDate)
       : addWorkdaysUtc(applyDate, await getFundConfirmDays(investmentAccId, txRecord.fundCode));
     const navDate = new Date(`${confirmDate}T00:00:00.000Z`);
-    const navData = await getFundNav(txRecord.fundCode, navDate);
+    const navData = await getFundNav(txRecord.fundCode, navDate, investmentAccId);
 
     if (!navData) {
       return { ok: false as const, error: `API 未能获取 ${txRecord.fundCode} 在 ${confirmDate} 的净值，确认日期可能是非交易日，或基金查询API未配置` };
@@ -2457,6 +2406,7 @@ async function updateTransactionFromDialog(formData: FormData) {
         const productType = String(formData.get("productType") ?? "fund").trim();
         const subtype = String(formData.get("subtype") ?? "buy").trim();
         const redeemLike = subtype === "redeem" || subtype === "switch_out";
+        const isInsuranceEntry = entry.source === "insurance" || !!entry.insuranceProductId;
 
         const investAcc = accountIdFormData ? await tx.account.findUnique({ where: { id: accountIdFormData } }) : null;
         if (!investAcc) throw new Error("请选择投资账户");
@@ -2523,7 +2473,9 @@ async function updateTransactionFromDialog(formData: FormData) {
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: fundCode || null,
-            fundProductType: (productType as any) || null,
+            insuranceAction: isInsuranceEntry ? (redeemLike ? "refund" : "premium") : entry.insuranceAction,
+            insuranceProductName: isInsuranceEntry ? (entry.fundName ?? null) : entry.insuranceProductName,
+            fundProductType: isInsuranceEntry ? null : (productType as any) || null,
             fundSubtype: (subtype as any) || null,
             date,
             type: TransactionType.investment,
@@ -2824,7 +2776,7 @@ export default async function Home({
             : isOverview
               ? "overview"
               : "detail";
-  const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance";
+  const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
   const legacyNames = (() => {
     if (!selectedAccount) return [];
@@ -2914,9 +2866,14 @@ export default async function Home({
   };
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
-    const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+    const effectiveAmount = effectiveAmountForAccount(e, accountId);
+    const balanceTarget = getBalanceReconcileTarget(e);
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
+    if (column === "flow" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return "初始";
+    if (column === "flow" && e.source === BALANCE_RECONCILE_SOURCE) return "校准";
     if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
+    if (column === "type" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return "初始";
+    if (column === "type" && e.source === BALANCE_RECONCILE_SOURCE) return "校准";
     if (column === "type") return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
     if (column === "category") return getInsuranceDetailCategoryName(e) || DETAIL_EMPTY_VALUE;
     if (column === "related") {
@@ -2975,8 +2932,7 @@ export default async function Home({
     return true;
   }));
   const filteredEntries2 = filteredEntries.filter((e) => {
-    const amount = toNumber(e.amount);
-    const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+    const effectiveAmount = effectiveAmountForAccount(e, accountId);
     const inflow = effectiveAmount > 0 ? effectiveAmount : null;
     const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
     if ((detailInFromN != null || detailInToN != null)) {
@@ -2994,8 +2950,7 @@ export default async function Home({
   const normalExportRows = (() => {
     const rows = [["日期", "类型", "流出", "流入", "账户", "对向账户", "备注"]];
     for (const e of filteredEntries2) {
-      const amount = toNumber(e.amount);
-      const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+      const effectiveAmount = effectiveAmountForAccount(e, accountId);
       const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
       const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
       const accountLabel = accountId && e.toAccountId === accountId ? (e.toAccountName ?? "") : (e.accountName ?? "");
@@ -3046,14 +3001,10 @@ export default async function Home({
 
   const total = filteredEntries.reduce(
     (acc, e) => {
-      const amount = toNumber(e.amount);
-      const isInvestAccountEntry = accountId && (e.toAccountId === accountId || e.accountId === accountId);
       // 确定对当前账户而言的资金方向
       // 规则：toAccountId = 资金收到方
       // 对于当前账户：资金流入当前账户 → 正数(in)，流出 → 负数(out)
-      const effectiveAmount = isInvestAccountEntry
-        ? (e.toAccountId === accountId ? Math.abs(amount) : amount)
-        : (!accountId ? amount : (e.toAccountId === accountId ? Math.abs(amount) : amount));
+      const effectiveAmount = effectiveAmountForAccount(e, accountId);
       if (effectiveAmount >= 0) acc.in += effectiveAmount;
       else acc.out += -effectiveAmount;
       acc.net += effectiveAmount;
@@ -3075,10 +3026,7 @@ export default async function Home({
     const asc = [...rawEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let running = 0;
     for (const e of asc) {
-      const amount = toNumber(e.amount);
-      const isToAccount = accountId && e.toAccountId === accountId;
-      const displayAmount = isToAccount ? Math.abs(toNumber(e.fundArrivalAmount ?? amount)) : amount;
-      running += displayAmount;
+      running = applyBalanceReconcileEntry(running, e, accountId);
       balanceByEntryId.set(e.id, running);
     }
   }
@@ -3675,6 +3623,27 @@ export default async function Home({
         : entry.toAccountId;
       return `account:${debtAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
     };
+    const rowLockedInterestKeys = new Set<string>();
+    for (const entry of debtEntriesRaw) {
+      if (
+        entry.type === TransactionType.transfer ||
+        !(
+          rowAccountIds.has(entry.toAccountId ?? "") ||
+          (entry.regularInvestPlanId ? rowPlanIds.has(entry.regularInvestPlanId) : false)
+        ) ||
+        !(
+          String(entry.source ?? "").includes("interest") ||
+          String(entry.categoryName ?? "").includes("利息") ||
+          String(entry.note ?? "").includes("利息")
+        )
+      ) {
+        continue;
+      }
+      const source = String(entry.source ?? "");
+      if (source.startsWith("debt_") && source.includes("interest")) {
+        rowLockedInterestKeys.add(rowPrincipalKey(entry));
+      }
+    }
     const rowInterestByPrincipalKey = new Map<string, number>();
     for (const entry of debtEntriesRaw) {
       if (
@@ -3692,12 +3661,11 @@ export default async function Home({
         continue;
       }
       const key = rowPrincipalKey(entry);
+      if (String(entry.source ?? "") === "scheduled_task" && rowLockedInterestKeys.has(key)) continue;
       rowInterestByPrincipalKey.set(key, (rowInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
     }
     const paidEntries = rowPrincipalEntries.filter((entry) => {
-      const amount = toNumber(entry.amount);
-      const isToDebtAccount = rowAccountIds.has(entry.toAccountId ?? "");
-      const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
+      const displayAmount = debtPrincipalForAccountSide(entry, rowAccountIds);
       if (displayAmount <= 0) return false;
       const source = String(entry.source ?? "");
       return (
@@ -3708,12 +3676,10 @@ export default async function Home({
       );
     });
     row.paidPrincipal = paidEntries.reduce((sum, entry) => {
-      const amount = toNumber(entry.amount);
-      const isToDebtAccount = rowAccountIds.has(entry.toAccountId ?? "");
-      return sum + Math.abs(isToDebtAccount ? Math.abs(amount) : amount);
+      return sum + Math.abs(debtPrincipalForAccountSide(entry, rowAccountIds));
     }, 0);
     row.paidInterest = paidEntries.reduce(
-      (sum, entry) => sum + (rowInterestByPrincipalKey.get(rowPrincipalKey(entry)) ?? 0),
+      (sum, entry) => sum + Math.abs(toNumber(entry.debtInterestAmount)) + (rowInterestByPrincipalKey.get(rowPrincipalKey(entry)) ?? 0),
       0,
     );
     row.remainingPrincipal = Math.abs(row.net);
@@ -3827,8 +3793,16 @@ export default async function Home({
     return `account:${debtAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
   }
   const debtInterestByPrincipalKey = new Map<string, number>();
+  const lockedDebtInterestKeys = new Set<string>();
+  for (const entry of filteredDebtInterestEntries) {
+    const source = String(entry.source ?? "");
+    if (source.startsWith("debt_") && source.includes("interest")) {
+      lockedDebtInterestKeys.add(debtPrincipalKey(entry));
+    }
+  }
   for (const entry of filteredDebtInterestEntries) {
     const key = debtPrincipalKey(entry);
+    if (String(entry.source ?? "") === "scheduled_task" && lockedDebtInterestKeys.has(key)) continue;
     debtInterestByPrincipalKey.set(key, (debtInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
   }
   const debtFeeByPrincipalKey = new Map<string, number>();
@@ -3841,9 +3815,7 @@ export default async function Home({
   const debtBalanceTimeline: Array<{ date: string; balance: number }> = [];
   let runningDebtBalance = 0;
   for (const entry of [...filteredDebtPrincipalEntries].sort((a, b) => compareDetailEntriesAsc(a, b))) {
-    const amount = toNumber(entry.amount);
-    const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-    const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
+    const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
     runningDebtBalance += displayAmount;
     debtBalanceByEntryId.set(entry.id, runningDebtBalance);
     debtBalanceTimeline.push({
@@ -3863,12 +3835,12 @@ export default async function Home({
     .map((entry) => {
       const amount = toNumber(entry.amount);
       const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-      const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
-      const interestAmount = debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0;
-      const feeAmount = debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0;
+      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
+      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
+      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
       const paymentTotal =
-        interestAmount > 0 || feeAmount > 0 || entry.source === "debt_repay_out" || entry.source === "debt_prepay_out" || entry.source === "debt_collect_in"
-          ? Math.abs(displayAmount) + interestAmount + feeAmount
+        interestAmount > 0 || feeAmount > 0 || entry.source === "debt_repay_out" || entry.source === "debt_prepay_out" || entry.source === "debt_collect_in" || entry.source === "scheduled_task"
+          ? debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount
           : null;
       const relatedAccountId = isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
       const inferredDirection = (selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable";
@@ -3887,9 +3859,24 @@ export default async function Home({
                     direction: inferredDirection,
                     isDebtAccountFromSide: !isToDebtAccount,
                   });
+      const entryDate = entryDisplayDate(entry);
+      const entryDateKey = entryDate.toISOString().slice(0, 10);
+      const defaultRecalculateStartDate =
+        selectedRepaymentPlan &&
+        (entry.regularInvestPlanId
+          ? entry.regularInvestPlanId === selectedRepaymentPlan.id
+          : selectedDebtAccountIds.has(relatedAccountId))
+          ? formatDateUtc(calcNextScheduledRunDate(
+              entryDate,
+              selectedRepaymentPlan.intervalUnit,
+              selectedRepaymentPlan.intervalValue,
+              selectedRepaymentPlan.executionDay,
+              false,
+            ))
+          : null;
       return {
         id: entry.id,
-        date: entryDisplayDate(entry).toISOString().slice(0, 10),
+        date: entryDateKey,
         typeLabel: entry.type === TransactionType.transfer ? transferActionLabel : (entry.categoryName || formatType(entry.type)),
         relatedAccountLabel: debtAccountLabelById.get(relatedAccountId) ?? "-",
         note: entry.note ?? "",
@@ -3905,9 +3892,10 @@ export default async function Home({
                 mode: entry.source === "debt_prepay_out" ? "prepay_out" as const : "repay_out" as const,
                 defaultDebtAccountId: isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
                 defaultCashAccountId: isToDebtAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
-                defaultDate: entryDisplayDate(entry).toISOString().slice(0, 10),
+                defaultDate: entryDateKey,
                 defaultPrincipal: Math.abs(displayAmount),
                 defaultInterest: interestAmount,
+                defaultRecalculateStartDate,
               }
             : undefined,
         edit:
@@ -3935,10 +3923,9 @@ export default async function Home({
     const paidPrincipalEntries = [...filteredDebtPrincipalEntries]
       .sort((a, b) => compareDetailEntriesAsc(a, b))
       .filter((entry) => {
-        const amount = toNumber(entry.amount);
-        const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-        const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
-        if (displayAmount <= 0) return false;
+      const amount = toNumber(entry.amount);
+      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
+      if (displayAmount <= 0) return false;
         const source = String(entry.source ?? "");
         return (
           source === "debt_repay_out" ||
@@ -3947,19 +3934,20 @@ export default async function Home({
           (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
         );
       });
-    for (const [index, entry] of paidPrincipalEntries.entries()) {
-      const amount = toNumber(entry.amount);
-      const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-      const displayAmount = isToDebtAccount ? Math.abs(amount) : amount;
-      const interestAmount = debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0;
-      const feeAmount = debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0;
+    let paidRepaymentPeriod = 0;
+    for (const entry of paidPrincipalEntries) {
+      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
+      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
+      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
+      const isPrepayment = entry.source === "debt_prepay_out";
+      if (!isPrepayment) paidRepaymentPeriod += 1;
       repaymentScheduleRows.push({
         rowType: "payment",
         status: "paid",
-        eventType: entry.source === "debt_prepay_out" ? "prepayment" : "repayment",
-        period: index + 1,
+        eventType: isPrepayment ? "prepayment" : "repayment",
+        period: isPrepayment ? 0 : paidRepaymentPeriod,
         date: entryDisplayDate(entry).toISOString().slice(0, 10),
-        payment: Math.abs(displayAmount) + interestAmount + feeAmount,
+        payment: debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount,
         principal: Math.abs(displayAmount),
         interest: interestAmount,
         remainingPrincipal: Math.abs(debtBalanceByEntryId.get(entry.id) ?? 0),
@@ -4642,6 +4630,9 @@ export default async function Home({
             fundName: e.fundName,
             source: e.source,
             insuranceProductId: e.insuranceProductId ?? null,
+            debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
+            debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
+            debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
             depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
             depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
             fundProductType: e.fundProductType,
@@ -4816,6 +4807,9 @@ export default async function Home({
     fundName: e.fundName,
     source: e.source,
     insuranceProductId: e.insuranceProductId ?? null,
+    debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
+    debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
+    debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
     depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
     fundProductType: e.fundProductType,
@@ -4981,23 +4975,51 @@ export default async function Home({
       : [];
 
   const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
-  const depositLots = (() => {
-    const activeDepositAccountIds = new Set<string>();
-    if (selectedAccount) {
-      if (isDepositAccount(selectedAccount)) {
-        activeDepositAccountIds.add(selectedAccount.id);
-      }
-      if (selectedAccount.institutionId) {
-        for (const account of allDepositAccounts) {
-          if (account.institutionId === selectedAccount.institutionId) {
-            activeDepositAccountIds.add(account.id);
-          }
-        }
-      }
-    }
-    if (activeDepositAccountIds.size === 0) return [];
+  const allDepositAccountIds = allDepositAccounts.map((account) => account.id);
+  const allDepositEntries =
+    allDepositAccountIds.length > 0
+      ? await prisma.txRecord.findMany({
+          where: {
+            ...hid,
+            deletedAt: null,
+            fundProductType: "deposit",
+            OR: [
+              { accountId: { in: allDepositAccountIds } },
+              { toAccountId: { in: allDepositAccountIds } },
+            ],
+          },
+          select: {
+            id: true,
+            date: true,
+            createdAt: true,
+            deletedAt: true,
+            type: true,
+            accountId: true,
+            accountName: true,
+            toAccountId: true,
+            toAccountName: true,
+            amount: true,
+            fundCode: true,
+            fundName: true,
+            fundProductType: true,
+            fundSubtype: true,
+            fundNav: true,
+            fundConfirmDate: true,
+            fundArrivalDate: true,
+            fundArrivalAmount: true,
+            depositAnnualRate: true,
+            depositInterest: true,
+            depositSourceEntryId: true,
+            source: true,
+          },
+          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+          take: 5000,
+        })
+      : [];
 
-    const sourceEntries = entries.filter(
+  function buildDepositLots(sourceEntryPool: Array<any>, activeDepositAccountIds: Set<string>, sortAccountId?: string | null) {
+    if (activeDepositAccountIds.size === 0) return [];
+    const sourceEntries = sourceEntryPool.filter(
       (entry) =>
         entry.fundProductType === "deposit" &&
         !entry.deletedAt &&
@@ -5007,12 +5029,9 @@ export default async function Home({
     if (sourceEntries.length === 0) return [];
 
     const accountNameById = new Map(allDepositAccounts.map((account) => [account.id, account.name]));
+    const sourceEntryById = new Map(sourceEntries.map((entry) => [entry.id, entry]));
     const depositSourceEntries = [...sourceEntries].sort((a, b) =>
-      compareDetailEntriesAsc(
-        a,
-        b,
-        selectedAccount && isDepositAccount(selectedAccount) ? selectedAccount.id : undefined,
-      ),
+      compareDetailEntriesAsc(a, b, sortAccountId ?? undefined),
     );
 
     const lotBuckets = new Map<
@@ -5084,31 +5103,33 @@ export default async function Home({
     }
 
     return allLots
-      .map((lot) => ({
-        id: lot.id,
-        label: lot.fundName,
-        originalAmount: Number((entries.find((entry) => entry.id === lot.id) ? Math.abs(toNumber(entries.find((entry) => entry.id === lot.id)!.fundArrivalAmount ?? entries.find((entry) => entry.id === lot.id)!.amount)) : lot.remainingAmount).toFixed(2)),
-        subLabel: [
-          lot.depositAccountName,
-          lot.maturityDate ? `到期 ${lot.maturityDate}` : "",
-          lot.remainingAmount > 0.0001 ? `可取 ${formatMoney(lot.remainingAmount)}` : "已结清",
-        ]
-          .filter(Boolean)
-          .join(" · "),
-        fundName: lot.fundName,
-        startDate: toYmdOrNull(entries.find((entry) => entry.id === lot.id)?.date),
-        maturityDate: lot.maturityDate,
-        remainingAmount: Number(lot.remainingAmount.toFixed(2)),
-        status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
-        annualRate: (() => {
-          const sourceEntry = entries.find((entry) => entry.id === lot.id);
-          if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
-          return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
-        })(),
-        depositAccountId: lot.depositAccountId,
-        depositAccountLabel: lot.depositAccountName,
-        relatedEntryIds: lot.relatedEntryIds,
-      }))
+      .map((lot) => {
+        const sourceEntry = sourceEntryById.get(lot.id);
+        return {
+          id: lot.id,
+          label: lot.fundName,
+          originalAmount: Number(Math.abs(toNumber(sourceEntry?.fundArrivalAmount ?? sourceEntry?.amount ?? lot.remainingAmount)).toFixed(2)),
+          subLabel: [
+            lot.depositAccountName,
+            lot.maturityDate ? `到期 ${lot.maturityDate}` : "",
+            lot.remainingAmount > 0.0001 ? `可取 ${formatMoney(lot.remainingAmount)}` : "已结清",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          fundName: lot.fundName,
+          startDate: toYmdOrNull(sourceEntry?.date),
+          maturityDate: lot.maturityDate,
+          remainingAmount: Number(lot.remainingAmount.toFixed(2)),
+          status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
+          annualRate: (() => {
+            if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
+            return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
+          })(),
+          depositAccountId: lot.depositAccountId,
+          depositAccountLabel: lot.depositAccountName,
+          relatedEntryIds: lot.relatedEntryIds,
+        };
+      })
       .sort((a, b) => {
         if (a.status !== b.status) return a.status === "open" ? -1 : 1;
         const dateA = a.maturityDate ?? "9999-12-31";
@@ -5116,9 +5137,40 @@ export default async function Home({
         if (dateA !== dateB) return dateA.localeCompare(dateB);
         return a.label.localeCompare(b.label, "zh-Hans-CN");
       });
-  })();
-  const redeemLotOptions = depositLots
-    .filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001)
+  }
+
+  const activeDepositAccountIds = new Set<string>();
+  if (selectedAccount) {
+    if (isDepositAccount(selectedAccount)) {
+      activeDepositAccountIds.add(selectedAccount.id);
+    }
+    if (selectedAccount.institutionId) {
+      for (const account of allDepositAccounts) {
+        if (account.institutionId === selectedAccount.institutionId) {
+          activeDepositAccountIds.add(account.id);
+        }
+      }
+    }
+    for (const entry of entries) {
+      if (entry.fundProductType !== "deposit" || entry.deletedAt) continue;
+      if (entry.accountId !== selectedAccount.id && entry.toAccountId !== selectedAccount.id) continue;
+      const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      const depositAccountId = (isRedeemEntry ? entry.accountId : entry.toAccountId) ?? "";
+      if (depositAccountId && allDepositAccounts.some((account) => account.id === depositAccountId)) {
+        activeDepositAccountIds.add(depositAccountId);
+      }
+    }
+  }
+  const depositLots = buildDepositLots(
+    entries,
+    activeDepositAccountIds,
+    selectedAccount && isDepositAccount(selectedAccount) ? selectedAccount.id : undefined,
+  );
+  const allDepositLots = buildDepositLots(allDepositEntries, new Set(allDepositAccountIds));
+  const scopedOpenDepositLots = depositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
+  const globalOpenDepositLots = allDepositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
+  const redeemLotSource = scopedOpenDepositLots.length > 0 ? scopedOpenDepositLots : globalOpenDepositLots;
+  const redeemLotOptions = redeemLotSource
     .map((lot) => ({
       id: lot.id,
       label: lot.label,
@@ -5139,8 +5191,10 @@ export default async function Home({
         ? allDepositAccounts.find((account) => account.institutionId === selectedAccount.institutionId)?.id ?? ""
         : "";
   const defaultCashAccountForSelectedInstitution =
-    selectedAccount?.institutionId
-      ? cashAccountList.find((account) => account.kind === "bank_debit" && account.institutionId === selectedAccount.institutionId)?.id
+    selectedAccount && cashAccountList.some((account) => account.id === selectedAccount.id)
+      ? selectedAccount.id
+      : selectedAccount?.institutionId
+        ? cashAccountList.find((account) => account.kind === "bank_debit" && account.institutionId === selectedAccount.institutionId)?.id
         ?? cashAccountList.find((account) => account.institutionId === selectedAccount.institutionId)?.id
         ?? cashAccountList[0]?.id
         ?? ""
@@ -5180,7 +5234,7 @@ export default async function Home({
               <UnifiedEntryLauncher
                 defaultAction={
                   isDepositView
-                    ? "deposit-redeem"
+                    ? "deposit"
                     : (view === "investfund" || view === "investmoney")
                       ? "investment"
                       : view === "regularinvest"
@@ -5195,10 +5249,11 @@ export default async function Home({
                 }
                 context={{
                   defaultAccountId: selectedAccount?.id ?? accountId ?? "",
-                  defaultCashAccountId: isDepositView ? defaultCashAccountForSelectedInstitution : (cashAccountList[0]?.id ?? accountId ?? ""),
+                  defaultCashAccountId: defaultCashAccountForSelectedInstitution,
                   defaultTransferFromAccountId: isBillAccount ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "") : (selectedAccount?.id ?? accountId ?? ""),
                   defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
                   defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
+                  defaultDepositSubtype: isDepositView && globalOpenDepositLots.length > 0 ? "redeem" : "buy",
                   defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
                   defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
                   defaultDebtInstitutionId: selectedDebtObjectValue,
@@ -5215,8 +5270,7 @@ export default async function Home({
                   { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
                   { key: "investment", label: "开放式基金 / 货币基金" },
                   { key: "wealth", label: "银行理财" },
-                  { key: "deposit-buy", label: "存款存入" },
-                  { key: "deposit-redeem", label: "存款取出", disabled: redeemLotOptions.length === 0 && !isDepositView },
+                  { key: "deposit", label: "存款" },
                   { key: "insurance", label: "保险" },
                   { key: "debt", label: "往来款", disabled: cashAccountList.length === 0 },
                   { key: "regular-task", label: "计划任务" },
@@ -5307,7 +5361,7 @@ export default async function Home({
                 cashAccountSSOptions={cashAccountSSOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 redeemLotOptions={redeemLotOptions}
-                allRedeemLotOptions={depositLots}
+                allRedeemLotOptions={allDepositLots}
                 nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
@@ -5320,7 +5374,7 @@ export default async function Home({
                 cashAccountSSOptions={cashAccountSSOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 redeemLotOptions={redeemLotOptions}
-                allRedeemLotOptions={depositLots}
+                allRedeemLotOptions={allDepositLots}
                 nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
@@ -5332,6 +5386,13 @@ export default async function Home({
                 cashAccountSSOptions={cashAccountSSOptions}
                 nestedFieldData={nestedFieldData}
               />
+              {!isInsuranceView ? (
+                <InsuranceEntryEditBridge
+                  cashAccounts={cashAccountList}
+                  cashAccountSSOptions={cashAccountSSOptions}
+                  nestedFieldData={nestedFieldData}
+                />
+              ) : null}
               <RegularInvestForm
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 accountLabel={selectedAccountLabel}
@@ -5400,6 +5461,8 @@ export default async function Home({
                   {billSummariesWithCumulative.length > 0 ? (
                     <CreditBillSummaryTable
                       accountId={selectedAccount?.id ?? ""}
+                      accountName={selectedAccount?.name ?? ""}
+                      institutionName={selectedAccount?.Institution?.name ?? ""}
                       rows={creditBillSummaryRows}
                       initialPage={currentPage}
                       pageSize={billListPageSize}
@@ -5423,14 +5486,14 @@ export default async function Home({
                       <DetailViewClient
                         accountId={selectedAccount?.id ?? ""}
                         isInvestAccount={false}
-                        initialEntries={selectedBillMonth ? (creditCardBillDetails?.details ?? []) : []}
+                        initialEntries={selectedBillMonth ? (creditCardBillDetails?.details ?? []) : allDetailEntries}
                         accountOptions={accountOptions}
                         investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                         compactRows
                         storageKey="mmh_credit_bill_detail_table_v1"
                         refreshOnGlobalEvent={false}
                         toolbarMode="custom"
-                        toolbarTitle={selectedBillMonth && creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "账单明细"}
+                        toolbarTitle={selectedBillMonth && creditCardBill?.statementMonth ? `账单明细 (${creditCardBill.statementMonth})` : "全部账单明细"}
                         toolbarRightContent={
                           selectedBillMonth && creditCardBill ? (
                             <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
@@ -5439,9 +5502,13 @@ export default async function Home({
                               </span>
                               <span className="whitespace-nowrap text-slate-600">共 {creditCardBillDetails?.details.length ?? 0} 条</span>
                             </div>
-                          ) : null
+                          ) : (
+                            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
+                              <span className="whitespace-nowrap text-slate-600">共 {allDetailEntries.length} 条</span>
+                            </div>
+                          )
                         }
-                        emptyText={selectedBillMonth ? "暂无记录" : "请先选择上方账单"}
+                        emptyText="暂无记录"
                       />
                     </div>
                   </BasicDetailSelectionProvider>
@@ -5587,6 +5654,9 @@ export default async function Home({
                   accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                   compactRows={selectedAccount?.kind === AccountKind.bank_debit}
+                  showBalanceReconcile={selectedAccount?.kind === AccountKind.bank_debit}
+                  accountLabel={selectedAccountLabel}
+                  currentBalance={selectedAccountBalanceValue}
                 />
               </div>
             </div>

@@ -7,8 +7,9 @@ import {
   calcLoanRunParts,
   calcLoanRunPartsWithRateAdjustments,
   calcLoanScheduledAmount,
-  calcLoanScheduledAmountForPeriodStart,
+  calcLoanScheduledAmountExact,
   getEffectiveLoanAnnualRate,
+  roundLoanMoney,
 } from "@/lib/loan-repayment";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -20,6 +21,9 @@ import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 export const runtime = "nodejs";
 
 type RecalculateStrategy = "reduce_payment" | "reduce_term";
+const AUTO_LOAN_REPAYMENT_SOURCE = "scheduled_task";
+const LOCKED_LOAN_REPAYMENT_SOURCE = "debt_repay_out";
+const LOAN_REPAYMENT_BOUNDARY_SOURCES = [AUTO_LOAN_REPAYMENT_SOURCE, LOCKED_LOAN_REPAYMENT_SOURCE] as const;
 
 function normalizeStrategy(value: unknown): RecalculateStrategy {
   return value === "reduce_term" ? "reduce_term" : "reduce_payment";
@@ -43,6 +47,13 @@ function parseDateOnlyUtc(value: unknown) {
   return date;
 }
 
+function parseLoanTotalRunsFromNote(note?: string | null) {
+  const match = String(note ?? "").match(/期数[：:]\s*(\d+)/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 async function getLoanBalanceBeforeDate(params: {
   householdId: string;
   accountId: string;
@@ -52,6 +63,7 @@ async function getLoanBalanceBeforeDate(params: {
     where: {
       householdId: params.householdId,
       deletedAt: null,
+      type: TransactionType.transfer,
       date: { lt: params.date },
       OR: [{ accountId: params.accountId }, { toAccountId: params.accountId }],
     },
@@ -59,11 +71,16 @@ async function getLoanBalanceBeforeDate(params: {
       accountId: true,
       toAccountId: true,
       amount: true,
+      debtPrincipalAmount: true,
     },
   });
 
   return rows.reduce((sum, row) => (
-    sum + (row.toAccountId === params.accountId ? Math.abs(toNumber(row.amount)) : toNumber(row.amount))
+    sum + (
+      row.toAccountId === params.accountId
+        ? Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount))
+        : toNumber(row.amount)
+    )
   ), 0);
 }
 
@@ -104,9 +121,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "自由还款没有固定计划，不需要重算" }, { status: 400 });
     }
 
+    const originalBorrow = await prisma.txRecord.findFirst({
+      where: {
+        householdId,
+        deletedAt: null,
+        source: "debt_borrow_in",
+        type: TransactionType.transfer,
+        accountId: plan.accountId,
+      },
+      orderBy: { date: "asc" },
+      select: { note: true },
+    });
+    const originalTotalRuns = memo.originalTotalRuns ?? parseLoanTotalRunsFromNote(originalBorrow?.note);
     const remainingPrincipal = Math.abs(toNumber(plan.Account_RegularInvestPlan_accountIdToAccount.balance));
     const executedRuns = Math.max(0, plan.executedRuns ?? 0);
     const remainingRuns = plan.totalRuns == null ? null : Math.max(0, plan.totalRuns - executedRuns);
+    const originalRemainingRuns = originalTotalRuns == null ? null : Math.max(0, originalTotalRuns - executedRuns);
     const intervalMonths = memo.repaymentIntervalMonths ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : 1);
     const recalculateStartDate = requestedStartDate ?? plan.nextRunDate;
     const tableAdjustments = (await listLoanRateAdjustmentsByAccountIds({
@@ -119,50 +149,123 @@ export async function POST(req: Request) {
     });
 
     if (formatDateUtc(recalculateStartDate) < formatDateUtc(plan.nextRunDate)) {
-      const historicalPrincipalRows = await prisma.txRecord.findMany({
+      const historicalExistingRows = await prisma.txRecord.findMany({
         where: {
           householdId,
           regularInvestPlanId: plan.id,
-          source: "scheduled_task",
           type: TransactionType.transfer,
           toAccountId: plan.accountId,
+          source: { in: [...LOAN_REPAYMENT_BOUNDARY_SOURCES] },
           date: { gte: recalculateStartDate },
           deletedAt: null,
         },
         orderBy: [{ date: "asc" }, { id: "asc" }],
-        select: { date: true },
+        select: { date: true, source: true, amount: true, debtPrincipalAmount: true },
       });
-      if (historicalPrincipalRows.length === 0) {
-        return NextResponse.json({ ok: false, error: "起始日期之后没有可重算的计划还款记录" }, { status: 400 });
+
+      const historicalExistingByDate = new Map<string, (typeof historicalExistingRows)[number]>();
+      for (const row of historicalExistingRows) {
+        const key = formatDateUtc(row.date);
+        const existing = historicalExistingByDate.get(key);
+        if (!existing || row.source === LOCKED_LOAN_REPAYMENT_SOURCE) {
+          historicalExistingByDate.set(key, row);
+        }
       }
 
-      const firstRunDate = historicalPrincipalRows[0]!.date;
-      const finalRunDate = historicalPrincipalRows[historicalPrincipalRows.length - 1]!.date;
+      const historicalRuns: Array<{
+        date: Date;
+        source: typeof AUTO_LOAN_REPAYMENT_SOURCE | typeof LOCKED_LOAN_REPAYMENT_SOURCE;
+        amount: unknown;
+        debtPrincipalAmount: unknown;
+      }> = [];
+      let historicalRunDate = recalculateStartDate;
+      let historicalGuard = 0;
+      while (formatDateUtc(historicalRunDate) < formatDateUtc(plan.nextRunDate)) {
+        const existing = historicalExistingByDate.get(formatDateUtc(historicalRunDate));
+        historicalRuns.push({
+          date: historicalRunDate,
+          source: existing?.source === LOCKED_LOAN_REPAYMENT_SOURCE ? LOCKED_LOAN_REPAYMENT_SOURCE : AUTO_LOAN_REPAYMENT_SOURCE,
+          amount: existing?.amount ?? null,
+          debtPrincipalAmount: existing?.debtPrincipalAmount ?? null,
+        });
+        historicalRunDate = calcNextScheduledRunDate(
+          historicalRunDate,
+          plan.intervalUnit,
+          plan.intervalValue,
+          plan.executionDay,
+          false,
+        );
+        historicalGuard += 1;
+        if (historicalGuard > 1200) {
+          return NextResponse.json({ ok: false, error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
+        }
+      }
+      if (historicalRuns.length === 0) {
+        return NextResponse.json({ ok: false, error: "起始日期之后没有可重算的计划期次" }, { status: 400 });
+      }
+
+      const firstRunDate = historicalRuns[0]!.date;
+      const finalRunDate = historicalRuns[historicalRuns.length - 1]!.date;
       const previousPrincipalRow = await prisma.txRecord.findFirst({
         where: {
           householdId,
           regularInvestPlanId: plan.id,
-          source: "scheduled_task",
           type: TransactionType.transfer,
           toAccountId: plan.accountId,
+          source: { in: [...LOAN_REPAYMENT_BOUNDARY_SOURCES] },
           date: { lt: firstRunDate },
           deletedAt: null,
         },
         orderBy: { date: "desc" },
         select: { date: true },
       });
-      const executedBefore = await prisma.txRecord.count({
+      const existingExecutedBefore = await prisma.txRecord.count({
         where: {
           householdId,
           regularInvestPlanId: plan.id,
-          source: "scheduled_task",
           type: TransactionType.transfer,
           toAccountId: plan.accountId,
+          source: { in: [...LOAN_REPAYMENT_BOUNDARY_SOURCES] },
           date: { lt: firstRunDate },
           deletedAt: null,
         },
       });
-      const remainingRunsAtStart = plan.totalRuns == null ? null : Math.max(0, plan.totalRuns - executedBefore);
+      let scheduledRunsBefore = 0;
+      let scheduledBeforeDate = plan.startDate;
+      let scheduledBeforeGuard = 0;
+      while (formatDateUtc(scheduledBeforeDate) < formatDateUtc(firstRunDate)) {
+        scheduledRunsBefore += 1;
+        scheduledBeforeDate = calcNextScheduledRunDate(
+          scheduledBeforeDate,
+          plan.intervalUnit,
+          plan.intervalValue,
+          plan.executionDay,
+          false,
+        );
+        scheduledBeforeGuard += 1;
+        if (scheduledBeforeGuard > 1200) break;
+      }
+      const executedBefore = Math.max(
+        existingExecutedBefore,
+        Math.min(scheduledRunsBefore, Math.max(0, plan.executedRuns ?? 0)),
+      );
+      const prepaymentBeforeStart = await prisma.txRecord.findFirst({
+        where: {
+          householdId,
+          deletedAt: null,
+          source: "debt_prepay_out",
+          type: TransactionType.transfer,
+          toAccountId: plan.accountId,
+          date: { lt: firstRunDate },
+        },
+        select: { id: true },
+      });
+      const totalRunsForHistoricalStart = strategy === "reduce_payment"
+        ? (originalTotalRuns ?? plan.totalRuns)
+        : prepaymentBeforeStart
+        ? plan.totalRuns
+        : (originalTotalRuns ?? plan.totalRuns);
+      const remainingRunsAtStart = totalRunsForHistoricalStart == null ? null : Math.max(0, totalRunsForHistoricalStart - executedBefore);
       if (!remainingRunsAtStart || remainingRunsAtStart <= 0) {
         return NextResponse.json({ ok: false, error: "起始日期后的剩余期数不足，无法重算历史记录" }, { status: 400 });
       }
@@ -175,20 +278,36 @@ export async function POST(req: Request) {
       if (rollingRemainingPrincipal <= 0.005) {
         return NextResponse.json({ ok: false, error: "起始日期前贷款余额已为 0，无法重算历史记录" }, { status: 400 });
       }
+      let rollingExactRemainingPrincipal = rollingRemainingPrincipal;
 
       const previousRunDate = previousPrincipalRow?.date ?? plan.startDate;
       let rollingPreviousRunDate = previousRunDate;
+      const annualRateAtHistoricalStart = getEffectiveLoanAnnualRate({
+        baseAnnualRate: memo.annualRate,
+        adjustments,
+        date: formatDateUtc(previousRunDate),
+      });
       let rollingScheduledAmount = strategy === "reduce_payment"
-        ? calcLoanScheduledAmountForPeriodStart({
-            repaymentMethod: memo.repaymentMethod,
-            baseAnnualRate: memo.annualRate,
-            adjustments,
-            intervalMonths,
-            scheduledAmount: toNumber(plan.amount),
-            remainingPrincipal: rollingRemainingPrincipal,
-            remainingRuns: remainingRunsAtStart,
-            periodStartDate: formatDateUtc(previousRunDate),
-          })
+        ? (
+            calcLoanScheduledAmount({
+              repaymentMethod: memo.repaymentMethod,
+              annualRate: annualRateAtHistoricalStart,
+              principal: rollingRemainingPrincipal,
+              totalRuns: remainingRunsAtStart,
+              intervalMonths,
+            }) ?? toNumber(plan.amount)
+          )
+        : toNumber(plan.amount);
+      let rollingScheduledAmountExact = strategy === "reduce_payment"
+        ? (
+            calcLoanScheduledAmountExact({
+              repaymentMethod: memo.repaymentMethod,
+              annualRate: annualRateAtHistoricalStart,
+              principal: rollingExactRemainingPrincipal,
+              totalRuns: remainingRunsAtStart,
+              intervalMonths,
+            }) ?? rollingScheduledAmount
+          )
         : toNumber(plan.amount);
       const cashAccount = plan.cashAccountId
         ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
@@ -200,21 +319,37 @@ export async function POST(req: Request) {
       if (!targetAccount) {
         return NextResponse.json({ ok: false, error: "贷款账户不存在" }, { status: 404 });
       }
-      const interestCategory = await prisma.category.findFirst({
-        where: { householdId, type: "expense", name: "利息支出" },
-        select: { id: true, name: true },
+      const prepaymentRows = await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          deletedAt: null,
+          source: "debt_prepay_out",
+          type: TransactionType.transfer,
+          toAccountId: plan.accountId,
+          date: { gte: firstRunDate, lte: finalRunDate },
+        },
+        orderBy: [{ date: "asc" }, { id: "asc" }],
+        select: { date: true, amount: true, debtPrincipalAmount: true },
       });
+      let nextPrepaymentIndex = 0;
+      const applyPrepaymentsBefore = (currentRunDate: Date) => {
+        while (
+          nextPrepaymentIndex < prepaymentRows.length &&
+          prepaymentRows[nextPrepaymentIndex]!.date < currentRunDate
+        ) {
+          rollingExactRemainingPrincipal = Math.max(
+            0,
+            rollingExactRemainingPrincipal - Math.abs(toNumber(prepaymentRows[nextPrepaymentIndex]!.debtPrincipalAmount ?? prepaymentRows[nextPrepaymentIndex]!.amount)),
+          );
+          rollingRemainingPrincipal = Math.max(
+            0,
+            Math.round((rollingRemainingPrincipal - Math.abs(toNumber(prepaymentRows[nextPrepaymentIndex]!.debtPrincipalAmount ?? prepaymentRows[nextPrepaymentIndex]!.amount))) * 100) / 100,
+          );
+          nextPrepaymentIndex += 1;
+        }
+      };
 
-      const generatedDates: Date[] = [];
-      let runDate = firstRunDate;
-      let guard = 0;
-      while (runDate <= finalRunDate && generatedDates.length < remainingRunsAtStart) {
-        generatedDates.push(runDate);
-        runDate = calcNextScheduledRunDate(runDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, false);
-        guard += 1;
-        if (guard > 1200) throw new Error("计划周期异常，已停止重算以避免无限循环");
-      }
-      if (generatedDates.length === 0) {
+      if (historicalRuns.length === 0) {
         return NextResponse.json({ ok: false, error: "没有可重算的历史期次" }, { status: 400 });
       }
 
@@ -223,14 +358,20 @@ export async function POST(req: Request) {
           where: {
             householdId,
             regularInvestPlanId: plan.id,
-            source: "scheduled_task",
+            source: AUTO_LOAN_REPAYMENT_SOURCE,
+            OR: [
+              { type: TransactionType.transfer, toAccountId: plan.accountId },
+              { type: TransactionType.expense },
+            ],
             deletedAt: null,
             date: { gte: firstRunDate, lte: finalRunDate },
           },
           data: { deletedAt: new Date() },
         });
 
-        for (const [index, currentRunDate] of generatedDates.entries()) {
+        for (const [index, currentRun] of historicalRuns.entries()) {
+          const currentRunDate = currentRun.date;
+          applyPrepaymentsBefore(currentRunDate);
           const runDateKey = formatDateUtc(currentRunDate);
           const remainingRunsForThisRun = Math.max(1, remainingRunsAtStart - index);
           const parts = calcLoanRunPartsWithRateAdjustments({
@@ -239,14 +380,30 @@ export async function POST(req: Request) {
             adjustments,
             intervalMonths,
             scheduledAmount: rollingScheduledAmount,
-            remainingPrincipal: rollingRemainingPrincipal,
+            scheduledAmountExact: rollingScheduledAmountExact,
+            remainingPrincipal: rollingExactRemainingPrincipal,
             remainingRuns: remainingRunsForThisRun,
             previousRunDate: formatDateUtc(rollingPreviousRunDate),
             runDate: runDateKey,
           });
           rollingScheduledAmount = parts.scheduledAmount;
+          rollingScheduledAmountExact = parts.scheduledAmountExact ?? rollingScheduledAmountExact;
+          if (currentRun.source === LOCKED_LOAN_REPAYMENT_SOURCE) {
+            const lockedPrincipal = toNumber(currentRun.debtPrincipalAmount ?? currentRun.amount);
+            rollingExactRemainingPrincipal = Math.max(
+              0,
+              rollingExactRemainingPrincipal - Math.abs(lockedPrincipal),
+            );
+            rollingRemainingPrincipal = Math.max(
+              0,
+              Math.round((rollingRemainingPrincipal - Math.abs(lockedPrincipal)) * 100) / 100,
+            );
+            rollingPreviousRunDate = currentRunDate;
+            continue;
+          }
+          if (currentRun.source !== AUTO_LOAN_REPAYMENT_SOURCE) continue;
 
-          if (parts.principal > 0) {
+          if (parts.principal > 0 || parts.interest > 0) {
             await tx.txRecord.create({
               data: {
                 householdId,
@@ -256,30 +413,17 @@ export async function POST(req: Request) {
                 accountName: cashAccount.name,
                 toAccountId: targetAccount.id,
                 toAccountName: targetAccount.name,
-                amount: -parts.principal,
-                source: "scheduled_task",
+                amount: -roundLoanMoney(parts.principal + parts.interest),
+                debtPrincipalAmount: Math.abs(parts.principal),
+                debtInterestAmount: Math.abs(parts.interest),
+                debtFeeAmount: 0,
+                source: AUTO_LOAN_REPAYMENT_SOURCE,
                 regularInvestPlanId: plan.id,
-                note: "计划任务：还贷款：本金",
+                note: "计划任务：还贷款",
               },
             });
           }
-          if (parts.interest > 0) {
-            await tx.txRecord.create({
-              data: {
-                householdId,
-                date: currentRunDate,
-                type: TransactionType.expense,
-                accountId: cashAccount.id,
-                accountName: cashAccount.name,
-                categoryId: interestCategory?.id ?? null,
-                categoryName: interestCategory?.name ?? "利息支出",
-                amount: -parts.interest,
-                source: "scheduled_task",
-                regularInvestPlanId: plan.id,
-                note: "计划任务：还贷款：利息",
-              },
-            });
-          }
+          rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - (parts.principalExact ?? parts.principal));
           rollingRemainingPrincipal = Math.max(0, Math.round((rollingRemainingPrincipal - parts.principal) * 100) / 100);
           rollingPreviousRunDate = currentRunDate;
         }
@@ -288,16 +432,17 @@ export async function POST(req: Request) {
           where: { id: plan.id },
           data: {
             amount: rollingScheduledAmount,
-            executedRuns: executedBefore + generatedDates.length,
-            lastRunDate: generatedDates[generatedDates.length - 1]!,
+            totalRuns: strategy === "reduce_payment" && originalTotalRuns != null ? originalTotalRuns : plan.totalRuns,
+            executedRuns: executedBefore + historicalRuns.length,
+            lastRunDate: historicalRuns[historicalRuns.length - 1]!.date,
             nextRunDate: calcNextScheduledRunDate(
-              generatedDates[generatedDates.length - 1]!,
+              historicalRuns[historicalRuns.length - 1]!.date,
               plan.intervalUnit,
               plan.intervalValue,
               plan.executionDay,
               false,
             ),
-            memo: encodeScheduledTaskMemo({ ...memo, loanRateAdjustments: [] }),
+            memo: encodeScheduledTaskMemo({ ...memo, originalTotalRuns: originalTotalRuns ?? memo.originalTotalRuns ?? null, loanRateAdjustments: [] }),
           },
         });
       });
@@ -309,9 +454,10 @@ export async function POST(req: Request) {
         ok: true,
         data: {
           status: "historical_recalculated",
-          regeneratedCount: generatedDates.length,
+          regeneratedCount: historicalRuns.filter((row) => row.source === AUTO_LOAN_REPAYMENT_SOURCE).length,
+          lockedCount: historicalRuns.filter((row) => row.source === LOCKED_LOAN_REPAYMENT_SOURCE).length,
           startDate: formatDateUtc(firstRunDate),
-          endDate: formatDateUtc(generatedDates[generatedDates.length - 1]!),
+          endDate: formatDateUtc(historicalRuns[historicalRuns.length - 1]!.date),
         },
       });
     }
@@ -322,14 +468,15 @@ export async function POST(req: Request) {
         data: {
           status: RegularInvestStatus.completed,
           endDate: new Date(),
-          memo: encodeScheduledTaskMemo({ ...memo, loanRateAdjustments: [] }),
+          memo: encodeScheduledTaskMemo({ ...memo, originalTotalRuns: originalTotalRuns ?? memo.originalTotalRuns ?? null, loanRateAdjustments: [] }),
         },
       });
       revalidateAfterTxChange();
       return NextResponse.json({ ok: true, data: { status: "completed", nextAmount: 0, remainingRuns: 0 } });
     }
 
-    if (!remainingRuns || remainingRuns <= 0) {
+    const availableRemainingRuns = strategy === "reduce_payment" ? (originalRemainingRuns ?? remainingRuns) : remainingRuns;
+    if (!availableRemainingRuns || availableRemainingRuns <= 0) {
       return NextResponse.json({ ok: false, error: "计划剩余期数不足，无法重算" }, { status: 400 });
     }
 
@@ -342,29 +489,37 @@ export async function POST(req: Request) {
     const currentAmount = toNumber(plan.amount);
     const updateData: { amount?: number; totalRuns?: number; nextRunDate: Date; memo: string } = {
       nextRunDate: recalculateStartDate,
-      memo: encodeScheduledTaskMemo({ ...memo, loanRateAdjustments: [] }),
+      memo: encodeScheduledTaskMemo({ ...memo, originalTotalRuns: originalTotalRuns ?? memo.originalTotalRuns ?? null, loanRateAdjustments: [] }),
     };
 
     if (strategy === "reduce_payment") {
+      const fixedTermRemainingRuns = originalRemainingRuns ?? remainingRuns;
+      if (!fixedTermRemainingRuns || fixedTermRemainingRuns <= 0) {
+        return NextResponse.json({ ok: false, error: "原始贷款期限不足，无法按期限不变重算月供" }, { status: 400 });
+      }
       const nextAmount = calcLoanScheduledAmount({
         repaymentMethod: memo.repaymentMethod,
         annualRate: effectiveAnnualRate,
         principal: remainingPrincipal,
-        totalRuns: remainingRuns,
+        totalRuns: fixedTermRemainingRuns,
         intervalMonths,
       });
       if (!nextAmount || nextAmount <= 0) {
         return NextResponse.json({ ok: false, error: "无法重算月供，请检查利率、剩余本金和剩余期数" }, { status: 400 });
       }
       updateData.amount = nextAmount;
+      if (originalTotalRuns != null && originalTotalRuns > executedRuns) {
+        updateData.totalRuns = originalTotalRuns;
+      }
     } else {
+      const termRemainingRuns = remainingRuns ?? 0;
       let simulatedPrincipal = remainingPrincipal;
       let simulatedRuns = 0;
       let runDate = recalculateStartDate;
       if (currentAmount <= 0) {
         return NextResponse.json({ ok: false, error: "当前计划金额不正确，无法按月供不变重算" }, { status: 400 });
       }
-      const maxRuns = Math.min(Math.max(remainingRuns, 1), 600);
+      const maxRuns = Math.min(Math.max(termRemainingRuns, 1), 600);
       while (simulatedRuns < maxRuns && simulatedPrincipal > 0.005) {
         const runDateKey = formatDateUtc(runDate);
         const annualRateForRun = getEffectiveLoanAnnualRate({
@@ -377,13 +532,14 @@ export async function POST(req: Request) {
           annualRate: annualRateForRun,
           intervalMonths,
           scheduledAmount: currentAmount,
+          scheduledAmountExact: currentAmount,
           remainingPrincipal: simulatedPrincipal,
-          remainingRuns: Math.max(1, remainingRuns - simulatedRuns),
+          remainingRuns: Math.max(1, termRemainingRuns - simulatedRuns),
         });
         if (parts.principal <= 0.005) {
           return NextResponse.json({ ok: false, error: "当前月供不足以冲减本金，无法缩短期限" }, { status: 400 });
         }
-        simulatedPrincipal = Math.max(0, Math.round((simulatedPrincipal - parts.principal) * 100) / 100);
+        simulatedPrincipal = Math.max(0, simulatedPrincipal - (parts.principalExact ?? parts.principal));
         simulatedRuns += 1;
         runDate = calcNextScheduledRunDate(runDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, false);
       }

@@ -94,6 +94,7 @@ export function formatCreditCardDisplayName(input: {
   numberMasked?: string | null;
   template?: string | null;
   mode?: CreditCardLabelMode;
+  /** @deprecated Duplicate last-four suppression is now always on for credit cards. */
   suppressDuplicateLast4?: boolean;
 }) {
   const accountName = input.accountName.trim();
@@ -102,7 +103,7 @@ export function formatCreditCardDisplayName(input: {
   const shortInstitutionName = shortInstitutionNameRaw || fullInstitutionName;
   const institutionName = fullInstitutionName || shortInstitutionNameRaw;
   const last4Raw = (input.numberMasked ?? "").trim();
-  const last4 = input.suppressDuplicateLast4 && last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
+  const last4 = last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
   const template = normalizeCreditCardLabelTemplate(input.template, input.mode);
 
   const rendered = template

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
-  FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE,
+  SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
 
@@ -12,10 +11,12 @@ const TIME_ZONE_MODE_KEY = "mmh_time_zone_mode";
 const TIME_ZONE_KEY = "mmh_time_zone";
 const CREDIT_CARD_LABEL_MODE_KEY = "mmh_credit_card_label_mode";
 const CREDIT_CARD_LABEL_TEMPLATE_KEY = "mmh_credit_card_label_template";
+const CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_KEY = "mmh_credit_card_sidebar_label_template";
 const CREDIT_BILL_HIDE_ZERO_KEY = "mmh_credit_hide_zero_bills";
 const CREDIT_BILL_HIDE_SETTLED_KEY = "mmh_credit_hide_settled_bills";
 const CREDIT_BILL_RECENT_CYCLES_KEY = "mmh_credit_recent_cycles";
 const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
+const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USERNAME_KEY = "mmh_username";
 const HOUSEHOLD_KEY = "householdId";
@@ -75,10 +76,15 @@ export async function GET(req: NextRequest) {
     req.cookies.get(CREDIT_CARD_LABEL_TEMPLATE_KEY)?.value,
     creditCardLabelMode,
   );
+  const creditCardSidebarLabelTemplate = normalizeCreditCardLabelTemplate(
+    req.cookies.get(CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_KEY)?.value || SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
+    "short_last4",
+  );
   const creditBillHideZero = normalizeBoolean(req.cookies.get(CREDIT_BILL_HIDE_ZERO_KEY)?.value, false);
   const creditBillHideSettled = normalizeBoolean(req.cookies.get(CREDIT_BILL_HIDE_SETTLED_KEY)?.value, false);
   const creditBillShowRecentCycles = normalizeBoolean(req.cookies.get(CREDIT_BILL_RECENT_CYCLES_KEY)?.value, true);
   const displayLanguage = normalizeDisplayLanguage(req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value);
+  const sidebarHideInitialData = normalizeBoolean(req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value, false);
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -88,10 +94,12 @@ export async function GET(req: NextRequest) {
     timeZone,
     creditCardLabelMode,
     creditCardLabelTemplate,
+    creditCardSidebarLabelTemplate,
     creditBillHideZero,
     creditBillHideSettled,
     creditBillShowRecentCycles,
     displayLanguage,
+    sidebarHideInitialData,
   });
 }
 
@@ -105,10 +113,12 @@ export async function PUT(req: NextRequest) {
     timeZone?: unknown;
     creditCardLabelMode?: unknown;
     creditCardLabelTemplate?: unknown;
+    creditCardSidebarLabelTemplate?: unknown;
     creditBillHideZero?: unknown;
     creditBillHideSettled?: unknown;
     creditBillShowRecentCycles?: unknown;
     displayLanguage?: unknown;
+    sidebarHideInitialData?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -117,10 +127,12 @@ export async function PUT(req: NextRequest) {
   const hasTimeZone = Object.prototype.hasOwnProperty.call(prefs, "timeZone");
   const hasCreditCardLabelMode = Object.prototype.hasOwnProperty.call(prefs, "creditCardLabelMode");
   const hasCreditCardLabelTemplate = Object.prototype.hasOwnProperty.call(prefs, "creditCardLabelTemplate");
+  const hasCreditCardSidebarLabelTemplate = Object.prototype.hasOwnProperty.call(prefs, "creditCardSidebarLabelTemplate");
   const hasCreditBillHideZero = Object.prototype.hasOwnProperty.call(prefs, "creditBillHideZero");
   const hasCreditBillHideSettled = Object.prototype.hasOwnProperty.call(prefs, "creditBillHideSettled");
   const hasCreditBillShowRecentCycles = Object.prototype.hasOwnProperty.call(prefs, "creditBillShowRecentCycles");
   const hasDisplayLanguage = Object.prototype.hasOwnProperty.call(prefs, "displayLanguage");
+  const hasSidebarHideInitialData = Object.prototype.hasOwnProperty.call(prefs, "sidebarHideInitialData");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
@@ -130,6 +142,12 @@ export async function PUT(req: NextRequest) {
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
     hasCreditCardLabelTemplate ? prefs.creditCardLabelTemplate : req.cookies.get(CREDIT_CARD_LABEL_TEMPLATE_KEY)?.value,
     creditCardLabelMode,
+  );
+  const creditCardSidebarLabelTemplate = normalizeCreditCardLabelTemplate(
+    hasCreditCardSidebarLabelTemplate
+      ? prefs.creditCardSidebarLabelTemplate
+      : req.cookies.get(CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_KEY)?.value || SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
+    "short_last4",
   );
   const creditBillHideZero = normalizeBoolean(
     hasCreditBillHideZero ? prefs.creditBillHideZero : req.cookies.get(CREDIT_BILL_HIDE_ZERO_KEY)?.value,
@@ -146,6 +164,10 @@ export async function PUT(req: NextRequest) {
   const displayLanguage = normalizeDisplayLanguage(
     hasDisplayLanguage ? prefs.displayLanguage : req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value,
   );
+  const sidebarHideInitialData = normalizeBoolean(
+    hasSidebarHideInitialData ? prefs.sidebarHideInitialData : req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value,
+    false,
+  );
   const maxAge = sessionDays * 24 * 60 * 60;
 
   const response = NextResponse.json({
@@ -157,10 +179,12 @@ export async function PUT(req: NextRequest) {
     timeZone,
     creditCardLabelMode,
     creditCardLabelTemplate,
+    creditCardSidebarLabelTemplate,
     creditBillHideZero,
     creditBillHideSettled,
     creditBillShowRecentCycles,
     displayLanguage,
+    sidebarHideInitialData,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
@@ -204,6 +228,12 @@ export async function PUT(req: NextRequest) {
     httpOnly: false,
     sameSite: "lax",
   });
+  response.cookies.set(CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_KEY, creditCardSidebarLabelTemplate, {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
   response.cookies.set(CREDIT_BILL_HIDE_ZERO_KEY, creditBillHideZero ? "1" : "0", {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
@@ -223,6 +253,12 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(DISPLAY_LANGUAGE_KEY, displayLanguage, {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(SIDEBAR_HIDE_INITIAL_DATA_KEY, String(sidebarHideInitialData), {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

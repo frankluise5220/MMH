@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
@@ -167,7 +167,9 @@ export function AIPanel({
   initialCollapsed?: boolean;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const modelsLoadedRef = useRef(false);
 
   /* State */
   const [mounted, setMounted] = useState(false);
@@ -210,19 +212,41 @@ export function AIPanel({
 
   useEffect(() => {
     if (!mounted) return;
-    reloadModels();
-  }, [mounted]);
+    if (!enabled) return;
+    if (pathname.startsWith("/settings") && collapsed) {
+      setModelsLoading(false);
+      return;
+    }
+    const run = () => {
+      modelsLoadedRef.current = true;
+      reloadModels();
+    };
+    const requestIdle = window.requestIdleCallback;
+    if (requestIdle) {
+      const idleId = requestIdle(run, { timeout: 2500 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(run, 800);
+    return () => window.clearTimeout(timer);
+  }, [mounted, enabled, pathname, collapsed]);
 
   useEffect(() => {
     if (!mounted) return;
-    function onFocus() { reloadModels(); }
+    function onFocus() {
+      if (pathname.startsWith("/settings") && collapsed) return;
+      reloadModels();
+    }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [mounted]);
+  }, [mounted, pathname, collapsed]);
 
   function setCollapsedPersist(next: boolean) {
     setCollapsedState(next);
     setAiPanelCollapsedPreference(next);
+    if (!next && !modelsLoadedRef.current) {
+      modelsLoadedRef.current = true;
+      reloadModels();
+    }
   }
 
   /* ---- Models ---- */
@@ -736,7 +760,7 @@ export function AIPanel({
         </button>
         <div className="mt-8 flex flex-col gap-4 items-center text-foreground/20">
           <Sparkles size={18} />
-          <div className="text-[10px] font-bold tracking-widest" style={{ writingMode: "vertical-rl" }}>智能助手</div>
+          <div className="text-[10px] font-bold tracking-widest" style={{ writingMode: "vertical-rl" }}>记账助手</div>
         </div>
       </aside>
     );
@@ -750,35 +774,33 @@ export function AIPanel({
     <aside className="w-80 ai-panel-glass shrink-0 flex flex-col h-screen overflow-hidden transition-all duration-300 relative border-l border-foreground/5">
 
       {/* 头部：标题 + 模型选择 + 操作按钮 */}
-      <div className="shrink-0 px-4 pt-4 pb-3 border-b border-foreground/5">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-foreground rounded-xl flex items-center justify-center shadow-lg shadow-foreground/10 text-accent-clay">
-              <Sparkles size={16} />
+      <div className="shrink-0 border-b border-slate-200/70 bg-white/70 px-3 py-3 backdrop-blur">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h5 className="truncate text-sm font-semibold text-slate-900">记账助手</h5>
+              <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">AI</span>
             </div>
-            <div>
-              <h5 className="font-heading text-base text-foreground leading-tight">记账助手</h5>
-              <p className="text-[9px] font-bold text-foreground/30 tracking-wider">解析 · 导入 · 查询 · 修改</p>
-            </div>
+            <p className="mt-0.5 text-[10px] font-medium text-slate-400">解析 · 导入 · 查询 · 修改</p>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={() => { setMessages([{ role: "assistant", text: "粘贴账单文本或输入指令，我会帮你解析、导入、查询或修改记录。" }]); }}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-foreground/5 transition-all"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
               title="新对话"
             >
               <Plus size={16} />
             </button>
             <button
               onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-foreground/5 transition-all"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
               title="API 配置"
             >
               <Settings size={16} />
             </button>
             <button
               onClick={() => setCollapsedPersist(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
               title="收起记账助手"
             >
               <PanelRightClose size={18} />
@@ -791,15 +813,15 @@ export function AIPanel({
           {modelNames.length > 0 ? (
             <button
               onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-              className="w-full flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-surface-white/70 border border-foreground/5 text-[11px] text-foreground/60 hover:bg-surface-white transition-all shadow-sm"
+              className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
             >
               <span className="font-bold truncate">{activeModelDisplay}</span>
-              <ChevronDown size={14} className="text-foreground/30 shrink-0" />
+              <ChevronDown size={14} className="shrink-0 text-slate-400" />
             </button>
           ) : (
             <button
               onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
-              className="w-full flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-surface-white/70 border border-foreground/5 text-[11px] text-foreground/40 hover:bg-surface-white transition-all shadow-sm"
+              className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm transition-colors hover:bg-slate-50"
             >
               <span>{modelsLoading ? "加载中…" : "未配置模型，点击设置"}</span>
               <Settings size={12} className="shrink-0" />
@@ -1347,9 +1369,9 @@ export function AIPanel({
             type="button"
             onClick={() => router.push("/settings/email")}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold text-foreground/30 hover:text-foreground/60 hover:bg-foreground/5 transition-all"
-            title="邮箱导入账单"
+            title="打开邮箱导入账单"
           >
-            <Mail size={12} /> 邮箱账单
+            <Mail size={12} /> 邮箱导入
           </button>
         </div>
       </div>

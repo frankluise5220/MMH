@@ -11,6 +11,7 @@ import {
 } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
+import { useI18n } from "@/lib/i18n";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 
@@ -126,6 +127,14 @@ export function AdvancedDataTable<T>({
   columnVisibilityTriggerId,
   summaryRow,
 }: AdvancedDataTableProps<T>) {
+  const { t } = useI18n();
+  const tf = (key: string, values: Record<string, string | number>) => {
+    let text: string = t(key);
+    for (const [name, value] of Object.entries(values)) {
+      text = text.replaceAll(`{${name}}`, String(value));
+    }
+    return text;
+  };
   const viewportRef = useRef<HTMLDivElement>(null);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -379,7 +388,7 @@ export function AdvancedDataTable<T>({
               toolbarLeftContent
             ) : (
               <>
-                {selectable ? <span>已选 {selectedCount}</span> : null}
+                {selectable ? <span>{tf("table.selectedCount", { count: selectedCount })}</span> : null}
                 {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
                 {hasAnyFilters ? (
                   <button
@@ -390,7 +399,7 @@ export function AdvancedDataTable<T>({
                     }}
                     className="text-xs text-blue-600 hover:text-blue-700"
                   >
-                    清空筛选
+                    {t("table.clearFilters")}
                   </button>
                 ) : null}
                 {selectedCount > 0 ? batchActions.map((action) => (
@@ -406,12 +415,12 @@ export function AdvancedDataTable<T>({
             {toolbarMode === "custom" ? toolbarRightContent : null}
             {showColumnVisibilityButton ? (
               <div ref={columnMenuRef} className="relative">
-                <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title="列设置">
+                <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title={t("table.columnSettings")}>
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                 </button>
                 {menuOpen ? (
                   <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
-                    <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">显示列</div>
+                    <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
                     <div className="max-h-56 space-y-1 overflow-y-auto">
                       {columns.map((column) => (
                         <label key={column.key} className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${column.hideable ? "cursor-pointer text-slate-700 hover:bg-slate-50" : "text-slate-400"}`}>
@@ -445,7 +454,7 @@ export function AdvancedDataTable<T>({
             <tr>
               {selectable ? (
                 <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
-                  <input type="checkbox" checked={allSelected} onChange={(event) => toggleAllRows(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label="选择全部" />
+                  <input type="checkbox" checked={allSelected} onChange={(event) => toggleAllRows(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectAll")} />
                 </th>
               ) : null}
               {visibleColumns.map((column) => (
@@ -495,7 +504,7 @@ export function AdvancedDataTable<T>({
                   ) : (
                     <span className="block truncate text-center">{column.label}</span>
                   )}
-                  <span role="separator" aria-orientation="vertical" onMouseDown={(event) => beginResize(event, column)} className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40" title="拖动调整列宽" />
+                  <span role="separator" aria-orientation="vertical" onMouseDown={(event) => beginResize(event, column)} className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40" title={t("table.resizeColumn")} />
                 </th>
               ))}
             </tr>
@@ -512,7 +521,7 @@ export function AdvancedDataTable<T>({
                 >
                   {selectable ? (
                     <td className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
-                      <input type="checkbox" checked={effectiveSelectedKeys.has(key)} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label="选择行" />
+                      <input type="checkbox" checked={effectiveSelectedKeys.has(key)} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
                     </td>
                   ) : null}
                   {visibleColumns.map((column) => (
@@ -525,7 +534,7 @@ export function AdvancedDataTable<T>({
             }) : (
               <tr>
                 <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={(selectable ? 1 : 0) + visibleColumns.length || 1}>
-                  {emptyText}
+                  {emptyText === "暂无数据" ? t("table.empty") : emptyText}
                 </td>
               </tr>
             )}

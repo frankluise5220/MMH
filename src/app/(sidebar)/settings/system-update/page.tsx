@@ -390,6 +390,49 @@ export default function SystemUpdatePage() {
     : isLatest
       ? "已是最新版本"
       : "未确认";
+  const updateActionPanel = !updating && !updateDone && versionInfo?.ok ? (
+    <div className="border-t border-slate-100 pt-3">
+      {needsUpdate && (!dockerManaged || versionInfo.updaterEnabled) ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
+              <Download className="h-4 w-4 shrink-0" />
+              发现新版本
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              {dockerManaged ? "将同步部署文件、拉取应用镜像并重启服务。" : `将更新到 ${versionInfo.remoteCommit}`}
+            </div>
+          </div>
+          <button
+            onClick={startUpdate}
+            className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
+          >
+            更新
+          </button>
+        </div>
+      ) : isLatest ? (
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          当前已是最新版本
+        </div>
+      ) : dockerManaged ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          当前为 Docker 部署，但未启用宿主机更新执行器。请在宿主机项目目录运行
+          <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
+            git pull
+            <br />
+            sudo docker compose pull app
+            <br />
+            sudo docker compose up -d
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          暂时无法确认远端版本，请点击上方刷新。
+        </div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-4">
@@ -480,6 +523,8 @@ export default function SystemUpdatePage() {
                 GitHub 查询失败，已改用镜像源版本判断。
               </div>
             ) : null}
+
+            {updateActionPanel}
 
             {dockerManaged && versionInfo.imageSourceConfig ? (
               <div className="border-t border-slate-100 pt-3">
@@ -587,48 +632,6 @@ export default function SystemUpdatePage() {
           <div className="text-xs text-red-600">获取版本信息失败</div>
         )}
       </section>
-
-      {!updating && !updateDone && versionInfo?.ok ? (
-        <section className="rounded-lg border border-slate-200 bg-white p-4">
-          {needsUpdate && (!dockerManaged || versionInfo.updaterEnabled) ? (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
-                  <Download className="h-4 w-4 shrink-0" />
-                  发现新版本
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  {dockerManaged ? "将同步部署文件、拉取应用镜像并重启服务。" : `将更新到 ${versionInfo.remoteCommit}`}
-                </div>
-              </div>
-              <button
-                onClick={startUpdate}
-                className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
-              >
-                更新
-              </button>
-            </div>
-          ) : isLatest ? (
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-700">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              当前已是最新版本
-            </div>
-          ) : dockerManaged ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              当前为 Docker 部署，但未启用宿主机更新执行器。请在宿主机项目目录运行
-              <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
-                git pull
-                <br />
-                sudo docker compose pull app
-                <br />
-                sudo docker compose up -d
-              </div>
-            </div>
-          ) : (
-            <div className="text-sm text-amber-700">暂时无法确认远端版本，请点击上方刷新。</div>
-          )}
-        </section>
-      ) : null}
 
       {(updating || updateDone) && steps.length > 0 ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">

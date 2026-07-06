@@ -10,6 +10,7 @@ export type ScheduledTaskPayload = {
   mortgageLprDiscount?: number | null;
   repaymentMethod?: string | null;
   repaymentIntervalMonths?: number | null;
+  originalTotalRuns?: number | null;
   loanRateAdjustments?: Array<{
     effectiveDate: string;
     annualRate: number;
@@ -68,6 +69,9 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
         mortgageLprDiscount,
         repaymentMethod: typeof parsed.repaymentMethod === "string" ? parsed.repaymentMethod : null,
         repaymentIntervalMonths: typeof parsed.repaymentIntervalMonths === "number" && Number.isFinite(parsed.repaymentIntervalMonths) ? parsed.repaymentIntervalMonths : null,
+        originalTotalRuns: typeof parsed.originalTotalRuns === "number" && Number.isFinite(parsed.originalTotalRuns) && parsed.originalTotalRuns > 0
+          ? Math.floor(parsed.originalTotalRuns)
+          : null,
         loanRateAdjustments: Array.isArray(parsed.loanRateAdjustments)
           ? parsed.loanRateAdjustments
               .map((item) => ({

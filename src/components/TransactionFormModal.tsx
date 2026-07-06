@@ -1,12 +1,13 @@
 ﻿"use client";
 
-import { ArrowLeftRight, ArrowRight, ChevronDown, Paperclip, Plus, Repeat } from "lucide-react";
+import { ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
+import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
@@ -44,6 +45,7 @@ type AiPrefillItem = {
 type OpenFromAiDetail = {
   requestId: string;
   item: AiPrefillItem;
+  source?: "launcher";
 };
 
 function normalizeYmd(value: string | undefined) {
@@ -147,9 +149,7 @@ export function TransactionFormModal({
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
   const [localTransferAccountSSOpts, setLocalTransferAccountSSOpts] = useState(transferAccountSSOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
-  const [entryMenuOpen, setEntryMenuOpen] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const triggerWrapRef = useRef<HTMLDivElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
 
   function mergeSmartSelectOptions(base?: SmartSelectOption[], extra?: SmartSelectOption[]) {
@@ -212,25 +212,6 @@ export function TransactionFormModal({
   useEffect(() => {
     setLocalNestedFieldData(nestedFieldData);
   }, [nestedFieldData]);
-
-  useEffect(() => {
-    if (!entryMenuOpen) return;
-    function handlePointerDown(event: MouseEvent) {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (triggerWrapRef.current?.contains(target)) return;
-      setEntryMenuOpen(false);
-    }
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setEntryMenuOpen(false);
-    }
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
-    return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
-    };
-  }, [entryMenuOpen]);
 
   useEffect(() => {
     if (accountSSOptions) {
@@ -373,10 +354,6 @@ export function TransactionFormModal({
     visibleOptionIds: transferVisibleOptionIds,
   } = useAccountSSFilter(localTransferAccountSSOpts, ownerFilter);
 
-  const mergedAccountSelectOptions = useMemo(
-    () => mergeSmartSelectOptions(localAccountSSOpts, accountList),
-    [localAccountSSOpts, accountList],
-  );
   const recentAccountIds = useRecentAccountIds();
   const displayTransferOptions = useMemo(() => {
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
@@ -474,6 +451,7 @@ export function TransactionFormModal({
 
       setRequestId(detail.requestId);
       setOpen(true);
+      setIsFromButton(detail.source === "launcher");
       setTxType(mappedType);
 
       const dateStr = normalizeYmd(item.date) || today;
@@ -709,90 +687,22 @@ export function TransactionFormModal({
   return (
     <>
       {!hideTrigger ? (
-        <div ref={triggerWrapRef} className="relative inline-flex">
-          <div className="inline-flex h-8 items-stretch overflow-hidden rounded-full bg-blue-600 text-white shadow-sm ring-1 ring-blue-600/90">
-            <button
-              type="button"
-              onClick={() => {
-                setEntryMenuOpen(false);
-                setOpen(true);
-                setIsFromButton(true);
-                resetDraft();
-              }}
-              className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10"
-            >
-              <Plus className="w-4 h-4" />
-              记账
-            </button>
-            <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
-            <button
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded={entryMenuOpen}
-              onClick={() => setEntryMenuOpen((prev) => !prev)}
-              className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
-              title="更多记账入口"
-            >
-              <ChevronDown className="w-4 h-4 opacity-90" />
-            </button>
-          </div>
-          {entryMenuOpen ? (
-            <div className="absolute right-0 top-9 z-20 min-w-[180px] overflow-hidden rounded-[12px] border border-slate-200 bg-white py-1 shadow-[0_12px_32px_rgba(15,23,42,0.16)]">
-              <button
-                type="button"
-                onClick={() => {
-                  setEntryMenuOpen(false);
-                  window.dispatchEvent(new CustomEvent("mmh:investment:create", {
-                    detail: { requestId: `create-${Date.now()}`, defaultAccountId, defaultCashAccountId: defaultAccountId ?? "" },
-                  }));
-                }}
-                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-              >
-                开放式基金 / 货币基金
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEntryMenuOpen(false);
-                  window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
-                    detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
-                  }));
-                }}
-                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-              >
-                银行理财
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEntryMenuOpen(false);
-                  window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
-                    detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: defaultAccountId ?? "" },
-                  }));
-                }}
-                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-              >
-                活期 / 定期存款
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEntryMenuOpen(false);
-                  window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
-                    detail: {
-                      requestId: `create-${Date.now()}`,
-                      defaultCashAccountId: defaultAccountId ?? "",
-                      defaultOwnerGroupId: "",
-                    },
-                  }));
-                }}
-                className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-              >
-                保险
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <UnifiedEntryLauncher
+          defaultAction="transaction"
+          actions={[
+            { key: "transaction", label: "记账" },
+            { key: "investment", label: "开放式基金 / 货币基金", disabled: !showInvestment },
+            { key: "wealth", label: "银行理财" },
+            { key: "deposit-buy", label: "存款存入" },
+            { key: "insurance", label: "保险" },
+          ]}
+          context={{
+            defaultAccountId: defaultAccountId ?? "",
+            defaultCashAccountId: defaultAccountId ?? "",
+            defaultDepositAccountId: defaultAccountId ?? "",
+            defaultInsuranceAccountId: defaultAccountId ?? "",
+          }}
+        />
       ) : null}
 
       {open ? createPortal(
@@ -986,7 +896,17 @@ export function TransactionFormModal({
                       <div className="form-label">类别</div>
                       <SmartSelect mode="single" value={categoryId} onChange={setCategoryId}
                         options={categorySSOptions} placeholder="未分类"
-                        onCreateClick={() => setCategoryNestedOpen(true)} />
+                        onCreateClick={() => setCategoryNestedOpen(true)}
+                        behavior={{
+                          hierarchy: true,
+                          search: true,
+                          initialCollapsedAll: true,
+                          accordionGroups: true,
+                          groupSelectOnDoubleClick: true,
+                          minDropdownWidth: 360,
+                          dropdownMaxHeight: 360,
+                        }}
+                      />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">标签</div>

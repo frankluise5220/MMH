@@ -150,6 +150,7 @@ export async function POST(req: NextRequest) {
     // 为 insurance_premium 解析目标账户
     let effectiveAccountId = accountId;
     let effectiveAccountName: string | null = null;
+    let insuranceProductName: string | null = null;
     if (isInsuranceTask && insuranceProductId && !accountId) {
       const product = await prisma.insuranceProduct.findFirst({
         where: { id: insuranceProductId, householdId },
@@ -158,6 +159,13 @@ export async function POST(req: NextRequest) {
       if (!product) return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 400 });
       effectiveAccountId = product.accountId;
       effectiveAccountName = product.Account.name;
+      insuranceProductName = product.name;
+    } else if (isInsuranceTask && insuranceProductId) {
+      const product = await prisma.insuranceProduct.findFirst({
+        where: { id: insuranceProductId, householdId },
+        select: { name: true },
+      });
+      insuranceProductName = product?.name ?? null;
     }
 
     const amountNum = parseFloat(amount);
@@ -180,6 +188,7 @@ export async function POST(req: NextRequest) {
 
     const taskTitle =
       fundName ||
+      (isInsuranceTask && insuranceProductName) ||
       (isFundTask
         ? fundCode
         : scheduledTaskType === "transfer" && cashAcc
@@ -219,6 +228,9 @@ export async function POST(req: NextRequest) {
           cashAccountName: cashAcc?.name || null,
           fundCode: isFundTask ? fundCode : scheduledTaskType,
           fundName: taskTitle,
+          taskType: scheduledTaskType,
+          targetName: taskTitle,
+          insuranceProductName: isInsuranceTask ? insuranceProductName ?? taskTitle : null,
           fundProductType: isFundTask ? (fundProductType || targetAcc.investProductType || null) : null,
           amount: amountNum,
           intervalUnit: intervalUnitValue,
@@ -373,6 +385,7 @@ export async function PUT(req: NextRequest) {
     const existingTask = decodeScheduledTaskMemo(existing.memo);
     const nextTaskType = normalizeScheduledTaskType(taskType || existingTask.type);
     const isFundTask = nextTaskType === "fund_regular_invest";
+    const isInsuranceTask = nextTaskType === "insurance_premium";
     const isLoanTask = nextTaskType === "loan_repayment";
     const nextAnnualRate =
       annualRate !== undefined ? parseOptionalPositiveNumber(annualRate) : existingTask.annualRate ?? null;
@@ -397,6 +410,15 @@ export async function PUT(req: NextRequest) {
       updateData.accountId = accountId;
       const fundAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true } });
       updateData.accountName = fundAcc?.name || null;
+    }
+    let nextInsuranceProductName: string | null = existing.insuranceProductName ?? null;
+    const effectiveInsuranceProductId = insuranceProductId || existingTask.insuranceProductId || null;
+    if (isInsuranceTask && effectiveInsuranceProductId) {
+      const product = await prisma.insuranceProduct.findFirst({
+        where: { id: effectiveInsuranceProductId, householdId },
+        select: { name: true },
+      });
+      nextInsuranceProductName = product?.name ?? nextInsuranceProductName;
     }
     const parsedStartDate = startDate != null ? parseDateOnlyUtc(startDate) : null;
     if (startDate != null && !parsedStartDate) {
@@ -440,6 +462,12 @@ export async function PUT(req: NextRequest) {
     if (parsedStartDate) updateData.startDate = nextStoredStartDate;
     if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
     if (fundName != null) updateData.fundName = fundName;
+    updateData.taskType = nextTaskType;
+    updateData.targetName =
+      isInsuranceTask
+        ? nextInsuranceProductName ?? fundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
+        : fundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType);
+    updateData.insuranceProductName = isInsuranceTask ? nextInsuranceProductName ?? updateData.targetName : null;
     if (amount != null) updateData.amount = parseFloat(amount);
     if (intervalUnit != null || intervalValue != null) {
       updateData.intervalUnit = effectiveIntervalUnit;
@@ -489,10 +517,10 @@ export async function PUT(req: NextRequest) {
     if (skipPendingPreceding !== undefined) (updateData as any).skipPendingPreceding = skipPendingPreceding;
     updateData.memo = encodeScheduledTaskMemo({
       type: nextTaskType,
-      title: fundName || existing.fundName || scheduledTaskTypeLabel(nextTaskType),
+      title: updateData.targetName,
       fromAccountId: cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
       toAccountId: accountId || existing.accountId,
-      insuranceProductId: insuranceProductId || existingTask.insuranceProductId || null,
+      insuranceProductId: effectiveInsuranceProductId,
       annualRate: isLoanTask ? nextAnnualRate : null,
       repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
       repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,

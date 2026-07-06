@@ -64,6 +64,14 @@ export function getCachedSettingsBootstrap() {
   return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
 }
 
+async function getSharedSettingsBootstrap(options?: { force?: boolean }) {
+  if (options?.force) return null;
+  const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
+  if (entry?.value) return entry.value;
+  if (entry?.promise) return entry.promise;
+  return null;
+}
+
 export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
   const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
@@ -96,18 +104,20 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
   return promise;
 }
 
+export function warmSettingsBootstrap(options?: { force?: boolean }) {
+  void fetchSettingsBootstrap(options).catch(() => null);
+}
+
 export async function fetchSettingsAccountData(options?: { force?: boolean }) {
-  if (!options?.force) {
-    const bootstrap = getCachedSettingsBootstrap();
-    if (bootstrap) {
-      return {
-        accounts: bootstrap.accounts,
-        groups: bootstrap.groups,
-        institutions: bootstrap.institutions,
-        counterparties: bootstrap.counterparties,
-        users: bootstrap.users,
-      };
-    }
+  const bootstrap = await getSharedSettingsBootstrap(options);
+  if (bootstrap) {
+    return {
+      accounts: bootstrap.accounts,
+      groups: bootstrap.groups,
+      institutions: bootstrap.institutions,
+      counterparties: bootstrap.counterparties,
+      users: bootstrap.users,
+    };
   }
   const entry = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
@@ -154,18 +164,14 @@ export function getCachedSettingsCategories() {
 }
 
 export async function fetchSettingsCategories(options?: { force?: boolean }) {
-  if (!options?.force) {
-    const bootstrap = getCachedSettingsBootstrap();
-    if (bootstrap) return bootstrap.categories;
-  }
+  const bootstrap = await getSharedSettingsBootstrap(options);
+  if (bootstrap) return bootstrap.categories;
   const entry = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
   if (!options?.force && entry?.promise) return entry.promise;
 
-  const promise = fetch("/api/v1/category")
-    .then((res) => res.json())
+  const promise = fetchSettingsBootstrap(options)
     .then((data) => {
-      if (!data?.ok) throw new Error(data?.error || "读取分类失败");
       const value = data.categories || [];
       setCacheValue(CATEGORIES_KEY, value);
       return value as SettingsCategory[];
@@ -197,14 +203,14 @@ export function getCachedSettingsTags() {
 }
 
 export async function fetchSettingsTags(options?: { force?: boolean }) {
+  const bootstrap = await getSharedSettingsBootstrap(options);
+  if (bootstrap) return bootstrap.tags;
   const entry = cache.get(TAGS_KEY) as CacheEntry<SettingsTag[]> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
   if (!options?.force && entry?.promise) return entry.promise;
 
-  const promise = fetch("/api/v1/tags")
-    .then((res) => res.json())
+  const promise = fetchSettingsBootstrap(options)
     .then((data) => {
-      if (!data?.ok) throw new Error(data?.error || "读取标签失败");
       const value = data.tags || [];
       cache.set(TAGS_KEY, { value, updatedAt: Date.now() });
       return value as SettingsTag[];

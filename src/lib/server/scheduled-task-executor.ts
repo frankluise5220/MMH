@@ -2,7 +2,12 @@ import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type Account
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
-import { calcLoanRunPartsWithRateAdjustments, calcLoanScheduledAmountForPeriodStart, roundLoanMoney } from "@/lib/loan-repayment";
+import {
+  calcLoanRunPartsWithRateAdjustments,
+  calcLoanScheduledAmountExact,
+  calcLoanScheduledAmountForPeriodStart,
+  roundLoanMoney,
+} from "@/lib/loan-repayment";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel, type ScheduledTaskPayload, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -76,6 +81,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
   task?: ScheduledTaskPayload;
   overrideDate?: Date | null;
   overrideAmount?: number | null;
+  initialLoanPrincipal?: number | null;
   now?: Date;
 }): Promise<NonFundScheduledTaskResult> {
   const { householdId, plan } = params;
@@ -193,7 +199,11 @@ export async function executeNonFundScheduledTaskPlan(params: {
           select: { balance: true },
         })
       : null;
-  let rollingRemainingPrincipal = Math.abs(toNumber(initialDebtAccount?.balance ?? 0));
+  let rollingRemainingPrincipal =
+    task.type === "loan_repayment" && params.initialLoanPrincipal && params.initialLoanPrincipal > 0
+      ? params.initialLoanPrincipal
+      : Math.abs(toNumber(initialDebtAccount?.balance ?? 0));
+  let rollingExactRemainingPrincipal = rollingRemainingPrincipal;
   let rollingPreviousRunDate = latestExistingDate
     ? startOfDayUtc(latestExistingDate)
     : plan.lastRunDate
@@ -211,6 +221,17 @@ export async function executeNonFundScheduledTaskPlan(params: {
         periodStartDate: formatDateUtc(rollingPreviousRunDate),
       })
     : amountNum;
+  let rollingScheduledAmountExact = task.type === "loan_repayment"
+    ? (
+        calcLoanScheduledAmountExact({
+          repaymentMethod: task.repaymentMethod,
+          annualRate: task.annualRate,
+          principal: rollingExactRemainingPrincipal,
+          totalRuns: plan.totalRuns ? Math.max(1, plan.totalRuns - plan.executedRuns) : 1,
+          intervalMonths: task.repaymentIntervalMonths,
+        }) ?? rollingScheduledAmount
+      )
+    : amountNum;
   const affectedAccountIds = new Set<string>([cashAcc.id, targetAcc.id]);
   await prisma.$transaction(async (tx) => {
     for (const [runIndex, runDate] of datesToProcess.entries()) {
@@ -225,16 +246,19 @@ export async function executeNonFundScheduledTaskPlan(params: {
           adjustments: loanRateAdjustments,
           intervalMonths: task.repaymentIntervalMonths,
           scheduledAmount: rollingScheduledAmount,
-          remainingPrincipal: rollingRemainingPrincipal,
+          scheduledAmountExact: rollingScheduledAmountExact,
+          remainingPrincipal: rollingExactRemainingPrincipal,
           remainingRuns: remainingRunsForThisRun,
           previousRunDate: formatDateUtc(rollingPreviousRunDate),
           runDate: runDateKey,
         });
         rollingScheduledAmount = parts.scheduledAmount;
+        rollingScheduledAmountExact = parts.scheduledAmountExact ?? rollingScheduledAmountExact;
+        rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - (parts.principalExact ?? parts.principal));
         rollingRemainingPrincipal = Math.max(0, roundLoanMoney(rollingRemainingPrincipal - parts.principal));
         rollingPreviousRunDate = runDate;
 
-        if (parts.principal > 0) {
+        if (parts.principal > 0 || parts.interest > 0) {
           await tx.txRecord.create({
             data: {
               householdId,
@@ -244,36 +268,13 @@ export async function executeNonFundScheduledTaskPlan(params: {
               accountName: cashAcc.name,
               toAccountId: targetAcc.id,
               toAccountName: targetAcc.name,
-              amount: -parts.principal,
+              amount: -roundLoanMoney(parts.principal + parts.interest),
+              debtPrincipalAmount: Math.abs(parts.principal),
+              debtInterestAmount: Math.abs(parts.interest),
+              debtFeeAmount: 0,
               source: "scheduled_task",
               regularInvestPlanId: plan.id,
-              note: `${getTaskNote(task.type)}：本金`,
-            },
-          });
-        }
-
-        if (parts.interest > 0) {
-          const interestCategory = await tx.category.findFirst({
-            where: {
-              householdId,
-              type: "expense",
-              name: "利息支出",
-            },
-            select: { id: true, name: true },
-          });
-          await tx.txRecord.create({
-            data: {
-              householdId,
-              type: TransactionType.expense,
-              date: runDate,
-              accountId: cashAcc.id,
-              accountName: cashAcc.name,
-              amount: -parts.interest,
-              categoryId: interestCategory?.id ?? null,
-              categoryName: interestCategory?.name ?? "利息支出",
-              source: "scheduled_task",
-              regularInvestPlanId: plan.id,
-              note: `${getTaskNote(task.type)}：利息`,
+              note: getTaskNote(task.type),
             },
           });
         }
@@ -306,8 +307,9 @@ export async function executeNonFundScheduledTaskPlan(params: {
             toAccountName: targetAcc.name,
             amount: -amountNum,
             fundName: insuranceProduct.name,
-            fundProductType: "wealth",
             fundSubtype: "buy",
+            insuranceAction: "premium",
+            insuranceProductName: insuranceProduct.name,
             source: "insurance",
             insuranceProductId: insuranceProduct.id,
             regularInvestPlanId: plan.id,

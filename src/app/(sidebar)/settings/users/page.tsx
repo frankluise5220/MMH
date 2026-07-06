@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   getAiPanelEnabledPreference,
+  getSessionDaysPreference,
   setAiPanelEnabledPreference,
   setSessionDaysPreference,
 } from "@/lib/client/appPreferences";
@@ -163,24 +164,8 @@ export default function UsersPage() {
 
   useEffect(() => {
     fetchUsers();
-    fetch("/api/v1/settings/app-preferences")
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok && Number.isFinite(Number(d.sessionDays))) {
-          const next = Number(d.sessionDays);
-          setSessionDays(next);
-          setSessionDaysPreference(next);
-        }
-        if (d.ok && typeof d.aiPanelEnabled === "boolean") {
-          setAiPanelEnabled(d.aiPanelEnabled);
-          setAiPanelEnabledPreference(d.aiPanelEnabled);
-        } else {
-          setAiPanelEnabled(getAiPanelEnabledPreference());
-        }
-      })
-      .catch(() => {
-        setAiPanelEnabled(getAiPanelEnabledPreference());
-      });
+    setSessionDays(getSessionDaysPreference());
+    setAiPanelEnabled(getAiPanelEnabledPreference());
   }, []);
 
   async function fetchUsers() {

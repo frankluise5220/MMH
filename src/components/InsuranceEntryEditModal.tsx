@@ -17,8 +17,7 @@ type InsuranceEntryEditValue = {
   coverageAmount: string;
   paymentTermYears: string;
   note: string;
-  fundSubtype: string;
-  fundProductType: string;
+  insuranceAction: "premium" | "refund";
   insuranceProductId: string;
   insuranceProductName: string;
 };
@@ -101,9 +100,11 @@ export function InsuranceEntryEditModal({
           date: currentDraft.date,
           amount: amountValue,
           cashAccountId: currentDraft.cashAccountId,
-          fundSubtype: currentDraft.fundSubtype,
-          fundProductType: currentDraft.fundProductType,
+          fundSubtype: currentDraft.insuranceAction === "refund" ? "redeem" : "buy",
+          fundProductType: null,
           source: "insurance",
+          insuranceAction: currentDraft.insuranceAction,
+          insuranceProductName: currentDraft.insuranceProductName,
           insuranceProductId: currentDraft.insuranceProductId,
           note: currentDraft.note,
           coverageAmount: parseOptionalNumber(currentDraft.coverageAmount),
@@ -129,7 +130,7 @@ export function InsuranceEntryEditModal({
     <div className="app-modal-backdrop z-[1200]">
       <div className="app-modal-panel max-w-xl">
         <div className="modal-header">
-          <div className="text-sm font-semibold text-slate-800">编辑投保记录</div>
+          <div className="text-sm font-semibold text-slate-800">编辑保险续期</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
             关闭
           </button>

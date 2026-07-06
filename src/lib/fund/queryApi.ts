@@ -20,6 +20,16 @@ type NavResult = {
   date: string;
 } | null;
 
+type FundQueryApiConfig = {
+  id: string;
+  code: string;
+  name: string;
+  baseUrl: string;
+  priority: number;
+  isActive: boolean;
+  householdId: string | null;
+};
+
 export type FundIdentityResult = {
   code: string;
   name: string;
@@ -92,6 +102,90 @@ function parseDanjuan(data: any): NavResult {
   };
 }
 
+function findValueByKeys(data: unknown, keys: string[], depth = 0): unknown {
+  if (depth > 8 || data == null || typeof data !== "object") return undefined;
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const found = findValueByKeys(item, keys, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  const record = data as Record<string, unknown>;
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null && String(record[key]).trim() !== "") {
+      return record[key];
+    }
+  }
+  for (const value of Object.values(record)) {
+    const found = findValueByKeys(value, keys, depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function parseNumberValue(value: unknown): number | undefined {
+  const raw = String(value ?? "").replace(/,/g, "").trim();
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function parseDateValue(value: unknown): string | undefined {
+  const raw = String(value ?? "").trim();
+  if (!raw) return undefined;
+  const dashed = raw.match(/\d{4}-\d{1,2}-\d{1,2}/)?.[0];
+  if (dashed) {
+    const [y, m, d] = dashed.split("-").map((part) => part.padStart(2, "0"));
+    return `${y}-${m}-${d}`;
+  }
+  const compact = raw.match(/\d{8}/)?.[0];
+  if (compact) return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
+  return undefined;
+}
+
+// 支付宝/蚂蚁财富接口不同版本字段名不稳定，这里只读取明确的净值字段，不做宽泛数字猜测。
+function parseAlipay(data: any): NavResult {
+  const nav = parseNumberValue(findValueByKeys(data, [
+    "nav",
+    "netValue",
+    "unitNetValue",
+    "fundNetValue",
+    "dailyNetValue",
+    "dwjz",
+  ]));
+  if (!nav) return null;
+
+  const cumNav = parseNumberValue(findValueByKeys(data, [
+    "cumNav",
+    "totalNetValue",
+    "accumulatedNetValue",
+    "accumulativeNetValue",
+    "ljjz",
+  ]));
+  const date = parseDateValue(findValueByKeys(data, [
+    "date",
+    "navDate",
+    "netValueDate",
+    "statisticDate",
+    "jzrq",
+  ]));
+  if (!date) return null;
+  const name = normalizeFundName(findValueByKeys(data, [
+    "name",
+    "fundName",
+    "fundShortName",
+    "shortName",
+  ]));
+
+  return {
+    date,
+    nav,
+    cumNav,
+    name: name ?? undefined,
+  };
+}
+
 function normalizeFundName(name: unknown): string | null {
   const value = String(name ?? "").trim();
   if (!value || value.length < 2) return null;
@@ -159,17 +253,35 @@ const PARSERS: Record<string, (data: any) => NavResult> = {
   eastmoney: parseEastmoney,
   eastmoney_history: parseEastmoneyHistory,
   danjuan: parseDanjuan,
-  // sina and alipay fall through to generic parsers
+  alipay: parseAlipay,
 };
 
 /**
  * 获取所有活跃的查询 API（按优先级排序）
  */
-async function getActiveApis() {
+async function getActiveApis(householdId?: string | null): Promise<FundQueryApiConfig[]> {
   return prisma.fundQueryApi.findMany({
-    where: { isActive: true },
-    orderBy: { priority: "asc" },
+    where: {
+      isActive: true,
+      ...(householdId
+        ? { OR: [{ householdId }, { householdId: null }] }
+        : {}),
+    },
+    orderBy: [
+      { priority: "asc" },
+      { createdAt: "asc" },
+    ],
   });
+}
+
+function moveApiToFront(apis: FundQueryApiConfig[], predicate: (api: FundQueryApiConfig) => boolean) {
+  const selected = apis.find(predicate);
+  if (!selected) return apis;
+  return [selected, ...apis.filter((api) => api.id !== selected.id)];
+}
+
+function isAlipayInstitutionText(text: string) {
+  return /支付宝|蚂蚁|Ant\s*Fortune|Alipay/i.test(text);
 }
 
 /**
@@ -249,23 +361,36 @@ export async function queryFundNav(
   dateStr?: string,
   accountId?: string,
 ): Promise<NavResult> {
+  let account:
+    | {
+        defaultFundQueryApiId: string | null;
+        householdId: string | null;
+        Institution: { name: string; shortName: string | null; type: string | null } | null;
+      }
+    | null = null;
+  if (accountId) {
+    account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: {
+        defaultFundQueryApiId: true,
+        householdId: true,
+        Institution: { select: { name: true, shortName: true, type: true } },
+      },
+    });
+  }
+
   // 获取活跃 API 列表
-  const activeApis = await getActiveApis();
+  const activeApis = await getActiveApis(account?.householdId);
   if (activeApis.length === 0) return null;
 
-  // 如果指定了账户，尝试用该账户的默认 API
+  // 优先级：账户默认 API > 账户机构场景优先 > 全局拖拽优先级
   let orderedApis = activeApis;
-  if (accountId) {
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-      select: { defaultFundQueryApiId: true },
-    });
-    if (account?.defaultFundQueryApiId) {
-      const defaultApi = activeApis.find(a => a.id === account!.defaultFundQueryApiId);
-      if (defaultApi) {
-        // 将默认 API 移到最前面
-        orderedApis = [defaultApi, ...activeApis.filter(a => a.id !== defaultApi.id)];
-      }
+  if (account?.defaultFundQueryApiId) {
+    orderedApis = moveApiToFront(orderedApis, (api) => api.id === account!.defaultFundQueryApiId);
+  } else if (account?.Institution) {
+    const institutionText = `${account.Institution.name} ${account.Institution.shortName ?? ""}`;
+    if (isAlipayInstitutionText(institutionText)) {
+      orderedApis = moveApiToFront(orderedApis, (api) => /alipay|支付宝|蚂蚁/i.test(`${api.code} ${api.name}`));
     }
   }
 

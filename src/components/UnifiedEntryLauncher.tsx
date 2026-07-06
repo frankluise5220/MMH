@@ -10,6 +10,7 @@ type EntryKind =
   | "transfer"
   | "investment"
   | "wealth"
+  | "deposit"
   | "deposit-buy"
   | "deposit-redeem"
   | "insurance"
@@ -32,6 +33,7 @@ type Props = {
     defaultTransferFromAccountId?: string;
     defaultTransferToAccountId?: string;
     defaultDepositAccountId?: string;
+    defaultDepositSubtype?: "buy" | "redeem";
     defaultInsuranceAccountId?: string;
     defaultDebtAccountId?: string;
     defaultDebtInstitutionId?: string;
@@ -52,6 +54,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
         new CustomEvent("mmh:create-transaction:open", {
           detail: {
             requestId,
+            source: "launcher",
             item: { type: "expense" },
             defaultAccountId: context?.defaultAccountId ?? "",
           },
@@ -63,6 +66,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
         new CustomEvent("mmh:create-transaction:open", {
           detail: {
             requestId,
+            source: "launcher",
             item: { type: "advance" },
             defaultAccountId: context?.defaultAccountId ?? "",
           },
@@ -74,6 +78,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
         new CustomEvent("mmh:create-transaction:open", {
           detail: {
             requestId,
+            source: "launcher",
             item: { type: "transfer" },
             defaultAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
             defaultFromAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
@@ -99,6 +104,18 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
           detail: {
             requestId,
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "deposit":
+      window.dispatchEvent(
+        new CustomEvent("mmh:deposit:create", {
+          detail: {
+            requestId,
+            defaultSubtype: context?.defaultDepositSubtype ?? "buy",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultDepositAccountId: context?.defaultDepositAccountId ?? context?.defaultAccountId ?? "",
           },
         }),
       );
@@ -244,7 +261,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
           className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
-          {defaultItem?.label ?? "璁拌处"}
+          {defaultItem?.label ?? "记账"}
         </button>
         <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
         <button
@@ -253,7 +270,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
           className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
-          title="鏇村璁拌处鍏ュ彛"
+          title="更多记账入口"
         >
           <ChevronDown className="h-4 w-4 opacity-90" />
         </button>

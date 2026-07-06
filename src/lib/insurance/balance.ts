@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
+import { isInsuranceRefund } from "@/lib/insurance/transaction";
 
 export async function computeInsuranceAccountDisplayBalances(
   accountIds: string[],
@@ -46,6 +47,7 @@ export async function computeInsuranceAccountDisplayBalances(
       accountId: true,
       toAccountId: true,
       amount: true,
+      insuranceAction: true,
       fundSubtype: true,
       insuranceProductId: true,
     },
@@ -57,9 +59,7 @@ export async function computeInsuranceAccountDisplayBalances(
     const accountId = productAccountIdById.get(productId);
     if (!accountId) continue;
     const amount = Math.abs(toNumber(entry.amount));
-    const delta = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out"
-      ? -amount
-      : amount;
+    const delta = isInsuranceRefund(entry) ? -amount : amount;
     result.set(accountId, (result.get(accountId) ?? 0) + delta);
   }
 

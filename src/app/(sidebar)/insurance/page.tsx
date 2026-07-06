@@ -8,6 +8,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
+import { getInsuranceAction, isInsuranceRefund } from "@/lib/insurance/transaction";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +40,8 @@ type InsuranceRow = {
   entries: Array<{
     id: string;
     date: Date;
+    insuranceAction: string | null;
+    insuranceProductName: string | null;
     fundSubtype: string | null;
     accountName: string | null;
     toAccountName: string | null;
@@ -130,7 +133,8 @@ export default async function InsurancePage() {
 
     const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
     const balance = relatedEntries.reduce((sum, entry) => {
-      return sum + Math.abs(toNumber(entry.amount));
+      const amount = Math.abs(toNumber(entry.amount));
+      return sum + (isInsuranceRefund(entry) ? -amount : amount);
     }, 0);
     const metricMode = getInsuranceMetricMode(
       product.productType ?? null,
@@ -139,8 +143,10 @@ export default async function InsurancePage() {
     );
     const coverageAmount = Number(product.coverageAmount ?? 0);
     const totalPremium = relatedEntries
-      .filter((entry) => entry.fundSubtype !== "redeem")
+      .filter((entry) => !isInsuranceRefund(entry))
       .reduce((sum, entry) => sum + Math.abs(toNumber(entry.amount)), 0);
+    const premiumCount = relatedEntries.filter((entry) => getInsuranceAction(entry) === "premium").length;
+    const refundCount = relatedEntries.filter((entry) => getInsuranceAction(entry) === "refund").length;
 
     return {
       id: product.id,
@@ -182,8 +188,8 @@ export default async function InsurancePage() {
       insuredPersonName: product.InsuredPerson?.name?.trim() || product.InsuredUser?.name?.trim() || "",
       accountId: account.id,
       accountLabel: display.label,
-      buyCount: relatedEntries.filter((entry) => entry.fundSubtype === "buy").length,
-      redeemCount: relatedEntries.filter((entry) => entry.fundSubtype === "redeem").length,
+      buyCount: premiumCount,
+      redeemCount: refundCount,
       entries: relatedEntries,
     };
   }).filter((row) => row.entries.length > 0 || row.statusLabel !== "已失效" || row.coverageAmount !== 0 || row.cashValue !== 0);
@@ -219,7 +225,7 @@ export default async function InsurancePage() {
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">保险</div>
-            <div className="text-xs text-slate-500">按机构与所有人查看保险产品、投保和赎回记录</div>
+            <div className="text-xs text-slate-500">按机构与所有人查看保险产品、续期和回款记录</div>
           </div>
           <TopEntryLauncher defaultAction="insurance" />
         </div>
@@ -230,8 +236,8 @@ export default async function InsurancePage() {
           <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
             <SummaryCard label="保险产品" value={String(rows.length)} />
             <SummaryCard label="金额型保单" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
-            <SummaryCard label="投保记录" value={String(totalBuy)} />
-            <SummaryCard label="赎回记录" value={String(totalRedeem)} />
+            <SummaryCard label="续期记录" value={String(totalBuy)} />
+            <SummaryCard label="回款记录" value={String(totalRedeem)} />
           </div>
         </section>
 
@@ -302,8 +308,8 @@ export default async function InsurancePage() {
                         <span>频率 {row.frequencyLabel}</span>
                         <span>保费 {formatMoney(row.totalPremium)}</span>
                         <span>账户 {row.accountLabel}</span>
-                        <span>投保 {row.buyCount}</span>
-                        <span>赎回 {row.redeemCount}</span>
+                        <span>续期 {row.buyCount}</span>
+                        <span>回款 {row.redeemCount}</span>
                       </div>
                     </div>
                     <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
@@ -331,21 +337,23 @@ export default async function InsurancePage() {
                       </thead>
                       <tbody>
                         {row.entries.length > 0 ? row.entries.map((entry) => {
+                          const action = getInsuranceAction(entry);
+                          const isRefund = action === "refund";
                           const cashLabel =
-                            entry.fundSubtype === "redeem"
+                            isRefund
                               ? (entry.toAccountName ?? "-")
                               : (entry.accountName ?? "-");
-                          const amount = entry.fundSubtype === "redeem"
+                          const amount = isRefund
                             ? Math.abs(toNumber(entry.amount))
                             : toNumber(entry.amount);
-                          const displayAmount = entry.fundSubtype === "redeem" ? amount : -Math.abs(amount);
+                          const displayAmount = isRefund ? amount : -Math.abs(amount);
                           return (
                             <tr key={entry.id} className="hover:bg-slate-50">
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-700 tabular-nums">{entry.date.toISOString().slice(0, 10)}</td>
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-700">
                                 <span className="inline-flex items-center gap-1">
-                                  {entry.fundSubtype === "redeem" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownLeft className="h-3 w-3" />}
-                                  {entry.fundSubtype === "redeem" ? "赎回" : "投保"}
+                                  {isRefund ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownLeft className="h-3 w-3" />}
+                                  {isRefund ? "回款" : "续期"}
                                 </span>
                               </td>
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-600">{cashLabel}</td>

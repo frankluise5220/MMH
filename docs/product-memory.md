@@ -36,6 +36,14 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - In this repo, do not rely on complex PowerShell expressions to inspect or patch source files when a simpler `rg` search, explicit UTF-8 file read, or `apply_patch` edit can do the job more reliably.
 - When Chinese text is involved, file content is the source of truth; terminal rendering is not.
 
+### Internationalization
+
+- Chinese, English, and Japanese product descriptions should use the same structure and comparable depth. Do not leave English or Japanese as short summaries when Chinese has the complete explanation.
+- Translate system-controlled UI text, including navigation, buttons, table headers, filters, dialogs, empty states, errors, settings labels, and business enum display labels.
+- Do not translate user-owned data, including account names, institution names, counterparty names, family member names, custom categories, tags, remarks, imported bill content, and raw statement text.
+- Product terms should stay consistent across languages. "往来款" is "Settlements" in English and "立替・貸借" in Japanese. "往来对象" is "Counterparties" in English and "取引先" in Japanese. "计划任务" is "Scheduled Tasks" in English and "予定タスク" in Japanese.
+- Language switching should change display text only. It must not rewrite stored business data or user-entered labels.
+
 ### Sidebar And Navigation
 
 - Sidebar grouping is a major workflow surface and must be easy to scan.

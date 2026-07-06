@@ -5,6 +5,11 @@ import { ArrowDownLeft, ArrowUpRight, Pencil, Shield, Trash2 } from "lucide-reac
 
 import { formatMoney } from "@/lib/format";
 import {
+  getInsuranceAction,
+  getInsuranceProductName,
+  type InsuranceAction,
+} from "@/lib/insurance/transaction";
+import {
   AdvancedDataTable,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
@@ -21,7 +26,7 @@ import {
   type InsuranceProductEditOption,
   type InsuranceProductEditValue,
 } from "./InsuranceProductEditModal";
-import { InsuranceEntryEditModal } from "./InsuranceEntryEditModal";
+import { InsuranceEntryEditModal, type InsuranceEntryEditValue } from "./InsuranceEntryEditModal";
 import { InsurancePolicyDeleteModal } from "./InsurancePolicyDeleteModal";
 import type { SmartSelectOption } from "./SmartSelect";
 
@@ -44,9 +49,8 @@ type InsuranceEntry = {
     accountId?: string;
     cashAccountId?: string;
     insuranceProductId?: string | null;
-    fundName?: string;
-    fundProductType?: string;
-    fundSubtype?: string;
+    insuranceAction?: InsuranceAction;
+    insuranceProductName?: string;
     source?: string | null;
   };
 };
@@ -211,10 +215,20 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
   return detailEntries
     .filter((entry) => entry.source === "insurance")
     .map((entry) => {
-      const fundSubtype = String(entry.fundSubtype ?? "");
-      const isRedeemEntry = fundSubtype === "redeem" || fundSubtype === "switch_out";
+      const insuranceAction = getInsuranceAction({
+        source: "insurance",
+        insuranceAction: typeof entry.insuranceAction === "string" ? entry.insuranceAction : null,
+        fundSubtype: typeof entry.fundSubtype === "string" ? entry.fundSubtype : null,
+      });
+      const isRedeemEntry = insuranceAction === "refund";
       const rawAmount = Number(entry.amount ?? 0);
       const amount = isRedeemEntry ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+      const productName = getInsuranceProductName({
+        source: "insurance",
+        insuranceProductName:
+          typeof entry.insuranceProductName === "string" ? entry.insuranceProductName : null,
+        fundName: typeof entry.fundName === "string" ? entry.fundName : null,
+      });
 
       const cashAccountId = isRedeemEntry
         ? (entry.toAccountId ? String(entry.toAccountId) : null)
@@ -234,8 +248,8 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
       return {
         id: String(entry.id ?? ""),
         date: String(entry.date ?? ""),
-        typeLabel: isRedeemEntry ? "赎回" : "投保",
-        productName: String(entry.fundName ?? ""),
+        typeLabel: isRedeemEntry ? "回款" : "续期",
+        productName,
         cashAccountLabel,
         cashAccountId,
         note: String(entry.note ?? ""),
@@ -257,10 +271,8 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
             : String(entry.accountId ?? ""),
           insuranceProductId:
             entry.insuranceProductId == null ? null : String(entry.insuranceProductId),
-          fundName: entry.fundName == null ? undefined : String(entry.fundName),
-          fundProductType:
-            entry.fundProductType == null ? undefined : String(entry.fundProductType),
-          fundSubtype: fundSubtype || undefined,
+          insuranceAction,
+          insuranceProductName: productName,
           source: "insurance",
         },
       };
@@ -361,19 +373,7 @@ export function InsuranceShell({
   const [deletingPolicy, setDeletingPolicy] = useState(false);
   const [productEditValue, setProductEditValue] = useState<InsuranceProductEditValue | null>(null);
   const [savingProduct, setSavingProduct] = useState(false);
-  const [entryEditValue, setEntryEditValue] = useState<{
-    readonly id: string;
-    readonly date: string;
-    readonly amount: string;
-    readonly cashAccountId: string;
-    readonly coverageAmount: string;
-    readonly paymentTermYears: string;
-    readonly note: string;
-    readonly fundSubtype: string;
-    readonly fundProductType: string;
-    readonly insuranceProductId: string;
-    readonly insuranceProductName: string;
-  } | null>(null);
+  const [entryEditValue, setEntryEditValue] = useState<InsuranceEntryEditValue | null>(null);
   const refreshSeq = useRef(0);
   const currentHoldingsRef = useRef<InsuranceHolding[]>(holdings);
   const familyMemberOptionsRef = useRef<SmartSelectOption[]>(familyMemberOptions);
@@ -502,9 +502,8 @@ export function InsuranceShell({
         accountId?: string;
         cashAccountId?: string;
         insuranceProductId?: string | null;
-        fundName?: string;
-        fundProductType?: string;
-        fundSubtype?: string;
+        insuranceAction?: "premium" | "refund";
+        insuranceProductName?: string;
         source?: string | null;
       }>).detail;
       const sourceEntry = currentEntries.find((entry) => entry.id === detail.entryId);
@@ -518,10 +517,9 @@ export function InsuranceShell({
         paymentTermYears:
           sourceEntry.paymentTermYears == null ? "" : String(sourceEntry.paymentTermYears),
         note: detail.note ?? sourceEntry.note ?? "",
-        fundSubtype: detail.fundSubtype ?? "buy",
-        fundProductType: detail.fundProductType ?? "insurance",
+        insuranceAction: detail.insuranceAction ?? (sourceEntry.amount > 0 ? "refund" : "premium"),
         insuranceProductId: detail.insuranceProductId ? String(detail.insuranceProductId) : "",
-        insuranceProductName: sourceEntry.productName,
+        insuranceProductName: detail.insuranceProductName ?? sourceEntry.productName,
       });
     }
 

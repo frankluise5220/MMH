@@ -3,6 +3,7 @@ import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadCommonData } from "@/lib/server/cached-data";
 
 export const runtime = "nodejs";
 
@@ -23,28 +24,9 @@ export async function GET() {
   try {
     const { householdId, hidFilter } = await getHouseholdScope();
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
-    const [accounts, groups, institutions, counterparties, users, categories, tags] = await Promise.all([
-      prisma.account.findMany({
-        where: { isPlaceholder: { not: true }, ...hidFilter },
-        include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
-        orderBy: [{ isActive: "desc" }, { name: "asc" }],
-      }),
-      prisma.accountGroup.findMany({
-        where: hidFilter,
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      }),
-      prisma.institution.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
-      prisma.counterparty.findMany({ where: hidFilter, orderBy: [{ type: "asc" }, { name: "asc" }] }),
+    const [{ accounts, groups, institutions, counterparties, categories, tags }, users] = await Promise.all([
+      loadCommonData(hidFilter),
       prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
-      prisma.category.findMany({
-        where: hidFilter,
-        orderBy: [{ type: "asc" }, { name: "asc" }],
-        select: { id: true, name: true, type: true, parentId: true, isSystem: true },
-      }),
-      prisma.tag.findMany({
-        where: hidFilter,
-        orderBy: { name: "asc" },
-      }),
     ]);
 
     return NextResponse.json({

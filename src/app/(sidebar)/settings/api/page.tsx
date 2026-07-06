@@ -24,14 +24,20 @@ export default function ApiKeysPage() {
   const [newKey, setNewKey] = useState("");
   const [showKeyIds, setShowKeyIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => { fetchKeys(); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchKeys(controller.signal);
+    return () => controller.abort();
+  }, []);
 
-  async function fetchKeys() {
+  async function fetchKeys(signal?: AbortSignal) {
     try {
-      const res = await fetch("/api/v1/settings/access-keys");
+      const res = await fetch("/api/v1/settings/access-keys", { signal });
       const data = await res.json();
       if (data.ok && Array.isArray(data.keys)) setKeys(data.keys);
-    } catch { /* ignore */ }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
   }
 
   async function handleCreate() {

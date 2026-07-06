@@ -43,6 +43,15 @@ function pnlCls(n: number | null | undefined): string {
 
 const p = parseNumber;
 
+function buildFundNavUrl(code: string, date: string, accountId?: string) {
+  const params = new URLSearchParams({
+    code,
+    date,
+  });
+  if (accountId) params.set("accountId", accountId);
+  return `/api/v1/fund/nav?${params.toString()}`;
+}
+
 // 编辑模式的入口数据。
 export type InvestmentEntry = {
   id: string;
@@ -853,7 +862,7 @@ export function InvestmentFormModal({
       if (lastNavFetchedDate.current === confirmDate) return;
       lastNavFetchedDate.current = confirmDate;
       setNavLoading(true);
-      fetch(`/api/v1/fund/nav?code=${encodeURIComponent(code)}&date=${encodeURIComponent(confirmDate)}`)
+      fetch(buildFundNavUrl(code, confirmDate, toAccountId))
         .then(r => r.json())
         .then(d => {
           if (d.ok && d.nav) {
@@ -865,7 +874,7 @@ export function InvestmentFormModal({
         .finally(() => setNavLoading(false));
     }, 500);
     return () => { if (navDebounce.current) clearTimeout(navDebounce.current); };
-  }, [confirmDate, fundCode, subtype, productType, mode, entry?.fundNav]);
+  }, [confirmDate, fundCode, subtype, productType, mode, entry?.fundNav, toAccountId]);
 
   useEffect(() => {
     if (!isRedeemLike(subtype) || mode !== "create") return;
@@ -965,7 +974,7 @@ export function InvestmentFormModal({
     const fetchDate = confirmDate || applyDate;
     setNavLoading(true);
     try {
-      const res = await fetch(`/api/v1/fund/nav?code=${encodeURIComponent(fundCode)}&date=${encodeURIComponent(fetchDate)}`);
+      const res = await fetch(buildFundNavUrl(fundCode, fetchDate, toAccountId));
       const data = await res.json();
       if (data.ok && data.nav) {
         setNavFromApi(String(data.nav));
@@ -1127,7 +1136,7 @@ export function InvestmentFormModal({
           // Preserve amount and fund, clear nav/units (user re-fetches or enters nav for new date)
           if (amount.trim() && fundCode.trim()) {
             // Check if nav is available in cache for the new date via API
-            fetch(`/api/v1/fund/nav?code=${encodeURIComponent(fundCode.trim())}&date=${encodeURIComponent(nextDate)}`)
+            fetch(buildFundNavUrl(fundCode.trim(), nextDate, toAccountId))
               .then(r => r.json())
               .then(d => {
                 if (d.ok && d.nav) {

@@ -5,12 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import EditBillAmount from "@/components/EditBillAmount";
+import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
 import { formatMoney } from "@/lib/format";
 import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
+import { useI18n } from "@/lib/i18n";
 
 export type CreditBillSummaryRow = {
   month: string;
@@ -28,6 +30,8 @@ export type CreditBillSummaryRow = {
 
 type CreditBillSummaryTableProps = {
   accountId: string;
+  accountName: string;
+  institutionName?: string | null;
   rows: CreditBillSummaryRow[];
   initialPage: number;
   pageSize: number;
@@ -55,6 +59,8 @@ function pageButtonClass(enabled: boolean, tone: "muted" | "normal" = "normal") 
 
 export function CreditBillSummaryTable({
   accountId,
+  accountName,
+  institutionName,
   rows,
   initialPage,
   pageSize,
@@ -68,6 +74,14 @@ export function CreditBillSummaryTable({
   fillHeight = false,
 }: CreditBillSummaryTableProps) {
   const router = useRouter();
+  const { t } = useI18n();
+  const tf = (key: string, values: Record<string, string | number>) => {
+    let text: string = t(key);
+    for (const [name, value] of Object.entries(values)) {
+      text = text.replaceAll(`{${name}}`, String(value));
+    }
+    return text;
+  };
   const [localRows, setLocalRows] = useState(rows);
   const [editingCycle, setEditingCycle] = useState<CreditBillSummaryRow | null>(null);
   const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
@@ -157,11 +171,11 @@ export function CreditBillSummaryTable({
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!data?.ok) throw new Error(data?.error ?? "更新账单周期失败");
+      if (!data?.ok) throw new Error(data?.error ?? t("creditBill.updateCycleFailed"));
       setEditingCycle(null);
       router.refresh();
     } catch (error) {
-      setCycleError(error instanceof Error ? error.message : "更新账单周期失败");
+      setCycleError(error instanceof Error ? error.message : t("creditBill.updateCycleFailed"));
     } finally {
       setCycleSaving(false);
     }
@@ -195,29 +209,30 @@ export function CreditBillSummaryTable({
     <div className={["panel-surface overflow-hidden", fillHeight ? "flex h-full min-h-0 flex-col" : "", className ?? ""].filter(Boolean).join(" ")}>
       <div className="panel-header">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-800">账单列表</span>
+          <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
           <Link href={buildHref()} prefetch={false} scroll={false} className="h-6 px-1.5 rounded border text-xs flex items-center border-blue-300 bg-blue-50 text-blue-700">
-            全部
+            {t("creditBill.all")}
           </Link>
           {totalPages > 1 ? (
             <div className="ml-1 flex items-center gap-0.5">
-              <button type="button" onClick={() => setPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title="第一页">
+              <button type="button" onClick={() => setPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={t("creditBill.firstPage")}>
                 <ChevronsLeft className="h-3.5 w-3.5" />
               </button>
-              <button type="button" onClick={() => setPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title="上一页">
+              <button type="button" onClick={() => setPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={t("creditBill.prevPage")}>
                 <ChevronLeft className="h-3 w-3" />
               </button>
               <span className="px-1 text-xs text-slate-500">{safePage}/{totalPages}</span>
-              <button type="button" onClick={() => setPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title="下一页">
+              <button type="button" onClick={() => setPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={t("creditBill.nextPage")}>
                 <ChevronRight className="h-3 w-3" />
               </button>
-              <button type="button" onClick={() => setPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title="最后一页">
+              <button type="button" onClick={() => setPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={t("creditBill.lastPage")}>
                 <ChevronsRight className="h-3 w-3" />
               </button>
             </div>
           ) : null}
         </div>
         <div className="flex items-center gap-2">
+          <CreditBillMailImportButton accountName={accountName} institutionName={institutionName} />
           <button
             type="button"
             onClick={() => {
@@ -233,9 +248,9 @@ export function CreditBillSummaryTable({
                 ? "border-blue-300 bg-blue-50 text-blue-700"
                 : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
             }`}
-            title={showRecentBillCycles ? "当前只显示近10期，点击后显示全部账单" : "当前显示全部账单，点击后恢复近10期"}
+            title={showRecentBillCycles ? t("creditBill.recentTitle") : t("creditBill.allBillsTitle")}
           >
-            {showRecentBillCycles ? "近10期" : "全部账单"}
+            {showRecentBillCycles ? t("creditBill.recent10") : t("creditBill.allBills")}
           </button>
           <button
             type="button"
@@ -253,7 +268,7 @@ export function CreditBillSummaryTable({
                 : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
             }`}
           >
-            隐藏 0 收支
+            {t("creditBill.hideZero")}
           </button>
           <button
             type="button"
@@ -271,7 +286,7 @@ export function CreditBillSummaryTable({
                 : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
             }`}
           >
-            隐藏已还
+            {t("creditBill.hideSettled")}
           </button>
         </div>
       </div>
@@ -279,12 +294,12 @@ export function CreditBillSummaryTable({
         <table className="w-full table-fixed border-separate border-spacing-0">
           <thead className="sticky top-0 z-10">
             <tr className="bg-white">
-              <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">账单</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">周期</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">支出</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">退回/收入</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">账单金额</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">还款</th>
+              <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.bill")}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.period")}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.expense")}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.refundIncome")}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.billAmount")}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.repayment")}</th>
             </tr>
           </thead>
           <tbody className="text-sm">
@@ -299,7 +314,7 @@ export function CreditBillSummaryTable({
                   <td className="border-b border-slate-100 px-4 py-2">
                     <Link href={href} prefetch={false} scroll={false} className="block">
                       <span className={`whitespace-nowrap text-xs font-semibold ${row.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
-                        {row.month}{row.isCurrentCycle ? "（未出账单）" : row.month === settledBillMonth ? "（本期账单）" : ""}
+                        {row.month}{row.isCurrentCycle ? `（${t("creditBill.currentCycle")}）` : row.month === settledBillMonth ? `（${t("creditBill.currentBill")}）` : ""}
                       </span>
                     </Link>
                   </td>
@@ -311,7 +326,7 @@ export function CreditBillSummaryTable({
                           openCycleEditor(row);
                         }}
                         className="inline-flex cursor-text whitespace-nowrap rounded px-1 text-xs tabular-nums text-slate-700 hover:bg-amber-50 hover:text-amber-700"
-                        title="双击修改这一期账单周期，并从这一期开始调整后续周期"
+                        title={t("creditBill.editCycleHint")}
                       >
                         {row.periodLabel}
                       </span>
@@ -351,12 +366,12 @@ export function CreditBillSummaryTable({
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/20 px-4">
           <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">修改 {editingCycle.month} 账单周期</div>
-              <div className="mt-1 text-xs text-slate-500">保存后会从这一期开始调整后续周期，并同步账户管理里的账单日/还款日。</div>
+              <div className="text-sm font-semibold text-slate-800">{tf("creditBill.editCycleTitle", { month: editingCycle.month })}</div>
+              <div className="mt-1 text-xs text-slate-500">{t("creditBill.editCycleDesc")}</div>
             </div>
             <div className="space-y-3 px-4 py-4">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">周期开始</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.periodStart")}</span>
                 <input
                   type="date"
                   value={cycleForm.periodStart}
@@ -365,7 +380,7 @@ export function CreditBillSummaryTable({
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">周期结束 / 新账单日</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.periodEnd")}</span>
                 <input
                   type="date"
                   value={cycleForm.periodEnd}
@@ -374,7 +389,7 @@ export function CreditBillSummaryTable({
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">还款日</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.dueDate")}</span>
                 <input
                   type="date"
                   value={cycleForm.dueDate}
@@ -386,10 +401,10 @@ export function CreditBillSummaryTable({
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
               <button type="button" onClick={() => setEditingCycle(null)} className="secondary-button h-8 px-3 text-xs" disabled={cycleSaving}>
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={saveCycle} className="primary-button h-8 px-3 text-xs" disabled={cycleSaving}>
-                {cycleSaving ? "保存中..." : "保存"}
+                {cycleSaving ? t("creditBill.saving") : t("common.save")}
               </button>
             </div>
           </div>

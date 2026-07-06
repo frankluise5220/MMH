@@ -187,7 +187,7 @@ export function BasicDetailBatchDeleteButton() {
       }
       setDeleteMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
       clear();
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      window.dispatchEvent(new CustomEvent("mmh:fund:refresh", { detail: { deletedEntryIds: entryIds } }));
     } catch {
       setDeleteMessage("批量删除失败");
     } finally {

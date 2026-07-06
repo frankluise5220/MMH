@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { AccountKind } from "@prisma/client";
 
 import { SidebarClient } from "@/components/layout/SidebarClient";
-import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
@@ -12,6 +12,11 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
+
+type CurrentCreditCycle = {
+  accountId: string;
+  effectiveBill: unknown;
+};
 
 async function getSidebarData() {
   await connection();
@@ -21,49 +26,53 @@ async function getSidebarData() {
   const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as string;
   const isRedUp = colorScheme === "red_up_green_down";
-
-  const household = await prisma.household.findUnique({
-    where: { id: householdId },
-    select: { id: true, name: true },
-  });
-
-  const accounts = await prisma.account.findMany({
-    where: { isPlaceholder: { not: true }, name: { not: "未指定账户" }, ...hidFilter, isActive: true },
-    include: { AccountGroup: true, Institution: true },
-    orderBy: [{ name: "asc" }],
-  });
-
-  const investBalByAccountId = await computeInvestBalances(ctx);
-  const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
-    accounts
-      .filter((account) => !isPureInvestmentAccount(account))
-      .map((account) => ({
-        id: account.id,
-        kind: account.kind,
-        investProductType: account.investProductType,
-        billingDay: account.billingDay,
-      })),
-    hidFilter,
+  const creditCardSidebarLabelTemplate = normalizeCreditCardLabelTemplate(
+    cookieStore.get("mmh_credit_card_sidebar_label_template")?.value || SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
+    "short_last4",
   );
+
+  const [household, accounts, investBalByAccountId] = await Promise.all([
+    prisma.household.findUnique({
+      where: { id: householdId },
+      select: { id: true, name: true },
+    }),
+    prisma.account.findMany({
+      where: { isPlaceholder: { not: true }, name: { not: "未指定账户" }, ...hidFilter, isActive: true },
+      include: { AccountGroup: true, Institution: true },
+      orderBy: [{ name: "asc" }],
+    }),
+    computeInvestBalances(ctx),
+  ]);
+
+  const cashBalanceAccounts = accounts
+    .filter((account) => !isPureInvestmentAccount(account))
+    .map((account) => ({
+      id: account.id,
+      kind: account.kind,
+      investProductType: account.investProductType,
+      billingDay: account.billingDay,
+    }));
   const creditIds = accounts
     .filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay)
     .map((account) => account.id);
-  const currentCreditCycles =
-    creditIds.length > 0
-      ? await prisma.creditCardCycle.findMany({
-          where: { accountId: { in: creditIds }, isCurrentCycle: true },
-          select: { accountId: true, effectiveBill: true },
-        })
-      : [];
-  const currentCreditBalanceByAccountId = new Map(
-    currentCreditCycles.map((cycle) => [cycle.accountId, Number(cycle.effectiveBill ?? 0)]),
-  );
   const insuranceAccountIds = accounts
     .filter((account) => account.kind === AccountKind.insurance)
     .map((account) => account.id);
-  const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
-    insuranceAccountIds,
-    hidFilter,
+  const cashDisplayBalancePromise = computeAccountDisplayBalances(cashBalanceAccounts, hidFilter);
+  const currentCreditCyclesPromise: Promise<CurrentCreditCycle[]> = creditIds.length > 0
+    ? prisma.creditCardCycle.findMany({
+        where: { accountId: { in: creditIds }, isCurrentCycle: true },
+        select: { accountId: true, effectiveBill: true },
+      })
+    : Promise.resolve([]);
+  const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
+  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+    cashDisplayBalancePromise,
+    currentCreditCyclesPromise,
+    insuranceDisplayBalancePromise,
+  ]);
+  const currentCreditBalanceByAccountId = new Map<string, number>(
+    currentCreditCycles.map((cycle) => [cycle.accountId, Number(cycle.effectiveBill ?? 0)]),
   );
   const items = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
@@ -86,7 +95,7 @@ async function getSidebarData() {
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, { suppressDuplicateCreditCardLast4: true });
+    }, creditCardSidebarLabelTemplate);
 
     return {
       id: account.id,
@@ -110,6 +119,7 @@ export async function Sidebar() {
   const initialPreferences = {
     sidebarOwnerFilter: cookieStore.get("sidebar_owner_filter")?.value ?? "",
     sidebarHideZero: cookieStore.get("sidebar_hide_zero")?.value === "true",
+    sidebarHideInitialData: cookieStore.get("sidebar_hide_initial_data")?.value === "true",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
     sidebarGroupBy: (cookieStore.get("sidebar_group_by")?.value === "institution" ? "institution" : "kind") as SidebarGroupMode,
   };

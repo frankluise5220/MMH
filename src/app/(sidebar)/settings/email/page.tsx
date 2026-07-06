@@ -1,12 +1,29 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
-import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
-import { TableColumnFilter } from "@/components/TableColumnFilter";
+import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
-import { fetchSettingsAccountData, fetchSettingsCategories } from "@/lib/client/settingsCache";
+import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+
+type BatchReplacePopoverButtonComponent = typeof import("@/components/BatchReplacePopoverButton").BatchReplacePopoverButton;
+type SmartSelectComponent = typeof import("@/components/SmartSelect").SmartSelect;
+type TableColumnFilterComponent = typeof import("@/components/TableColumnFilter").TableColumnFilter;
+
+const BatchReplacePopoverButton = dynamic(
+  () => import("@/components/BatchReplacePopoverButton").then((mod) => mod.BatchReplacePopoverButton),
+  { ssr: false },
+) as BatchReplacePopoverButtonComponent;
+const SmartSelect = dynamic(
+  () => import("@/components/SmartSelect").then((mod) => mod.SmartSelect),
+  { ssr: false },
+) as SmartSelectComponent;
+const TableColumnFilter = dynamic(
+  () => import("@/components/TableColumnFilter").then((mod) => mod.TableColumnFilter),
+  { ssr: false },
+) as TableColumnFilterComponent;
 
 const MAIL_DISPLAY_LIMIT = 5;
 const MAIL_FIXED_KEYWORD = "账单";
@@ -173,6 +190,7 @@ type AccountCreateDraft = {
 
 export default function EmailSettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAccountModal, setShowAccountModal] = useState(false);
@@ -221,28 +239,32 @@ export default function EmailSettingsPage() {
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "type" | "category" } | null>(null);
 
   useEffect(() => {
-    loadAccounts();
+    const controller = new AbortController();
+    loadAccounts(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  async function loadAccounts() {
+  async function loadAccounts(signal?: AbortSignal) {
+    setLoadingAccounts(true);
     try {
-      const res = await fetch("/api/v1/settings/email-accounts");
+      const res = await fetch("/api/v1/settings/email-accounts", { signal });
       const data = await res.json();
       if (data.ok) setAccounts(data.accounts);
-    } catch {}
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    } finally {
+      if (!signal?.aborted) setLoadingAccounts(false);
+    }
   }
 
   async function loadBookLookups() {
     try {
-      const [accountData, categories] = await Promise.all([
-        fetchSettingsAccountData(),
-        fetchSettingsCategories(),
-      ]);
+      const bootstrap = await fetchSettingsBootstrap();
       const lookups: BookLookups = {
-        accounts: Array.isArray(accountData.accounts) ? accountData.accounts as BookAccount[] : [],
-        institutions: Array.isArray(accountData.institutions) ? accountData.institutions : [],
-        users: Array.isArray(accountData.users) ? accountData.users : [],
-        categories: Array.isArray(categories) ? categories : [],
+        accounts: Array.isArray(bootstrap.accounts) ? bootstrap.accounts as BookAccount[] : [],
+        institutions: Array.isArray(bootstrap.institutions) ? bootstrap.institutions : [],
+        users: Array.isArray(bootstrap.users) ? bootstrap.users : [],
+        categories: Array.isArray(bootstrap.categories) ? bootstrap.categories : [],
       };
       bookLookupsRef.current = lookups;
       setBookAccounts(lookups.accounts);
@@ -792,6 +814,7 @@ export default function EmailSettingsPage() {
     return bookAccounts.find((account) => account.id === accountId)?.name ?? null;
   }, [bookAccounts, importPreview?.statementAccountId]);
 
+  const hasImportPreview = importPreview !== null;
   const previewFilterRows = useMemo(() => importPreview?.items ?? [], [importPreview]);
   const getPreviewColumnValue = useCallback((row: ImportPreviewItem, column: ImportPreviewColumn) => {
     const item = row.item;
@@ -822,44 +845,54 @@ export default function EmailSettingsPage() {
     if (!importPreview) return [];
     return Array.from(importPreview.selectedKeys).filter((key) => filteredPreviewKeys.has(key));
   }, [filteredPreviewKeys, importPreview]);
-  const previewAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
-    { value: "", label: "未选择" },
-    ...bookAccounts
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
-      .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
-  ], [bookAccounts]);
-  const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
-    { value: "", label: "未选择" },
-    ...bookAccounts
-      .filter((account) => account.kind === "bank_debit")
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
-      .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
-  ], [bookAccounts]);
+  const previewAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
+    if (!hasImportPreview) return [{ value: "", label: "未选择" }];
+    return [
+      { value: "", label: "未选择" },
+      ...bookAccounts
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
+        .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
+    ];
+  }, [bookAccounts, hasImportPreview]);
+  const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
+    if (!hasImportPreview) return [{ value: "", label: "未选择" }];
+    return [
+      { value: "", label: "未选择" },
+      ...bookAccounts
+        .filter((account) => account.kind === "bank_debit")
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
+        .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
+    ];
+  }, [bookAccounts, hasImportPreview]);
   const previewDebitAccountDisplayOptions = useMemo(
-    () => bookAccounts
-      .filter((account) => account.kind === "bank_debit")
-      .map((account) => buildAccountDisplayOption({
-        ...account,
-        Institution: account.Institution
-          ? {
-              name: account.Institution.name ?? null,
-              shortName: account.Institution.shortName ?? null,
-            }
-          : null,
-        AccountGroup: account.AccountGroup
-          ? {
-              id: account.AccountGroup.id,
-              name: account.AccountGroup.name ?? null,
-            }
-          : null,
-      }))
-      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
-    [bookAccounts],
+    () => {
+      if (!hasImportPreview) return [];
+      return bookAccounts
+        .filter((account) => account.kind === "bank_debit")
+        .map((account) => buildAccountDisplayOption({
+          ...account,
+          Institution: account.Institution
+            ? {
+                name: account.Institution.name ?? null,
+                shortName: account.Institution.shortName ?? null,
+              }
+            : null,
+          AccountGroup: account.AccountGroup
+            ? {
+                id: account.AccountGroup.id,
+                name: account.AccountGroup.name ?? null,
+              }
+            : null,
+        }))
+        .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN"));
+    },
+    [bookAccounts, hasImportPreview],
   );
   const previewDebitAccountOptions = useMemo<SmartSelectOption[]>(
     () => {
+      if (!hasImportPreview) return [];
       const displayById = new Map(previewDebitAccountDisplayOptions.map((account) => [account.id, account]));
       return buildGroupedAccountOptions(previewDebitAccountDisplayOptions).map((option) => {
         if (option.isHeader) return option;
@@ -872,7 +905,7 @@ export default function EmailSettingsPage() {
         };
       });
     },
-    [previewDebitAccountDisplayOptions],
+    [hasImportPreview, previewDebitAccountDisplayOptions],
   );
   const {
     ownerFilterLabel: previewDebitOwnerFilterLabel,
@@ -886,33 +919,37 @@ export default function EmailSettingsPage() {
     return source.filter((option) => option.isHeader || previewDebitVisibleOptionIds.has(option.id));
   }, [previewDebitAccountFilteredOptions, previewDebitAccountOptions, previewDebitVisibleOptionIds]);
   const previewCategoryOptions = useMemo(() => {
+    if (!hasImportPreview) return [];
     return bookCategories
       .filter((category) => category.type === "expense" || category.type === "income")
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-  }, [bookCategories]);
-  const previewReplaceFields = useMemo<BatchReplaceFieldConfig<ImportPreviewEditableCell>[]>(() => [
-    { value: "date", label: IMPORT_PREVIEW_FIELD_LABELS.date, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
-    { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
-    {
-      value: "type",
-      label: IMPORT_PREVIEW_FIELD_LABELS.type,
-      kind: "select",
-      options: [
-        { value: "", label: "选择类型" },
-        { value: "expense", label: "支出" },
-        { value: "income", label: "收入" },
-        { value: "transfer", label: "转账" },
-        { value: "investment", label: "投资" },
-      ],
-    },
-    { value: "account", label: IMPORT_PREVIEW_FIELD_LABELS.account, kind: "smartSelect", options: previewAccountReplaceOptions },
-    { value: "counterAccount", label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount, kind: "smartSelect", options: previewDebitAccountReplaceOptions },
-    { value: "category", label: IMPORT_PREVIEW_FIELD_LABELS.category, kind: "text", placeholder: "输入分类" },
-    { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "输入收支机构" },
-    { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额" },
-    { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
-  ], [previewAccountReplaceOptions, previewDebitAccountReplaceOptions]);
+  }, [bookCategories, hasImportPreview]);
+  const previewReplaceFields = useMemo<BatchReplaceFieldConfig<ImportPreviewEditableCell>[]>(() => {
+    if (!hasImportPreview) return [];
+    return [
+      { value: "date", label: IMPORT_PREVIEW_FIELD_LABELS.date, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
+      { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
+      {
+        value: "type",
+        label: IMPORT_PREVIEW_FIELD_LABELS.type,
+        kind: "select",
+        options: [
+          { value: "", label: "选择类型" },
+          { value: "expense", label: "支出" },
+          { value: "income", label: "收入" },
+          { value: "transfer", label: "转账" },
+          { value: "investment", label: "投资" },
+        ],
+      },
+      { value: "account", label: IMPORT_PREVIEW_FIELD_LABELS.account, kind: "smartSelect", options: previewAccountReplaceOptions },
+      { value: "counterAccount", label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount, kind: "smartSelect", options: previewDebitAccountReplaceOptions },
+      { value: "category", label: IMPORT_PREVIEW_FIELD_LABELS.category, kind: "text", placeholder: "输入分类" },
+      { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "输入收支机构" },
+      { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额" },
+      { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
+    ];
+  }, [hasImportPreview, previewAccountReplaceOptions, previewDebitAccountReplaceOptions]);
 
   function previewAccountIdFromName(accountName: string, item?: ParsedItem) {
     const nameKey = normalizedKey(accountName);
@@ -1183,7 +1220,9 @@ export default function EmailSettingsPage() {
             <button className="h-7 px-2 rounded-md border border-slate-300 text-xs hover:bg-slate-50" onClick={openCreateAccountModal}>新增</button>
           </div>
           <div className="max-h-[220px] space-y-2 overflow-y-auto pr-1">
-            {accounts.length > 0 ? accounts.map(acc => (
+            {loadingAccounts ? (
+              <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-400">加载邮箱账户…</div>
+            ) : accounts.length > 0 ? accounts.map(acc => (
               <div key={acc.id} className={`flex items-center gap-2 rounded-md border px-2.5 py-2 ${selectedId === acc.id ? "border-blue-300 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
                 <button className="min-w-0 flex-1 text-left" onClick={() => selectAccountForMail(acc.id)}>
                   <div className="truncate text-sm font-medium text-slate-800">{acc.label}</div>

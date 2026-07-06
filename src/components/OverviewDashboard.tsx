@@ -233,32 +233,12 @@ export function OverviewDashboard({
               <Link href="/accounts" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
             </div>
             <div className="space-y-4 px-4 py-4">
-              <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
-                {assetDistribution.map((item, index) => (
-                  <div
-                    key={item.kind}
-                    className={`${distributionBarClass(index)} transition-all`}
-                    style={{ width: `${Math.max(item.pct, 2)}%` }}
-                    title={`${item.label}: ${formatMoneyYuan(item.value)} (${item.pct.toFixed(1)}%)`}
-                  />
-                ))}
-              </div>
-              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                {assetDistribution.map((item, index) => (
-                  <div key={item.kind} className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
-                    <span className={`h-2.5 w-2.5 rounded-full ${distributionBarClass(index)}`} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium text-slate-700">{item.label}</div>
-                      <div className="text-[11px] text-slate-400">{item.pct.toFixed(1)}%</div>
-                    </div>
-                    <div className={`text-xs font-medium tabular-nums ${directionalClass(item.value, isRedUp)}`}>{formatMoney(item.value)}</div>
-                  </div>
-                ))}
-                {assetDistribution.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-400 lg:col-span-4">
-                    暂无可统计的日常账户
-                  </div>
-                )}
+              <DailyAccountDistributionBar items={assetDistribution} />
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <MetricCard label="现金" value={formatMoneyYuan(totals.cash)} valueClass={directionalClass(totals.cash, isRedUp)} />
+                <MetricCard label="借记卡" value={formatMoneyYuan(totals.bankDebit)} valueClass={directionalClass(totals.bankDebit, isRedUp)} />
+                <MetricCard label="电子钱包" value={formatMoneyYuan(totals.ewallet)} valueClass={directionalClass(totals.ewallet, isRedUp)} />
+                <MetricCard label="存款" value={formatMoneyYuan(totals.deposit)} valueClass={directionalClass(totals.deposit, isRedUp)} />
               </div>
             </div>
             <div className="divide-y divide-slate-100 border-t border-slate-100">
@@ -427,6 +407,40 @@ function InvestmentCostProfitBar({
           <span className={`h-2 w-2 rounded-full ${pnlClass}`} />
           {pnlLabel}
         </span>
+      </div>
+    </div>
+  );
+}
+
+function DailyAccountDistributionBar({ items }: { items: AssetDistItem[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-400">
+        暂无日常账户分布
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
+        {items.map((item, index) => (
+          <div
+            key={item.kind}
+            className={`${distributionBarClass(index)} transition-all`}
+            style={{ width: `${Math.max(item.pct, 2)}%` }}
+            title={`${item.label}: ${formatMoneyYuan(item.value)} (${item.pct.toFixed(1)}%)`}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+        {items.map((item, index) => (
+          <span key={item.kind} className="inline-flex items-center gap-1">
+            <span className={`h-2 w-2 rounded-full ${distributionBarClass(index)}`} />
+            <span>{item.label}</span>
+            <span className="tabular-nums text-slate-400">{item.pct.toFixed(1)}%</span>
+          </span>
+        ))}
       </div>
     </div>
   );
