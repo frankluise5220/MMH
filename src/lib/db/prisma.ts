@@ -16,8 +16,10 @@ function createClient(): PrismaClient {
   const pool = globalForPrisma.prismaPool ?? new Pool({
     connectionString,
     max: Number(process.env.PG_POOL_MAX ?? 8),
-    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 1500),
-    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 10_000),
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5_000),
+    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30_000),
+    keepAlive: true,
+    keepAliveInitialDelayMillis: Number(process.env.PG_KEEPALIVE_INITIAL_DELAY_MS ?? 10_000),
   });
   globalForPrisma.prismaPool = pool;
 
