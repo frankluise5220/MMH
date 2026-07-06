@@ -233,7 +233,13 @@ function extractImageVersion(manifestText) {
   }
 }
 
-function testImageManifest(source, image) {
+function normalizeTimeoutMs(input, fallback = 12000) {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.round(n), 3000), 15000);
+}
+
+function testImageManifest(source, image, timeoutMs = 12000) {
   return new Promise((resolve) => {
     if (!image) {
       resolve({ source, ok: false, error: "未填写镜像地址" });
@@ -247,7 +253,7 @@ function testImageManifest(source, image) {
     const child = spawn("docker", ["manifest", "inspect", "--verbose", image], { cwd: workdir });
     const timer = setTimeout(() => {
       if (!settled) child.kill("SIGTERM");
-    }, 12000);
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -280,16 +286,15 @@ async function testImageSourceSpeed(input) {
   const env = await readEnvValues();
   const requestedSource = String(input?.source || "").trim();
   const customAppImage = String(input?.customAppImage || "").trim();
+  const timeoutMs = normalizeTimeoutMs(input?.timeoutMs);
   const sources = requestedSource
     ? [requestedSource]
     : [...Object.keys(imageSources), "custom"];
 
-  const results = [];
-  for (const source of sources) {
+  return Promise.all(sources.map((source) => {
     const image = getImageForSpeedTest(source, env, customAppImage);
-    results.push(await testImageManifest(source, image));
-  }
-  return results;
+    return testImageManifest(source, image, timeoutMs);
+  }));
 }
 
 async function chooseImageSource() {

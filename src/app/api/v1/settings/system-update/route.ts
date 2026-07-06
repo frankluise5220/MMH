@@ -51,6 +51,9 @@ type ImageSourceConfig = {
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 const IMAGE_FALLBACK_ORDER = ["dockerproxy", "nju", "ghcr", "daocloud", "custom"];
+const UPDATER_DEFAULT_TIMEOUT_MS = 5_000;
+const VERSION_CHECK_TIMEOUT_MS = 5_000;
+const IMAGE_VERSION_CHECK_TIMEOUT_MS = 6_000;
 
 function getUpdaterConfig() {
   const url = String(process.env.MMH_UPDATER_URL ?? "").trim();
@@ -58,24 +61,36 @@ function getUpdaterConfig() {
   return { url, token, enabled: Boolean(url && token) };
 }
 
-async function callUpdater(path: string, init?: RequestInit) {
+async function callUpdater(path: string, init?: RequestInit, timeoutMs = UPDATER_DEFAULT_TIMEOUT_MS) {
   const { url, token } = getUpdaterConfig();
   if (!url || !token) {
     throw new Error("未配置宿主机更新执行器");
   }
-  const res = await fetch(`${url.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      Authorization: `Bearer ${token}`,
-    },
-    cache: "no-store",
-  });
-  const data = await res.json().catch(() => null) as any;
-  if (!res.ok) {
-    throw new Error(data?.error ?? `更新执行器请求失败：${res.status}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => null) as any;
+    if (!res.ok) {
+      throw new Error(data?.error ?? `更新执行器请求失败：${res.status}`);
+    }
+    return data;
+  } catch (error) {
+    if ((error as { name?: string })?.name === "AbortError") {
+      throw new Error("更新执行器响应超时");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 function isDockerEnvironment(): boolean {
@@ -131,6 +146,10 @@ function readCommand(projectRoot: string, cmd: string) {
   return execSync(cmd, { cwd: projectRoot, encoding: "utf-8" }).trim();
 }
 
+function readCommandWithTimeout(projectRoot: string, cmd: string, timeout: number) {
+  return execSync(cmd, { cwd: projectRoot, encoding: "utf-8", timeout }).trim();
+}
+
 function commandErrorMessage(error: unknown) {
   const e = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
   const stderr = typeof e.stderr === "string" ? e.stderr : e.stderr?.toString();
@@ -140,16 +159,19 @@ function commandErrorMessage(error: unknown) {
 
 async function getGitHubVersionInfo(projectRoot: string) {
   try {
-    const line = readCommand(projectRoot, `git ls-remote ${DEFAULT_GITHUB_REPO_URL} refs/heads/main`);
+    const line = readCommandWithTimeout(projectRoot, `git ls-remote ${DEFAULT_GITHUB_REPO_URL} refs/heads/main`, VERSION_CHECK_TIMEOUT_MS);
     const commit = line.split(/\s+/)[0]?.trim() || "unknown";
     let commitDate = "";
     let commitMsg = "";
     if (commit !== "unknown") {
       try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), VERSION_CHECK_TIMEOUT_MS);
         const res = await fetch("https://api.github.com/repos/frankluise5220/MMH/commits/main", {
           headers: { Accept: "application/vnd.github+json" },
           cache: "no-store",
-        });
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timer));
         if (res.ok) {
           const data = await res.json() as {
             sha?: string;
@@ -267,21 +289,26 @@ async function getImageVersionFallback(
 ): Promise<Partial<VersionInfo> | null> {
   if (!getUpdaterConfig().enabled) return null;
   const configuredSource = imageSourceConfig?.source || "auto";
-  const sourceOrder = configuredSource === "auto" ? IMAGE_FALLBACK_ORDER : [configuredSource];
+  const configuredAppImage = imageSourceConfig?.appImage || imageSourceConfig?.customAppImage || "";
+  const sourceForCheck = configuredSource === "auto"
+    ? (configuredAppImage ? "custom" : IMAGE_FALLBACK_ORDER[0])
+    : configuredSource;
+  const sourceOrder = [sourceForCheck];
 
   try {
     const data = await callUpdater("/speed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
-        configuredSource === "auto"
-          ? { customAppImage: imageSourceConfig?.customAppImage || "" }
+        sourceForCheck === "custom"
+          ? { source: "custom", customAppImage: configuredAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS }
           : {
-              source: configuredSource,
+              source: sourceForCheck,
               customAppImage: imageSourceConfig?.customAppImage || "",
+              timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS,
             },
       ),
-    });
+    }, IMAGE_VERSION_CHECK_TIMEOUT_MS + 2_000);
     const results = Array.isArray(data?.results) ? data.results as Array<{
       source?: string;
       image?: string;
@@ -329,16 +356,18 @@ export async function GET(req: NextRequest) {
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
     let imageSourceConfig: ImageSourceConfig | null = null;
-    if (checkRemote && isDockerEnvironment() && getUpdaterConfig().enabled) {
+    const dockerEnvironment = isDockerEnvironment();
+    const updaterEnabled = getUpdaterConfig().enabled;
+    if (checkRemote && dockerEnvironment && updaterEnabled) {
       try {
-        const data = await callUpdater("/config");
+        const data = await callUpdater("/config", undefined, 3_000);
         imageSourceConfig = data.config ?? null;
       } catch {
         imageSourceConfig = null;
       }
     }
     const local = getLocalGitInfo(projectRoot);
-    const localOnlyVersionInfo = {
+    const localOnlyVersionInfo: VersionInfo = {
       ...local,
       remoteName: "",
       remoteBranch: "",
@@ -353,24 +382,52 @@ export async function GET(req: NextRequest) {
       githubCommitMsg: "",
       githubCommitDate: "",
       githubCanCheck: false,
+      fetchError: undefined,
     };
 
-    let versionInfo = checkRemote ? await getGitVersionInfo(projectRoot) : localOnlyVersionInfo;
-    if (checkRemote && isDockerEnvironment() && !versionInfo.canCheckUpdate) {
-      const imageFallback = await getImageVersionFallback(versionInfo, imageSourceConfig);
+    let versionInfo = localOnlyVersionInfo;
+    if (checkRemote && dockerEnvironment) {
+      const imageFallback = updaterEnabled
+        ? await getImageVersionFallback(localOnlyVersionInfo, imageSourceConfig)
+        : null;
       if (imageFallback) {
         versionInfo = {
-          ...versionInfo,
+          ...localOnlyVersionInfo,
           ...imageFallback,
         };
+      } else if (updaterEnabled) {
+        versionInfo = {
+          ...localOnlyVersionInfo,
+          fetchError: "镜像版本检查失败或超时，请稍后重试",
+        };
+      } else {
+        const github = await getGitHubVersionInfo(projectRoot);
+        const githubCommit = github.githubCommit;
+        const localComparable = local.localCommitFull !== "unknown" ? local.localCommitFull.slice(0, 7) : local.localCommit;
+        const canCheck = github.githubCanCheck && githubCommit !== "unknown" && localComparable !== "unknown";
+        versionInfo = {
+          ...localOnlyVersionInfo,
+          ...github,
+          remoteName: "github",
+          remoteBranch: "main",
+          remoteUrl: DEFAULT_GITHUB_REPO_URL,
+          remoteCommit: githubCommit,
+          remoteCommitMsg: github.githubCommitMsg,
+          remoteCommitDate: github.githubCommitDate,
+          needsUpdate: canCheck ? localComparable !== githubCommit : false,
+          canCheckUpdate: canCheck,
+          fetchError: github.githubFetchError,
+        };
       }
+    } else if (checkRemote) {
+      versionInfo = await getGitVersionInfo(projectRoot);
     }
 
     return NextResponse.json({
       ok: true,
-      isDocker: isDockerEnvironment(),
+      isDocker: dockerEnvironment,
       updateMode: "git",
-      updaterEnabled: getUpdaterConfig().enabled,
+      updaterEnabled,
       imageSourceConfig,
       localVersion,
       ...versionInfo,

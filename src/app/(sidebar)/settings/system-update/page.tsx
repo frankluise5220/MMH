@@ -390,32 +390,15 @@ export default function SystemUpdatePage() {
     : isLatest
       ? "已是最新版本"
       : "未确认";
-  const updateActionPanel = !updating && !updateDone && versionInfo?.ok ? (
+  const canStartUpdate = needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
+  const updateActionPanel = !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
     <div className="border-t border-slate-100 pt-3">
-      {needsUpdate && (!dockerManaged || versionInfo.updaterEnabled) ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
-              <Download className="h-4 w-4 shrink-0" />
-              发现新版本
-            </div>
-            <div className="mt-1 text-xs text-slate-500">
-              {dockerManaged ? "将同步部署文件、拉取应用镜像并重启服务。" : `将更新到 ${versionInfo.remoteCommit}`}
-            </div>
-          </div>
-          <button
-            onClick={startUpdate}
-            className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
-          >
-            更新
-          </button>
-        </div>
-      ) : isLatest ? (
+      {isLatest ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           当前已是最新版本
         </div>
-      ) : dockerManaged ? (
+      ) : needsUpdate && !canStartUpdate && dockerManaged ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           当前为 Docker 部署，但未启用宿主机更新执行器。请在宿主机项目目录运行
           <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
@@ -426,11 +409,11 @@ export default function SystemUpdatePage() {
             sudo docker compose up -d
           </div>
         </div>
-      ) : (
+      ) : !canCheckUpdate ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
           暂时无法确认远端版本，请点击上方刷新。
         </div>
-      )}
+      ) : null}
     </div>
   ) : null;
 
@@ -495,21 +478,37 @@ export default function SystemUpdatePage() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`rounded px-2 py-0.5 text-xs ${
-                  needsUpdate
-                    ? "bg-amber-50 text-amber-700"
-                    : isLatest
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-slate-100 text-slate-600"
-                }`}
-              >
-                {updateStatusText}
-              </span>
-              <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                {versionInfo.localVersion}
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    needsUpdate
+                      ? "bg-amber-50 text-amber-700"
+                      : isLatest
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {updateStatusText}
+                </span>
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                  {versionInfo.localVersion}
+                </span>
+                {needsUpdate ? (
+                  <span className="text-xs text-slate-500">
+                    {dockerManaged ? "将拉取应用镜像并重启服务" : `将更新到 ${versionInfo.remoteCommit}`}
+                  </span>
+                ) : null}
+              </div>
+              {canStartUpdate ? (
+                <button
+                  onClick={startUpdate}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  更新
+                </button>
+              ) : null}
             </div>
 
             {!canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
