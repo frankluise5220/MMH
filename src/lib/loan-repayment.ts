@@ -78,6 +78,66 @@ export function calcLoanPeriodInterestByDailyRate(params: {
   return roundLoanMoney(interest);
 }
 
+export type LoanPrincipalAdjustmentInPeriod = {
+  date: string;
+  amount: number;
+};
+
+export function calcLoanPeriodInterestByDailyRateWithPrincipalAdjustments(params: {
+  principal: number;
+  baseAnnualRate?: number | null;
+  adjustments?: LoanRateAdjustment[] | null;
+  principalAdjustments?: LoanPrincipalAdjustmentInPeriod[] | null;
+  intervalMonths?: number | null;
+  startDateExclusive: string;
+  endDateInclusive: string;
+}) {
+  const startMs = dateOnlyToUtcMs(params.startDateExclusive);
+  const endMs = dateOnlyToUtcMs(params.endDateInclusive);
+  const startingPrincipal = Math.max(0, params.principal);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || startingPrincipal <= 0) return 0;
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const intervalMonths = Math.max(1, params.intervalMonths || 1);
+  const periodDays = Math.max(1, intervalMonths * 30);
+  if (periodDays <= 0) return 0;
+
+  const principalAdjustments = [...(params.principalAdjustments ?? [])]
+    .map((item) => ({
+      date: String(item.date ?? "").slice(0, 10),
+      elapsedDays: Math.max(0, Math.round((dateOnlyToUtcMs(item.date) - startMs) / dayMs)),
+      amount: Math.max(0, Number(item.amount)),
+    }))
+    .filter((item) => Number.isFinite(item.elapsedDays) && item.amount > 0 && item.elapsedDays > 0 && item.elapsedDays < periodDays)
+    .sort((a, b) => a.elapsedDays - b.elapsedDays);
+
+  let interest = 0;
+  let principal = startingPrincipal;
+  let cursor = 0;
+
+  const addSegmentInterest = (days: number, date: string) => {
+    if (days <= 0 || principal <= 0) return;
+    const rate = getEffectiveLoanAnnualRate({
+      baseAnnualRate: params.baseAnnualRate,
+      adjustments: params.adjustments,
+      date,
+    });
+    if (rate != null && Number.isFinite(rate) && rate > 0 && principal > 0) {
+      interest += principal * days * (rate / 100) / 360;
+    }
+  };
+
+  for (const adjustment of principalAdjustments) {
+    const elapsedDays = Math.min(periodDays, Math.max(cursor, adjustment.elapsedDays));
+    addSegmentInterest(elapsedDays - cursor, adjustment.date);
+    principal = Math.max(0, principal - adjustment.amount);
+    cursor = elapsedDays;
+  }
+  addSegmentInterest(periodDays - cursor, params.endDateInclusive);
+
+  return roundLoanMoney(interest);
+}
+
 export function calcLoanScheduledAmount(params: {
   repaymentMethod?: string | null;
   annualRate?: number | null;
@@ -221,6 +281,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
   repaymentMethod?: string | null;
   baseAnnualRate?: number | null;
   adjustments?: LoanRateAdjustment[] | null;
+  principalAdjustments?: LoanPrincipalAdjustmentInPeriod[] | null;
   intervalMonths?: number | null;
   scheduledAmount: number;
   scheduledAmountExact?: number | null;
@@ -230,6 +291,14 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
   runDate: string;
 }) {
   const adjustments = normalizeLoanRateAdjustments(params.adjustments);
+  const hasRateAdjustmentInThisPeriod = params.previousRunDate
+    ? hasLoanRateAdjustmentInPeriod({
+        adjustments,
+        startDateExclusive: params.previousRunDate,
+        endDateInclusive: params.runDate,
+      })
+    : false;
+  const hasPrincipalAdjustmentInThisPeriod = (params.principalAdjustments?.length ?? 0) > 0;
   const remainingPrincipal = Math.max(0, params.remainingPrincipal);
   const remainingRuns = Math.max(1, params.remainingRuns);
   const effectiveAnnualRate = getEffectiveLoanAnnualRate({
@@ -237,52 +306,52 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
     adjustments,
     date: params.runDate,
   });
-  const scheduledAmount =
-    calcLoanScheduledAmount({
-      repaymentMethod: params.repaymentMethod,
-      annualRate: effectiveAnnualRate,
-      principal: remainingPrincipal,
-      totalRuns: remainingRuns,
-      intervalMonths: params.intervalMonths,
-    }) ?? params.scheduledAmount;
-  const scheduledAmountExact =
-    calcLoanScheduledAmountExact({
-      repaymentMethod: params.repaymentMethod,
-      annualRate: effectiveAnnualRate,
-      principal: remainingPrincipal,
-      totalRuns: remainingRuns,
-      intervalMonths: params.intervalMonths,
-    }) ?? params.scheduledAmountExact ?? scheduledAmount;
+  const scheduledAmount = hasPrincipalAdjustmentInThisPeriod
+    ? params.scheduledAmount
+    : calcLoanScheduledAmount({
+        repaymentMethod: params.repaymentMethod,
+        annualRate: effectiveAnnualRate,
+        principal: remainingPrincipal,
+        totalRuns: remainingRuns,
+        intervalMonths: params.intervalMonths,
+      }) ?? params.scheduledAmount;
+  const scheduledAmountExact = hasPrincipalAdjustmentInThisPeriod
+    ? params.scheduledAmountExact ?? params.scheduledAmount
+    : calcLoanScheduledAmountExact({
+        repaymentMethod: params.repaymentMethod,
+        annualRate: effectiveAnnualRate,
+        principal: remainingPrincipal,
+        totalRuns: remainingRuns,
+        intervalMonths: params.intervalMonths,
+      }) ?? params.scheduledAmountExact ?? scheduledAmount;
 
   if (
     params.previousRunDate &&
-    hasLoanRateAdjustmentInPeriod({
-      adjustments,
-      startDateExclusive: params.previousRunDate,
-      endDateInclusive: params.runDate,
-    })
+    (hasRateAdjustmentInThisPeriod || hasPrincipalAdjustmentInThisPeriod)
   ) {
     const periodStartAnnualRate = getEffectiveLoanAnnualRate({
       baseAnnualRate: params.baseAnnualRate,
       adjustments,
       date: params.previousRunDate,
     });
-    const periodStartScheduledAmount =
-      calcLoanScheduledAmount({
-        repaymentMethod: params.repaymentMethod,
-        annualRate: periodStartAnnualRate,
-        principal: remainingPrincipal,
-        totalRuns: remainingRuns,
-        intervalMonths: params.intervalMonths,
-      }) ?? params.scheduledAmount;
-    const periodStartScheduledAmountExact =
-      calcLoanScheduledAmountExact({
-        repaymentMethod: params.repaymentMethod,
-        annualRate: periodStartAnnualRate,
-        principal: remainingPrincipal,
-        totalRuns: remainingRuns,
-        intervalMonths: params.intervalMonths,
-      }) ?? params.scheduledAmountExact ?? periodStartScheduledAmount;
+    const periodStartScheduledAmount = hasRateAdjustmentInThisPeriod
+      ? calcLoanScheduledAmount({
+          repaymentMethod: params.repaymentMethod,
+          annualRate: periodStartAnnualRate,
+          principal: remainingPrincipal,
+          totalRuns: remainingRuns,
+          intervalMonths: params.intervalMonths,
+        }) ?? params.scheduledAmount
+      : params.scheduledAmount;
+    const periodStartScheduledAmountExact = hasRateAdjustmentInThisPeriod
+      ? calcLoanScheduledAmountExact({
+          repaymentMethod: params.repaymentMethod,
+          annualRate: periodStartAnnualRate,
+          principal: remainingPrincipal,
+          totalRuns: remainingRuns,
+          intervalMonths: params.intervalMonths,
+        }) ?? params.scheduledAmountExact ?? periodStartScheduledAmount
+      : params.scheduledAmountExact ?? periodStartScheduledAmount;
     const periodStartParts = calcLoanRunParts({
       repaymentMethod: params.repaymentMethod,
       annualRate: periodStartAnnualRate,
@@ -292,22 +361,35 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
       remainingPrincipal,
       remainingRuns,
     });
-    const interest = calcLoanPeriodInterestByDailyRate({
-      principal: remainingPrincipal,
-      baseAnnualRate: params.baseAnnualRate,
-      adjustments,
-      startDateExclusive: params.previousRunDate,
-      endDateInclusive: params.runDate,
-    });
-    const principal = roundLoanMoney(Math.min(remainingPrincipal, Math.max(0, periodStartParts.principal)));
+    const interest = hasPrincipalAdjustmentInThisPeriod
+      ? calcLoanPeriodInterestByDailyRateWithPrincipalAdjustments({
+          principal: remainingPrincipal,
+          baseAnnualRate: params.baseAnnualRate,
+          adjustments,
+          principalAdjustments: params.principalAdjustments,
+          intervalMonths: params.intervalMonths,
+          startDateExclusive: params.previousRunDate,
+          endDateInclusive: params.runDate,
+        })
+      : calcLoanPeriodInterestByDailyRate({
+          principal: remainingPrincipal,
+          baseAnnualRate: params.baseAnnualRate,
+          adjustments,
+          startDateExclusive: params.previousRunDate,
+          endDateInclusive: params.runDate,
+        });
+    const principalExact = hasPrincipalAdjustmentInThisPeriod
+      ? Math.min(remainingPrincipal, Math.max(0, periodStartScheduledAmountExact - interest))
+      : periodStartParts.principalExact;
+    const principal = roundLoanMoney(Math.min(remainingPrincipal, Math.max(0, principalExact ?? periodStartParts.principal)));
     return {
       principal,
       interest,
       payment: roundLoanMoney(principal + interest),
       annualRate: effectiveAnnualRate,
-      scheduledAmount,
-      scheduledAmountExact,
-      principalExact: periodStartParts.principalExact,
+      scheduledAmount: hasPrincipalAdjustmentInThisPeriod ? periodStartScheduledAmount : scheduledAmount,
+      scheduledAmountExact: hasPrincipalAdjustmentInThisPeriod ? periodStartScheduledAmountExact : scheduledAmountExact,
+      principalExact,
       usedDailyInterest: true,
     };
   }

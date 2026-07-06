@@ -229,6 +229,7 @@ export async function POST(req: Request) {
         orderBy: { date: "desc" },
         select: { date: true },
       });
+      const previousRunDate = previousPrincipalRow?.date ?? plan.startDate;
       const existingExecutedBefore = await prisma.txRecord.count({
         where: {
           householdId,
@@ -266,7 +267,7 @@ export async function POST(req: Request) {
           source: "debt_prepay_out",
           type: TransactionType.transfer,
           toAccountId: plan.accountId,
-          date: { lt: firstRunDate },
+          date: { lte: previousRunDate },
         },
         select: { id: true },
       });
@@ -290,8 +291,26 @@ export async function POST(req: Request) {
       }
       let rollingExactRemainingPrincipal = rollingRemainingPrincipal;
 
-      const previousRunDate = previousPrincipalRow?.date ?? plan.startDate;
       let rollingPreviousRunDate = previousRunDate;
+      const prepaymentRows = await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          deletedAt: null,
+          source: "debt_prepay_out",
+          type: TransactionType.transfer,
+          toAccountId: plan.accountId,
+          date: { gt: previousRunDate, lte: finalRunDate },
+        },
+        orderBy: [{ date: "asc" }, { id: "asc" }],
+        select: { date: true, amount: true, debtPrincipalAmount: true },
+      });
+      const inPeriodPrepaymentsAlreadyInBalance = prepaymentRows
+        .filter((row) => row.date < firstRunDate)
+        .reduce((sum, row) => sum + Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)), 0);
+      if (inPeriodPrepaymentsAlreadyInBalance > 0) {
+        rollingExactRemainingPrincipal += inPeriodPrepaymentsAlreadyInBalance;
+        rollingRemainingPrincipal = Math.round((rollingRemainingPrincipal + inPeriodPrepaymentsAlreadyInBalance) * 100) / 100;
+      }
       const annualRateAtHistoricalStart = getEffectiveLoanAnnualRate({
         baseAnnualRate: memo.annualRate,
         adjustments,
@@ -329,23 +348,11 @@ export async function POST(req: Request) {
       if (!targetAccount) {
         return NextResponse.json({ ok: false, error: "贷款账户不存在" }, { status: 404 });
       }
-      const prepaymentRows = await prisma.txRecord.findMany({
-        where: {
-          householdId,
-          deletedAt: null,
-          source: "debt_prepay_out",
-          type: TransactionType.transfer,
-          toAccountId: plan.accountId,
-          date: { gte: firstRunDate, lte: finalRunDate },
-        },
-        orderBy: [{ date: "asc" }, { id: "asc" }],
-        select: { date: true, amount: true, debtPrincipalAmount: true },
-      });
       let nextPrepaymentIndex = 0;
-      const applyPrepaymentsBefore = (currentRunDate: Date) => {
+      const applyPrepaymentsBefore = (previousRunDate: Date) => {
         while (
           nextPrepaymentIndex < prepaymentRows.length &&
-          prepaymentRows[nextPrepaymentIndex]!.date < currentRunDate
+          prepaymentRows[nextPrepaymentIndex]!.date <= previousRunDate
         ) {
           rollingExactRemainingPrincipal = Math.max(
             0,
@@ -398,13 +405,19 @@ export async function POST(req: Request) {
 
         for (const [index, currentRun] of historicalRuns.entries()) {
           const currentRunDate = currentRun.date;
-          applyPrepaymentsBefore(currentRunDate);
+          applyPrepaymentsBefore(rollingPreviousRunDate);
           const runDateKey = formatDateUtc(currentRunDate);
           const remainingRunsForThisRun = Math.max(1, remainingRunsAtStart - index);
           const parts = calcLoanRunPartsWithRateAdjustments({
             repaymentMethod: memo.repaymentMethod,
             baseAnnualRate: memo.annualRate,
             adjustments,
+            principalAdjustments: prepaymentRows
+              .filter((row) => row.date > rollingPreviousRunDate && row.date <= currentRunDate)
+              .map((row) => ({
+                date: formatDateUtc(row.date),
+                amount: Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)),
+              })),
             intervalMonths,
             scheduledAmount: rollingScheduledAmount,
             scheduledAmountExact: rollingScheduledAmountExact,
@@ -450,8 +463,21 @@ export async function POST(req: Request) {
               },
             });
           }
+          const inPeriodPrepaymentTotal = prepaymentRows
+            .filter((row) => row.date > rollingPreviousRunDate && row.date <= currentRunDate)
+            .reduce((sum, row) => sum + Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)), 0);
           rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - (parts.principalExact ?? parts.principal));
           rollingRemainingPrincipal = Math.max(0, Math.round((rollingRemainingPrincipal - parts.principal) * 100) / 100);
+          if (inPeriodPrepaymentTotal > 0) {
+            rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - inPeriodPrepaymentTotal);
+            rollingRemainingPrincipal = Math.max(0, Math.round((rollingRemainingPrincipal - inPeriodPrepaymentTotal) * 100) / 100);
+            while (
+              nextPrepaymentIndex < prepaymentRows.length &&
+              prepaymentRows[nextPrepaymentIndex]!.date <= currentRunDate
+            ) {
+              nextPrepaymentIndex += 1;
+            }
+          }
           rollingPreviousRunDate = currentRunDate;
         }
 
