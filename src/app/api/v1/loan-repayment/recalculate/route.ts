@@ -16,7 +16,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
+import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 
 export const runtime = "nodejs";
 
@@ -52,6 +52,13 @@ function parseLoanTotalRunsFromNote(note?: string | null) {
   if (!match) return null;
   const value = Number(match[1]);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function alignToRepaymentRunDate(
+  date: Date,
+  plan: { intervalUnit: IntervalUnit; intervalValue: number; executionDay?: number | null },
+) {
+  return calcInitialScheduledRunDate(date, plan.intervalUnit, plan.intervalValue, plan.executionDay, false);
 }
 
 async function getLoanBalanceBeforeDate(params: {
@@ -138,7 +145,10 @@ export async function POST(req: Request) {
     const remainingRuns = plan.totalRuns == null ? null : Math.max(0, plan.totalRuns - executedRuns);
     const originalRemainingRuns = originalTotalRuns == null ? null : Math.max(0, originalTotalRuns - executedRuns);
     const intervalMonths = memo.repaymentIntervalMonths ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : 1);
-    const recalculateStartDate = requestedStartDate ?? plan.nextRunDate;
+    const rawRecalculateStartDate = requestedStartDate ?? plan.nextRunDate;
+    const recalculateStartDate = requestedStartDate
+      ? alignToRepaymentRunDate(requestedStartDate, plan)
+      : plan.nextRunDate;
     const tableAdjustments = (await listLoanRateAdjustmentsByAccountIds({
       householdId,
       accountIds: [plan.accountId],
@@ -354,6 +364,23 @@ export async function POST(req: Request) {
       }
 
       await prisma.$transaction(async (tx) => {
+        if (formatDateUtc(rawRecalculateStartDate) < formatDateUtc(firstRunDate)) {
+          await tx.txRecord.updateMany({
+            where: {
+              householdId,
+              regularInvestPlanId: plan.id,
+              source: AUTO_LOAN_REPAYMENT_SOURCE,
+              OR: [
+                { type: TransactionType.transfer, toAccountId: plan.accountId },
+                { type: TransactionType.expense },
+              ],
+              deletedAt: null,
+              date: { gte: rawRecalculateStartDate, lt: firstRunDate },
+            },
+            data: { deletedAt: new Date() },
+          });
+        }
+
         await tx.txRecord.updateMany({
           where: {
             householdId,

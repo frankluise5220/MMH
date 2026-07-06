@@ -432,7 +432,7 @@ export function DebtTransactionModal({
   });
 
   function getPendingRepaymentLprAdjustment() {
-    if ((mode !== "repay_out" && mode !== "prepay_out") || editingEntryId || !repaymentLprCheck) return null;
+    if (mode !== "repay_out" || editingEntryId || !repaymentLprCheck) return null;
     const discount = repaymentLprCheck.mortgageLprDiscount;
     if (discount == null || !Number.isFinite(discount) || discount <= 0 || !isValidDateInput(date)) return null;
     const lpr = getLatestFiveYearLpr(date);

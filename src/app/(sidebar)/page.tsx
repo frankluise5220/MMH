@@ -1169,7 +1169,7 @@ async function createDebtTransaction(formData: FormData) {
       if (
         acceptedLprRateEffectiveDate &&
         acceptedLprAnnualRate != null &&
-        (mode === "repay_out" || mode === "prepay_out")
+        mode === "repay_out"
       ) {
         const repaymentPlan = await tx.regularInvestPlan.findFirst({
           where: {
@@ -3866,13 +3866,23 @@ export default async function Home({
         (entry.regularInvestPlanId
           ? entry.regularInvestPlanId === selectedRepaymentPlan.id
           : selectedDebtAccountIds.has(relatedAccountId))
-          ? formatDateUtc(calcNextScheduledRunDate(
-              entryDate,
-              selectedRepaymentPlan.intervalUnit,
-              selectedRepaymentPlan.intervalValue,
-              selectedRepaymentPlan.executionDay,
-              false,
-            ))
+          ? formatDateUtc(
+              entry.regularInvestPlanId
+                ? calcNextScheduledRunDate(
+                    entryDate,
+                    selectedRepaymentPlan.intervalUnit,
+                    selectedRepaymentPlan.intervalValue,
+                    selectedRepaymentPlan.executionDay,
+                    false,
+                  )
+                : calcInitialScheduledRunDate(
+                    entryDate,
+                    selectedRepaymentPlan.intervalUnit,
+                    selectedRepaymentPlan.intervalValue,
+                    selectedRepaymentPlan.executionDay,
+                    false,
+                  ),
+            )
           : null;
       return {
         id: entry.id,
