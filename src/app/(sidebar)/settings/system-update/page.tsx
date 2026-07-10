@@ -464,7 +464,7 @@ export default function SystemUpdatePage() {
                     ) : null}
                   </>
                 ) : (
-                  <span className="text-amber-600">未获取，请检查网络后查询</span>
+                  <span className="text-amber-600">未获取，请查看下方失败原因后重试</span>
                 )}
               </div>
 

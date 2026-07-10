@@ -117,6 +117,8 @@ MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
 系统设置 -> 系统更新 -> 镜像源
 ```
 
+选择“自动选择”时，网页里的“刷新远端版本”和实际更新都会按镜像源顺序检测可用版本；不会只检查单一源。如果全部源都无法读取镜像版本，页面会显示失败原因。
+
 常用可选源：
 
 - `ghcr`：`ghcr.io/frankluise5220/mmh:latest`

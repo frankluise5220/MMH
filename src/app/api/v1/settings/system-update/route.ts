@@ -51,6 +51,7 @@ type ImageSourceConfig = {
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 const IMAGE_FALLBACK_ORDER = ["dockerproxy", "nju", "ghcr", "daocloud", "custom"];
+const STANDARD_IMAGE_SOURCE_ORDER = IMAGE_FALLBACK_ORDER.filter((source) => source !== "custom");
 const UPDATER_DEFAULT_TIMEOUT_MS = 5_000;
 const VERSION_CHECK_TIMEOUT_MS = 5_000;
 const IMAGE_VERSION_CHECK_TIMEOUT_MS = 6_000;
@@ -283,43 +284,63 @@ function getComparableShortCommit(value: string | undefined) {
   return commit.slice(0, 7);
 }
 
+type ImageVersionSpeedResult = {
+  source?: string;
+  image?: string;
+  ok?: boolean;
+  error?: string;
+  version?: {
+    revision?: string;
+    commit?: string;
+    created?: string;
+    message?: string;
+  };
+};
+
+function getImageVersionSourceOrder(imageSourceConfig: ImageSourceConfig | null) {
+  const configuredSource = imageSourceConfig?.source || "auto";
+  const customAppImage = imageSourceConfig?.customAppImage || "";
+  if (configuredSource === "custom") return ["custom"];
+  if (configuredSource && configuredSource !== "auto") return [configuredSource];
+  return customAppImage ? [...STANDARD_IMAGE_SOURCE_ORDER, "custom"] : STANDARD_IMAGE_SOURCE_ORDER;
+}
+
+function getImageVersionCheckBody(imageSourceConfig: ImageSourceConfig | null) {
+  const configuredSource = imageSourceConfig?.source || "auto";
+  const customAppImage = imageSourceConfig?.customAppImage || "";
+  if (configuredSource === "custom") {
+    return { source: "custom", customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
+  }
+  if (configuredSource && configuredSource !== "auto") {
+    return { source: configuredSource, customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
+  }
+  return { customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
+}
+
+function getImageVersionFetchError(imageSourceConfig: ImageSourceConfig | null) {
+  const configuredSource = imageSourceConfig?.source || "auto";
+  if (configuredSource === "auto") {
+    const sourceText = getImageVersionSourceOrder(imageSourceConfig).join("、");
+    return `镜像版本检查失败或超时，已按顺序尝试：${sourceText}`;
+  }
+  return `镜像版本检查失败或超时，已检查镜像源：${configuredSource}`;
+}
+
 async function getImageVersionFallback(
   base: VersionInfo,
   imageSourceConfig: ImageSourceConfig | null,
 ): Promise<Partial<VersionInfo> | null> {
   if (!getUpdaterConfig().enabled) return null;
   const configuredSource = imageSourceConfig?.source || "auto";
-  const configuredAppImage = imageSourceConfig?.appImage || imageSourceConfig?.customAppImage || "";
-  const sourceForCheck = configuredSource === "auto"
-    ? (configuredAppImage ? "custom" : IMAGE_FALLBACK_ORDER[0])
-    : configuredSource;
-  const sourceOrder = [sourceForCheck];
+  const sourceOrder = getImageVersionSourceOrder(imageSourceConfig);
 
   try {
     const data = await callUpdater("/speed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        sourceForCheck === "custom"
-          ? { source: "custom", customAppImage: configuredAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS }
-          : {
-              source: sourceForCheck,
-              customAppImage: imageSourceConfig?.customAppImage || "",
-              timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS,
-            },
-      ),
+      body: JSON.stringify(getImageVersionCheckBody(imageSourceConfig)),
     }, IMAGE_VERSION_CHECK_TIMEOUT_MS + 2_000);
-    const results = Array.isArray(data?.results) ? data.results as Array<{
-      source?: string;
-      image?: string;
-      ok?: boolean;
-      version?: {
-        revision?: string;
-        commit?: string;
-        created?: string;
-        message?: string;
-      };
-    }> : [];
+    const results = Array.isArray(data?.results) ? data.results as ImageVersionSpeedResult[] : [];
 
     const resultBySource = new Map(results.map((result) => [String(result.source || ""), result]));
     const selected = sourceOrder
@@ -398,7 +419,7 @@ export async function GET(req: NextRequest) {
       } else if (updaterEnabled) {
         versionInfo = {
           ...localOnlyVersionInfo,
-          fetchError: "镜像版本检查失败或超时，请稍后重试",
+          fetchError: getImageVersionFetchError(imageSourceConfig),
         };
       } else {
         const github = await getGitHubVersionInfo(projectRoot);
