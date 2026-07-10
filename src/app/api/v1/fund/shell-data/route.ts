@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 
 export async function GET(req: Request) {
   try {
@@ -36,7 +37,14 @@ export async function GET(req: Request) {
 
     // Do not limit here: the client paginates details locally.
     // entryScope=account is used when the client needs a complete local cache for fast fund switching.
-    const fundEntries = await prisma.txRecord.findMany({
+    const fundTransactionEntries = await loadFundTransactionEntryLike({
+      accountId,
+      householdId: ctx.householdId,
+      fundCode: selectedFundCode || undefined,
+      entryScope,
+    });
+
+    const legacyFundEntries = fundTransactionEntries.length > 0 ? [] : await prisma.txRecord.findMany({
       where: {
         deletedAt: null,
         ...(entryScope === "account"
@@ -46,6 +54,7 @@ export async function GET(req: Request) {
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     });
+    const fundEntries = fundTransactionEntries.length > 0 ? fundTransactionEntries : legacyFundEntries;
 
     // Fee rates
     const feeRateRecords = await prisma.fundFeeRate.findMany({

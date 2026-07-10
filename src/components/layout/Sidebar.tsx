@@ -15,7 +15,8 @@ import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 
 type CurrentCreditCycle = {
   accountId: string;
-  effectiveBill: unknown;
+  cumulativeRemain: unknown;
+  cumulativeOverpaid: unknown;
 };
 
 async function getSidebarData() {
@@ -62,7 +63,7 @@ async function getSidebarData() {
   const currentCreditCyclesPromise: Promise<CurrentCreditCycle[]> = creditIds.length > 0
     ? prisma.creditCardCycle.findMany({
         where: { accountId: { in: creditIds }, isCurrentCycle: true },
-        select: { accountId: true, effectiveBill: true },
+        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
       })
     : Promise.resolve([]);
   const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
@@ -72,7 +73,10 @@ async function getSidebarData() {
     insuranceDisplayBalancePromise,
   ]);
   const currentCreditBalanceByAccountId = new Map<string, number>(
-    currentCreditCycles.map((cycle) => [cycle.accountId, Number(cycle.effectiveBill ?? 0)]),
+    currentCreditCycles.map((cycle) => [
+      cycle.accountId,
+      Number(cycle.cumulativeRemain ?? 0) - Number(cycle.cumulativeOverpaid ?? 0),
+    ]),
   );
   const items = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);

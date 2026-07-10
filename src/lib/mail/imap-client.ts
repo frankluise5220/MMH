@@ -1,5 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { createHash } from "node:crypto";
 import type { Readable } from "stream";
 import { extractPdfText } from "@/lib/mail/pdf";
 
@@ -12,7 +13,7 @@ export type ImapConfig = {
   mailbox?: string;
 };
 
-export type MailListItem = { uid: number; subject: string; from: string; date: string };
+export type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string };
 export type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
 export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments: MailAttachment[] };
 export type MailListMeta = {
@@ -78,6 +79,19 @@ function toIso(value: Date | string | undefined) {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
+function normalizeHashPart(value: string | number | undefined | null) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function buildMailListHash(input: { subject: string; from: string; date: string }) {
+  const payload = [
+    normalizeHashPart(input.subject),
+    normalizeHashPart(input.from),
+    normalizeHashPart(input.date),
+  ].join("\n");
+  return createHash("sha256").update(payload, "utf8").digest("hex");
+}
+
 function formatAddress(address?: { name?: string; address?: string }[]) {
   const first = address?.[0];
   return (first?.address || first?.name || "").trim();
@@ -127,7 +141,7 @@ export async function closeImap(target: MailClient["client"] | MailClient) {
 
 export async function listMails(
   target: MailClient["client"] | MailClient,
-  options: { limit: number; scanLimit?: number; sinceDate?: string; keyword?: string; subjectIncludes?: string; fromIncludes?: string },
+  options: { limit: number; scanLimit?: number; sinceDate?: string; keyword?: string; keywords?: string[]; subjectIncludes?: string; fromIncludes?: string },
   trace: string[] = []
 ): Promise<{ items: MailListItem[]; meta: MailListMeta }> {
   const client = "client" in target ? target.client : target;
@@ -137,10 +151,15 @@ export async function listMails(
     return { items: [], meta: { total: 0, scanned: 0, matched: 0, limited: options.limit, hasKeyword: false, scanLimit: options.scanLimit ?? options.limit, sinceDate: options.sinceDate ?? "" } };
   }
 
-  const keyword = options.keyword?.trim().toLowerCase();
+  const keywords = Array.from(new Set([
+    options.keyword,
+    ...(options.keywords ?? []),
+  ]
+    .map((item) => item?.trim().toLowerCase())
+    .filter((item): item is string => !!item)));
   const subjectKeyword = options.subjectIncludes?.trim().toLowerCase();
   const fromKeyword = options.fromIncludes?.trim().toLowerCase();
-  const hasKeyword = Boolean(keyword || subjectKeyword || fromKeyword);
+  const hasKeyword = Boolean(keywords.length > 0 || subjectKeyword || fromKeyword);
   const since = options.sinceDate ? new Date(`${options.sinceDate}T00:00:00.000Z`) : null;
   const sinceValid = since && !Number.isNaN(since.getTime()) ? since : null;
   const range = buildRecentSequenceRange(total, options.limit, hasKeyword || Boolean(sinceValid), options.scanLimit);
@@ -159,7 +178,7 @@ export async function listMails(
       scanned += 1;
       const normalizedSubject = subject.toLowerCase();
       const normalizedFrom = from.toLowerCase();
-      const keywordOk = !keyword || normalizedSubject.includes(keyword) || normalizedFrom.includes(keyword);
+      const keywordOk = keywords.length === 0 || keywords.some((keyword) => normalizedSubject.includes(keyword) || normalizedFrom.includes(keyword));
       const subjectOk = !subjectKeyword || normalizedSubject.includes(subjectKeyword);
       const fromOk = !fromKeyword || normalizedFrom.includes(fromKeyword);
 
@@ -173,6 +192,7 @@ export async function listMails(
         subject,
         from,
         date: toIso(message.envelope?.date),
+        hash: buildMailListHash({ subject, from, date: toIso(message.envelope?.date) }),
       });
       trace.push(`row ok uid=${message.uid} "${subject}"`);
     }

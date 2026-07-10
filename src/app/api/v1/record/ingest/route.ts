@@ -13,6 +13,7 @@ import {
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-account";
+import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,7 @@ type AccountLookupRow = {
   name: string;
   kind: AccountKind;
   billingDay: number | null;
+  currency: string | null;
   numberMasked: string | null;
   Institution: { name: string | null; shortName?: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
@@ -29,7 +31,7 @@ type AccountLookupRow = {
 type ImportContext = {
   householdId: string;
   accountIdByMatchKey: Map<string, string>;
-  accountMetaById: Map<string, { kind: AccountKind; billingDay: number | null }>;
+  accountMetaById: Map<string, { name: string; kind: AccountKind; billingDay: number | null; currency: string | null }>;
   accountLookupRows: AccountLookupRow[];
   categoryIdByName: Map<string, string>;
   tagIdByName: Map<string, string>;
@@ -70,6 +72,7 @@ const ParsedItemSchema = z.object({
   rawText: z.string(),
   type: z.enum(["expense", "income", "transfer", "investment"]),
   date: z.string().optional(),
+  postedAt: z.string().optional(),
   amount: z.number(),
   account: z.string().optional(),
   fromAccount: z.string().optional(),
@@ -91,6 +94,13 @@ function parseDate(date?: string) {
   return d;
 }
 
+function parseOptionalDateTime(value?: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function addMonthsUtc(date: Date, months: number) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   d.setUTCMonth(d.getUTCMonth() + months);
@@ -99,7 +109,7 @@ function addMonthsUtc(date: Date, months: number) {
 
 function toStatementMonth(date: Date, billingDay: number) {
   const day = date.getUTCDate();
-  const monthBase = day <= billingDay ? date : addMonthsUtc(date, 1);
+  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
   const y = monthBase.getUTCFullYear();
   const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
@@ -162,6 +172,7 @@ async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string
       name: true,
       kind: true,
       billingDay: true,
+      currency: true,
       numberMasked: true,
       Institution: {
         select: {
@@ -176,7 +187,7 @@ async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string
   // Index all accounts
   for (const account of accounts) {
     indexAccountLookup(ctx.accountIdByMatchKey, account);
-    ctx.accountMetaById.set(account.id, { kind: account.kind, billingDay: account.billingDay });
+    ctx.accountMetaById.set(account.id, { name: account.name, kind: account.kind, billingDay: account.billingDay, currency: account.currency });
   }
   ctx.accountLookupRows = accounts;
 
@@ -250,8 +261,8 @@ async function ensureAccountId(ctx: ImportContext, tx: Db, accountName?: string)
       },
     });
     indexAccountLookup(ctx.accountIdByMatchKey, { id: created.id, name: created.name, kind: created.kind, numberMasked: created.numberMasked, Institution: null });
-    ctx.accountMetaById.set(created.id, { kind: created.kind, billingDay: created.billingDay });
-    ctx.accountLookupRows.push({ id: created.id, name: created.name, kind: created.kind, billingDay: created.billingDay, numberMasked: created.numberMasked, Institution: null });
+    ctx.accountMetaById.set(created.id, { name: created.name, kind: created.kind, billingDay: created.billingDay, currency: created.currency });
+    ctx.accountLookupRows.push({ id: created.id, name: created.name, kind: created.kind, billingDay: created.billingDay, currency: created.currency, numberMasked: created.numberMasked, Institution: null });
     return created.id;
   } catch {
     return (await resolveAccountId(ctx, tx, name)) ?? null;
@@ -311,6 +322,20 @@ function statementMonthForAccountMeta(ctx: ImportContext, accountId: string | nu
   return toStatementMonth(date, meta.billingDay);
 }
 
+async function accountMetaFor(ctx: ImportContext, tx: Db, accountId: string | null) {
+  if (!accountId) return null;
+  const cached = ctx.accountMetaById.get(accountId);
+  if (cached) return cached;
+  const account = await tx.account.findUnique({
+    where: { id: accountId },
+    select: { name: true, kind: true, billingDay: true, currency: true },
+  });
+  if (!account) return null;
+  const meta = { name: account.name, kind: account.kind, billingDay: account.billingDay, currency: account.currency };
+  ctx.accountMetaById.set(accountId, meta);
+  return meta;
+}
+
 async function buildImportContext(): Promise<ImportContext> {
   const { householdId } = await getHouseholdScope();
   const [accounts, categories, tags, institutions, defaultGroup] = await Promise.all([
@@ -321,6 +346,7 @@ async function buildImportContext(): Promise<ImportContext> {
         name: true,
         kind: true,
         billingDay: true,
+        currency: true,
         numberMasked: true,
         Institution: {
           select: {
@@ -365,7 +391,7 @@ async function buildImportContext(): Promise<ImportContext> {
 
   for (const account of accounts) {
     indexAccountLookup(ctx.accountIdByMatchKey, account);
-    ctx.accountMetaById.set(account.id, { kind: account.kind, billingDay: account.billingDay });
+    ctx.accountMetaById.set(account.id, { name: account.name, kind: account.kind, billingDay: account.billingDay, currency: account.currency });
   }
   for (const category of categories) {
     if (!ctx.categoryIdByName.has(category.name)) ctx.categoryIdByName.set(category.name, category.id);
@@ -388,7 +414,8 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
   const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
   const counterpartyInstitutionName = String(item.institution ?? "").trim() || null;
   const rawSecondNote = String(item.secondRemark ?? "").trim();
-  const secondNote = rawSecondNote || counterpartyInstitutionName || null;
+  const primaryNote = String(item.remark ?? item.rawText ?? "").trim();
+  const transferDisplayNote = rawSecondNote || primaryNote || null;
 
   const shouldUseDoubleEntry =
     item.type === "transfer" ||
@@ -406,6 +433,11 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
     const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(ctx, tx, "未指定账户") : null);
     const sourceAccountName = fromAccountName || (toAccountId ? "未指定账户" : "未识别账户");
     const fromStatementMonth = statementMonthForAccountMeta(ctx, sourceAccountId, date);
+    const fromAccountMeta = await accountMetaFor(ctx, tx, sourceAccountId);
+    const toAccountMeta = await accountMetaFor(ctx, tx, toAccountId);
+    const transactionCurrency = item.type === "transfer" && fromAccountMeta && toAccountMeta
+      ? resolveSameCurrencyTransfer(fromAccountMeta, toAccountMeta)
+      : normalizeCurrency(fromAccountMeta?.currency ?? toAccountMeta?.currency);
 
     const amountAbs = Math.abs(item.amount);
 
@@ -422,20 +454,22 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
     }
 
     const transaction = await tx.txRecord.create({
-      data: {
-        type: item.type as any,
-        date,
-        amount: -amountAbs,
+    data: {
+      type: item.type as any,
+      date,
+      postedAt: null,
+      amount: -amountAbs,
         accountId: sourceAccountId ?? toAccountId ?? "",
         accountName: sourceAccountName,
         toAccountId,
         toAccountName: toAccountName || null,
         note: item.remark ?? item.rawText,
-        toNote: secondNote,
+        toNote: transferDisplayNote,
         counterpartyInstitutionId,
         counterpartyInstitutionName,
         statementMonth: fromStatementMonth,
         householdId: ctx.householdId,
+        currency: transactionCurrency,
         // Add fund fields for investment type
         ...(item.type === "investment" && fundCode ? {
           fundCode,
@@ -456,9 +490,11 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
     Promise.resolve(resolveCategoryId(ctx, item.category)),
   ]);
   const statementMonth = statementMonthForAccountMeta(ctx, accountId, date);
+  const accountMeta = await accountMetaFor(ctx, tx, accountId);
 
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * Math.abs(item.amount);
+  const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
 
   // For investment transactions, detect fund fields
   let fundCode: string | null = null;
@@ -476,17 +512,19 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
     data: {
       type: item.type as any,
       date,
+      postedAt,
       amount,
       accountId: accountId ?? (await ensureAccountId(ctx, tx, "未指定账户")) ?? "",
       accountName: accountName || "未识别账户",
       categoryId,
       categoryName: item.category ?? null,
       note: item.remark ?? item.rawText,
-      toNote: secondNote,
+      toNote: null,
       counterpartyInstitutionId,
       counterpartyInstitutionName,
       statementMonth,
       householdId: ctx.householdId,
+      currency: normalizeCurrency(accountMeta?.currency),
       // Add fund fields for investment type
       ...(item.type === "investment" && fundCode ? {
         fundCode,

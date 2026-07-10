@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
-import { hasSmtpConfig } from "@/lib/mail/smtp";
-import { hasResendConfig } from "@/lib/mail/resend";
+import { hasAnySmtpConfig } from "@/lib/mail/smtp";
+import { hasAnyResendConfig } from "@/lib/mail/resend";
 
 export const runtime = "nodejs";
 
@@ -11,10 +10,10 @@ export const runtime = "nodejs";
  */
 export async function GET() {
   // 检查 Resend（SystemSetting + env）
-  const hasResend = await hasResendConfigAsync();
+  const hasResend = await hasAnyResendConfig();
 
-  // 检查 SMTP（EmailAccount + UserSettings + env）
-  const hasSmtp = hasSmtpConfig() || await hasSmtpDbConfig();
+  // 检查 SMTP（统一走实际发送会使用的解析路径）
+  const hasSmtp = await hasAnySmtpConfig();
 
   return NextResponse.json({
     ok: true,
@@ -22,28 +21,4 @@ export async function GET() {
     hasResend,
     hasSmtp,
   });
-}
-
-async function hasResendConfigAsync(): Promise<boolean> {
-  // env 配置
-  if (hasResendConfig()) return true;
-  // SystemSetting 配置
-  try {
-    const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
-    if (setting) {
-      const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
-      if (parsed.apiKey && parsed.from) return true;
-    }
-  } catch {}
-  return false;
-}
-
-async function hasSmtpDbConfig(): Promise<boolean> {
-  try {
-    const account = await prisma.emailAccount.findFirst({
-      where: { smtpHost: { not: null }, smtpFrom: { not: null } },
-    });
-    if (account?.smtpHost && account?.smtpFrom) return true;
-  } catch {}
-  return false;
 }

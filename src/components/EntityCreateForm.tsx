@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
-import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
+import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
+import { supportsTradingCalendarForAccount, TRADING_CALENDARS, TRADING_CALENDAR_LABELS } from "@/lib/fund/trading-calendar";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
 /* ---- Types ---- */
@@ -19,6 +20,7 @@ type EntityCreatedExtra = {
   institutionId?: string;
   institutionName?: string;
   institutionShortName?: string;
+  currency?: string;
 };
 
 type FieldDef = {
@@ -200,6 +202,7 @@ const ENTITY_CONFIG = {
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
+      { key: "tradingCalendar", label: "交易日历", type: "select", options: TRADING_CALENDARS.map((value) => ({ value, label: TRADING_CALENDAR_LABELS[value] })), defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
       { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
       { key: "institutionId", label: "机构", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
       { key: "currency", label: "币种", type: "text", defaultValue: "CNY", placeholder: "CNY" },
@@ -207,7 +210,7 @@ const ENTITY_CONFIG = {
       { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
       { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" },
       { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" },
-      { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" },
+      { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
     ] as FieldDef[],
   },
   group: {
@@ -516,6 +519,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           institutionId: entityType === "account" ? created.institutionId ?? form.institutionId ?? undefined : undefined,
           institutionName: entityType === "account" ? created.Institution?.name : undefined,
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
+          currency: entityType === "account" ? created.currency ?? form.currency ?? undefined : undefined,
           type: entityType === "institution" || entityType === "counterparty" || entityType === "category" ? selectedTypeValue : undefined,
         });
         // Reset form
@@ -808,7 +812,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
     return (
       <>
-        <div className="app-modal-backdrop z-[60]">
+        <div className="app-modal-backdrop z-[1100]">
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { ChevronDown, Plus, Repeat } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from "react";
@@ -13,6 +13,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { institutionTypeLabel } from "@/lib/account-kinds";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   buildMortgageLprRateAdjustments,
   calcMortgageAnnualRateFromLprDiscount,
@@ -23,9 +24,11 @@ import {
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
 import { getEffectiveLoanAnnualRate, type LoanRateAdjustment } from "@/lib/loan-repayment";
+import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
+import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-type PrepayStrategy = "reduce_term" | "reduce_payment" | "settle";
+type PrepayStrategy = LoanPrepayStrategy;
 
 type AccountOption = {
   id: string;
@@ -201,7 +204,10 @@ export function DebtTransactionModal({
   defaultDebtAccountId?: string;
   defaultDebtInstitutionId?: string;
   defaultCashAccountId?: string;
-  action: (formData: FormData) => Promise<{ ok: true; warning?: string } | { ok: false; error: string }>;
+  action: (formData: FormData) => Promise<
+    | { ok: true; warning?: string; recalculateAfterSave?: { accountId: string; startDate: string } | null }
+    | { ok: false; error: string }
+  >;
   showTriggerButton?: boolean;
 }) {
   const router = useRouter();
@@ -281,7 +287,9 @@ export function DebtTransactionModal({
   const [editRecalculateStartDate, setEditRecalculateStartDate] = useState("");
   const [interest, setInterest] = useState("");
   const [penalty, setPenalty] = useState("");
-  const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>("reduce_payment");
+  const [prepayTotal, setPrepayTotal] = useState("");
+  const [prepayTotalManual, setPrepayTotalManual] = useState(false);
+  const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>(DEFAULT_LOAN_PREPAY_STRATEGY);
   const [bankExecutionRate, setBankExecutionRate] = useState("");
   const [annualRate, setAnnualRate] = useState("");
   const [annualRateManuallyEdited, setAnnualRateManuallyEdited] = useState(false);
@@ -344,7 +352,9 @@ export function DebtTransactionModal({
     setEditRecalculateStartDate("");
     setInterest("");
     setPenalty("");
-    setPrepayStrategy("reduce_payment");
+    setPrepayTotal("");
+    setPrepayTotalManual(false);
+    setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
     setBankExecutionRate("");
     setAnnualRate("");
     setAnnualRateManuallyEdited(false);
@@ -412,7 +422,14 @@ export function DebtTransactionModal({
       }
       if (detail?.defaultRecalculateStartDate) setEditRecalculateStartDate(detail.defaultRecalculateStartDate);
       if (detail?.defaultInterest != null) setInterest(String(detail.defaultInterest));
-      if (detail?.defaultPenalty != null) setPenalty(String(detail.defaultPenalty));
+      if (detail?.defaultPenalty != null) {
+        const nextPenalty = String(detail.defaultPenalty);
+        setPenalty(nextPenalty);
+        if (detail?.mode === "prepay_out") {
+          setPrepayTotal(roundMoneyValue(parseMoneyText(String(detail.defaultPrincipal ?? "")) + parseMoneyText(nextPenalty)).toFixed(2));
+          setPrepayTotalManual(false);
+        }
+      }
       if (detail?.defaultPrepayStrategy) setPrepayStrategy(detail.defaultPrepayStrategy);
       if (detail?.mode === "repay_out" || detail?.mode === "prepay_out") {
         setRepaymentLprCheck({
@@ -430,6 +447,49 @@ export function DebtTransactionModal({
     setOpen(false);
     resetDraft();
   });
+
+  const prepayComputedTotal = useMemo(() => {
+    if (mode !== "prepay_out") return "";
+    if (!principal.trim() && !penalty.trim()) return "";
+    return roundMoneyValue(parseMoneyText(principal) + parseMoneyText(penalty)).toFixed(2);
+  }, [mode, penalty, principal]);
+
+  useEffect(() => {
+    if (mode !== "prepay_out" || prepayTotalManual) return;
+    setPrepayTotal(prepayComputedTotal);
+  }, [mode, prepayComputedTotal, prepayTotalManual]);
+
+  function applyPrepayTotalDraft(options?: { alertOnInvalid?: boolean }) {
+    if (mode !== "prepay_out" || !prepayTotal.trim()) return penalty;
+    const total = roundMoneyValue(parseMoneyText(prepayTotal));
+    const principalAmount = roundMoneyValue(parseMoneyText(principal));
+    if (total + 0.005 < principalAmount) {
+      if (options?.alertOnInvalid) window.alert("支出合计不能小于提前还本金");
+      setPrepayTotal(prepayComputedTotal);
+      setPrepayTotalManual(false);
+      return penalty;
+    }
+    const nextPenalty = roundMoneyValue(total - principalAmount).toFixed(2);
+    setPenalty(nextPenalty);
+    setPrepayTotal(total.toFixed(2));
+    setPrepayTotalManual(false);
+    return nextPenalty;
+  }
+
+  function handlePrincipalChange(value: string) {
+    setPrincipal(value);
+    if (mode === "prepay_out") setPrepayTotalManual(false);
+  }
+
+  function handlePenaltyChange(value: string) {
+    setPenalty(value);
+    if (mode === "prepay_out") setPrepayTotalManual(false);
+  }
+
+  function handlePrepayTotalChange(value: string) {
+    setPrepayTotal(value);
+    setPrepayTotalManual(true);
+  }
 
   function getPendingRepaymentLprAdjustment() {
     if (mode !== "repay_out" || editingEntryId || !repaymentLprCheck) return null;
@@ -514,6 +574,10 @@ export function DebtTransactionModal({
       !!debtAccountId &&
       !!editRecalculateStartDate &&
       Math.abs(roundMoneyValue(parseMoneyText(principal)) - roundMoneyValue(parseMoneyText(originalPrincipalForEdit))) > 0.005;
+    const penaltyForSubmit = mode === "prepay_out" ? applyPrepayTotalDraft({ alertOnInvalid: true }) : penalty;
+    if (mode === "prepay_out" && prepayTotal.trim() && parseMoneyText(prepayTotal) + 0.005 < parseMoneyText(principal)) {
+      return;
+    }
 
     const formData = new FormData();
     formData.set("editEntryId", editingEntryId);
@@ -526,7 +590,7 @@ export function DebtTransactionModal({
     formData.set("cashAccountId", cashAccountId);
     formData.set("principal", principal);
     formData.set("interest", interest);
-    formData.set("penalty", penalty);
+    formData.set("penalty", penaltyForSubmit);
     formData.set("prepayStrategy", prepayStrategy);
     formData.set("annualRate", annualRate);
     formData.set("mortgageLprDiscount", mortgageLprDiscount);
@@ -553,6 +617,19 @@ export function DebtTransactionModal({
       if (res.warning) {
         window.alert(res.warning);
       }
+      if (res.recalculateAfterSave) {
+        const recalcResponse = await fetch("/api/v1/loan-repayment/recalculate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(res.recalculateAfterSave),
+        });
+        const recalcData = await recalcResponse.json().catch(() => null);
+        if (!recalcResponse.ok || !recalcData?.ok) {
+          window.alert(recalcData?.error || "提前还款已保存，但后续计划重算失败");
+        } else {
+          window.alert(formatLoanRecalculateSuccessMessage(recalcData.data));
+        }
+      }
       if (shouldPromptPrincipalRecalculation) {
         const accepted = window.confirm([
           "本期还款本金已经修改，这会改变后续剩余本金。",
@@ -566,21 +643,25 @@ export function DebtTransactionModal({
             body: JSON.stringify({
               accountId: debtAccountId,
               startDate: editRecalculateStartDate,
-              strategy: "reduce_payment",
             }),
           });
           const recalcData = await recalcResponse.json().catch(() => null);
           if (!recalcResponse.ok || !recalcData?.ok) {
             window.alert(recalcData?.error || "本金已保存，但后续计划重算失败");
+          } else {
+            window.alert(formatLoanRecalculateSuccessMessage(recalcData.data));
           }
         }
       }
+      dispatchFinanceDataChanged({ reason: "debt-save" });
       router.refresh();
       if (keepAdding) {
         setPrincipal("");
         setInterest("");
         setPenalty("");
-        setPrepayStrategy("reduce_payment");
+        setPrepayTotal("");
+        setPrepayTotalManual(false);
+        setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
         setBankExecutionRate("");
         setAnnualRate("");
         setMortgageLprDiscount("");
@@ -616,12 +697,12 @@ export function DebtTransactionModal({
     await saveDebtTransaction(pendingKeepAdding, { skipHistoryPrompt: true });
   }
 
-  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "prepay_out";
+  const showInterest = mode === "repay_out" || mode === "collect_in";
   const showPrepayment = mode === "prepay_out";
   const showBorrowPlan = mode === "borrow_in";
   const repaymentTotal = useMemo(() => {
-    if (!showInterest || (!principal.trim() && !interest.trim())) return "";
-    return (parseMoneyText(principal) + parseMoneyText(interest) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
+    if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
+    return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
   const cashAccountLabel = mode === "borrow_in"
     ? "入账账户"
@@ -764,44 +845,63 @@ export function DebtTransactionModal({
                         <div className="form-label">{mode === "borrow_in" ? "入账日期" : "日期"}</div>
                         <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
-                      <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? "往来对象" : mode === "repay_out" || mode === "prepay_out" ? "借款项" : "借出项"}</div>
-                        {mode === "borrow_in" ? (
+                      {showPrepayment ? (
+                        <div className="space-y-1">
+                          <div className="form-label">{cashAccountLabel}</div>
                           <SmartSelect
                             mode="single"
-                            value={debtInstitutionId}
-                            onChange={(id) => {
-                              setDebtInstitutionId(id);
-                              setDebtAccountId("");
-                              setDebtItemName("");
-                            }}
-                            options={mergeSmartSelectOptions(visibleDebtObjectOptions, [])}
+                            value={cashAccountId}
+                            onChange={setCashAccountId}
+                            options={visibleCashOptions}
                             placeholder="请选择"
-                            onCreateClick={() => { void openDebtObjectCreate(); }}
-                            createLabel="新增往来对象"
                             behavior={{
-                              hierarchy: false,
-                              search: true,
+                              hierarchy: "auto",
+                              search: "auto",
                               clearable: false,
-                              minDropdownWidth: 320,
+                              headerExtra: cashOwnerCycleButton,
                             }}
                           />
-                        ) : (
-                          <SmartSelect
-                            mode="single"
-                            value={debtAccountId}
-                            onChange={setDebtAccountId}
-                            options={debtAccountOptions}
-                            placeholder={mode === "repay_out" || mode === "prepay_out" ? "请选择已有借款项" : "请选择已有借出项"}
-                            behavior={{
-                              hierarchy: false,
-                              search: true,
-                              clearable: false,
-                              minDropdownWidth: 360,
-                            }}
-                          />
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="form-label">{mode === "borrow_in" ? "往来对象" : mode === "repay_out" ? "借款项" : "借出项"}</div>
+                          {mode === "borrow_in" ? (
+                            <SmartSelect
+                              mode="single"
+                              value={debtInstitutionId}
+                              onChange={(id) => {
+                                setDebtInstitutionId(id);
+                                setDebtAccountId("");
+                                setDebtItemName("");
+                              }}
+                              options={mergeSmartSelectOptions(visibleDebtObjectOptions, [])}
+                              placeholder="请选择"
+                              onCreateClick={() => { void openDebtObjectCreate(); }}
+                              createLabel="新增往来对象"
+                              behavior={{
+                                hierarchy: false,
+                                search: true,
+                                clearable: false,
+                                minDropdownWidth: 320,
+                              }}
+                            />
+                          ) : (
+                            <SmartSelect
+                              mode="single"
+                              value={debtAccountId}
+                              onChange={setDebtAccountId}
+                              options={debtAccountOptions}
+                              placeholder={mode === "repay_out" ? "请选择已有借款项" : "请选择已有借出项"}
+                              behavior={{
+                                hierarchy: false,
+                                search: true,
+                                clearable: false,
+                                minDropdownWidth: 360,
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -820,6 +920,24 @@ export function DebtTransactionModal({
                           </datalist>
                         </div>
                       ) : null}
+                      {showPrepayment ? (
+                        <div className="col-span-2 space-y-1">
+                          <div className="form-label">借款项</div>
+                          <SmartSelect
+                            mode="single"
+                            value={debtAccountId}
+                            onChange={setDebtAccountId}
+                            options={debtAccountOptions}
+                            placeholder="请选择已有借款项"
+                            behavior={{
+                              hierarchy: false,
+                              search: true,
+                              clearable: false,
+                              minDropdownWidth: 360,
+                            }}
+                          />
+                        </div>
+                      ) : (
                       <div className={mode === "borrow_in" ? "space-y-1" : "col-span-2 space-y-1"}>
                         <div className="form-label">{cashAccountLabel}</div>
                         <SmartSelect
@@ -836,11 +954,13 @@ export function DebtTransactionModal({
                           }}
                         />
                       </div>
+                      )}
                     </div>
 
+                    {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? "借款总额" : mode === "prepay_out" ? "提前还本金" : mode === "repay_out" || mode === "collect_in" ? "本金" : "金额"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? "借款总额" : mode === "repay_out" || mode === "collect_in" ? "本金" : "金额"}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (
@@ -861,15 +981,20 @@ export function DebtTransactionModal({
                         </div>
                       ) : null}
                     </div>
+                    ) : null}
 
                     {showPrepayment ? (
                       <>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="space-y-1">
+                            <div className="form-label">提前还本金</div>
+                            <CalcInput value={principal} onChange={handlePrincipalChange} placeholder="例如：1000" label="提前还本金" precision={2} />
+                          </div>
                           <div className="space-y-1">
                             <div className="form-label">手续费/违约金</div>
-                            <CalcInput value={penalty} onChange={setPenalty} placeholder="可选" label="手续费" precision={2} />
+                            <CalcInput value={penalty} onChange={handlePenaltyChange} placeholder="可选" label="手续费" precision={2} />
                           </div>
-                          <div className="space-y-1 sm:col-span-2">
+                          <div className="space-y-1">
                             <div className="form-label">处理后续还款计划</div>
                             <select
                               value={prepayStrategy}
@@ -881,13 +1006,15 @@ export function DebtTransactionModal({
                               ))}
                             </select>
                           </div>
-                          <div className="space-y-1 sm:col-span-3">
+                          <div className="space-y-1">
                             <div className="form-label">支出合计</div>
-                            <input
-                              value={repaymentTotal}
-                              readOnly
-                              placeholder="自动计算"
-                              className="form-input bg-slate-50 text-right font-mono text-slate-700"
+                            <CalcInput
+                              value={prepayTotal}
+                              onChange={handlePrepayTotalChange}
+                              onBlur={() => applyPrepayTotalDraft()}
+                              placeholder="自动计算，可手填"
+                              label="支出合计"
+                              precision={2}
                             />
                           </div>
                         </div>

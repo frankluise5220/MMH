@@ -8,10 +8,12 @@ import { getOrCreatePlaceholderAccountId } from "@/lib/server/placeholder-accoun
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
+import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
+import { supportsCostBasisMethod } from "@/lib/investment-config";
 
 export const runtime = "nodejs";
 
-const fundProductTypes = ["fund", "money", "wealth"] as const;
+const fundProductTypes = ["fund", "money", "wealth", "metal"] as const;
 const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
@@ -57,6 +59,8 @@ export async function POST(req: NextRequest) {
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
+    const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
+    const tradingCalendar = resolveTradingCalendarForAccount(kind, investProductType, body.tradingCalendar);
 
     if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
 
@@ -92,8 +96,9 @@ export async function POST(req: NextRequest) {
         repaymentDay: isCreditLike ? (parseDay(body.repaymentDay) ?? null) : null,
         creditLimit: isCreditLike ? String(body.creditLimit ?? "").trim() || null : null,
         numberMasked: isCreditLike ? String(body.numberMasked ?? "").trim() || null : null,
-        investProductType: isInvestment ? normalizeFundProductType(body.investProductType) as any : null,
-        costBasisMethod: isInvestment ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
+        investProductType: investProductType as any,
+        costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
+        ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
         defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
         fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals) : 3,
       },
@@ -149,11 +154,18 @@ export async function PUT(req: NextRequest) {
     }
     if (nextKind === "investment") {
       if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
-      if (body.costBasisMethod !== undefined || existing.kind !== "investment") data.costBasisMethod = normalizeCostBasisMethod(body.costBasisMethod ?? existing.costBasisMethod) as any;
+      const nextInvestProductType = String(data.investProductType ?? existing.investProductType ?? "");
+      data.costBasisMethod = supportsCostBasisMethod(nextInvestProductType)
+        ? normalizeCostBasisMethod(body.costBasisMethod ?? existing.costBasisMethod) as any
+        : null;
+      if (body.tradingCalendar !== undefined || body.investProductType !== undefined || existing.kind !== "investment") {
+        data.tradingCalendar = resolveTradingCalendarForAccount(nextKind, nextInvestProductType, body.tradingCalendar ?? existing.tradingCalendar) as any;
+      }
       if (body.defaultFundQueryApiId !== undefined) data.defaultFundQueryApiId = String(body.defaultFundQueryApiId ?? "").trim() || null;
     } else {
       data.investProductType = null;
       data.costBasisMethod = null;
+      data.tradingCalendar = null;
       data.defaultFundQueryApiId = null;
     }
 
@@ -266,6 +278,7 @@ export async function DELETE(req: NextRequest) {
     await prisma.creditCardCycle.deleteMany({ where: { accountId: id } });
     await prisma.fundSnapshot.deleteMany({ where: { accountId: id } });
     await prisma.fundHolding.deleteMany({ where: { accountId: id } });
+    await prisma.preciousMetalHolding.deleteMany({ where: { accountId: id } });
 
     // Now safe to delete the account (remaining cascade relations are already cleaned up)
     await prisma.account.delete({ where: { id } });

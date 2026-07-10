@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 
 
@@ -17,6 +17,7 @@ import { toNumber } from "@/lib/date-utils";
 import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
+import { allocateBuyFailedRefunds, findLinkedEntries, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 
 import { WealthFormModal } from "@/components/WealthFormModal";
 
@@ -166,7 +167,7 @@ export function FundShell(props: Props) {
 
     accountId, selectedAccount, selectedAccountLabel, accountOptions,
 
-    cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, nestedFieldData, createAction, editAction,
+    cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, metalTypes, metalUnits, nestedFieldData, createAction, editAction,
 
     fillNavAction, regularInvestFormAction, lastUsedCashAccount, isRedUp,
     fundUnitsDecimals: fundUnitsDecimalsProp,
@@ -176,6 +177,8 @@ export function FundShell(props: Props) {
   const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
 
   const formatFundUnits = (value: number) => value.toFixed(fundUnitsDecimals);
+  const isMetalAccount = selectedAccount?.investProductType === "metal";
+  const entryAssetKey = useCallback((entry: any) => String(isMetalAccount ? entry?.metalTypeId ?? "" : entry?.fundCode ?? "").trim(), [isMetalAccount]);
 
 
 
@@ -224,6 +227,52 @@ export function FundShell(props: Props) {
 
   // Shadow props with reactive local state
   const d = localData;
+  const refundLinkAllocation = useMemo(() => {
+    return allocateBuyFailedRefunds((d.allEntries || []).map((entry: any) => ({
+      id: String(entry.id ?? ""),
+      date: entry.date,
+      createdAt: entry.createdAt,
+      fundConfirmDate: entry.fundConfirmDate,
+      fundArrivalDate: entry.fundArrivalDate,
+      accountId: entry.accountId ?? null,
+      toAccountId: entry.toAccountId ?? null,
+      fundCode: entryAssetKey(entry),
+      fundSubtype: entry.fundSubtype ?? null,
+      source: entry.source ?? null,
+      fundSourceEntryId: entry.fundSourceEntryId ?? null,
+      amount: toNumber(entry.amount),
+    })));
+  }, [d.allEntries, entryAssetKey, isMetalAccount]);
+  const refundAmountByBuyId = refundLinkAllocation.refundAmountByBuyId;
+  const displayUnitsOfPlain = useCallback((entry: any) => {
+    if (isMetalAccount) return entry.metalQuantity != null ? toNumber(entry.metalQuantity) : null;
+    const storedUnits = entry.fundUnits != null ? toNumber(entry.fundUnits) : null;
+    if (entry.fundSubtype === "buy" && storedUnits != null) {
+      return getEffectiveBuyUnitsByRefunds(
+        { id: String(entry.id ?? ""), amount: toNumber(entry.amount), fundUnits: storedUnits },
+        refundAmountByBuyId,
+      );
+    }
+    return storedUnits;
+  }, [isMetalAccount, refundAmountByBuyId]);
+  const displayUnitsOf = displayUnitsOfPlain;
+  const linkedCandidateEntries = useMemo(() => {
+    return (d.allEntries || []).map((entry: any) => ({
+      id: String(entry.id ?? ""),
+      date: fmtDate(entry.date),
+      createdAt: entry.createdAt,
+      fundConfirmDate: fmtDate(entry.fundConfirmDate),
+      fundArrivalDate: fmtDate(entry.fundArrivalDate),
+      accountId: entry.accountId ?? null,
+      toAccountId: entry.toAccountId ?? null,
+      fundCode: entryAssetKey(entry),
+      fundSubtype: entry.fundSubtype ?? null,
+      fundUnits: displayUnitsOfPlain(entry),
+      source: entry.source ?? null,
+      fundSourceEntryId: entry.fundSourceEntryId ?? null,
+      amount: toNumber(entry.amount),
+    }));
+  }, [d.allEntries, entryAssetKey, displayUnitsOfPlain]);
 
 
 
@@ -467,6 +516,11 @@ export function FundShell(props: Props) {
   }, [d.positions, d.clearedPositions]);
 
   const displayFundName = useCallback((entry: any) => {
+    if (isMetalAccount) {
+      const typeName = String(entry?.metalTypeName ?? "").trim();
+      const unitName = String(entry?.metalUnitName ?? "").trim();
+      return [typeName, unitName].filter(Boolean).join(" · ") || String(entry?.metalTypeId ?? "").trim() || "-";
+    }
     const code = String(entry?.fundCode ?? "").trim();
     const fetched = code ? fetchedFundNames[code] : "";
     if (fetched && !isGenericFundName(fetched, code)) return fetched;
@@ -475,7 +529,7 @@ export function FundShell(props: Props) {
     const stored = String(entry?.fundName ?? "").trim();
     if (stored && !isGenericFundName(stored, code)) return stored;
     return code || "-";
-  }, [fetchedFundNames, fundNameByCode]);
+  }, [fetchedFundNames, fundNameByCode, isMetalAccount]);
 
 
 
@@ -507,7 +561,7 @@ export function FundShell(props: Props) {
 
       const nav = e.fundNav != null ? e.fundNav : "";
 
-      const units = e.fundUnits != null ? e.fundUnits : "";
+      const units = displayUnitsOf(e) != null ? displayUnitsOf(e) : "";
 
       const amt = e.amount != null ? e.amount : "";
 
@@ -531,15 +585,17 @@ export function FundShell(props: Props) {
 
         : e.fundSubtype === "dividend_cash" ? fmtDate(e.fundArrivalDate)
 
-        : (e.fundUnits != null && Number(e.fundUnits) > 0) ? fmtDate(e.fundConfirmDate) : "待确认";
+        : (displayUnitsOf(e) != null && Number(displayUnitsOf(e)) > 0) ? fmtDate(e.fundConfirmDate) : "待确认";
 
-      const status = isBuyFailed ? "暂停申购" : (e.fundUnits == null || Number(e.fundUnits) === 0) ? "待确认" : "确认";
+      const status = isBuyFailed
+        ? (e.source === "regular_invest_refund" ? "买入退回" : "暂停申购")
+        : (e.fundSubtype === "buy" && (refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) ? "部分确认" : (e.fundUnits == null || Number(e.fundUnits) === 0) ? "待确认" : "确认";
 
 
 
       parts.push([
 
-        fmtDate(e.date),
+        fundApplyDateOf(e),
 
         confirmDate || "",
 
@@ -906,7 +962,32 @@ export function FundShell(props: Props) {
 
 
 
-  const filtered = useMemo(() => fundCode ? d.allEntries.filter((e: any) => e.fundCode === fundCode) : [], [d.allEntries, fundCode]);
+  const fundApplyDateOf = useCallback((entry: any) => {
+    if (entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund") {
+      const linkedBuyId = String(entry.fundSourceEntryId ?? "").trim()
+        || Array.from(refundLinkAllocation.buyIdsByRefundId.get(String(entry?.id ?? "")) ?? [])[0]
+        || "";
+      if (linkedBuyId) {
+        const linkedBuy = (d.allEntries || []).find((item: any) => String(item?.id ?? "") === linkedBuyId);
+        const linkedDate = fmtDate(linkedBuy?.date);
+        if (linkedDate) return linkedDate;
+      }
+    }
+    return fmtDate(entry?.date);
+  }, [d.allEntries, refundLinkAllocation]);
+
+  const filtered = useMemo(() => {
+    if (!fundCode) return [];
+    return d.allEntries
+      .filter((e: any) => entryAssetKey(e) === fundCode)
+      .sort((a: any, b: any) => {
+        const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
+        if (byApplyDate !== 0) return byApplyDate;
+        const byCreatedAt = fmtDate(b.createdAt).localeCompare(fmtDate(a.createdAt));
+        if (byCreatedAt !== 0) return byCreatedAt;
+        return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+      });
+  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => p.fundCode === fundCode) ?? null,
     [d.positions, fundCode],
@@ -1093,13 +1174,15 @@ export function FundShell(props: Props) {
 
 
   const statusOf = (e: any) => {
-
-    if (e.fundSubtype === "buy_failed") return "暂停申购";
-
-    const units = e.fundUnits != null ? toNumber(e.fundUnits) : null;
-
+    if (e.fundSubtype === "buy_failed") return e.source === "regular_invest_refund" ? "买入退回" : "暂停申购";
+    if (e.fundSubtype === "buy") {
+      if ((refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) {
+        const units = displayUnitsOf(e);
+        return units != null && units > 0 ? "部分确认" : "待确认";
+      }
+    }
+    const units = displayUnitsOf(e);
     return units != null && units > 0 ? "确认" : "待确认";
-
   };
 
 
@@ -1222,7 +1305,7 @@ export function FundShell(props: Props) {
 
     return filtered.filter((e: any) => {
 
-      const applyDate = fmtDate(e.date);
+      const applyDate = fundApplyDateOf(e);
 
       if (!inDateRange(applyDate, dateFrom, dateTo)) return false;
 
@@ -1238,7 +1321,7 @@ export function FundShell(props: Props) {
 
     });
 
-  }, [filtered, columnFilters, accountOptions, dateFrom, dateTo]);
+  }, [filtered, columnFilters, accountOptions, dateFrom, dateTo, fundApplyDateOf]);
 
 
 
@@ -1534,8 +1617,11 @@ export function FundShell(props: Props) {
               investmentAccounts={investmentAccounts}
               cashAccountSSOptions={cashAccountSSOptions}
               investmentAccountSSOptions={investmentAccountSSOptions}
+              metalTypes={metalTypes}
+              metalUnits={metalUnits}
+              nestedFieldData={nestedFieldData}
               holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
-              allEntries={d.allEntries.map((e: any) => ({ date: fmtDate(e.date), fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundCode: e.fundCode, fundSubtype: e.fundSubtype, fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null, source: e.source ?? null }))}
+              allEntries={d.allEntries.map((e: any) => ({ id: e.id, date: fmtDate(e.date), createdAt: e.createdAt, fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundSourceEntryId: e.fundSourceEntryId ?? null, fundCode: entryAssetKey(e), fundSubtype: e.fundSubtype, fundUnits: displayUnitsOf(e), source: e.source ?? null, accountId: e.accountId ?? null, toAccountId: e.toAccountId ?? null, amount: toNumber(e.amount) }))}
               createAction={createAction}
               openSignal={positionEntryOpenSignal}
               hideTrigger
@@ -1544,9 +1630,9 @@ export function FundShell(props: Props) {
 
             <div className="flex items-center gap-0.5">
 
-              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>持仓基金</button>
+              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{isMetalAccount ? "持仓贵金属" : "持仓基金"}</button>
 
-              <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>清仓基金</button>
+              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>清仓基金</button> : null}
 
             </div>
 
@@ -1556,7 +1642,7 @@ export function FundShell(props: Props) {
 
             {!showCleared ? (<>
 
-              {d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
+              {!isMetalAccount && d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
 
             </>) : null}
 
@@ -1582,10 +1668,10 @@ export function FundShell(props: Props) {
 
                 <tr>
 
-                  <SortHead sk="fundCode" label="基金" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
+                  <SortHead sk="fundCode" label={isMetalAccount ? "品种" : "基金"} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    份额
+                    {isMetalAccount ? "数量" : "份额"}
                     <ResizeGrip table="positions" colKey="units" width={colWidth("positions", "units", 92)} minWidth={64} />
                   </th>
 
@@ -1595,7 +1681,7 @@ export function FundShell(props: Props) {
                   </th>
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    净值
+                    {isMetalAccount ? "单价" : "净值"}
                     <ResizeGrip table="positions" colKey="nav" width={colWidth("positions", "nav", 136)} minWidth={118} />
                   </th>
 
@@ -1768,7 +1854,7 @@ export function FundShell(props: Props) {
                               );
                             })()
                           ) : null}
-                          <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
+                          {!isMetalAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" /> : null}
                         </div>
                       </td>
 
@@ -2528,11 +2614,35 @@ export function FundShell(props: Props) {
 
                 const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
 
-                const units = e.fundUnits != null ? toNumber(e.fundUnits) : null;
+                const units = displayUnitsOf(e);
 
                 const info = fl(e.fundSubtype, e.source);
 
                 const selected = selectedIds.has(e.id);
+                const isRegularInvestRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
+                const linkedBuyForRefund = isRegularInvestRefund
+                  ? (() => {
+                      const target: RefundLinkableEntry = {
+                        id: String(e.id ?? ""),
+                        date: fmtDate(e.date),
+                        createdAt: e.createdAt,
+                        fundConfirmDate: fmtDate(e.fundConfirmDate),
+                        fundArrivalDate: fmtDate(e.fundArrivalDate),
+                        accountId: e.accountId ?? null,
+                        toAccountId: e.toAccountId ?? null,
+                        fundCode: entryAssetKey(e),
+                        fundSubtype: e.fundSubtype ?? null,
+                        fundUnits: displayUnitsOfPlain(e),
+                        source: e.source ?? null,
+                        fundSourceEntryId: e.fundSourceEntryId ?? null,
+                        amount: toNumber(e.amount),
+                      };
+                      const linked = findLinkedEntries(target, linkedCandidateEntries);
+                      const linkedBuyId = linked.linkedBuys[0]?.id;
+                      return linkedBuyId ? d.allEntries.find((item: any) => String(item.id ?? "") === linkedBuyId) ?? null : null;
+                    })()
+                  : null;
+                const editableInvestmentEntry = linkedBuyForRefund ?? e;
 
                 return (
 
@@ -2591,7 +2701,7 @@ export function FundShell(props: Props) {
                     </td>
 
                     {isDetailColumnVisible("date") ? (
-                    <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{fmtDate(e.date)}</td>
+                    <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{fundApplyDateOf(e)}</td>
                     ) : null}
 
                     {isDetailColumnVisible("arrivalDate") ? (
@@ -2680,6 +2790,10 @@ export function FundShell(props: Props) {
                         if (s === "待确认") return <span className="text-amber-600">{s}</span>;
 
                         if (s === "暂停申购") return <span className="text-rose-600">{s}</span>;
+
+                        if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
+
+                        if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
 
                         return <span className="text-emerald-700">{s}</span>;
 
@@ -2790,33 +2904,41 @@ export function FundShell(props: Props) {
 
                             entry={{
 
-                              id: e.id, transactionId: e.id,
+                              id: editableInvestmentEntry.id, transactionId: editableInvestmentEntry.id,
 
-                              date: fmtDate(e.date),
+                              date: fmtDate(editableInvestmentEntry.date),
 
-                              confirmDate: fmtDate(e.fundConfirmDate) || undefined,
+                              confirmDate: fmtDate(editableInvestmentEntry.fundConfirmDate) || undefined,
 
-                              amount: toNumber(e.amount), note: e.note ?? null, memo: e.note ?? null,
+                              amount: toNumber(editableInvestmentEntry.amount), note: editableInvestmentEntry.note ?? null, memo: editableInvestmentEntry.note ?? null,
 
-                              fundCode: e.fundCode ?? null, fundName: displayFundName(e) === "-" ? (e.fundCode ?? null) : displayFundName(e),
+                              fundCode: editableInvestmentEntry.fundCode ?? null, fundName: displayFundName(editableInvestmentEntry) === "-" ? (editableInvestmentEntry.fundCode ?? null) : displayFundName(editableInvestmentEntry),
 
-                              fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
+                              fundUnits: editableInvestmentEntry.fundUnits != null ? toNumber(editableInvestmentEntry.fundUnits) : null,
+                              displayFundUnits: displayUnitsOf(editableInvestmentEntry),
 
-                              fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
+                              fundNav: editableInvestmentEntry.fundNav != null ? toNumber(editableInvestmentEntry.fundNav) : null,
 
-                              fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
+                              fundFee: editableInvestmentEntry.fundFee != null ? toNumber(editableInvestmentEntry.fundFee) : null,
 
-                              fundProductType: e.fundProductType ?? null, fundSubtype: e.fundSubtype ?? null,
+                              fundProductType: editableInvestmentEntry.fundProductType ?? null, fundSubtype: editableInvestmentEntry.fundSubtype ?? null,
+                              metalTypeId: editableInvestmentEntry.metalTypeId ?? null,
+                              metalTypeName: editableInvestmentEntry.metalTypeName ?? null,
+                              metalUnitId: editableInvestmentEntry.metalUnitId ?? null,
+                              metalUnitName: editableInvestmentEntry.metalUnitName ?? null,
+                              metalQuantity: editableInvestmentEntry.metalQuantity != null ? toNumber(editableInvestmentEntry.metalQuantity) : null,
+                              metalUnitPrice: editableInvestmentEntry.metalUnitPrice != null ? toNumber(editableInvestmentEntry.metalUnitPrice) : null,
+                              metalFee: editableInvestmentEntry.metalFee != null ? toNumber(editableInvestmentEntry.metalFee) : null,
 
-                              source: e.source ?? null,
+                              source: editableInvestmentEntry.source ?? null,
 
-                              accountId: e.accountId ?? null, toAccountId: e.toAccountId ?? null, toAccountName: e.toAccountName ?? null,
+                              accountId: editableInvestmentEntry.accountId ?? null, toAccountId: editableInvestmentEntry.toAccountId ?? null, toAccountName: editableInvestmentEntry.toAccountName ?? null,
 
-                              fundArrivalDate: fmtDate(e.fundArrivalDate) || null,
+                              fundArrivalDate: fmtDate(editableInvestmentEntry.fundArrivalDate) || null,
 
-                              fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+                              fundArrivalAmount: editableInvestmentEntry.fundArrivalAmount != null ? toNumber(editableInvestmentEntry.fundArrivalAmount) : null,
 
-                              realizedProfit: e.realizedProfit != null ? toNumber(e.realizedProfit) : null,
+                              realizedProfit: editableInvestmentEntry.realizedProfit != null ? toNumber(editableInvestmentEntry.realizedProfit) : null,
 
                             }}
 
@@ -2826,15 +2948,25 @@ export function FundShell(props: Props) {
 
                             defaults={{
 
-                              confirmDays: d.confirmDaysMap[e.fundCode ?? ""] ?? selectedAccount?.defaultConfirmDays ?? undefined,
+                              confirmDays: d.confirmDaysMap[editableInvestmentEntry.fundCode ?? ""] ?? selectedAccount?.defaultConfirmDays ?? undefined,
 
-                              feeRate: d.feeRateMap[`${e.fundCode ?? ""}:${e.fundSubtype === "redeem" ? "redeem" : "buy"}`] ?? null,
+                              feeRate: d.feeRateMap[`${editableInvestmentEntry.fundCode ?? ""}:${editableInvestmentEntry.fundSubtype === "redeem" ? "redeem" : "buy"}`] ?? null,
 
                             }}
 
                             cashAccounts={cashAccounts}
 
                             investmentAccounts={investmentAccounts}
+
+                            cashAccountSSOptions={cashAccountSSOptions}
+
+                            investmentAccountSSOptions={investmentAccountSSOptions}
+                            metalTypes={metalTypes}
+                            metalUnits={metalUnits}
+
+                           nestedFieldData={nestedFieldData}
+
+                            allEntries={linkedCandidateEntries}
 
                             createAction={createAction}
 

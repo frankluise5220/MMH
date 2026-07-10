@@ -4,8 +4,10 @@ import { TransactionType, RegularInvestStatus, IntervalUnit } from "@prisma/clie
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -249,6 +251,7 @@ export async function POST(req: NextRequest) {
 
     // 净值数据从缓存库读取（前端已先调 /api/v1/fund/preload-nav 扩充了净值库）
     await prisma.$transaction(async (tx) => {
+      const changedFundEntryIds: string[] = [];
       for (const runDate of datesToProcess) {
         // 计算 T+N 确认日期（使用工作日计算）
         const runDateStr = formatDateUtc(runDate);
@@ -272,7 +275,7 @@ export async function POST(req: NextRequest) {
         // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
         // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
         if (sgzt === "暂停申购") {
-          await tx.txRecord.create({
+          const failedBuy = await tx.txRecord.create({
             data: {
               householdId,
               type: TransactionType.investment,
@@ -296,7 +299,7 @@ export async function POST(req: NextRequest) {
               note: `基金暂停申购 ${plan.fundCode}`,
             },
           });
-          await tx.txRecord.create({
+          const refund = await tx.txRecord.create({
             data: {
               householdId,
               type: TransactionType.investment,
@@ -316,10 +319,12 @@ export async function POST(req: NextRequest) {
               fundArrivalDate: arrivalDate,
               fundNav: null,
               fundUnits: null,
+              fundSourceEntryId: failedBuy.id,
               regularInvestPlanId: planId,
               note: `基金暂停申购，资金退回 ${plan.fundCode}`,
             },
           });
+          changedFundEntryIds.push(failedBuy.id, refund.id);
           continue;
         }
 
@@ -331,7 +336,7 @@ export async function POST(req: NextRequest) {
         }
         const feeRate = feeRateRaw / 100;
         const feeAmount = feeRate > 0 ? amountNum * feeRate : null;
-        const principal = feeAmount != null ? amountNum - feeAmount : amountNum;
+        const feeAmountNumber = feeAmount ?? 0;
 
         // 从净值缓存库查找对应确认日期的净值
         let fundNav: number | null = null;
@@ -339,7 +344,13 @@ export async function POST(req: NextRequest) {
 
         if (foundNav && foundNav.nav > 0) {
           fundNav = foundNav.nav;
-          fundUnits = roundFundUnits(principal / foundNav.nav, fundUnitsDecimals);
+          fundUnits = calculateConfirmedBuyUnits({
+            grossAmount: amountNum,
+            refundAmount: 0,
+            fee: feeAmountNumber,
+            nav: foundNav.nav,
+            roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+          });
         }
 
         // 构建备注：限制大额申购时记录状态提醒用户
@@ -349,7 +360,7 @@ export async function POST(req: NextRequest) {
         }
 
         // 创建 TxRecord，直接包含所有基金字段
-        await tx.txRecord.create({
+        const createdBuy = await tx.txRecord.create({
           data: {
             householdId,
             type: TransactionType.investment,
@@ -373,6 +384,7 @@ export async function POST(req: NextRequest) {
             note,
           },
         });
+        changedFundEntryIds.push(createdBuy.id);
       }
 
       // 更新定投计划状态
@@ -393,6 +405,7 @@ export async function POST(req: NextRequest) {
           status: willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active,
         },
       });
+      await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
     });
 
     await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));

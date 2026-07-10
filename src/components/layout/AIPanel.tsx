@@ -478,7 +478,11 @@ export function AIPanel({
     setLoading(true);
     try {
       const result = await importItems(selected);
-      setMessages((m) => [...m, { role: "assistant", text: `已导入 ${result.createdCount} 条记录。` }]);
+      const createdAccounts = Array.isArray(result.createdAccounts) ? result.createdAccounts : [];
+      const accountText = createdAccounts.length
+        ? ` 已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}。`
+        : "";
+      setMessages((m) => [...m, { role: "assistant", text: `已导入 ${result.createdCount} 条记录。${accountText}` }]);
       setImportConfirmDialog(null);
       setTimeout(() => router.refresh(), 500);
     } catch (e: any) {

@@ -3,8 +3,11 @@ import { TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 
 /**
@@ -270,21 +273,32 @@ export async function POST(req: NextRequest) {
           amount: true,
           fundNav: true,
           fundConfirmDate: true,
+          fundArrivalDate: true,
+          fundSourceEntryId: true,
+          createdAt: true,
           accountId: true,
           toAccountId: true,
+          fundProductType: true,
+          metalTypeId: true,
         },
       });
 
       const fundCodesByInvestAcc = new Map<string, Set<string>>();
+      const metalAccountsToRecalc = new Set<string>();
 
       for (const r of touched) {
         if (r.accountId) balanceAccountIds.add(r.accountId);
         if (r.toAccountId) balanceAccountIds.add(r.toAccountId);
 
-        if (r.type !== "investment" || !r.fundCode) continue;
         const isRedeemOrRefund = r.fundSubtype === "redeem" || r.fundSubtype === "switch_out" || r.fundSubtype === "dividend_cash"
           || (r.fundSubtype === "buy_failed" && r.source === "regular_invest_refund");
         const investAccId = isRedeemOrRefund ? r.accountId : r.toAccountId;
+        if (r.type !== "investment") continue;
+        if ((r.metalTypeId || r.fundProductType === "metal") && investAccId) {
+          metalAccountsToRecalc.add(investAccId);
+          continue;
+        }
+        if (!r.fundCode) continue;
         if (investAccId) {
           if (!fundCodesByInvestAcc.has(investAccId)) fundCodesByInvestAcc.set(investAccId, new Set());
           fundCodesByInvestAcc.get(investAccId)!.add(r.fundCode);
@@ -296,11 +310,61 @@ export async function POST(req: NextRequest) {
           const feeRateRaw = await getFundFeeRateByDate(investIdForFee, r.fundCode, r.fundConfirmDate, "buy");
           const feeRate = feeRateRaw / 100;
           const amountAbs = Math.abs(Number(r.amount));
-          const fee = Number((amountAbs * feeRate).toFixed(2));
-          const principal = amountAbs - fee;
+          const related = await prisma.txRecord.findMany({
+            where: {
+              deletedAt: null,
+              fundCode: r.fundCode,
+              OR: [
+                { id: r.id },
+                { fundSourceEntryId: r.id },
+                {
+                  fundSubtype: "buy_failed",
+                  source: "regular_invest_refund",
+                  accountId: investIdForFee,
+                },
+              ],
+            },
+            select: {
+              id: true,
+              date: true,
+              createdAt: true,
+              fundConfirmDate: true,
+              fundArrivalDate: true,
+              accountId: true,
+              toAccountId: true,
+              fundCode: true,
+              fundSubtype: true,
+              source: true,
+              amount: true,
+              fundSourceEntryId: true,
+            },
+          });
+          const { refundAmountByBuyId } = allocateBuyFailedRefunds(related.map((entry) => ({
+            id: entry.id,
+            date: entry.date,
+            createdAt: entry.createdAt,
+            fundConfirmDate: entry.fundConfirmDate,
+            fundArrivalDate: entry.fundArrivalDate,
+            accountId: entry.accountId,
+            toAccountId: entry.toAccountId,
+            fundCode: entry.fundCode,
+            fundSubtype: entry.fundSubtype,
+            source: entry.source,
+            amount: Number(entry.amount),
+            fundSourceEntryId: entry.fundSourceEntryId,
+          })));
+          const refundAmount = refundAmountByBuyId.get(r.id) ?? 0;
+          const confirmedAmount = Math.max(0, amountAbs - refundAmount);
+          const fee = Number((confirmedAmount * feeRate).toFixed(2));
           const nav = Number(r.fundNav);
           const fundUnitsDecimals = await getAccountFundUnitsDecimals(investIdForFee);
-          const units = nav > 0 ? roundFundUnits(principal / nav, fundUnitsDecimals) : null;
+          const units = calculateConfirmedBuyUnits({
+            grossAmount: amountAbs,
+            refundAmount,
+            fee,
+            nav,
+            roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+          });
           await prisma.txRecord.update({
             where: { id: r.id },
             data: { fundFee: fee, ...(units != null ? { fundUnits: units } : {}) },
@@ -315,6 +379,10 @@ export async function POST(req: NextRequest) {
       for (const [acctId, codes] of fundCodesByInvestAcc.entries()) {
         await recalcFundPositions(acctId, Array.from(codes)).catch(() => {});
       }
+      for (const acctId of metalAccountsToRecalc) {
+        await recalcPreciousMetalPositions(acctId).catch(() => {});
+      }
+      await syncFundTransactionsFromTxRecords(Array.from(touchedRecordIds)).catch(() => {});
     }
 
     // Client-side handles page refresh

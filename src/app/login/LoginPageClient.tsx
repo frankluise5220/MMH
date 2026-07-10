@@ -9,6 +9,7 @@ import {
 } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 import { getProductIntro } from "@/lib/product-intro";
+import { MmhLogo } from "@/components/MmhLogo";
 
 type HouseholdChoice = {
   id: string;
@@ -22,6 +23,7 @@ type AuthVerifyResponse = {
   households?: HouseholdChoice[];
   householdId?: string | null;
   message?: string;
+  maskedEmailHint?: string | null;
 };
 
 type PasswordStatusResponse = {
@@ -31,10 +33,16 @@ type PasswordStatusResponse = {
   users?: { id: string; name: string }[];
 };
 
+type CreateLedgerResponse = {
+  ok: boolean;
+  error?: string;
+};
+
 type ResetStep = "request" | "confirm";
+type LoginMode = "login" | "setup" | "create";
 
 export function LoginPageClient({ householdName }: { householdName: string | null }) {
-  const [mode, setMode] = useState<"login" | "setup">("login");
+  const [mode, setMode] = useState<LoginMode>("login");
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -50,11 +58,18 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [setupUsername, setSetupUsername] = useState("admin");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [createInviteCode, setCreateInviteCode] = useState("");
+  const [createLedgerName, setCreateLedgerName] = useState("");
+  const [createAdminName, setCreateAdminName] = useState("admin");
+  const [createAdminEmail, setCreateAdminEmail] = useState("");
+  const [createPassword, setCreatePassword] = useState("");
+  const [createConfirmPassword, setCreateConfirmPassword] = useState("");
 
   const [showReset, setShowReset] = useState(false);
   const [resetStep, setResetStep] = useState<ResetStep>("request");
   const [resetUsername, setResetUsername] = useState("");
   const [resetEmail, setResetEmail] = useState("");
+  const [resetEmailHint, setResetEmailHint] = useState("");
   const [resetCode, setResetCode] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
@@ -70,6 +85,8 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   function openPasswordReset() {
     setResetStep("request");
     setResetInfo("");
+    setResetEmail("");
+    setResetEmailHint("");
     setResetHouseholdId("");
     setResetHouseholdChoices([]);
     if (!passwordResetEnabled) {
@@ -241,9 +258,51 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     }
   }
 
+  async function handleCreateLedger() {
+    const trimmedInviteCode = createInviteCode.trim();
+    const trimmedLedgerName = createLedgerName.trim();
+    const trimmedAdminName = createAdminName.trim() || "admin";
+    const trimmedAdminEmail = createAdminEmail.trim();
+    const trimmedPassword = createPassword.trim();
+    const trimmedConfirmPassword = createConfirmPassword.trim();
+    if (!trimmedInviteCode) { setError("请输入邀请码"); return; }
+    if (!trimmedLedgerName) { setError("请输入账簿名"); return; }
+    if (!trimmedAdminName) { setError("请输入管理员用户名"); return; }
+    if (!trimmedAdminEmail) { setError("请输入管理员邮箱"); return; }
+    if (!trimmedPassword) { setError("请输入密码"); return; }
+    if (trimmedPassword !== trimmedConfirmPassword) { setError("两次输入的密码不一致"); return; }
+
+    setLoading(true);
+    setError("");
+    try {
+      const createRes = await fetch("/api/v1/auth/create-ledger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inviteCode: trimmedInviteCode,
+          name: trimmedLedgerName,
+          adminName: trimmedAdminName,
+          adminEmail: trimmedAdminEmail,
+          adminPassword: trimmedPassword,
+        }),
+      });
+      const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
+      if (!createRes.ok || !createData?.ok) {
+        setError(createData?.error ?? "创建账簿失败");
+        return;
+      }
+      window.location.href = "/";
+    } catch {
+      setError("创建账簿失败，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleResetRequest(selectedHouseholdId = resetHouseholdId) {
     if (!resetUsername.trim()) { setResetError("请输入用户名"); return; }
-    if (!resetEmail.trim()) { setResetError("请输入找回邮箱"); return; }
+    const previewOnly = !resetEmailHint;
+    if (!previewOnly && !resetEmail.trim()) { setResetError("请输入绑定邮箱"); return; }
 
     setResetLoading(true);
     setResetError("");
@@ -254,7 +313,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: resetUsername.trim(),
-          email: resetEmail.trim(),
+          ...(previewOnly ? { preview: true } : { email: resetEmail.trim() }),
           ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
         }),
       });
@@ -270,7 +329,12 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       }
       setResetHouseholdId(data.householdId ?? selectedHouseholdId ?? "");
       setResetHouseholdChoices([]);
-      setResetInfo(data.message ?? "如果该用户已绑定邮箱，将收到一封验证码邮件。");
+      if (previewOnly) {
+        setResetEmailHint(data.maskedEmailHint ?? "");
+        setResetInfo(data.message ?? "请补全绑定邮箱后发送验证码。");
+        return;
+      }
+      setResetInfo(data.message ?? "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。");
       setResetStep("confirm");
     } catch {
       setResetError("发送失败，请稍后重试");
@@ -343,7 +407,6 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-blue-400/20 blur-3xl" />
           <div className="absolute -bottom-16 left-8 h-56 w-56 rounded-full bg-emerald-300/15 blur-3xl" />
           <div className="relative">
-            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-blue-200">MoneyMoneyHome</div>
             <h1 className="mt-4 text-3xl font-semibold leading-tight">{productIntro.title}</h1>
             <div className="mt-2 text-sm text-amber-100">{productIntro.mantra}</div>
             <p className="mt-5 text-base leading-7 text-slate-100">{productIntro.lead}</p>
@@ -366,7 +429,13 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         <div className="border-b border-slate-200/70 bg-white/72 px-6 py-5 shadow-[inset_0_-1px_0_rgba(148,163,184,0.14)] backdrop-blur">
           {householdName && <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("login.book")}</div>}
           <div className="flex items-center justify-between">
-            <div className="text-base font-semibold text-slate-800">{householdName ? currentHouseholdDisplayName : "MMH"}</div>
+            <div className="flex min-w-0 items-center gap-2">
+              <MmhLogo size={40} />
+              <div className="min-w-0">
+                <div className="truncate text-base font-semibold text-slate-800">{householdName ? currentHouseholdDisplayName : "MoneyMoneyHome"}</div>
+                {!householdName && <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">Family Finance</div>}
+              </div>
+            </div>
             <button
               type="button"
               onClick={() => { window.location.href = "/"; }}
@@ -378,6 +447,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           </div>
           {mode === "login" && <div className="mt-1 text-xs text-slate-500">{t("login.continueHint")}</div>}
           {mode === "setup" && <div className="mt-1 text-xs text-slate-500">{t("login.setupHint")}</div>}
+          {mode === "create" && <div className="mt-1 text-xs text-slate-500">{t("login.createHint")}</div>}
         </div>
 
         {mode === "login" && (
@@ -464,13 +534,6 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 {error && <div className="text-sm text-red-600">{error}</div>}
                 <button
                   type="button"
-                  className="text-xs text-slate-500 transition-colors hover:text-blue-700"
-                  onClick={openPasswordReset}
-                >
-                  {t("login.forgotByEmail")}
-                </button>
-                <button
-                  type="button"
                   className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                   disabled={loading}
                   onClick={() => void handleLogin()}
@@ -507,6 +570,8 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     value={resetUsername}
                     onChange={(event) => {
                       setResetUsername(event.target.value);
+                      setResetEmail("");
+                      setResetEmailHint("");
                       setResetHouseholdId("");
                       setResetHouseholdChoices([]);
                     }}
@@ -516,20 +581,22 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   />
                 </div>
                 {resetStep === "request" && (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">找回邮箱</div>
-                    <input
-                      value={resetEmail}
-                      onChange={(event) => {
-                        setResetEmail(event.target.value);
-                        setResetHouseholdId("");
-                        setResetHouseholdChoices([]);
-                      }}
-                      type="email"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      placeholder="该用户绑定的邮箱"
-                    />
-                  </div>
+                  resetEmailHint ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">补全绑定邮箱</div>
+                      <div className="text-[11px] text-slate-500">请根据提示补全完整邮箱：{resetEmailHint}</div>
+                      <input
+                        value={resetEmail}
+                        onChange={(event) => {
+                          setResetEmail(event.target.value);
+                          setResetHouseholdChoices([]);
+                        }}
+                        type="email"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder="输入完整绑定邮箱"
+                      />
+                    </div>
+                  ) : null
                 )}
                 {resetStep === "confirm" && (
                   <>
@@ -591,14 +658,32 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 {resetError && <div className="text-sm text-red-600">{resetError}</div>}
                 {resetInfo && <div className="text-sm text-slate-600">{resetInfo}</div>}
                 {resetStep === "request" ? (
-                  <button
-                    type="button"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    disabled={resetLoading}
-                    onClick={() => void handleResetRequest()}
-                  >
-                    {resetLoading ? "发送中..." : "发送验证码"}
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      disabled={resetLoading}
+                      onClick={() => void handleResetRequest()}
+                    >
+                      {resetLoading ? "处理中..." : resetEmailHint ? "发送验证码" : "下一步"}
+                    </button>
+                    {resetEmailHint ? (
+                      <button
+                        type="button"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        disabled={resetLoading}
+                        onClick={() => {
+                          setResetEmail("");
+                          setResetEmailHint("");
+                          setResetError("");
+                          setResetInfo("");
+                          setResetHouseholdChoices([]);
+                        }}
+                      >
+                        重新输入用户名
+                      </button>
+                    ) : null}
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     <button
@@ -625,6 +710,108 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {mode === "create" && (
+          <div className="space-y-4 p-6">
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">邀请码</div>
+              <input
+                value={createInviteCode}
+                onChange={(event) => setCreateInviteCode(event.target.value)}
+                type="password"
+                autoComplete="off"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder="输入新建账簿邀请码"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">账簿名</div>
+              <input
+                value={createLedgerName}
+                onChange={(event) => setCreateLedgerName(event.target.value)}
+                type="text"
+                autoComplete="organization"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder="输入新账簿名"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">管理员用户名</div>
+              <input
+                value={createAdminName}
+                onChange={(event) => setCreateAdminName(event.target.value)}
+                type="text"
+                autoComplete="username"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder="输入管理员用户名"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">管理员邮箱</div>
+              <input
+                value={createAdminEmail}
+                onChange={(event) => setCreateAdminEmail(event.target.value)}
+                type="email"
+                autoComplete="email"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder="用于找回密码"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
+              <input
+                value={createPassword}
+                onChange={(event) => setCreatePassword(event.target.value)}
+                type="password"
+                autoComplete="new-password"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder={t("login.passwordPlaceholder")}
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
+              <input
+                value={createConfirmPassword}
+                onChange={(event) => setCreateConfirmPassword(event.target.value)}
+                type="password"
+                autoComplete="new-password"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder={t("login.confirmPassword")}
+                onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+              />
+            </div>
+            {error && <div className="text-sm text-red-600">{error}</div>}
+            <button
+              type="button"
+              className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              disabled={loading}
+              onClick={() => void handleCreateLedger()}
+            >
+              {loading ? t("login.creating") : t("login.createAndEnter")}
+            </button>
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              disabled={loading}
+              onClick={() => {
+                setError("");
+                setResetError("");
+                setResetInfo("");
+                setShowReset(false);
+                setCreateInviteCode("");
+                setCreateLedgerName("");
+                setCreateAdminName("admin");
+                setCreateAdminEmail("");
+                setCreatePassword("");
+                setCreateConfirmPassword("");
+                setMode("login");
+              }}
+            >
+              {t("login.enter")}
+            </button>
           </div>
         )}
 
@@ -674,6 +861,31 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               onClick={() => void handleSetup()}
             >
               {loading ? t("login.setting") : t("login.setupAndEnter")}
+            </button>
+          </div>
+        )}
+
+        {mode === "login" && !showReset && (
+          <div className="px-6 pb-6 -mt-2">
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              disabled={loading}
+              onClick={() => {
+                setError("");
+                setResetError("");
+                setResetInfo("");
+                setShowReset(false);
+                setCreateInviteCode("");
+                setCreateLedgerName("");
+                setCreateAdminName("admin");
+                setCreateAdminEmail("");
+                setCreatePassword("");
+                setCreateConfirmPassword("");
+                setMode("create");
+              }}
+            >
+              {t("login.createAccount")}
             </button>
           </div>
         )}

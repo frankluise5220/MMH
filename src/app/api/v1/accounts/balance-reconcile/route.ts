@@ -4,7 +4,7 @@
  * Body: { accountId: string; actualBalance: number; date?: string; entryId?: string }
  * Response: { ok: true, entryId, previousBalance, actualBalance, difference }
  *
- * Creates a balance anchor TxRecord for a debit-card account. It works like a
+ * Creates a balance anchor TxRecord for cash, debit-card, or e-wallet accounts. It works like a
  * credit-card bill override: when ordered balance calculation reaches this record,
  * the running balance is set to actualBalance, then later records continue from it.
  */
@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { toNumber } from "@/lib/date-utils";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
@@ -36,15 +36,17 @@ function parseDateOnly(value?: string) {
   const raw = String(value ?? "").trim();
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (match) {
-    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59));
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59);
   }
-  const today = startOfDayUtc(new Date());
-  return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59));
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
 }
 
 function money(value: number) {
   return Number(value.toFixed(2));
 }
+
+const RECONCILABLE_ACCOUNT_KINDS: AccountKind[] = [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewallet];
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -57,7 +59,7 @@ export async function POST(req: Request) {
   const account = await prisma.account.findFirst({
     where: {
       id: parsed.data.accountId,
-      kind: AccountKind.bank_debit,
+      kind: { in: RECONCILABLE_ACCOUNT_KINDS },
       isPlaceholder: { not: true },
       ...hidFilter,
     },
@@ -71,7 +73,7 @@ export async function POST(req: Request) {
     },
   });
   if (!account) {
-    return NextResponse.json({ ok: false, error: "只支持对借记卡账户校准余额" }, { status: 404 });
+    return NextResponse.json({ ok: false, error: "只支持对现金、借记卡、电子零钱账户校准余额" }, { status: 404 });
   }
 
   const balanceMap = await computeAccountDisplayBalances([account], hidFilter);

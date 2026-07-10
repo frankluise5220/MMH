@@ -6,6 +6,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { toStatementMonth } from "@/lib/date-utils";
+import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { RegularInvestClient } from "./RegularInvestClient";
 
 async function unavailableCreateTransaction(_formData: FormData) {
@@ -67,7 +68,7 @@ async function updateScheduledTransferRecord(formData: FormData) {
           categoryName: null,
           statementMonth,
           note: note || null,
-          toNote: toNote || null,
+          toNote: (toNote || note) || null,
         },
         select: {
           accountId: true,
@@ -138,6 +139,16 @@ export default async function RegularInvestPage() {
           deletedAt: null,
         },
         select: {
+          id: true,
+          date: true,
+          createdAt: true,
+          fundConfirmDate: true,
+          fundArrivalDate: true,
+          accountId: true,
+          toAccountId: true,
+          fundCode: true,
+          fundSubtype: true,
+          fundSourceEntryId: true,
           regularInvestPlanId: true,
           source: true,
           amount: true,
@@ -145,6 +156,21 @@ export default async function RegularInvestPage() {
         },
       })
     : [];
+
+  const { refundAmountByBuyId } = allocateBuyFailedRefunds(allEntries.map((entry) => ({
+    id: entry.id,
+    date: entry.date,
+    createdAt: entry.createdAt,
+    fundConfirmDate: entry.fundConfirmDate,
+    fundArrivalDate: entry.fundArrivalDate,
+    accountId: entry.accountId,
+    toAccountId: entry.toAccountId,
+    fundCode: entry.fundCode,
+    fundSubtype: entry.fundSubtype,
+    source: entry.source,
+    amount: Number(entry.amount),
+    fundSourceEntryId: entry.fundSourceEntryId,
+  })));
 
   const statsByPlanId = new Map<string, { executedCount: number; executedAmount: number; confirmedCount: number; confirmedAmount: number }>();
   for (const entry of allEntries) {
@@ -160,7 +186,10 @@ export default async function RegularInvestPage() {
     stats.executedAmount += Math.abs(Number(entry.amount));
     if (entry.fundUnits != null && Number(entry.fundUnits) > 0) {
       stats.confirmedCount++;
-      stats.confirmedAmount += Math.abs(Number(entry.amount));
+      stats.confirmedAmount += getConfirmedBuyAmount(
+        Number(entry.amount),
+        refundAmountByBuyId.get(entry.id) ?? 0,
+      );
     }
   }
 

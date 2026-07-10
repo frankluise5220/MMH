@@ -2,20 +2,17 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
-const STORAGE_KEY = "daily_task_last_run";
+let startupCheckStarted = false;
 
-function getLastRunDate(): string {
-  if (typeof window === "undefined") return "";
-  try { return localStorage.getItem(STORAGE_KEY) ?? ""; } catch { return ""; }
-}
-
-function setLastRunDate() {
-  try { localStorage.setItem(STORAGE_KEY, new Date().toISOString().slice(0, 10)); } catch { /* noop */ }
-}
-
-function isToday(dateStr: string): boolean {
-  return dateStr === new Date().toISOString().slice(0, 10);
+function hasUsefulChange(result: unknown) {
+  if (!result || typeof result !== "object") return false;
+  const data = result as Record<string, unknown>;
+  const executedCount = Number(data.executedCount ?? 0);
+  const filled = Number(data.filled ?? data.entryFilled ?? 0);
+  const navFilled = Number(data.navFilled ?? data.entryNavFilled ?? 0);
+  return executedCount > 0 || filled > 0 || navFilled > 0;
 }
 
 export function DailyTaskCheck() {
@@ -23,54 +20,29 @@ export function DailyTaskCheck() {
   const pathname = usePathname();
 
   useEffect(() => {
-    if (pathname.startsWith("/settings")) return;
-    const lastRun = getLastRunDate();
-    if (isToday(lastRun) || running.current) return;
+    if (startupCheckStarted || running.current) return;
+    startupCheckStarted = true;
 
     const run = async () => {
       running.current = true;
       try {
-        // 1. 执行到期定投计划
-        await fetch("/api/v1/regular-invest/auto-execute", {
+        const planRes = await fetch("/api/v1/regular-invest/auto-execute", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         });
+        const planData = await planRes.json().catch(() => null);
 
-        // 2. 获取所有持仓基金的最新净值，并补齐未确认交易净值
-        const accRes = await fetch("/api/v1/accounts/internal?balances=false");
-        const accData = await accRes.json();
-        if (accData.ok && accData.accounts) {
-          const investAccounts = accData.accounts.filter((a: any) => a.kind === "investment");
-          await Promise.allSettled(
-            investAccounts.map(async (acc: any) => {
-              const shellRes = await fetch(
-                `/api/v1/fund/shell-data?accountId=${encodeURIComponent(acc.id)}&showCleared=false&entryScope=account`
-              );
-              const shellData = await shellRes.json();
-              if (!shellData.ok) return;
+        const pendingRes = await fetch("/api/v1/fund/refresh-pending", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const pendingData = await pendingRes.json().catch(() => null);
 
-              const symbols = [...new Set([
-                ...(shellData.positions ?? []).map((p: any) => p.fundCode).filter(Boolean),
-                ...(shellData.pendingByCode ? Object.keys(shellData.pendingByCode) : []),
-                // 还包括所有有基金代码但没有净值/份额的记录
-                ...(shellData.allEntries ?? [])
-                  .filter((e: any) => e.fundCode && (e.fundNav == null || e.fundUnits == null || Number(e.fundUnits) === 0))
-                  .map((e: any) => e.fundCode),
-              ].map((code) => String(code).trim()).filter(Boolean))];
-              if (symbols.length === 0) return;
-
-              await fetch("/api/v1/fund/refresh", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ accountId: acc.id, symbols }),
-              });
-            })
-          );
+        if (hasUsefulChange(planData) || hasUsefulChange(pendingData)) {
+          dispatchFinanceDataChanged({ reason: "startup-check", entryIds: Array.isArray(pendingData?.entryIds) ? pendingData.entryIds : undefined });
         }
-
-        setLastRunDate();
       } catch {
-        // 静默失败，明天重试
+        startupCheckStarted = false;
       } finally {
         running.current = false;
       }

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
@@ -16,10 +16,10 @@ import {
   Shield,
   PanelLeftClose,
   PanelLeftOpen,
-  BookOpen,
   UserRound,
   Plus,
 } from "lucide-react";
+import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { InitModal } from "../InitModal";
@@ -27,6 +27,7 @@ import { DailyTaskCheck } from "../DailyTaskCheck";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatMoney } from "@/lib/format";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
@@ -42,6 +43,7 @@ import {
 } from "@/lib/client/appPreferences";
 import { warmSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 
 type AccountItem = {
   id?: string | null;
@@ -198,6 +200,7 @@ export function SidebarClient({
   const [pendingSettings, setPendingSettings] = useState(false);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
   const [initOpen, setInitOpen] = useState(false);
+  const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
@@ -237,12 +240,14 @@ export function SidebarClient({
     startTransition(() => {
       setItems(normalizeSidebarItems(initialItems));
     });
-    setSelectedOwnerFilter("");
+  }, [initialItems]);
+
+  useEffect(() => {
     setCollapsedSections(new Set());
     setCollapsedAssetSubgroupKeys(new Set());
     initializedSectionsRef.current = false;
     initializedAssetSubgroupsRef.current = false;
-  }, [householdId, initialItems]);
+  }, [householdId]);
 
   useEffect(() => {
     const debouncedRefresh = () => {
@@ -290,9 +295,11 @@ export function SidebarClient({
         }
       }, 100);
     };
-    window.addEventListener("mmh:fund:refresh", debouncedRefresh);
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, debouncedRefresh);
+    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, debouncedRefresh);
     return () => {
-      window.removeEventListener("mmh:fund:refresh", debouncedRefresh);
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, debouncedRefresh);
+      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, debouncedRefresh);
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
     };
   }, [householdId]);
@@ -326,6 +333,10 @@ export function SidebarClient({
   useEffect(() => {
     if (pathname.startsWith("/settings")) setPendingSettings(false);
   }, [pathname]);
+
+  useEffect(() => {
+    if (pathname === "/" && selectedAccountId) recordRecentAccount(selectedAccountId);
+  }, [pathname, selectedAccountId]);
 
   function cycleOwnerFilter() {
     const cycle = ["", ...ownerOptions];
@@ -438,6 +449,16 @@ export function SidebarClient({
   });
 
   const sections = useMemo(() => {
+    const sortAccountsByUsage = (accounts: AccountItem[]) => sortByAccountUsage(accounts, accountUsage);
+    const compareAccountUsage = (a: AccountItem, b: AccountItem) => {
+      const aStat = a.id ? accountUsage[a.id] : undefined;
+      const bStat = b.id ? accountUsage[b.id] : undefined;
+      const countDiff = (bStat?.count ?? 0) - (aStat?.count ?? 0);
+      if (countDiff !== 0) return countDiff;
+      const recencyDiff = (bStat?.lastUsedAt ?? 0) - (aStat?.lastUsedAt ?? 0);
+      if (recencyDiff !== 0) return recencyDiff;
+      return a.label.localeCompare(b.label, "zh-Hans-CN");
+    };
     if (sidebarGroupBy === "institution") {
       const map = new Map<string, { kind: string; label: string; accounts: AccountItem[]; total: number; subgroups: never[] }>();
       for (const item of visibleItems) {
@@ -463,7 +484,7 @@ export function SidebarClient({
           accounts: [...section.accounts].sort((a, b) => {
             const kindDiff = (KIND_SORT_ORDER.get(a.kind) ?? 999) - (KIND_SORT_ORDER.get(b.kind) ?? 999);
             if (kindDiff !== 0) return kindDiff;
-            return a.label.localeCompare(b.label, "zh-Hans-CN");
+            return compareAccountUsage(a, b);
           }),
         }))
         .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
@@ -482,7 +503,7 @@ export function SidebarClient({
         g.label === "资产"
           ? (() => {
               const subgroupItems = ASSET_SUBGROUPS.map((subgroup) => {
-                const accounts = filtered.filter((item) => subgroup.kinds.includes(item.kind));
+                const accounts = sortAccountsByUsage(filtered.filter((item) => subgroup.kinds.includes(item.kind)));
                 return {
                   key: subgroup.key,
                   label: subgroup.label,
@@ -491,7 +512,7 @@ export function SidebarClient({
                 };
               }).filter((subgroup) => subgroup.accounts.length > 0);
               const coveredKinds = new Set(ASSET_SUBGROUPS.flatMap((subgroup) => subgroup.kinds));
-              const fallbackAccounts = filtered.filter((item) => !coveredKinds.has(item.kind));
+              const fallbackAccounts = sortAccountsByUsage(filtered.filter((item) => !coveredKinds.has(item.kind)));
               if (fallbackAccounts.length > 0) {
                 subgroupItems.push({
                   key: "other_asset",
@@ -504,12 +525,12 @@ export function SidebarClient({
             })()
           : [];
       return {
-        kind: g.label, label: g.label, accounts: filtered,
+        kind: g.label, label: g.label, accounts: sortAccountsByUsage(filtered),
         total: filtered.reduce((s, a) => s + a.balance, 0),
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
-  }, [visibleItems, sidebarGroupBy]);
+  }, [visibleItems, sidebarGroupBy, accountUsage]);
 
   function isAccountItemActive(item: AccountItem) {
     if (pathname !== "/") return false;
@@ -592,10 +613,10 @@ export function SidebarClient({
             ref={ledgerSwitcherAnchorRef}
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
-            className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-foreground text-accent-clay shadow-lg shadow-foreground/10 transition-colors hover:bg-slate-800"
+            className="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
             title="切换账簿"
           >
-            <BookOpen size={18} />
+            <MmhLogo size={32} />
           </button>
           <button
             type="button"
@@ -671,10 +692,10 @@ export function SidebarClient({
             ref={ledgerSwitcherAnchorRef}
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
-            className="flex h-8 w-8 items-center justify-center rounded-xl bg-foreground text-accent-clay shadow-lg shadow-foreground/10 transition-colors hover:bg-slate-800"
+            className="flex h-10 w-10 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
             title="切换账簿"
           >
-            <BookOpen size={16} />
+            <MmhLogo size={28} />
           </button>
           <button
             type="button"

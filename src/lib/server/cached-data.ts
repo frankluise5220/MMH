@@ -10,9 +10,9 @@
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind } from "@prisma/client";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
 
 // ── 类型 ──
 
@@ -25,7 +25,7 @@ export type BaseData = CommonData & {
 // ── Common 基础数据（跨账户共享，跨请求缓存） ──
 
 async function _loadCommonData(hidFilter: { householdId: string }) {
-  const [categories, accounts, tags, groups, institutions, counterparties] = await Promise.all([
+  const [categories, accounts, tags, groups, institutions, counterparties, preciousMetalDictionaries] = await Promise.all([
     prisma.category.findMany({
       where: { ...hidFilter },
       orderBy: [{ type: "asc" }, { name: "asc" }],
@@ -51,8 +51,9 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
       where: { ...hidFilter },
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
+    listPreciousMetalDictionaries(hidFilter.householdId),
   ]);
-  return { categories, accounts, tags, groups, institutions, counterparties };
+  return { categories, accounts, tags, groups, institutions, counterparties, preciousMetalDictionaries };
 }
 
 /** 跨请求缓存：不随账户变化的数据 */
@@ -73,7 +74,7 @@ export const loadSelectedAccount = cache(
   },
 );
 
-// ── entries 数据（请求级缓存 + 跨请求缓存） ──
+// ── entries 数据（请求级缓存） ──
 
 async function _loadEntriesForAccount(
   accountId: string,
@@ -89,21 +90,21 @@ async function _loadEntriesForAccount(
 
   return prisma.txRecord.findMany({
     where,
-    include: { EntryTag: { include: { Tag: true } } },
+    include: {
+      EntryTag: { include: { Tag: true } },
+      account: { include: { Institution: { select: { name: true } } } },
+      toAccount: { include: { Institution: { select: { name: true } } } },
+    },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: 5000,
   });
 }
 
 /**
- * 跨请求缓存：账户交易记录
- * key 含 accountId，每个账户独立缓存
+ * 账户交易明细可能超过 Next.js data cache 单项 2MB 上限。
+ * 这里只做 React.cache 请求级去重，避免大账户写入 unstable_cache 失败。
  */
-export const loadEntriesForAccount = unstable_cache(
-  _loadEntriesForAccount,
-  ["entries"],
-  { revalidate: false, tags: ["entries"] },
-);
+export const loadEntriesForAccount = cache(_loadEntriesForAccount);
 
 async function _loadInvestBalances(_hidFilterStr: string) {
   const hidFilter = JSON.parse(_hidFilterStr) as { householdId: string };
@@ -123,7 +124,7 @@ export const loadInvestBalances = unstable_cache(
   { revalidate: false, tags: ["invest-balances", "fund-holding"] },
 );
 
-// ── 投资账户持仓数据（跨请求缓存） ──
+// ── 投资账户持仓数据（请求级缓存） ──
 
 async function _loadInvestAccountData(
   _hidFilterStr: string,
@@ -195,7 +196,10 @@ async function _loadInvestAccountData(
   const fundEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
-      fundCode: { not: null },
+      ...hidFilter,
+      ...(account.investProductType === "metal"
+        ? { metalTypeId: { not: null } }
+        : { fundCode: { not: null } }),
       OR: [{ toAccountId: accountId }, { accountId: accountId }],
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
@@ -225,7 +229,7 @@ async function _loadInvestAccountData(
   }
 
   const filtered = selectedFundCode
-    ? fundEntries.filter((e) => e.fundCode === selectedFundCode)
+    ? fundEntries.filter((e) => account.investProductType === "metal" ? e.metalTypeId === selectedFundCode : e.fundCode === selectedFundCode)
     : fundEntries;
   const totalEntries = filtered.length;
   const totalPages = Math.max(1, Math.ceil(totalEntries / params.fundPageSize));
@@ -250,9 +254,8 @@ async function _loadInvestAccountData(
   };
 }
 
-/** 跨请求缓存：投资账户持仓+明细数据 */
-export const loadInvestAccountData = unstable_cache(
-  _loadInvestAccountData,
-  ["invest-account-data"],
-  { revalidate: false, tags: ["invest-account-data", "fund-holding"] },
-);
+/**
+ * 投资账户持仓+明细数据可能包含大量 allEntries。
+ * Next.js data cache 单项有 2MB 上限，因此这里只做请求级去重，避免基金明细较多时写入 unstable_cache 失败。
+ */
+export const loadInvestAccountData = cache(_loadInvestAccountData);

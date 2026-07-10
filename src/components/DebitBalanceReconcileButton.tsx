@@ -110,14 +110,21 @@ export function DebitBalanceReconcileButton({
         <div className="fixed inset-0 z-[95] flex items-start justify-center bg-slate-900/25 px-4 py-[18vh]">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{editingEntryId ? "编辑余额校准" : "借记卡余额校准"}</div>
-              <div className="mt-1 text-xs text-slate-500">{accountLabel}</div>
+              <div className="text-sm font-semibold text-slate-800">{editingEntryId ? "编辑余额校准" : "余额校准"}</div>
+              <div className="mt-1 text-xs text-slate-500">把当前账户余额固定到一个明确日期节点</div>
             </div>
 
             <div className="space-y-3 px-4 py-4 text-sm">
               <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 校准会在所选日期的最末时刻生成一个余额锚点，当天其他流水先计算，最后余额固定为校准金额。
               </div>
+
+              <label className="block">
+                <span className="mb-1 block text-xs text-slate-500">校准账户</span>
+                <div className="flex h-9 w-full items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-sm text-slate-700">
+                  {accountLabel || accountId}
+                </div>
+              </label>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">

@@ -6,6 +6,7 @@ import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 
 export const runtime = "nodejs";
 
@@ -44,7 +45,7 @@ function addMonthsUtc(date: Date, months: number) {
 
 function toStatementMonth(date: Date, billingDay: number) {
   const day = date.getUTCDate();
-  const monthBase = day <= billingDay ? date : addMonthsUtc(date, 1);
+  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
   const y = monthBase.getUTCFullYear();
   const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
@@ -378,6 +379,12 @@ export async function POST(req: NextRequest) {
     accountById.set(created.id, created);
     const key = `${created.Institution?.name ?? ""}·${created.name}`.replace(/^·/, "");
     accountByName.set(key, created);
+    createdAccounts.push({
+      id: created.id,
+      name: created.name,
+      kind: created.kind,
+      institutionName: created.Institution?.name ?? (institutionName || null),
+    });
     return created;
   }
 
@@ -407,6 +414,7 @@ export async function POST(req: NextRequest) {
 
   let createdCount = 0;
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
+  const createdAccounts: Array<{ id: string; name: string; kind: string; institutionName?: string | null }> = [];
   const defaultAcc = (defaultAccountName ?? "").trim();
 
   // Resolve fund name from nav cache for batch fund operations
@@ -469,6 +477,7 @@ export async function POST(req: NextRequest) {
             fundProductType: productType as any,
             fundSubtype: fundSubtypeValue as any,
             householdId,
+            currency: normalizeCurrency(cashAcc?.currency ?? fundAcc.currency),
           },
         });
         createdCount++;
@@ -492,6 +501,7 @@ export async function POST(req: NextRequest) {
         }
         const fromStatementMonth =
           (from.kind === "bank_credit" || from.kind === "loan") && from.billingDay ? toStatementMonth(date, from.billingDay) : null;
+        const transferCurrency = resolveSameCurrencyTransfer(from, to);
         await prisma.txRecord.create({
           data: {
             type: item.type as any,
@@ -505,6 +515,7 @@ export async function POST(req: NextRequest) {
             note: normalizedRemark,
             statementMonth: fromStatementMonth,
             householdId,
+            currency: transferCurrency,
           },
         });
       } else if (item.type === "investment") {
@@ -560,6 +571,7 @@ export async function POST(req: NextRequest) {
               note: normalizedRemark,
               statementMonth,
               householdId,
+              currency: normalizeCurrency(single.currency),
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -586,6 +598,7 @@ export async function POST(req: NextRequest) {
               note: normalizedRemark,
               statementMonth: fromStatementMonth,
               householdId,
+              currency: normalizeCurrency(cashAccount?.currency ?? from.currency),
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -647,6 +660,7 @@ export async function POST(req: NextRequest) {
           note: normalizedRemark,
           statementMonth,
           householdId,
+          currency: normalizeCurrency(account.currency),
         };
         if (category) {
           entryData.categoryId = category.id;
@@ -672,6 +686,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     createdCount,
     skippedCount: errors.length,
+    createdAccounts,
     errors: errors.length > 0 ? errors : undefined,
   });
 }

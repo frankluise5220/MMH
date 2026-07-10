@@ -41,9 +41,7 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 }
 
 function isAllowedHostname(hostname: string, allowedList: string[]): boolean {
-  if (allowedList.includes(hostname)) return true;
-  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(hostname)) return true;
-  return false;
+  return allowedList.includes(hostname);
 }
 
 async function isOriginCheckEnabled(): Promise<boolean> {
@@ -107,6 +105,13 @@ export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (PUBLIC_PATHS.some((path) => pathname.startsWith(path))) {
+    return NextResponse.next();
+  }
+
+  const hasApiCredential =
+    !!req.headers.get("x-api-key") ||
+    (req.headers.get("authorization") ?? "").toLowerCase().startsWith("bearer ");
+  if (pathname.startsWith("/api/") && hasApiCredential) {
     return NextResponse.next();
   }
 

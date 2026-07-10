@@ -2,10 +2,13 @@ import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 /**
@@ -40,18 +43,39 @@ export async function POST(req: Request) {
       // 收集恢复记录涉及的账户，重算余额
       const restoredRecords = await prisma.txRecord.findMany({
         where: { id: { in: transactionIds } },
-        select: { accountId: true, toAccountId: true, type: true, fundProductType: true },
+        select: { accountId: true, toAccountId: true, type: true, fundProductType: true, fundSubtype: true, fundCode: true, metalTypeId: true },
       });
+      await syncFundTransactionsFromTxRecords(transactionIds).catch(logger.catchLog("同步基金业务单失败", "route.ts"));
       const accountsToRecalc = new Set<string>();
+      const fundAccountsToRecalc = new Map<string, string[]>();
+      const metalAccountsToRecalc = new Set<string>();
       let touchedInvestment = false;
       for (const r of restoredRecords) {
         if (r.accountId) accountsToRecalc.add(r.accountId);
         if (r.toAccountId) accountsToRecalc.add(r.toAccountId);
         if (r.type === "investment" || r.fundProductType) touchedInvestment = true;
+        const isRedeemLike = r.fundSubtype === "redeem" || r.fundSubtype === "switch_out";
+        const investmentAccId = isRedeemLike ? r.accountId : r.toAccountId;
+        if ((r.metalTypeId || r.fundProductType === "metal") && investmentAccId) {
+          metalAccountsToRecalc.add(investmentAccId);
+        } else if (r.fundCode && r.fundProductType && investmentAccId) {
+          const codes = fundAccountsToRecalc.get(investmentAccId) ?? [];
+          if (!codes.includes(r.fundCode)) codes.push(r.fundCode);
+          fundAccountsToRecalc.set(investmentAccId, codes);
+        }
+      }
+      for (const [acctId, codes] of fundAccountsToRecalc) {
+        await recalcFundPositions(acctId, codes).catch(logger.catchLog("操作失败", "route.ts"));
+      }
+      for (const acctId of metalAccountsToRecalc) {
+        await recalcPreciousMetalPositions(acctId).catch(logger.catchLog("操作失败", "route.ts"));
       }
       for (const acctId of accountsToRecalc) {
         await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
       }
+      await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalc).catch(
+        logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
+      );
       if (touchedInvestment) revalidateAfterInvestChange();
       else revalidateAfterTxChange();
       // Client-side will handle page refresh
@@ -66,7 +90,9 @@ export async function POST(req: Request) {
 
     let deletedCount = 0;
     const fundAccountsToRecalc = new Map<string, string[]>();
+    const metalAccountsToRecalc = new Set<string>();
     const accountsToRecalcBalance = new Set<string>();
+    const changedFundEntryIds: string[] = [];
     let touchedInvestment = false;
 
     for (const entryId of entryIds) {
@@ -83,6 +109,7 @@ export async function POST(req: Request) {
         where: { id: txRecord.id },
         data: { deletedAt: new Date() },
       });
+      changedFundEntryIds.push(txRecord.id);
       deletedCount++;
 
       // 记录需要重新计算余额的账户（accountId 和 toAccountId 两侧）
@@ -154,7 +181,11 @@ export async function POST(req: Request) {
       // 如果是基金交易，记录需要重新计算持仓的账户和基金代码
       // 买入类：accountId=资金账户, toAccountId=投资账户
       // 赎回类：accountId=投资账户, toAccountId=资金账户
-      if (txRecord.fundCode && txRecord.fundProductType) {
+      if (txRecord.metalTypeId || txRecord.fundProductType === "metal") {
+        const isRedeemLike = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out";
+        const investmentAccId = isRedeemLike ? txRecord.accountId : txRecord.toAccountId;
+        if (investmentAccId) metalAccountsToRecalc.add(investmentAccId);
+      } else if (txRecord.fundCode && txRecord.fundProductType) {
         const isRedeemLike = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out";
         const investmentAccId = isRedeemLike ? txRecord.accountId : txRecord.toAccountId;
         if (investmentAccId) {
@@ -168,14 +199,23 @@ export async function POST(req: Request) {
     }
 
     // 批量重新计算持仓
+    if (changedFundEntryIds.length > 0) {
+      await syncFundTransactionsFromTxRecords(changedFundEntryIds).catch(logger.catchLog("同步基金业务单失败", "route.ts"));
+    }
     for (const [accountId, fundCodes] of fundAccountsToRecalc) {
       await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "route.ts"));
+    }
+    for (const accountId of metalAccountsToRecalc) {
+      await recalcPreciousMetalPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
     // 批量重新计算账户余额
     for (const accountId of accountsToRecalcBalance) {
       await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+    await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalcBalance).catch(
+      logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
+    );
 
     if (touchedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();

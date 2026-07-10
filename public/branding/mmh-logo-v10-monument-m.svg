@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH monument M logo</title>
+  <desc id="desc">A wide, architectural M monogram with a strong baseline.</desc>
+  <rect width="128" height="128" rx="32" fill="#F4EFE7"/>
+  <path
+    d="M20 99V27h18l26 36.5L90 27h18v72H89V57.5L69.5 85c-2.6 3.7-8.4 3.7-11 0L39 57.5V99H20Z"
+    fill="#24313A"
+  />
+  <path
+    d="M20 99V27h18l26 36.5L90 27h18"
+    fill="none"
+    stroke="#BE6E4A"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="6"
+  />
+</svg>

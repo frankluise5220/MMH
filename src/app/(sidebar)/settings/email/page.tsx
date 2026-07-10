@@ -552,7 +552,18 @@ export default function EmailSettingsPage() {
         body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false }),
       });
       const data = await res.json();
-      if (data.ok) { setInfo(`导入完成: 创建 ${data.createdCount} 条, 跳过 ${data.skippedCount} 条`); setParsedItems([]); setImportPreview(null); }
+      if (data.ok) {
+        const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
+        const accountText = createdAccounts.length
+          ? `；已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}`
+          : "";
+        setInfo(`导入完成: 创建 ${data.createdCount} 条, 跳过 ${data.skippedCount} 条${accountText}`);
+        if ((data.skippedCount ?? 0) > 0) {
+          const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
+          setError(firstError ? `有 ${data.skippedCount} 条未导入：${firstError}` : `有 ${data.skippedCount} 条未导入，请检查账户匹配。`);
+        }
+        setParsedItems([]); setImportPreview(null);
+      }
       else setError(data.error ?? "导入失败");
     } catch { setError("网络错误"); }
     finally { setImporting(false); }

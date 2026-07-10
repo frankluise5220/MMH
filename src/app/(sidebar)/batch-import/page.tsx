@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
+import { useI18n } from "@/lib/i18n";
 
 type ParsedItem = {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
+  postedAt?: string;
   amount: number;
   outflow?: number;
   inflow?: number;
@@ -26,15 +28,61 @@ type ParsedItem = {
   transferDirection?: "in" | "out";
 };
 
+type FundImportUploadItem = {
+  rawText: string;
+  date: string;
+  fundSubtype: string;
+  source: string;
+  cashAccount: string;
+  fundAccount: string;
+  fundCode: string;
+  fundName: string;
+  amount: number;
+  units: number | null;
+  nav: number | null;
+  fee: number | null;
+  confirmDate: string | null;
+  arrivalDate: string | null;
+  remark: string;
+};
+
+type FundPreviewIssue = {
+  level: "error" | "warning";
+  message: string;
+};
+
+type FundImportPreviewItem = FundImportUploadItem & {
+  feeRate: number | null;
+  confirmDays: number | null;
+  arrivalDays: number | null;
+  cashAccountId: string | null;
+  fundAccountId: string | null;
+  fundProductType: string | null;
+  issues: FundPreviewIssue[];
+};
+
+type FundRuleEditorRow = {
+  key: string;
+  fundAccountId: string | null;
+  fundAccount: string;
+  fundCode: string;
+  fundName: string;
+  confirmDays: string;
+  arrivalDays: string;
+};
+
 type ImportTemplate = {
   key: "normal" | "fund" | "credit";
   title: string;
   description: string;
   status: string;
   filename: string;
+  downloadFormat?: "csv" | "xlsx";
+  sheetName?: string;
   headers: string[];
+  exportHeaders?: string[];
   rows: string[][];
-  fields: Array<{ name: string; required: boolean; note: string }>;
+  fields: Array<{ name: string; label?: string; required: boolean; note: string }>;
 };
 
 type AccountOption = {
@@ -47,26 +95,74 @@ type AccountOption = {
 };
 
 type FilterColumn = "date" | "type" | "account" | "counterAccount" | "remark";
-type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark" | "secondRemark";
+type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
+type FundImportKind = "normal" | "fund" | null;
 
 const filterColumns: FilterColumn[] = ["date", "type", "account", "counterAccount", "remark"];
 const INITIAL_PREVIEW_COUNT = 200;
 const PREVIEW_COUNT_STEP = 200;
+const FUND_CANONICAL_HEADERS = [
+  "date",
+  "fundSubtype",
+  "source",
+  "cashAccount",
+  "fundAccount",
+  "fundCode",
+  "fundName",
+  "amount",
+  "units",
+  "nav",
+  "fee",
+  "confirmDate",
+  "arrivalDate",
+  "remark",
+] as const;
+const FUND_LABEL_HEADER_SET = new Set([
+  "日期",
+  "基金动作",
+  "来源",
+  "资金账户",
+  "基金账户",
+  "基金代码",
+  "基金名称",
+  "金额",
+  "份额",
+  "净值",
+  "手续费",
+  "净值日期",
+  "入账日期",
+  "备注",
+]);
+const FUND_FIELD_ALIASES: Record<Exclude<keyof FundImportUploadItem, "rawText">, string[]> = {
+  date: ["date", "日期", "交易日期", "申请日期"],
+  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作"],
+  source: ["source", "来源"],
+  cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account"],
+  fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account"],
+  fundCode: ["fundCode", "基金代码", "代码", "fund code"],
+  fundName: ["fundName", "基金名称", "名称", "fund name"],
+  amount: ["amount", "金额", "发生金额"],
+  units: ["units", "份额", "确认份额"],
+  nav: ["nav", "净值", "成交净值"],
+  fee: ["fee", "手续费"],
+  confirmDate: ["confirmDate", "确认日期", "净值日期"],
+  arrivalDate: ["arrivalDate", "入账日期", "到账日期"],
+  remark: ["remark", "备注", "说明"],
+};
 
-const replaceFieldLabels: Record<ReplaceField, string> = {
-  date: "日期",
-  type: "类型",
-  outflow: "流出",
-  inflow: "流入",
-  account: "账户",
-  counterAccount: "对向账户",
-  category: "分类",
-  institution: "收支机构",
-  tags: "标签",
-  remark: "备注",
-  secondRemark: "第二备注",
+const replaceFieldLabelKeys: Record<ReplaceField, string> = {
+  date: "batchImport.field.date",
+  type: "batchImport.field.type",
+  outflow: "batchImport.field.outflow",
+  inflow: "batchImport.field.inflow",
+  account: "batchImport.field.account",
+  counterAccount: "batchImport.field.counterAccount",
+  category: "batchImport.field.category",
+  institution: "batchImport.field.institution",
+  tags: "batchImport.field.tags",
+  remark: "batchImport.field.remark",
 };
 
 function applyNumberExpression(currentValue: number, expression: string) {
@@ -85,84 +181,124 @@ function applyNumberExpression(currentValue: number, expression: string) {
   return currentValue / operand;
 }
 
-const templates: ImportTemplate[] = [
+function buildTemplates(t: (key: string) => string): ImportTemplate[] {
+  return [
   {
     key: "normal",
-    title: "账单记录模板",
-    description: "用于现金、借记卡、电子钱包等普通账单。模板按库字段语义组织：收支大类决定写入哪种记录，金额写入金额字段，分类、标签、备注分别写入对应字段。",
-    status: "可上传导入",
+    title: t("batchImport.template.normal.title"),
+    description: t("batchImport.template.normal.description"),
+    status: t("batchImport.template.normal.status"),
     filename: "账单记录导入模板.csv",
-    headers: ["日期", "收支大类", "金额", "账户", "对向账户", "分类", "收支机构", "标签", "备注", "第二备注"],
+    downloadFormat: "csv",
+    sheetName: t("batchImport.sheet.template"),
+    headers: ["日期", "入账时间", "收支大类", "金额", "账户", "对向账户", "分类", "收支机构", "标签", "备注"],
     rows: [
-      ["2026-06-08", "支出", "32.50", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐", "门店消费"],
-      ["2026-06-08", "收入", "1.28", "招商银行2758", "", "利息收入", "招商银行", "利息", "活期利息", "季度结息"],
-      ["2026-06-08", "支出", "2.00", "招商银行2758", "", "利息支出", "招商银行", "手续费", "账户管理费", "月服务费"],
-      ["2026-06-08", "转账", "1000.00", "招商银行2758", "现金", "", "", "现金", "取现", "ATM"],
+      ["2026-06-08", "2026-06-09 09:30", "支出", "32.50", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐"],
+      ["2026-06-08", "", "收入", "1.28", "招商银行2758", "", "利息收入", "招商银行", "利息", "活期利息"],
+      ["2026-06-08", "2026-06-08 23:30", "支出", "2.00", "招商银行2758", "", "利息支出", "招商银行", "手续费", "账户管理费"],
+      ["2026-06-08", "", "转账", "1000.00", "招商银行2758", "现金", "", "", "现金", "取现"],
     ],
     fields: [
-      { name: "日期", required: true, note: "写入交易日期，格式 YYYY-MM-DD，对应库里的 date。" },
-      { name: "收支大类", required: true, note: "写入记录大类，对应库里的 type；填写 支出、收入、转账、投资。" },
-      { name: "金额", required: true, note: "写入记录金额，对应库里的 amount；填正数即可，不用再区分正负。" },
-      { name: "账户", required: true, note: "对应主账户。支出/收入写发生账户；转账时写转出账户。" },
-      { name: "对向账户", required: false, note: "对应转账对方账户。仅转账时建议填写，写入 toAccount。" },
-      { name: "分类", required: false, note: "对应分类字段。支出、收入建议填写，例如餐饮、利息收入、利息支出、工资。" },
-      { name: "收支机构", required: false, note: "对应收支机构。主要用于支出、收入的机构或商户描述。" },
-      { name: "标签", required: false, note: "对应标签关联。可填一个或多个标签，使用中文逗号或英文逗号分隔。" },
-      { name: "备注", required: false, note: "对应主备注，写入 note。" },
-      { name: "第二备注", required: false, note: "对应第二备注，写入 toNote；转账时用于转入备注，收支时用于机构备注或补充说明。" },
+      { name: "日期", required: true, note: t("batchImport.template.normal.field.date") },
+      { name: "入账时间", required: false, note: t("batchImport.template.normal.field.postedAt") },
+      { name: "收支大类", required: true, note: t("batchImport.template.normal.field.majorType") },
+      { name: "金额", required: true, note: t("batchImport.template.normal.field.amount") },
+      { name: "账户", required: true, note: t("batchImport.template.normal.field.account") },
+      { name: "对向账户", required: false, note: t("batchImport.template.normal.field.counterAccount") },
+      { name: "分类", required: false, note: t("batchImport.template.normal.field.category") },
+      { name: "收支机构", required: false, note: t("batchImport.template.normal.field.institution") },
+      { name: "标签", required: false, note: t("batchImport.template.normal.field.tags") },
+      { name: "备注", required: false, note: t("batchImport.template.normal.field.remark") },
     ],
   },
   {
     key: "fund",
-    title: "基金记录模板",
-    description: "用于基金买入、卖出、分红、手续费、净值、份额等明细。当前仅提供模板，后续需要走基金专用导入校验。",
-    status: "模板已提供，导入待专用流程",
-    filename: "基金记录导入模板.csv",
-    headers: ["date", "action", "account", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "remark"],
+    title: t("batchImport.template.fund.title"),
+    description: t("batchImport.template.fund.description"),
+    status: t("batchImport.template.normal.status"),
+    filename: "基金记录导入模板.xlsx",
+    downloadFormat: "xlsx",
+    sheetName: t("batchImport.sheet.template"),
+    headers: ["date", "fundSubtype", "source", "cashAccount", "fundAccount", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "arrivalDate", "remark"],
+    exportHeaders: [
+      t("batchImport.template.fund.label.date"),
+      t("batchImport.template.fund.label.fundSubtype"),
+      t("batchImport.template.fund.label.source"),
+      t("batchImport.template.fund.label.cashAccount"),
+      t("batchImport.template.fund.label.fundAccount"),
+      t("batchImport.template.fund.label.fundCode"),
+      t("batchImport.template.fund.label.fundName"),
+      t("batchImport.template.fund.label.amount"),
+      t("batchImport.template.fund.label.units"),
+      t("batchImport.template.fund.label.nav"),
+      t("batchImport.template.fund.label.fee"),
+      t("batchImport.template.fund.label.confirmDate"),
+      t("batchImport.template.fund.label.arrivalDate"),
+      t("batchImport.template.fund.label.remark"),
+    ],
     rows: [
-      ["2026-06-08", "buy", "招商银行2758", "000001", "示例基金", "1000.00", "999.0000", "1.0010", "1.50", "2026-06-10", "申购"],
-      ["2026-06-12", "redeem", "招商银行2758", "000001", "示例基金", "500.00", "499.0000", "1.0020", "0.50", "2026-06-14", "赎回"],
+      ["2026-06-08", "buy", "regular_invest", "招商银行2758", "招商基金账户", "000001", "示例基金", "100.00", "99.9000", "1.0010", "0.15", "2026-06-10", "2026-06-11", "定投成功部分"],
+      ["2026-06-08", "refund", "regular_invest_refund", "招商银行2758", "招商基金账户", "000001", "示例基金", "100.00", "", "", "", "2026-06-10", "2026-06-11", "定投退回部分"],
+      ["2026-06-12", "redeem", "manual", "招商银行2758", "招商基金账户", "000001", "示例基金", "500.00", "499.0000", "1.0020", "0.50", "2026-06-14", "2026-06-15", "赎回"],
     ],
     fields: [
-      { name: "date", required: true, note: "交易申请日期，格式 YYYY-MM-DD。" },
-      { name: "action", required: true, note: "buy、redeem、dividend、reinvest 等。" },
-      { name: "account", required: true, note: "基金所在账户名称。" },
-      { name: "fundCode", required: true, note: "基金代码，后续用于净值和持仓联动。" },
-      { name: "fundName", required: false, note: "基金名称，可用于补全显示。" },
-      { name: "amount", required: true, note: "发生金额。" },
-      { name: "units", required: false, note: "确认份额。" },
-      { name: "nav", required: false, note: "成交净值。" },
-      { name: "fee", required: false, note: "手续费。" },
-      { name: "confirmDate", required: false, note: "确认日期，未填时按确认天数库计算。" },
-      { name: "remark", required: false, note: "备注。" },
+      { name: "date", label: t("batchImport.template.fund.label.date"), required: true, note: t("batchImport.template.fund.field.date") },
+      { name: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), required: true, note: t("batchImport.template.fund.field.fundSubtype") },
+      { name: "source", label: t("batchImport.template.fund.label.source"), required: false, note: t("batchImport.template.fund.field.source") },
+      { name: "cashAccount", label: t("batchImport.template.fund.label.cashAccount"), required: false, note: t("batchImport.template.fund.field.cashAccount") },
+      { name: "fundAccount", label: t("batchImport.template.fund.label.fundAccount"), required: true, note: t("batchImport.template.fund.field.fundAccount") },
+      { name: "fundCode", label: t("batchImport.template.fund.label.fundCode"), required: true, note: t("batchImport.template.fund.field.fundCode") },
+      { name: "fundName", label: t("batchImport.template.fund.label.fundName"), required: false, note: t("batchImport.template.fund.field.fundName") },
+      { name: "amount", label: t("batchImport.template.fund.label.amount"), required: true, note: t("batchImport.template.fund.field.amount") },
+      { name: "units", label: t("batchImport.template.fund.label.units"), required: false, note: t("batchImport.template.fund.field.units") },
+      { name: "nav", label: t("batchImport.template.fund.label.nav"), required: false, note: t("batchImport.template.fund.field.nav") },
+      { name: "fee", label: t("batchImport.template.fund.label.fee"), required: false, note: t("batchImport.template.fund.field.fee") },
+      { name: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), required: false, note: t("batchImport.template.fund.field.confirmDate") },
+      { name: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), required: false, note: t("batchImport.template.fund.field.arrivalDate") },
+      { name: "remark", label: t("batchImport.template.fund.label.remark"), required: false, note: t("batchImport.template.fund.field.remark") },
     ],
   },
   {
     key: "credit",
-    title: "信用卡账单模板",
-    description: "用于信用卡账单周期内的消费、退款、还款、分期等记录。当前仅提供模板，后续需要走账单专用导入校验。",
-    status: "模板已提供，导入待专用流程",
-    filename: "信用卡账单导入模板.csv",
+    title: t("batchImport.template.credit.title"),
+    description: t("batchImport.template.credit.description"),
+    status: t("batchImport.template.pending"),
+    filename: "信用卡账单导入模板.xlsx",
+    downloadFormat: "xlsx",
+    sheetName: t("batchImport.sheet.template"),
     headers: ["statementMonth", "date", "type", "cardAccount", "amount", "category", "merchant", "remark", "installmentNo", "installmentTotal"],
+    exportHeaders: [
+      t("batchImport.template.credit.label.statementMonth"),
+      t("batchImport.template.credit.label.date"),
+      t("batchImport.template.credit.label.type"),
+      t("batchImport.template.credit.label.cardAccount"),
+      t("batchImport.template.credit.label.amount"),
+      t("batchImport.template.credit.label.category"),
+      t("batchImport.template.credit.label.merchant"),
+      t("batchImport.template.credit.label.remark"),
+      t("batchImport.template.credit.label.installmentNo"),
+      t("batchImport.template.credit.label.installmentTotal"),
+    ],
     rows: [
       ["2026-06", "2026-06-03", "expense", "招商信用卡", "128.00", "餐饮", "示例餐厅", "晚餐", "", ""],
       ["2026-06", "2026-06-05", "refund", "招商信用卡", "20.00", "餐饮", "示例餐厅", "退款", "", ""],
       ["2026-06", "2026-06-20", "repayment", "招商信用卡", "108.00", "", "", "还款", "", ""],
     ],
     fields: [
-      { name: "statementMonth", required: true, note: "账单月，格式 YYYY-MM。" },
-      { name: "date", required: true, note: "入账或交易日期，格式 YYYY-MM-DD。" },
-      { name: "type", required: true, note: "expense、refund、repayment、installment。" },
-      { name: "cardAccount", required: true, note: "信用卡账户名称。" },
-      { name: "amount", required: true, note: "账单金额，正数。退款和还款用 type 区分。" },
-      { name: "category", required: false, note: "分类名称。" },
-      { name: "merchant", required: false, note: "商户或交易对方。" },
-      { name: "remark", required: false, note: "备注。" },
-      { name: "installmentNo", required: false, note: "分期期数序号。" },
-      { name: "installmentTotal", required: false, note: "分期总期数。" },
+      { name: "statementMonth", label: t("batchImport.template.credit.label.statementMonth"), required: true, note: t("batchImport.template.credit.field.statementMonth") },
+      { name: "date", label: t("batchImport.template.credit.label.date"), required: true, note: t("batchImport.template.credit.field.date") },
+      { name: "type", label: t("batchImport.template.credit.label.type"), required: true, note: t("batchImport.template.credit.field.type") },
+      { name: "cardAccount", label: t("batchImport.template.credit.label.cardAccount"), required: true, note: t("batchImport.template.credit.field.cardAccount") },
+      { name: "amount", label: t("batchImport.template.credit.label.amount"), required: true, note: t("batchImport.template.credit.field.amount") },
+      { name: "category", label: t("batchImport.template.credit.label.category"), required: false, note: t("batchImport.template.credit.field.category") },
+      { name: "merchant", label: t("batchImport.template.credit.label.merchant"), required: false, note: t("batchImport.template.credit.field.merchant") },
+      { name: "remark", label: t("batchImport.template.credit.label.remark"), required: false, note: t("batchImport.template.credit.field.remark") },
+      { name: "installmentNo", label: t("batchImport.template.credit.label.installmentNo"), required: false, note: t("batchImport.template.credit.field.installmentNo") },
+      { name: "installmentTotal", label: t("batchImport.template.credit.label.installmentTotal"), required: false, note: t("batchImport.template.credit.field.installmentTotal") },
     ],
   },
-];
+  ];
+}
 
 function escapeCsvCell(value: string) {
   if (!/[",\r\n]/.test(value)) return value;
@@ -170,7 +306,52 @@ function escapeCsvCell(value: string) {
 }
 
 function buildCsv(template: ImportTemplate) {
-  return [template.headers, ...template.rows].map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+  const exportHeaders = template.exportHeaders ?? template.headers;
+  return [exportHeaders, ...template.rows].map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+}
+
+async function buildTemplateWorkbook(
+  template: ImportTemplate,
+  t: (key: string) => string,
+) {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.utils.book_new();
+  const displayHeaders = template.fields.map((field) => field.label ?? field.name);
+  const exportHeaders = template.exportHeaders ?? template.headers;
+  const needsLabelRow =
+    exportHeaders.length !== displayHeaders.length ||
+    exportHeaders.some((header, index) => header !== displayHeaders[index]);
+  const templateRows = [
+    exportHeaders,
+    ...(needsLabelRow ? [displayHeaders] : []),
+    ...template.rows,
+  ];
+  const templateSheet = XLSX.utils.aoa_to_sheet(templateRows);
+  templateSheet["!cols"] = template.headers.map((header, index) => ({
+    wch: Math.max(header.length, displayHeaders[index]?.length ?? 0, 14),
+  }));
+  XLSX.utils.book_append_sheet(workbook, templateSheet, template.sheetName ?? t("batchImport.sheet.template"));
+
+  const noteRows = [
+    [t("batchImport.sheet.noteTitle"), t("batchImport.sheet.noteContent")],
+    [],
+    [
+      t("batchImport.sheet.fieldKey"),
+      t("batchImport.sheet.displayLabel"),
+      t("batchImport.sheet.requiredColumn"),
+      t("batchImport.sheet.ruleColumn"),
+    ],
+    ...template.fields.map((field) => [
+      field.name,
+      field.label ?? field.name,
+      field.required ? t("batchImport.required") : t("batchImport.optional"),
+      field.note,
+    ]),
+  ];
+  const noteSheet = XLSX.utils.aoa_to_sheet(noteRows);
+  noteSheet["!cols"] = [{ wch: 20 }, { wch: 18 }, { wch: 10 }, { wch: 80 }];
+  XLSX.utils.book_append_sheet(workbook, noteSheet, t("batchImport.sheet.instructions"));
+  return { XLSX, workbook };
 }
 
 function parseCsv(text: string): string[][] {
@@ -213,6 +394,17 @@ function parseMoney(value: string) {
   if (!normalized) return 0;
   const amount = Number(normalized);
   return Number.isFinite(amount) ? Math.abs(amount) : 0;
+}
+
+function parseLooseNumber(value: string) {
+  const normalized = value.replace(/[,，￥¥\s]/g, "");
+  if (!normalized) return null;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function normalizeFundHeaderText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function normalizeAccountMatchKey(value?: string) {
@@ -286,6 +478,33 @@ function inferTransferDirection(source: string, inflow: number, outflow: number)
   return "out";
 }
 
+function normalizeFlowFields(
+  type: ParsedItem["type"],
+  amountValue: number,
+  inflowValue: number,
+  outflowValue: number,
+  transferDirection?: "in" | "out",
+) {
+  const amount = Math.abs(Number(amountValue || inflowValue || outflowValue) || 0);
+  const inflow = Math.abs(Number(inflowValue) || 0);
+  const outflow = Math.abs(Number(outflowValue) || 0);
+
+  if (type === "income") {
+    const nextAmount = amount || inflow;
+    return { amount: nextAmount, inflow: nextAmount, outflow: 0 };
+  }
+  if (type === "expense") {
+    const nextAmount = amount || outflow;
+    return { amount: nextAmount, inflow: 0, outflow: nextAmount };
+  }
+  if (type === "transfer") {
+    const nextAmount = amount || inflow || outflow;
+    if (transferDirection === "in") return { amount: nextAmount, inflow: nextAmount, outflow: 0 };
+    if (transferDirection === "out") return { amount: nextAmount, inflow: 0, outflow: nextAmount };
+  }
+  return { amount, inflow, outflow };
+}
+
 function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook): string[][] {
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) return [];
@@ -308,6 +527,146 @@ async function parseImportFile(file: File): Promise<string[][]> {
   return parseCsv(await file.text());
 }
 
+function buildFundHeaderIndex(headers: string[]) {
+  const normalizedHeaders = headers.map(normalizeFundHeaderText);
+  const map = new Map<Exclude<keyof FundImportUploadItem, "rawText">, number>();
+  (Object.entries(FUND_FIELD_ALIASES) as Array<[Exclude<keyof FundImportUploadItem, "rawText">, string[]]>).forEach(([field, aliases]) => {
+    const index = normalizedHeaders.findIndex((header) => aliases.some((alias) => normalizeFundHeaderText(alias) === header));
+    if (index >= 0) map.set(field, index);
+  });
+  return map;
+}
+
+function hasLikelyFundHeaders(map: Map<Exclude<keyof FundImportUploadItem, "rawText">, number>) {
+  return map.has("date") && map.has("fundAccount") && map.has("fundCode") && map.has("amount");
+}
+
+function hasCanonicalFundHeaders(headers: string[]) {
+  return headers.some((header) => FUND_CANONICAL_HEADERS.includes(header.trim() as (typeof FUND_CANONICAL_HEADERS)[number]));
+}
+
+function looksLikeFundLabelRow(headers: string[]) {
+  return headers.some((header) => FUND_LABEL_HEADER_SET.has(header.trim()));
+}
+
+function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
+  const firstRow = rows[0] ?? [];
+  const secondRow = rows[1] ?? [];
+  const firstHeaderIndex = buildFundHeaderIndex(firstRow);
+  const secondHeaderIndex = buildFundHeaderIndex(secondRow);
+
+  let headerIndex = firstHeaderIndex;
+  let dataRows = rows.slice(1);
+
+  if (hasCanonicalFundHeaders(firstRow)) {
+    headerIndex = firstHeaderIndex;
+    dataRows = rows.slice(looksLikeFundLabelRow(secondRow) ? 2 : 1);
+  } else if (hasLikelyFundHeaders(firstHeaderIndex)) {
+    headerIndex = firstHeaderIndex;
+    dataRows = rows.slice(1);
+  } else if (hasLikelyFundHeaders(secondHeaderIndex)) {
+    headerIndex = secondHeaderIndex;
+    dataRows = rows.slice(2);
+  }
+
+  const readField = (row: string[], field: Exclude<keyof FundImportUploadItem, "rawText">) => {
+    const index = headerIndex.get(field);
+    return index == null ? "" : String(row[index] ?? "").trim();
+  };
+
+  return dataRows
+    .filter((row) => row.some((cell) => String(cell ?? "").trim()))
+    .map((row) => ({
+      rawText: row.join(" "),
+      date: normalizeDateCell(readField(row, "date")),
+      fundSubtype: readField(row, "fundSubtype"),
+      source: readField(row, "source"),
+      cashAccount: readField(row, "cashAccount"),
+      fundAccount: readField(row, "fundAccount"),
+      fundCode: readField(row, "fundCode"),
+      fundName: readField(row, "fundName"),
+      amount: parseLooseNumber(readField(row, "amount")) ?? 0,
+      units: parseLooseNumber(readField(row, "units")),
+      nav: parseLooseNumber(readField(row, "nav")),
+      fee: parseLooseNumber(readField(row, "fee")),
+      confirmDate: normalizeDateCell(readField(row, "confirmDate")) || null,
+      arrivalDate: normalizeDateCell(readField(row, "arrivalDate")) || null,
+      remark: readField(row, "remark"),
+    }));
+}
+
+function formatOptionalNumber(value: number | null | undefined, digits = 2) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "-";
+}
+
+function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: string) => string) {
+  if (subtype === "buy_failed" && source === "regular_invest_refund") return t("batchImport.fundSubtype.refund");
+  if (subtype === "buy_failed") return t("batchImport.fundSubtype.unfilledRefund");
+  if (subtype === "buy") return t("fund.subtype.buy");
+  if (subtype === "redeem") return t("fund.subtype.redeem");
+  if (subtype === "dividend_cash") return t("fund.subtype.dividend_cash");
+  if (subtype === "dividend_reinvest") return t("fund.subtype.dividend_reinvest");
+  return subtype || "-";
+}
+
+function getFundImportSourceLabel(source: string, t: (key: string) => string) {
+  if (source === "regular_invest") return t("batchImport.fundSource.regularInvest");
+  if (source === "regular_invest_refund") return t("batchImport.fundSource.regularInvest");
+  if (source === "manual") return t("batchImport.fundSource.manual");
+  if (source === "dividend") return t("batchImport.fundSource.dividend");
+  return source || "-";
+}
+
+function buildFundRuleEditorRows(items: FundImportPreviewItem[]) {
+  const map = new Map<string, FundRuleEditorRow>();
+  for (const item of items) {
+    const fundCode = item.fundCode.trim();
+    const accountKey = item.fundAccountId || item.fundAccount.trim();
+    if (!fundCode || !accountKey) continue;
+    const key = `${accountKey}::${fundCode}`;
+    if (map.has(key)) continue;
+    map.set(key, {
+      key,
+      fundAccountId: item.fundAccountId,
+      fundAccount: item.fundAccount,
+      fundCode,
+      fundName: item.fundName || fundCode,
+      confirmDays: item.confirmDays != null ? String(item.confirmDays) : "",
+      arrivalDays: item.arrivalDays != null ? String(item.arrivalDays) : "",
+    });
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    a.fundAccount.localeCompare(b.fundAccount, "zh-Hans-CN") || a.fundCode.localeCompare(b.fundCode, "zh-Hans-CN"),
+  );
+}
+
+function serializeFundRuleOverrides(rows: FundRuleEditorRow[]) {
+  const invalidLabels: string[] = [];
+  const overrides = rows.flatMap((row) => {
+    const parseDays = (value: string, label: string) => {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const num = Number(trimmed);
+      if (!Number.isFinite(num) || num < 0) {
+        invalidLabels.push(`${row.fundCode} ${label}`);
+        return null;
+      }
+      return Math.trunc(num);
+    };
+    const confirmDays = parseDays(row.confirmDays, "确认天数");
+    const arrivalDays = parseDays(row.arrivalDays, "入账天数");
+    if (!row.fundCode || (!row.fundAccountId && !row.fundAccount.trim())) return [];
+    return [{
+      fundAccountId: row.fundAccountId,
+      fundAccount: row.fundAccount,
+      fundCode: row.fundCode,
+      confirmDays,
+      arrivalDays,
+    }];
+  });
+  return { overrides, invalidLabels };
+}
+
 function normalRowsToItems(rows: string[][]): ParsedItem[] {
   const [headers = [], ...dataRows] = rows;
   const headerIndex = new Map(headers.map((header, idx) => [header.trim(), idx]));
@@ -316,9 +675,14 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
 
   return dataRows.map((row) => {
     const date = normalizeDateCell(readAny(row, ["日期", "交易日期", "记账日期", "入账日期", "账单日期", "date"]));
-    const rawOutflow = parseMoney(readAny(row, ["流出", "支出", "转出", "借方金额", "支出金额", "outflow"]));
-    const rawInflow = parseMoney(readAny(row, ["流入", "收入", "转入", "贷方金额", "收入金额", "inflow"]));
-    const rawAmount = parseMoney(readAny(row, ["金额", "交易金额", "发生额", "本币金额", "人民币金额", "amount"]));
+    const postedAt = readAny(row, ["入账时间", "入账日期时间", "实际入账时间", "postedAt", "postingTime"]);
+    const rawOutflowText = readAny(row, ["流出", "支出", "转出", "借方金额", "支出金额", "outflow"]);
+    const rawInflowText = readAny(row, ["流入", "收入", "转入", "贷方金额", "收入金额", "inflow"]);
+    const rawAmountText = readAny(row, ["金额", "交易金额", "发生额", "本币金额", "人民币金额", "amount"]);
+    const rawOutflow = parseMoney(rawOutflowText);
+    const rawInflow = parseMoney(rawInflowText);
+    const rawAmountSigned = parseLooseNumber(rawAmountText) ?? 0;
+    const rawAmount = Math.abs(rawAmountSigned);
     const account = readAny(row, ["账户", "本方账户", "交易账户", "账号", "account", "fromAccount"]);
     const counterAccount = readAny(row, ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount", "fromAccount"]);
     const remark = readAny(row, ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途"]);
@@ -331,26 +695,36 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
     const source = `${majorType ?? ""} ${explicitType} ${category} ${remark}`;
     const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
     const amountLooksExpense = /支出|消费|扣款|付款|转出|借方|借记|取现/.test(source);
-    const amountByType =
-      rawAmount > 0
-        ? (majorType === "income" ? { inflow: rawAmount, outflow: 0 }
-          : majorType === "transfer" ? { inflow: 0, outflow: rawAmount }
-          : { inflow: 0, outflow: rawAmount })
-        : { inflow: 0, outflow: 0 };
-    const inflow = rawInflow || (!rawOutflow && amountByType.inflow) || (!rawOutflow && rawAmount && amountLooksIncome ? rawAmount : 0);
-    const outflow = rawOutflow || (!rawInflow && amountByType.outflow) || (!rawInflow && rawAmount && amountLooksExpense ? rawAmount : 0);
-    const fallbackInflow = !inflow && !outflow && rawAmount && (majorType === "income" || (!majorType && !amountLooksExpense)) ? rawAmount : inflow;
-    const type = majorType ?? inferBillType(source, fallbackInflow, outflow, counterAccount);
-    const transferDirection = type === "transfer" ? inferTransferDirection(source, fallbackInflow, outflow) : undefined;
-    const amount = fallbackInflow > 0 ? fallbackInflow : outflow || rawAmount;
+    const hasExplicitFlow = rawInflow > 0 || rawOutflow > 0 || !!rawInflowText || !!rawOutflowText;
+    const inferredType = majorType ?? inferBillType(
+      source,
+      rawInflow || (!hasExplicitFlow && rawAmountSigned > 0 && amountLooksIncome ? rawAmount : 0),
+      rawOutflow || (!hasExplicitFlow && rawAmountSigned < 0 ? rawAmount : 0),
+      counterAccount,
+    );
+    const type = inferredType;
+    const onlyAmountFlow = !hasExplicitFlow && rawAmount > 0
+      ? normalizeFlowFields(type, rawAmount, type === "income" ? rawAmount : 0, type === "income" ? 0 : rawAmount, type === "transfer" ? "out" : undefined)
+      : null;
+    const inflow = onlyAmountFlow?.inflow ?? rawInflow;
+    const outflow = onlyAmountFlow?.outflow ?? rawOutflow;
+    const transferDirection = type === "transfer" ? (onlyAmountFlow ? "out" : inferTransferDirection(source, inflow, outflow)) : undefined;
+    const flow = normalizeFlowFields(
+      type,
+      onlyAmountFlow?.amount ?? (inflow > 0 ? inflow : outflow || rawAmount),
+      inflow,
+      outflow,
+      transferDirection,
+    );
 
     return {
       rawText: row.join(" "),
       type,
       date,
-      amount,
-      outflow,
-      inflow: fallbackInflow,
+      postedAt: type === "expense" ? postedAt : "",
+      amount: flow.amount,
+      outflow: flow.outflow,
+      inflow: flow.inflow,
       account: type === "transfer" ? "" : account,
       fromAccount: type === "transfer" ? (majorType === "transfer" ? account : (transferDirection === "in" ? counterAccount : account)) : "",
       toAccount: type === "transfer" ? (majorType === "transfer" ? counterAccount : (transferDirection === "in" ? account : counterAccount)) : "",
@@ -358,23 +732,33 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
       institution,
       tags,
       remark,
-      secondRemark,
+      secondRemark: type === "transfer" ? (secondRemark || remark) : "",
       transferDirection: type === "transfer" && majorType === "transfer" ? "out" : transferDirection,
     };
   }).filter((item) => item.date && item.amount > 0);
 }
 
 function normalizeForStorage(item: ParsedItem): ParsedItem {
-  const outflow = item.outflow || 0;
-  const inflow = item.inflow || 0;
-  const amount = item.amount || outflow || inflow || 0;
+  const flow = normalizeFlowFields(
+    item.type,
+    item.amount || 0,
+    item.inflow || 0,
+    item.outflow || 0,
+    item.transferDirection,
+  );
+  const outflow = flow.outflow;
+  const inflow = flow.inflow;
+  const amount = flow.amount;
   if (item.type !== "transfer") {
     return {
       ...item,
       amount,
+      outflow,
+      inflow,
       account: item.account || item.fromAccount || item.toAccount || "",
       fromAccount: "",
       toAccount: "",
+      secondRemark: "",
       transferDirection: undefined,
     };
   }
@@ -394,15 +778,64 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
     account: fromAccount,
     fromAccount,
     toAccount,
+    secondRemark: item.secondRemark || item.remark || "",
     transferDirection: direction,
   };
 }
 
 export default function BatchImportPage() {
   const router = useRouter();
+  const { t } = useI18n();
+  const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
+    let text = t(key) as string;
+    if (!values) return text;
+    for (const [name, value] of Object.entries(values)) {
+      text = text.split(`{${name}}`).join(String(value));
+    }
+    return text;
+  }, [t]);
+  const replaceFieldLabels = useMemo<Record<ReplaceField, string>>(() => ({
+    date: t(replaceFieldLabelKeys.date),
+    type: t(replaceFieldLabelKeys.type),
+    outflow: t(replaceFieldLabelKeys.outflow),
+    inflow: t(replaceFieldLabelKeys.inflow),
+    account: t(replaceFieldLabelKeys.account),
+    counterAccount: t(replaceFieldLabelKeys.counterAccount),
+    category: t(replaceFieldLabelKeys.category),
+    institution: t(replaceFieldLabelKeys.institution),
+    tags: t(replaceFieldLabelKeys.tags),
+    remark: t(replaceFieldLabelKeys.remark),
+  }), [t]);
+  const templates = useMemo(() => buildTemplates(t), [t]);
+  const typeOptions = useMemo(
+    () => [
+      { value: "", label: t("batchImport.selectType") },
+      { value: "expense", label: t("transaction.type.expense") },
+      { value: "income", label: t("transaction.type.income") },
+      { value: "transfer", label: t("transaction.type.transfer") },
+    ],
+    [t],
+  );
+  const getTypeLabel = useCallback(
+    (type: ParsedItem["type"]) =>
+      type === "income"
+        ? t("transaction.type.income")
+        : type === "transfer"
+          ? t("transaction.type.transfer")
+          : type === "investment"
+            ? t("transaction.type.investment")
+            : t("transaction.type.expense"),
+    [t],
+  );
   const [items, setItems] = useState<ParsedItem[]>([]);
+  const [fundUploadItems, setFundUploadItems] = useState<FundImportUploadItem[]>([]);
+  const [fundPreviewItems, setFundPreviewItems] = useState<FundImportPreviewItem[]>([]);
+  const [fundRuleRows, setFundRuleRows] = useState<FundRuleEditorRow[]>([]);
+  const [fundRulesDirty, setFundRulesDirty] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [fundSelected, setFundSelected] = useState<Set<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<number, Partial<ParsedItem>>>({});
+  const [activeImportKind, setActiveImportKind] = useState<FundImportKind>(null);
   const [importing, setImporting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [importedCount, setImportedCount] = useState(0);
@@ -412,6 +845,7 @@ export default function BatchImportPage() {
   const [editingCell, setEditingCell] = useState<{ idx: number; field: EditableCell } | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<FilterColumn | null>(null);
   const [columnFilters, setColumnFilters] = useState<Partial<Record<FilterColumn, string[]>>>({});
+  const [showImportErrorsOnly, setShowImportErrorsOnly] = useState(false);
   const [previewCount, setPreviewCount] = useState(INITIAL_PREVIEW_COUNT);
 
   useEffect(() => {
@@ -419,6 +853,7 @@ export default function BatchImportPage() {
       const data = sessionStorage.getItem("batchImportItems");
       const storedItems = data ? JSON.parse(data) as ParsedItem[] : [];
       if (Array.isArray(storedItems) && storedItems.length > 0) {
+        setActiveImportKind("normal");
         setItems(storedItems);
         setSelected(new Set(storedItems.map((_, idx) => idx)));
       }
@@ -436,10 +871,12 @@ export default function BatchImportPage() {
         setAccountOptions(data.accounts);
       })
       .catch((error) => {
-        if (!cancelled) setUploadDebug(`账户列表加载失败：${error instanceof Error ? error.message : String(error)}`);
+        if (!cancelled) {
+          setUploadDebug(formatText("batchImport.accountLoadFailed", { reason: error instanceof Error ? error.message : String(error) }));
+        }
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [formatText]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
     const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim();
@@ -512,8 +949,12 @@ export default function BatchImportPage() {
     const current = currentValue.trim();
     const matchedId = findMatchedAccountId(current);
     if (!current || matchedId) return accountSmartSelectOptions;
-    return [{ id: `unmatched:${current}`, label: `${current}（未匹配）`, subLabel: "原始导入值" }, ...accountSmartSelectOptions];
-  }, [accountSmartSelectOptions, findMatchedAccountId]);
+    return [{
+      id: `unmatched:${current}`,
+      label: formatText("batchImport.unmatchedAccount", { value: current }),
+      subLabel: t("batchImport.originalImportedValue"),
+    }, ...accountSmartSelectOptions];
+  }, [accountSmartSelectOptions, findMatchedAccountId, formatText, t]);
 
   const accountSelectTextById = useCallback((selectedId: string) => {
     if (!selectedId) return "";
@@ -522,7 +963,12 @@ export default function BatchImportPage() {
     return account ? accountDisplayLabel(account) : "";
   }, [accountById, accountDisplayLabel]);
 
-  const downloadTemplate = useCallback((template: ImportTemplate) => {
+  const downloadTemplate = useCallback(async (template: ImportTemplate) => {
+    if (template.downloadFormat === "xlsx") {
+      const { XLSX, workbook } = await buildTemplateWorkbook(template, t);
+      XLSX.writeFile(workbook, template.filename, { compression: true });
+      return;
+    }
     const csv = `\uFEFF${buildCsv(template)}`;
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -531,52 +977,194 @@ export default function BatchImportPage() {
     link.download = template.filename;
     link.click();
     URL.revokeObjectURL(url);
-  }, []);
+  }, [t]);
+
+  const requestFundPreview = useCallback(async (
+    sourceItems: FundImportUploadItem[],
+    ruleRows: FundRuleEditorRow[],
+    preserveSelection: boolean,
+    fileInfo?: string,
+  ) => {
+    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows);
+    if (invalidLabels.length > 0) {
+      setMessage(formatText("batchImport.fundPreview.invalidRules", {
+        items: invalidLabels.slice(0, 3).join("、"),
+        more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
+      }));
+      return false;
+    }
+
+    setUploading(true);
+    try {
+      const res = await fetch("/api/v1/fund/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "preview", items: sourceItems, overrides }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
+      if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
+        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
+      }
+      setFundPreviewItems(data.items);
+      setFundRuleRows(buildFundRuleEditorRows(data.items));
+      setFundRulesDirty(false);
+      if (preserveSelection) {
+        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length)));
+      } else {
+        setFundSelected(new Set());
+      }
+      setUploadDebug(null);
+      setMessage(null);
+      return true;
+    } catch (error) {
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundSelected(new Set());
+      const reason = error instanceof Error ? error.message : String(error);
+      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo: fileInfo || "" }));
+      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
+      return false;
+    } finally {
+      setUploading(false);
+    }
+  }, [formatText, t]);
 
   const handleNormalCsvFile = useCallback(async (file: File) => {
-    const fileInfo = `文件：${file.name}；类型：${file.type || "未知"}；大小：${Math.round(file.size / 1024)} KB`;
-    setUploadDebug(`已选择文件，开始读取。${fileInfo}`);
-    setMessage(`正在读取文件：${file.name} ...`);
+    const fileInfo = formatText("batchImport.fileInfo", {
+      name: file.name,
+      type: file.type || t("batchImport.fileTypeUnknown"),
+      sizeKb: Math.round(file.size / 1024),
+    });
+    setActiveImportKind("normal");
+    setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
+    setMessage(formatText("batchImport.readingFileName", { name: file.name }));
     setImportedCount(0);
     setUploading(true);
     setItems([]);
+    setFundUploadItems([]);
+    setFundPreviewItems([]);
+    setFundRuleRows([]);
+    setFundRulesDirty(false);
     setDrafts({});
     setSelected(new Set());
+    setFundSelected(new Set());
     setColumnFilters({});
     setActiveFilterColumn(null);
+    setShowImportErrorsOnly(false);
     setPreviewCount(INITIAL_PREVIEW_COUNT);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
       const rows = await parseImportFile(file);
-      setUploadDebug(`文件读取完成，共 ${rows.length} 行。${fileInfo}`);
+      setUploadDebug(formatText("batchImport.rowsRead", { count: rows.length, fileInfo }));
       const parsed = normalRowsToItems(rows);
       if (parsed.length === 0) {
-        const headers = rows[0]?.join("、") || "未读取到表头";
+        const headers = rows[0]?.join("、") || t("batchImport.headersNotRead");
         setItems([]);
         setDrafts({});
         setSelected(new Set());
-        setUploadDebug(`读取成功但未识别到记录。表头：${headers}。${fileInfo}`);
-        setMessage(`已读取文件 ${file.name}，但未识别到可导入的账单记录。当前读取到的表头是：${headers}。请确认首行表头包含"日期、收支大类、金额、账户"等字段，并且明细行填写了日期与金额。支持 CSV、XLSX、XLS 文件。`);
+        setFundUploadItems([]);
+        setFundPreviewItems([]);
+        setFundRuleRows([]);
+        setFundSelected(new Set());
+        setShowImportErrorsOnly(false);
+        setUploadDebug(formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo }));
+        setMessage(formatText("batchImport.noRecordsRecognizedMessage", { name: file.name, headers }));
         return;
       }
       sessionStorage.setItem("batchImportItems", JSON.stringify(parsed));
       setItems(parsed);
+      setFundUploadItems([]);
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundRulesDirty(false);
       setDrafts({});
       setSelected(new Set());
+      setFundSelected(new Set());
       setEditingCell(null);
-      setUploadDebug(`识别完成，共 ${parsed.length} 条可预览记录。${fileInfo}`);
-      setMessage(`已读取 ${parsed.length} 条账单记录，并已按收支大类、金额和表头字段完成初步识别。请先在弹窗预览确认并勾选需要导入的记录。`);
+      setShowImportErrorsOnly(false);
+      setUploadDebug(formatText("batchImport.previewRecognized", { count: parsed.length, fileInfo }));
+      setMessage(formatText("batchImport.previewRecognizedMessage", { count: parsed.length }));
     } catch (error) {
       setItems([]);
+      setFundUploadItems([]);
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundRulesDirty(false);
       setDrafts({});
       setSelected(new Set());
+      setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
-      setUploadDebug(`读取失败：${reason || "未知错误"}。${fileInfo}`);
-      setMessage(`读取文件失败：${reason || "未知错误"}。请确认文件不是加密文件，且格式为 CSV、XLSX 或 XLS。`);
+      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo }));
+      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [formatText, t]);
+
+  const handleFundFile = useCallback(async (file: File) => {
+    const fileInfo = formatText("batchImport.fileInfo", {
+      name: file.name,
+      type: file.type || t("batchImport.fileTypeUnknown"),
+      sizeKb: Math.round(file.size / 1024),
+    });
+    setActiveImportKind("fund");
+    setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
+    setMessage(formatText("batchImport.readingFileName", { name: file.name }));
+    setUploading(true);
+    setImporting(false);
+    setImportedCount(0);
+    setItems([]);
+    setFundUploadItems([]);
+    setDrafts({});
+    setSelected(new Set());
+    setFundPreviewItems([]);
+    setFundRuleRows([]);
+    setFundRulesDirty(false);
+    setFundSelected(new Set());
+    setEditingCell(null);
+    setColumnFilters({});
+    setActiveFilterColumn(null);
+    setShowImportErrorsOnly(false);
+    setPreviewCount(INITIAL_PREVIEW_COUNT);
+
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    let previewRequested = false;
+    try {
+      const rows = await parseImportFile(file);
+      const parsed = fundRowsToItems(rows);
+      if (parsed.length === 0) {
+        setUploadDebug(formatText("batchImport.noRecordsRecognizedDebug", {
+          headers: rows[0]?.join("、") || t("batchImport.headersNotRead"),
+          fileInfo,
+        }));
+        setMessage(formatText("batchImport.noRecordsRecognizedMessage", {
+          name: file.name,
+          headers: rows[0]?.join("、") || t("batchImport.headersNotRead"),
+        }));
+        return;
+      }
+
+      setFundUploadItems(parsed);
+      previewRequested = true;
+      await requestFundPreview(parsed, [], false, fileInfo);
+    } catch (error) {
+      setFundUploadItems([]);
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundRulesDirty(false);
+      setFundSelected(new Set());
+      const reason = error instanceof Error ? error.message : String(error);
+      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo }));
+      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
+    } finally {
+      if (!previewRequested) setUploading(false);
+    }
+  }, [formatText, requestFundPreview, t]);
+
+  const handleApplyFundRules = useCallback(async () => {
+    if (fundUploadItems.length === 0 || importing) return;
+    await requestFundPreview(fundUploadItems, fundRuleRows, true);
+  }, [fundUploadItems, fundRuleRows, importing, requestFundPreview]);
 
   const openCellEdit = useCallback((idx: number, field: EditableCell) => {
     setEditingCell({ idx, field });
@@ -595,6 +1183,23 @@ export default function BatchImportPage() {
     });
   }, []);
 
+  const toggleFundSelect = useCallback((idx: number) => {
+    setFundSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const toggleAllFund = useCallback(() => {
+    setFundSelected((prev) => {
+      const allSelected = fundPreviewItems.length > 0 && fundPreviewItems.every((_, idx) => prev.has(idx));
+      if (allSelected) return new Set<number>();
+      return new Set(fundPreviewItems.map((_, idx) => idx));
+    });
+  }, [fundPreviewItems]);
+
 
   const updateDraft = useCallback((idx: number, field: string, value: unknown) => {
     setDrafts((prev) => ({
@@ -606,23 +1211,33 @@ export default function BatchImportPage() {
   const getItem = useCallback((idx: number): ParsedItem => {
     const item = items[idx];
     const draft = drafts[idx] ?? {};
+    const type = draft.type ?? item.type ?? "expense";
+    const transferDirection = draft.transferDirection ?? item.transferDirection;
+    const flow = normalizeFlowFields(
+      type,
+      Number(draft.amount ?? item.amount ?? 0),
+      Number(draft.inflow ?? item.inflow ?? 0),
+      Number(draft.outflow ?? item.outflow ?? 0),
+      transferDirection,
+    );
     return {
       ...item,
       ...draft,
+      type,
       date: draft.date ?? item.date ?? "",
       account: draft.account ?? item.account ?? "",
       fromAccount: draft.fromAccount ?? item.fromAccount ?? "",
       toAccount: draft.toAccount ?? item.toAccount ?? "",
-      amount: draft.amount ?? item.amount ?? 0,
-      outflow: draft.outflow ?? item.outflow ?? 0,
-      inflow: draft.inflow ?? item.inflow ?? 0,
+      amount: flow.amount,
+      outflow: flow.outflow,
+      inflow: flow.inflow,
       category: draft.category ?? item.category ?? "",
       institution: draft.institution ?? item.institution ?? "",
       tags: draft.tags ?? item.tags ?? "",
       remark: draft.remark ?? item.remark ?? "",
-      secondRemark: draft.secondRemark ?? item.secondRemark ?? "",
+      secondRemark: type === "transfer" ? (draft.secondRemark ?? item.secondRemark ?? item.remark ?? "") : "",
       counterparty: draft.counterparty ?? item.counterparty ?? "",
-      transferDirection: draft.transferDirection ?? item.transferDirection,
+      transferDirection,
     };
   }, [items, drafts]);
 
@@ -635,18 +1250,18 @@ export default function BatchImportPage() {
     const counterAccount = item.type === "transfer"
       ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
       : "";
-    if (column === "date") return item.date || "(空)";
-    if (column === "type") return item.type === "income" ? "收入" : item.type === "transfer" ? "转账" : "支出";
-    if (column === "account") return account.trim() || "(空)";
-    if (column === "counterAccount") return counterAccount.trim() || "(空)";
-    return (item.remark || item.counterparty || "").trim() || "(空)";
-  }, [getItem]);
+    if (column === "date") return item.date || t("batchImport.emptyValue");
+    if (column === "type") return getTypeLabel(item.type);
+    if (column === "account") return account.trim() || t("batchImport.emptyValue");
+    if (column === "counterAccount") return counterAccount.trim() || t("batchImport.emptyValue");
+    return (item.remark || item.counterparty || "").trim() || t("batchImport.emptyValue");
+  }, [getItem, getTypeLabel, t]);
 
   const columnFilterOptions = useMemo(() => {
     if (!activeFilterColumn) return [];
     return Array.from(new Set(items.map((_, idx) => getFilterColumnValue(idx, activeFilterColumn))))
-      .sort((a, b) => (a === "(空)" ? 1 : b === "(空)" ? -1 : a.localeCompare(b, "zh-CN")));
-  }, [items, activeFilterColumn, getFilterColumnValue]);
+      .sort((a, b) => (a === t("batchImport.emptyValue") ? 1 : b === t("batchImport.emptyValue") ? -1 : a.localeCompare(b, "zh-CN")));
+  }, [items, activeFilterColumn, getFilterColumnValue, t]);
 
   const filteredIndexes = useMemo(() => {
     return items
@@ -694,23 +1309,23 @@ export default function BatchImportPage() {
       const counterAccount = item.type === "transfer"
         ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
         : "";
-      if (!account.trim()) issues.push({ idx, level: "error", message: "本账户未识别，不能导入" });
+      if (!account.trim()) issues.push({ idx, level: "error", message: t("batchImport.issue.accountMissing") });
       else {
         const matchedId = findMatchedAccountId(account);
-        if (!matchedId) issues.push({ idx, level: "error", message: `本账户"${account.trim()}"未匹配到账户库` });
+        if (!matchedId) issues.push({ idx, level: "error", message: formatText("batchImport.issue.accountUnmatched", { account: account.trim() }) });
       }
-      if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: "金额为空或无效" });
+      if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: t("batchImport.issue.amountInvalid") });
       if (item.type === "transfer" && counterAccount.trim()) {
         const counterMatchedId = findMatchedAccountId(counterAccount);
         if (!counterMatchedId) {
-          issues.push({ idx, level: "warning", message: `对向账户"${counterAccount.trim()}"未匹配，将按空值写库` });
+          issues.push({ idx, level: "warning", message: formatText("batchImport.issue.counterAccountUnmatched", { account: counterAccount.trim() }) });
         }
       } else if (item.type === "transfer" && !counterAccount.trim()) {
-        issues.push({ idx, level: "warning", message: "转账缺少对方账户，将空值写库" });
+        issues.push({ idx, level: "warning", message: t("batchImport.issue.counterAccountMissing") });
       }
     }
     return issues;
-  }, [selected, getItem, accountNameSet, findMatchedAccountId]);
+  }, [selected, getItem, accountNameSet, findMatchedAccountId, formatText, t]);
 
   const importErrorIssues = useMemo(() => importIssues.filter((issue) => issue.level === "error"), [importIssues]);
   const importWarningIssues = useMemo(() => importIssues.filter((issue) => issue.level === "warning"), [importIssues]);
@@ -719,11 +1334,83 @@ export default function BatchImportPage() {
     for (const issue of importIssues) map.set(issue.idx, [...(map.get(issue.idx) ?? []), issue]);
     return map;
   }, [importIssues]);
+  const importErrorRowIndexes = useMemo(() => {
+    const set = new Set<number>();
+    for (const issue of importErrorIssues) set.add(issue.idx);
+    return set;
+  }, [importErrorIssues]);
+  const displayedFilteredIndexes = useMemo(() => {
+    const source = showImportErrorsOnly
+      ? filteredIndexes.filter((idx) => importErrorRowIndexes.has(idx))
+      : filteredIndexes;
+    return [...source].sort((a, b) => {
+      const aError = importErrorRowIndexes.has(a);
+      const bError = importErrorRowIndexes.has(b);
+      if (aError !== bError) return aError ? -1 : 1;
+      return a - b;
+    });
+  }, [filteredIndexes, importErrorRowIndexes, showImportErrorsOnly]);
+  const displayedVisibleIndexes = useMemo(
+    () => displayedFilteredIndexes.slice(0, previewCount),
+    [displayedFilteredIndexes, previewCount],
+  );
+  const importErrorPreviewText = useMemo(() => (
+    importErrorIssues
+      .slice(0, 6)
+      .map((issue) => `第 ${issue.idx + 1} 行：${issue.message}`)
+      .join("；")
+  ), [importErrorIssues]);
+
+  const fundImportIssues = useMemo(() => (
+    Array.from(fundSelected)
+      .flatMap((idx) => (fundPreviewItems[idx]?.issues ?? []).map((issue) => ({ idx, ...issue })))
+  ), [fundSelected, fundPreviewItems]);
+  const fundImportErrorIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "error"), [fundImportIssues]);
+  const fundImportWarningIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "warning"), [fundImportIssues]);
+  const fundPreviewWarningGroups = useMemo(() => {
+    const grouped = new Map<string, { message: string; count: number; rows: number[] }>();
+    fundPreviewItems.forEach((item, idx) => {
+      item.issues
+        .filter((issue) => issue.level === "warning")
+        .forEach((issue) => {
+          const current = grouped.get(issue.message);
+          if (current) {
+            current.count += 1;
+            current.rows.push(idx + 1);
+          } else {
+            grouped.set(issue.message, { message: issue.message, count: 1, rows: [idx + 1] });
+          }
+        });
+    });
+    return Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.rows[0] - b.rows[0]);
+  }, [fundPreviewItems]);
+  const fundPreviewWarningSummary = useMemo(() => {
+    if (fundPreviewWarningGroups.length === 0) return "";
+    const confirmRuleWarnings = fundPreviewWarningGroups.filter((group) => /^未找到\s+\S+\s+的确认天数配置/.test(group.message));
+    if (confirmRuleWarnings.length > 0 && confirmRuleWarnings.length === fundPreviewWarningGroups.length) {
+      const items = confirmRuleWarnings.map((group) => {
+        const match = group.message.match(/^未找到\s+(\S+)\s+的确认天数配置/);
+        return `${match?.[1] ?? group.message}（${group.count}条）`;
+      }).join("、");
+      return formatText("batchImport.fundPreview.warningMissingConfirmRules", { items });
+    }
+    const main = fundPreviewWarningGroups
+      .slice(0, 2)
+      .map((group) => formatText("batchImport.fundPreview.warningCompactItem", {
+        message: group.message,
+        count: group.count,
+      }))
+      .join("；");
+    const moreCount = fundPreviewWarningGroups.length - 2;
+    return moreCount > 0
+      ? `${main}；${formatText("batchImport.fundPreview.warningCompactMore", { count: moreCount })}`
+      : main;
+  }, [fundPreviewWarningGroups, formatText]);
 
   const applyReplaceToTargets = useCallback((replaceField: ReplaceField, replaceValue: string) => {
-    if (batchTargetIndexes.length === 0) throw new Error("请先勾选记录，或切换为应用到当前筛选结果");
+    if (batchTargetIndexes.length === 0) throw new Error(t("batchImport.batchReplaceNoTarget"));
     const value = replaceValue.trim();
-    if (!value && replaceField !== "counterAccount") throw new Error("请输入修改值");
+    if (!value && replaceField !== "counterAccount") throw new Error(t("batchImport.batchReplaceEmptyValue"));
 
     const nextDrafts = { ...drafts };
     let changed = 0;
@@ -739,6 +1426,10 @@ export default function BatchImportPage() {
         const nextType = value as ParsedItem["type"];
         patch.type = nextType;
         if (nextType === "transfer") patch.transferDirection = direction;
+        const flow = normalizeFlowFields(nextType, item.amount ?? 0, item.inflow ?? 0, item.outflow ?? 0, patch.transferDirection ?? direction);
+        patch.amount = flow.amount;
+        patch.inflow = flow.inflow;
+        patch.outflow = flow.outflow;
       } else if (replaceField === "outflow" || replaceField === "inflow") {
         const currentNumber = replaceField === "outflow" ? item.outflow ?? 0 : item.inflow ?? 0;
         const nextNumber = applyNumberExpression(currentNumber, value);
@@ -747,9 +1438,19 @@ export default function BatchImportPage() {
           continue;
         }
         patch[replaceField] = nextNumber;
-        patch.amount = nextNumber || (replaceField === "outflow" ? item.inflow ?? 0 : item.outflow ?? 0) || 0;
         if (type === "transfer" && nextNumber > 0) patch.transferDirection = replaceField === "inflow" ? "in" : "out";
         else if (replaceField === "inflow" && nextNumber > 0) patch.type = "income";
+        else if (replaceField === "outflow" && nextNumber > 0) patch.type = "expense";
+        const flow = normalizeFlowFields(
+          patch.type ?? type,
+          nextNumber || 0,
+          replaceField === "inflow" ? nextNumber : item.inflow ?? 0,
+          replaceField === "outflow" ? nextNumber : item.outflow ?? 0,
+          patch.transferDirection ?? direction,
+        );
+        patch.amount = flow.amount;
+        patch.inflow = flow.inflow;
+        patch.outflow = flow.outflow;
       } else if (replaceField === "account") {
         patch.account = value;
         if (type === "transfer") {
@@ -769,17 +1470,21 @@ export default function BatchImportPage() {
         }
       } else if (replaceField === "institution") patch.institution = value;
       else if (replaceField === "remark") patch.remark = value;
-      else if (replaceField === "secondRemark") patch.secondRemark = value;
       nextDrafts[idx] = { ...(nextDrafts[idx] ?? {}), ...patch };
       changed++;
     }
 
     setDrafts(nextDrafts);
-    const resultMessage = `已批量修改已勾选的 ${changed} 条记录：${replaceFieldLabels[replaceField]}${invalid > 0 ? `；${invalid} 条数字表达式无效未修改。` : "。"}`;
+    const invalidSuffix = invalid > 0 ? formatText("batchImport.batchReplaceInvalidCount", { count: invalid }) : "";
+    const resultMessage = formatText("batchImport.batchReplaceResult", {
+      count: changed,
+      field: replaceFieldLabels[replaceField],
+      invalidSuffix,
+    });
     setMessage(resultMessage);
     setEditingCell(null);
     return resultMessage;
-  }, [batchTargetIndexes, drafts, getItem]);
+  }, [batchTargetIndexes, drafts, formatText, getItem, replaceFieldLabels, t]);
 
   const handleImport = useCallback(async () => {
     if (importing) return;
@@ -787,14 +1492,25 @@ export default function BatchImportPage() {
     const selectedItems = selectedIndexes.map((idx) => normalizeForStorage(getItem(idx)));
     const missingCounterAccountCount = selectedItems.filter((item) => item.type === "transfer" && (!item.fromAccount?.trim() || !item.toAccount?.trim())).length;
     if (importErrorIssues.length > 0) {
-      const preview = importErrorIssues.slice(0, 5).map((issue) => `第 ${issue.idx + 1} 条：${issue.message}`).join("；");
-      setMessage(`导入前校验未通过：发现 ${importErrorIssues.length} 条阻断错误，已停止导入，未写入任何记录。${preview}${importErrorIssues.length > 5 ? "；其余请查看上传诊断。" : ""}`);
-      setUploadDebug(importIssues.map((issue) => `第 ${issue.idx + 1} 条${issue.level === "error" ? "错误" : "警告"}：${issue.message}`).join("\n"));
+      const preview = importErrorIssues
+        .slice(0, 5)
+        .map((issue) => formatText("batchImport.issueLine", { index: issue.idx + 1, level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"), message: issue.message }))
+        .join("；");
+      setMessage(formatText("batchImport.importValidationFailed", {
+        count: importErrorIssues.length,
+        preview,
+        more: importErrorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
+      }));
+      setUploadDebug(
+        importIssues
+          .map((issue) => formatText("batchImport.issueLine", { index: issue.idx + 1, level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"), message: issue.message }))
+          .join("\n"),
+      );
       return;
     }
     setImporting(true);
     setImportedCount(0);
-    setMessage(`正在导入 ${selectedItems.length} 条记录...`);
+    setMessage(formatText("batchImport.importingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
 
     try {
@@ -807,18 +1523,24 @@ export default function BatchImportPage() {
       if (!res.ok || !data || data.error) {
         setImportedCount(0);
         setImporting(false);
-        setMessage(`导入失败：已整批回滚，未写入任何记录。${data?.error || res.statusText || `HTTP ${res.status}`}`);
+        setMessage(formatText("batchImport.importFailedRollback", { reason: data?.error || res.statusText || `HTTP ${res.status}` }));
         setUploadDebug(data?.trace?.join("\n") ?? data?.error ?? null);
         return;
       }
       const success = data.createdCount ?? selectedItems.length;
       setImportedCount(success);
       setImporting(false);
-      setMessage(`导入完成：成功 ${success} 条。${missingCounterAccountCount > 0 ? `其中 ${missingCounterAccountCount} 条转账缺少对方账户，已空值写库，请导入后修改。` : ""}即将打开明细列表...`);
+      setMessage(formatText("batchImport.importSuccess", {
+        count: success,
+        missingCounterAccountNote: missingCounterAccountCount > 0
+          ? formatText("batchImport.importSuccessMissingCounterAccounts", { count: missingCounterAccountCount })
+          : "",
+        redirectNote: t("batchImport.openingDetailList"),
+      }));
     } catch (error) {
       setImportedCount(0);
       setImporting(false);
-      setMessage(`导入失败：已整批回滚，未写入任何记录。${error instanceof Error ? error.message : String(error)}`);
+      setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
       return;
     }
     if (selectedItems.length > 0) {
@@ -829,14 +1551,98 @@ export default function BatchImportPage() {
     }
   }, [importing, selected, getItem, router, importErrorIssues, importIssues]);
 
+  const handleFundImport = useCallback(async () => {
+    if (importing) return;
+    const selectedIndexes = Array.from(fundSelected);
+    const selectedItems = selectedIndexes.map((idx) => fundPreviewItems[idx]).filter(Boolean);
+    if (selectedItems.length === 0) return;
+
+    if (fundImportErrorIssues.length > 0) {
+      const preview = fundImportErrorIssues
+        .slice(0, 5)
+        .map((issue) => formatText("batchImport.issueLine", {
+          index: issue.idx + 1,
+          level: t("batchImport.levelError"),
+          message: issue.message,
+        }))
+        .join("；");
+      setMessage(formatText("batchImport.importValidationFailed", {
+        count: fundImportErrorIssues.length,
+        preview,
+        more: fundImportErrorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
+      }));
+      setUploadDebug(
+        fundImportIssues
+          .map((issue) => formatText("batchImport.issueLine", {
+            index: issue.idx + 1,
+            level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"),
+            message: issue.message,
+          }))
+          .join("\n"),
+      );
+      return;
+    }
+
+    setImporting(true);
+    setMessage(formatText("batchImport.fundImportingSelected", { count: selectedItems.length }));
+    setUploadDebug(null);
+
+    try {
+      const { overrides, invalidLabels } = serializeFundRuleOverrides(fundRuleRows);
+      if (invalidLabels.length > 0) {
+        throw new Error(formatText("batchImport.fundPreview.invalidRules", {
+          items: invalidLabels.slice(0, 3).join("、"),
+          more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
+        }));
+      }
+      const res = await fetch("/api/v1/fund/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "import", items: selectedItems, overrides }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number } | null;
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
+      }
+      const success = data.createdCount ?? selectedItems.length;
+      setMessage(formatText("batchImport.fundImportSuccess", {
+        count: success,
+        redirectNote: t("batchImport.openingInvestmentList"),
+      }));
+      setTimeout(() => {
+        setFundUploadItems([]);
+        setFundPreviewItems([]);
+        setFundRuleRows([]);
+        setFundRulesDirty(false);
+        setFundSelected(new Set());
+        setActiveImportKind(null);
+        router.push("/?view=invest");
+      }, 1500);
+    } catch (error) {
+      setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setImporting(false);
+    }
+  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, formatText, t, router]);
+
   const handleCancel = useCallback(() => {
     sessionStorage.removeItem("batchImportItems");
+    setActiveImportKind(null);
+    setImporting(false);
+    setUploading(false);
+    setImportedCount(0);
     setItems([]);
+    setFundUploadItems([]);
+    setFundPreviewItems([]);
+    setFundRuleRows([]);
+    setFundRulesDirty(false);
     setSelected(new Set());
+    setFundSelected(new Set());
     setDrafts({});
     setEditingCell(null);
     setActiveFilterColumn(null);
     setColumnFilters({});
+    setShowImportErrorsOnly(false);
     setMessage(null);
     setUploadDebug(null);
   }, []);
@@ -860,12 +1666,12 @@ export default function BatchImportPage() {
   };
 
   const accountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
-    { value: "", label: "未选择" },
+    { value: "", label: t("batchImport.unselected") },
     ...accountOptions.map((account) => {
       const label = accountDisplayLabel(account);
       return { value: label, label };
     }),
-  ], [accountOptions, accountDisplayLabel]);
+  ], [accountOptions, accountDisplayLabel, t]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
     { value: "date", label: replaceFieldLabels.date, kind: "date" },
@@ -873,32 +1679,26 @@ export default function BatchImportPage() {
       value: "type",
       label: replaceFieldLabels.type,
       kind: "select",
-      options: [
-        { value: "", label: "选择类型" },
-        { value: "expense", label: "支出" },
-        { value: "income", label: "收入" },
-        { value: "transfer", label: "转账" },
-      ],
+      options: typeOptions,
     },
-    { value: "outflow", label: replaceFieldLabels.outflow, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
-    { value: "inflow", label: replaceFieldLabels.inflow, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
+    { value: "outflow", label: replaceFieldLabels.outflow, kind: "number", placeholder: t("batchImport.numberExpressionPlaceholder") },
+    { value: "inflow", label: replaceFieldLabels.inflow, kind: "number", placeholder: t("batchImport.numberExpressionPlaceholder") },
     { value: "account", label: replaceFieldLabels.account, kind: "smartSelect", options: accountReplaceOptions },
     { value: "counterAccount", label: replaceFieldLabels.counterAccount, kind: "smartSelect", options: accountReplaceOptions, allowEmpty: true },
-    { value: "institution", label: replaceFieldLabels.institution, kind: "text", placeholder: "输入机构名称" },
-    { value: "remark", label: replaceFieldLabels.remark, kind: "text", placeholder: "输入替换内容" },
-    { value: "secondRemark", label: replaceFieldLabels.secondRemark, kind: "text", placeholder: "输入第二备注" },
-  ], [accountReplaceOptions]);
+    { value: "institution", label: replaceFieldLabels.institution, kind: "text", placeholder: t("batchImport.institutionPlaceholder") },
+    { value: "remark", label: replaceFieldLabels.remark, kind: "text", placeholder: t("batchImport.replaceContentPlaceholder") },
+  ], [accountReplaceOptions, replaceFieldLabels, t, typeOptions]);
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-semibold text-slate-800">账簿导入</h1>
+          <h1 className="text-lg font-semibold text-slate-800">{t("batchImport.pageTitle")}</h1>
           {items.length > 0 && (
             <span className="text-sm text-slate-500">
-              已选 <span className="font-medium text-blue-600">{selected.size}</span> / {items.length} 条
-              {importErrorIssues.length > 0 && <span className="ml-2 font-medium text-red-600">阻断错误 {importErrorIssues.length} 条</span>}
-              {importWarningIssues.length > 0 && <span className="ml-2 font-medium text-amber-600">警告 {importWarningIssues.length} 条</span>}
+              {formatText("batchImport.selectedSummary", { selected: selected.size, total: items.length })}
+              {importErrorIssues.length > 0 && <span className="ml-2 font-medium text-red-600">{formatText("batchImport.errorCount", { count: importErrorIssues.length })}</span>}
+              {importWarningIssues.length > 0 && <span className="ml-2 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: importWarningIssues.length })}</span>}
             </span>
           )}
         </div>
@@ -908,7 +1708,7 @@ export default function BatchImportPage() {
               onClick={handleCancel}
               className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
             >
-              清空
+              {t("batchImport.clear")}
             </button>
           )}
           {items.length > 0 && (
@@ -917,34 +1717,34 @@ export default function BatchImportPage() {
               disabled={importing || selected.size === 0 || importErrorIssues.length > 0}
               className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {importing ? "导入中..." : `导入 ${selected.size} 条`}
+              {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: selected.size })}
             </button>
           )}
         </div>
       </div>
 
-      {message && (
+      {activeImportKind !== "fund" && message && (
         <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-blue-700 text-sm">
           {message}
         </div>
       )}
 
-      {uploadDebug && (
+      {activeImportKind !== "fund" && uploadDebug && (
         <div className="mx-4 mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-800 text-sm">
-          <div className="font-medium">上传诊断</div>
+          <div className="font-medium">{t("batchImport.uploadDebugTitle")}</div>
           <div className="mt-1 break-all">{uploadDebug}</div>
         </div>
       )}
 
       {uploading && (
         <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-blue-700 text-sm">
-          正在读取并解析文件，请稍候。大 Excel 文件首次加载解析库可能需要几秒钟。
+          {t("batchImport.loadingOverlay")}
         </div>
       )}
 
       {importedCount > 0 && (
         <div className="mx-4 mt-4 p-3 bg-green-50 border border-green-200 rounded-md text-green-700 text-sm">
-          ✓ 已成功导入 {importedCount} 条记录，即将返回首页...
+          {formatText("batchImport.importSuccessRedirect", { count: importedCount })}
         </div>
       )}
 
@@ -964,24 +1764,24 @@ export default function BatchImportPage() {
                   onClick={() => downloadTemplate(template)}
                   className="px-3 py-1.5 text-sm rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 >
-                  下载 CSV 模板
+                  {template.downloadFormat === "xlsx" ? t("batchImport.downloadXlsxTemplate") : t("batchImport.downloadCsvTemplate")}
                 </button>
                 {template.key === "normal" && (
                   <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
-                    上传账单文件
+                    {t("batchImport.uploadBillFile")}
                     <input
                       type="file"
                       accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                       className="sr-only"
                       onClick={() => {
-                        setUploadDebug("已点击上传控件，等待选择文件。");
-                        setMessage("已打开文件选择，请选择 CSV、XLSX 或 XLS 文件。");
+                        setUploadDebug(t("batchImport.uploadControlClicked"));
+                        setMessage(t("batchImport.filePickerOpened"));
                       }}
                       onChange={(event) => {
                         const file = event.target.files?.[0];
                         if (!file) {
-                          setUploadDebug("文件选择窗口已关闭，但没有选择文件。");
-                          setMessage("没有选择文件，请重新点击上传账单文件。");
+                          setUploadDebug(t("batchImport.filePickerClosedNoFile"));
+                          setMessage(t("batchImport.noFileSelected"));
                           return;
                         }
                         void handleNormalCsvFile(file);
@@ -990,14 +1790,39 @@ export default function BatchImportPage() {
                     />
                   </label>
                 )}
+                {template.key === "fund" && (
+                  <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
+                    {t("batchImport.uploadFundFile")}
+                    <input
+                      type="file"
+                      accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                      className="sr-only"
+                      onClick={() => {
+                        setUploadDebug(t("batchImport.uploadControlClicked"));
+                        setMessage(t("batchImport.filePickerOpened"));
+                      }}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) {
+                          setUploadDebug(t("batchImport.filePickerClosedNoFile"));
+                          setMessage(t("batchImport.noFileSelected"));
+                          return;
+                        }
+                        void handleFundFile(file);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                )}
               </div>
               <div className="text-xs text-slate-500">
-                <div className="mb-1 font-medium text-slate-600">字段说明</div>
+                <div className="mb-1 font-medium text-slate-600">{t("batchImport.fieldNotes")}</div>
                 <div className="space-y-1">
                   {template.fields.map((field) => (
                     <div key={field.name}>
                       <span className="font-mono text-slate-700">{field.name}</span>
-                      {field.required && <span className="ml-1 text-red-500">必填</span>}
+                      {field.label && field.label !== field.name && <span className="ml-1 text-slate-500">({field.label})</span>}
+                      {field.required && <span className="ml-1 text-red-500">{t("batchImport.required")}</span>}
                       <span className="ml-1">{field.note}</span>
                     </div>
                   ))}
@@ -1008,33 +1833,34 @@ export default function BatchImportPage() {
         </section>
 
         <section className="bg-white rounded-lg border border-slate-200 p-6 text-sm text-slate-600 leading-7">
-          <h2 className="text-base font-semibold text-slate-800 mb-2">导入说明</h2>
-          <p>当前入口先支持"账单记录模板"的 CSV、XLSX、XLS 上传、弹窗预览确认和导入；基金记录、信用卡账单已给出模板字段，但需要后续专用校验流程，暂不直接写库。</p>
-          <p>账单记录按中文字段导入：模板列尽量直接对应入库字段语义。`收支大类` 对应记录类型，`金额` 对应金额，`分类` 对应分类，`标签` 对应标签关联，`备注` 对应备注。转账时，`账户` 视为转出账户，`对向账户` 视为转入账户。旧文件如果仍使用"流出/流入"或"类型/原始类型"列，系统也继续兼容识别。</p>
+          <h2 className="text-base font-semibold text-slate-800 mb-2">{t("batchImport.guideTitle")}</h2>
+          <p>{t("batchImport.guide.currentSupport")}</p>
+          <p>{t("batchImport.guide.fundSubtypeSource")}</p>
+          <p>{t("batchImport.guide.normalBill")}</p>
         </section>
       </div>
 
-      {(items.length > 0 || uploading) && (
+      {activeImportKind === "normal" && (items.length > 0 || uploading) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
           <div className="w-full max-w-7xl h-[82vh] bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
-                <div className="text-base font-semibold text-slate-800">导入预览确认</div>
-                <div className="text-xs text-slate-500 mt-1">{uploading ? "正在解析文件，完成后会显示预览。" : `已识别 ${items.length} 条，默认全不选。请检查日期、类型、账户和金额后勾选需要导入的记录。`}</div>
+                <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
+                <div className="text-xs text-slate-500 mt-1">{uploading ? t("batchImport.previewParsing") : t("batchImport.previewHint").replace("{count}", String(items.length))}</div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCancel}
                   className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   onClick={handleImport}
                   disabled={uploading || importing || selected.size === 0 || importErrorIssues.length > 0}
                   className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {importing ? "导入中..." : `确认导入 ${selected.size} 条`}
+                  {importing ? t("batchImport.importing") : t("batchImport.confirmImport").replace("{count}", String(selected.size))}
                 </button>
               </div>
             </div>
@@ -1050,20 +1876,47 @@ export default function BatchImportPage() {
             )}
             <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3 space-y-3">
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                <span className="font-medium text-slate-700">筛选结果</span>
-                <span>{filteredIndexes.length} / {items.length} 条</span>
-                <span className="text-slate-400">点击表头 ▼ 按列筛选，效果类似 Excel。</span>
+                <span className="font-medium text-slate-700">{t("batchImport.filterResult")}</span>
+                <span>{formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })}</span>
+                {importErrorIssues.length > 0 && (
+                  <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-700">
+                    阻断错误 {importErrorIssues.length} 条，已置顶
+                  </span>
+                )}
+                <span className="text-slate-400">{t("batchImport.filterHint")}</span>
+                {importErrorIssues.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowImportErrorsOnly((value) => !value);
+                      setPreviewCount(INITIAL_PREVIEW_COUNT);
+                    }}
+                    className="h-8 px-2 rounded border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
+                  >
+                    {showImportErrorsOnly ? "显示全部" : "只看错误"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
                     setActiveFilterColumn(null);
                     setColumnFilters({});
+                    setShowImportErrorsOnly(false);
                   }}
                   className="ml-auto h-8 px-2 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
                 >
-                  清空全部筛选
+                  {t("batchImport.clearAllFilters")}
                 </button>
               </div>
+              {importErrorIssues.length > 0 && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  <div className="font-semibold">确认导入按钮灰掉，是因为选中记录里还有阻断错误。</div>
+                  <div className="mt-1 leading-5">
+                    {importErrorPreviewText}
+                    {importErrorIssues.length > 6 ? `；还有 ${importErrorIssues.length - 6} 条` : ""}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex-1 min-h-0 overflow-auto">
               <table className="w-full text-xs border-separate border-spacing-0">
@@ -1073,56 +1926,63 @@ export default function BatchImportPage() {
                     <div className="flex items-center gap-2">
                       <input
                         type="checkbox"
-                        checked={filteredIndexes.length > 0 && filteredIndexes.every((idx) => selected.has(idx))}
+                        checked={displayedFilteredIndexes.length > 0 && displayedFilteredIndexes.every((idx) => selected.has(idx))}
                         onChange={toggleAllFiltered}
                         className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
-                        title="选择当前筛选结果"
+                        title={t("batchImport.selectFiltered")}
                       />
                       <BatchReplacePopoverButton
                         fields={replaceFields}
                         targetCount={batchTargetIndexes.length}
-                        targetLabel="已勾选"
+                        targetLabel={t("batchImport.selectedTargetLabel")}
                         panelAlign="left"
-                        disabledTitle="请先勾选记录，可先按表头筛选后全选"
-                        buttonTitle={`批量修改已勾选 ${batchTargetIndexes.length} 条记录`}
+                        disabledTitle={t("batchImport.selectFirstHint")}
+                        buttonTitle={formatText("batchImport.batchEditTitle", { count: batchTargetIndexes.length })}
                         messageClassName="sr-only"
                         onApply={applyReplaceToTargets}
                       />
                     </div>
                   </th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("date", "日期")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("type", "类型")}</th>
-                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">流出</th>
-                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">流入</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("account", "账户")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("counterAccount", "对向账户")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">分类</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">标签</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("remark", "备注")}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("date", t("batchImport.field.date"))}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("type", t("batchImport.field.type"))}</th>
+                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">{t("batchImport.field.outflow")}</th>
+                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">{t("batchImport.field.inflow")}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("account", t("batchImport.field.account"))}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("counterAccount", t("batchImport.field.counterAccount"))}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{t("batchImport.field.category")}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{t("batchImport.field.tags")}</th>
+                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("remark", t("batchImport.field.remark"))}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {uploading ? (
                   <tr>
                     <td colSpan={10} className="px-4 py-8 text-center text-sm text-blue-600">
-                      正在解析文件，预览会在完成后显示...
+                      {t("batchImport.previewParsing")}
                     </td>
                   </tr>
-                ) : filteredIndexes.length === 0 ? (
+                ) : displayedFilteredIndexes.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
-                      没有符合筛选条件的记录。
+                      {t("batchImport.noRecordsForFilter")}
                     </td>
                   </tr>
-                ) : visibleIndexes.map((idx) => {
+                ) : displayedVisibleIndexes.map((idx) => {
                   const item = items[idx];
                   const draft = drafts[idx] ?? {};
                   const date = draft.date ?? item.date ?? "";
-                  const amount = draft.amount ?? item.amount ?? 0;
-                  const outflow = draft.outflow ?? item.outflow ?? (item.type === "income" ? 0 : amount);
-                  const inflow = draft.inflow ?? item.inflow ?? (item.type === "income" ? amount : 0);
                   const type = draft.type ?? item.type ?? "expense";
                   const direction = draft.transferDirection ?? item.transferDirection;
+                  const flow = normalizeFlowFields(
+                    type,
+                    Number(draft.amount ?? item.amount ?? 0),
+                    Number(draft.inflow ?? item.inflow ?? 0),
+                    Number(draft.outflow ?? item.outflow ?? 0),
+                    direction,
+                  );
+                  const amount = flow.amount;
+                  const outflow = flow.outflow;
+                  const inflow = flow.inflow;
                   const account = type === "transfer"
                     ? (direction === "in" ? (draft.toAccount ?? item.toAccount ?? "") : (draft.fromAccount ?? item.fromAccount ?? ""))
                     : (draft.account ?? item.account ?? "");
@@ -1133,10 +1993,9 @@ export default function BatchImportPage() {
                   const institution = draft.institution ?? item.institution ?? "";
                   const tags = draft.tags ?? item.tags ?? "";
                   const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
-                  const secondRemark = draft.secondRemark ?? item.secondRemark ?? "";
                   const isSelected = selected.has(idx);
                   const editingField = editingCell?.idx === idx ? editingCell.field : null;
-                  const typeLabel = type === "income" ? "收入" : type === "transfer" ? "转账" : "支出";
+                  const typeLabel = getTypeLabel(type);
                   const rowIssues = importIssuesByRow.get(idx) ?? [];
                   const rowHasError = rowIssues.some((issue) => issue.level === "error");
                   const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
@@ -1163,7 +2022,7 @@ export default function BatchImportPage() {
                           />
                         </span>
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "date" ? (
                           <input
                             type="date"
@@ -1176,7 +2035,7 @@ export default function BatchImportPage() {
                           />
                         ) : date}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "type")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "type")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "type" ? (
                           <select
                             value={type}
@@ -1190,13 +2049,13 @@ export default function BatchImportPage() {
                             }}
                             className="h-6 w-20 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           >
-                            <option value="expense">支出</option>
-                            <option value="income">收入</option>
-                            <option value="transfer">转账</option>
+                            <option value="expense">{t("transaction.type.expense")}</option>
+                            <option value="income">{t("transaction.type.income")}</option>
+                            <option value="transfer">{t("transaction.type.transfer")}</option>
                           </select>
                         ) : typeLabel}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "outflow")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "outflow")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "outflow" ? (
                           <input
                             type="number"
@@ -1207,15 +2066,16 @@ export default function BatchImportPage() {
                             onChange={(e) => {
                               const next = parseFloat(e.target.value) || 0;
                               updateDraft(idx, "outflow", next);
-                              updateDraft(idx, "amount", next || inflow || 0);
+                              updateDraft(idx, "amount", next || 0);
                               if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "out");
+                              else if (next > 0) updateDraft(idx, "type", "expense");
                             }}
                             className="h-6 w-24 px-1.5 text-xs text-right border border-blue-300 rounded focus:outline-none tabular-nums"
                             step="0.01"
                           />
                         ) : (outflow ? outflow.toFixed(2) : "-")}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "inflow")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "inflow")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "inflow" ? (
                           <input
                             type="number"
@@ -1226,7 +2086,7 @@ export default function BatchImportPage() {
                             onChange={(e) => {
                               const next = parseFloat(e.target.value) || 0;
                               updateDraft(idx, "inflow", next);
-                              updateDraft(idx, "amount", next || outflow || 0);
+                              updateDraft(idx, "amount", next || 0);
                               if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "in");
                               else if (next > 0) updateDraft(idx, "type", "income");
                             }}
@@ -1235,9 +2095,9 @@ export default function BatchImportPage() {
                           />
                         ) : (inflow ? inflow.toFixed(2) : "-")}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "account" ? (
-                          <div className="w-44">
+                          <div className="w-80">
                             <SmartSelect
                               mode="single"
                               value={accountSelectValue(account)}
@@ -1251,15 +2111,15 @@ export default function BatchImportPage() {
                                 closeCellEdit();
                               }}
                               options={accountSmartSelectOptionsFor(account)}
-                              placeholder="未选择"
+                              placeholder={t("batchImport.unselected")}
                               behavior={{ hierarchy: false, search: true, clearable: true }}
                             />
                           </div>
-                        ) : (account || <span className="text-red-500">未识别</span>)}
+                        ) : (account || <span className="text-red-500">{t("batchImport.unrecognized")}</span>)}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title="双击修改">
+                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "counterAccount" ? (
-                          <div className="w-44">
+                          <div className="w-80">
                             <SmartSelect
                               mode="single"
                               value={accountSelectValue(counterAccount)}
@@ -1271,13 +2131,13 @@ export default function BatchImportPage() {
                                 closeCellEdit();
                               }}
                               options={accountSmartSelectOptionsFor(counterAccount)}
-                              placeholder="未选择"
+                              placeholder={t("batchImport.unselected")}
                               behavior={{ hierarchy: false, search: true, clearable: true }}
                             />
                           </div>
                         ) : (counterAccount || <span className="text-slate-400">-</span>)}
                       </td>
-                      <td className="max-w-[180px] truncate px-2 py-1 text-xs text-slate-700" title={category || "双击修改"} onDoubleClick={() => openCellEdit(idx, "category")}>
+                      <td className="max-w-[180px] truncate px-2 py-1 text-xs text-slate-700" title={category || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
                         {editingField === "category" ? (
                           <input
                             type="text"
@@ -1286,12 +2146,12 @@ export default function BatchImportPage() {
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
                             onChange={(e) => updateDraft(idx, "category", e.target.value)}
-                            placeholder="分类"
+                            placeholder={t("batchImport.categoryPlaceholder")}
                             className="h-6 w-36 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           />
                         ) : (category || <span className="text-slate-400">-</span>)}
                       </td>
-                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={tags || "双击修改"} onDoubleClick={() => openCellEdit(idx, "tags")}>
+                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={tags || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "tags")}>
                         {editingField === "tags" ? (
                           <input
                             type="text"
@@ -1300,12 +2160,12 @@ export default function BatchImportPage() {
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
                             onChange={(e) => updateDraft(idx, "tags", e.target.value)}
-                            placeholder="标签"
+                            placeholder={t("batchImport.tagsPlaceholder")}
                             className="h-6 w-44 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           />
                         ) : (tags || <span className="text-slate-400">-</span>)}
                       </td>
-                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={remark || "双击修改"} onDoubleClick={() => openCellEdit(idx, "remark")}>
+                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={remark || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "remark")}>
                         {editingField === "remark" ? (
                           <input
                             type="text"
@@ -1314,7 +2174,7 @@ export default function BatchImportPage() {
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
                             onChange={(e) => updateDraft(idx, "remark", e.target.value)}
-                            placeholder="备注"
+                            placeholder={t("batchImport.remarkPlaceholder")}
                             className="h-6 w-48 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           />
                         ) : (remark || <span className="text-slate-400">-</span>)}
@@ -1322,22 +2182,229 @@ export default function BatchImportPage() {
                     </tr>
                   );
                 })}
-                {!uploading && filteredIndexes.length > visibleIndexes.length && (
+                {!uploading && displayedFilteredIndexes.length > displayedVisibleIndexes.length && (
                   <tr>
                     <td colSpan={12} className="px-4 py-2 text-center text-xs text-slate-500">
-                      当前显示 {visibleIndexes.length} / {filteredIndexes.length} 条。
+                      {formatText("batchImport.currentVisibleCount", { visible: displayedVisibleIndexes.length, total: displayedFilteredIndexes.length })}
                       <button
                         type="button"
                         onClick={() => setPreviewCount((count) => count + PREVIEW_COUNT_STEP)}
                         className="ml-2 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
                       >
-                        继续加载 {Math.min(PREVIEW_COUNT_STEP, filteredIndexes.length - visibleIndexes.length)} 条
+                        {formatText("batchImport.loadMore", { count: Math.min(PREVIEW_COUNT_STEP, displayedFilteredIndexes.length - displayedVisibleIndexes.length) })}
                       </button>
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeImportKind === "fund" && (fundPreviewItems.length > 0 || uploading) && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
+          <div className="w-full max-w-7xl h-[82vh] bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+            <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-semibold text-slate-800">{t("batchImport.previewFundTitle")}</div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {uploading ? t("batchImport.previewParsing") : formatText("batchImport.previewFundHint", { count: fundPreviewItems.length })}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCancel}
+                  className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  onClick={handleFundImport}
+                  disabled={uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
+                  className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundSelected.size })}
+                </button>
+              </div>
+            </div>
+            {message && (
+              <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
+                {message}
+              </div>
+            )}
+            {uploadDebug && (
+              <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
+                {uploadDebug}
+              </div>
+            )}
+            <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                <span className="font-medium text-slate-700">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                {fundImportErrorIssues.length > 0 && (
+                  <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span>
+                )}
+                {fundImportWarningIssues.length > 0 && (
+                  <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span>
+                )}
+              </div>
+              {fundRuleRows.length > 0 && (
+                <div className="mt-3 rounded-lg border border-slate-200 bg-white">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
+                    <div className="text-xs font-medium text-slate-700">{t("batchImport.fundPreview.ruleEditorTitle")}</div>
+                    <button
+                      type="button"
+                      onClick={handleApplyFundRules}
+                      disabled={uploading || importing || fundRuleRows.length === 0}
+                      className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {fundRulesDirty ? t("batchImport.fundPreview.applyRulesDirty") : t("batchImport.fundPreview.applyRules")}
+                    </button>
+                  </div>
+                  <div className="max-h-40 overflow-auto">
+                    <div className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] gap-x-3 gap-y-2 px-3 py-2 text-[11px] text-slate-500">
+                      <div>{t("batchImport.template.fund.label.fundAccount")}</div>
+                      <div>{t("batchImport.template.fund.label.fundCode")}</div>
+                      <div>{t("batchImport.template.fund.label.fundName")}</div>
+                      <div>{t("batchImport.fundPreview.confirmRuleHeader")}</div>
+                      <div>{t("batchImport.fundPreview.arrivalRuleHeader")}</div>
+                    </div>
+                    <div className="space-y-2 border-t border-slate-100 px-3 py-2">
+                      {fundRuleRows.map((row) => (
+                        <div key={row.key} className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] items-center gap-x-3 gap-y-2">
+                          <div className="truncate text-xs text-slate-700" title={row.fundAccount}>{row.fundAccount}</div>
+                          <div className="text-xs tabular-nums text-slate-700">{row.fundCode}</div>
+                          <div className="truncate text-xs text-slate-700" title={row.fundName}>{row.fundName}</div>
+                          <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                            <span>T+</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={row.confirmDays}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setFundRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, confirmDays: value } : item));
+                                setFundRulesDirty(true);
+                              }}
+                              className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                            <span>T+</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={row.arrivalDays}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setFundRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, arrivalDays: value } : item));
+                                setFundRulesDirty(true);
+                              }}
+                              className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
+                            />
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {fundPreviewWarningSummary && (
+                <div className="mt-2 text-xs text-amber-700">
+                  <span className="font-medium text-amber-800">{t("batchImport.fundPreview.warningSummaryTitle")}</span>
+                  <span className="ml-1">{fundPreviewWarningSummary}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex-1 min-h-0 overflow-auto">
+              <table className="w-full text-xs border-separate border-spacing-0">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="w-16 px-2 py-1 text-left">
+                      <span className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={fundPreviewItems.length > 0 && fundPreviewItems.every((_, idx) => fundSelected.has(idx))}
+                          onChange={toggleAllFund}
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
+                        />
+                      </span>
+                    </th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.date")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundSubtype")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.source")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.cashAccount")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundAccount")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundCode")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundName")}</th>
+                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.template.fund.label.amount")}</th>
+                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.fundPreview.feeRate")}</th>
+                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.template.fund.label.fee")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.confirmDate")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.arrivalDate")}</th>
+                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.remark")}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {uploading ? (
+                    <tr>
+                      <td colSpan={14} className="px-4 py-8 text-center text-sm text-blue-600">
+                        {t("batchImport.previewParsing")}
+                      </td>
+                    </tr>
+                  ) : fundPreviewItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={14} className="px-4 py-8 text-center text-sm text-slate-500">
+                        {t("batchImport.noRecordsForFilter")}
+                      </td>
+                    </tr>
+                  ) : fundPreviewItems.map((item, idx) => {
+                    const rowHasError = item.issues.some((issue) => issue.level === "error");
+                    const rowHasWarning = item.issues.some((issue) => issue.level === "warning");
+                    const rowIssues = item.issues.map((issue) => issue.message).join("；");
+                    return (
+                      <tr key={`${item.rawText}-${idx}`} className={`${fundSelected.has(idx) ? "" : "opacity-50"} ${rowHasError ? "bg-red-50" : rowHasWarning ? "bg-amber-50" : ""}`}>
+                        <td className="px-2 py-1">
+                          <span className="inline-flex h-3.5 items-center gap-1 align-middle">
+                            {item.issues.length > 0 ? (
+                              <span
+                                className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : "bg-amber-500"}`}
+                                title={rowIssues}
+                              >
+                                !
+                              </span>
+                            ) : (
+                              <span className="h-3.5 w-3.5" />
+                            )}
+                            <input
+                              type="checkbox"
+                              checked={fundSelected.has(idx)}
+                              onChange={() => toggleFundSelect(idx)}
+                              className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
+                            />
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.date || "-"}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{getFundImportSubtypeLabel(item.fundSubtype, item.source, t)}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{getFundImportSourceLabel(item.source, t)}</td>
+                        <td className="max-w-[160px] truncate px-2 py-1 text-slate-700" title={item.cashAccount || ""}>{item.cashAccount || "-"}</td>
+                        <td className="max-w-[160px] truncate px-2 py-1 text-slate-700" title={item.fundAccount || ""}>{item.fundAccount || "-"}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{item.fundCode || "-"}</td>
+                        <td className="max-w-[180px] truncate px-2 py-1 text-slate-700" title={item.fundName || ""}>{item.fundName || "-"}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{formatOptionalNumber(item.amount, 2)}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{item.feeRate != null ? `${item.feeRate.toFixed(4)}%` : "-"}</td>
+                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{formatOptionalNumber(item.fee, 2)}</td>
+                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.confirmDate || "-"}</td>
+                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.arrivalDate || "-"}</td>
+                        <td className="max-w-[180px] truncate px-2 py-1 text-slate-700" title={item.remark || ""}>{item.remark || "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

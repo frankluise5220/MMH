@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -40,23 +41,26 @@ export async function POST(req: Request) {
         deletedAt: { not: null, lte: cutoff },
         ...hidFilter,
       },
-      select: { id: true, accountId: true, toAccountId: true, fundCode: true, fundSubtype: true, fundProductType: true },
+      select: { id: true, accountId: true, toAccountId: true, fundCode: true, fundSubtype: true, fundProductType: true, metalTypeId: true },
     });
 
     const txIds = toDelete.map(t => t.id);
 
     if (txIds.length === 0) {
-      return { permanentlyDeleted: 0, fundAccountsToRecalc: new Map<string, string[]>() };
+      return { permanentlyDeleted: 0, fundAccountsToRecalc: new Map<string, string[]>(), metalAccountsToRecalc: new Set<string>() };
     }
 
     // 收集需要重新计算持仓的基金账户
     // 买入类：accountId=资金账户, toAccountId=投资账户
     // 赎回类：accountId=投资账户, toAccountId=资金账户
     const fundAccountsToRecalc = new Map<string, string[]>();
+    const metalAccountsToRecalc = new Set<string>();
     for (const tx of toDelete) {
-      if (tx.fundCode && tx.fundProductType) {
-        const isRedeemLike = tx.fundSubtype === "redeem" || tx.fundSubtype === "switch_out";
-        const investmentAccId = isRedeemLike ? tx.accountId : tx.toAccountId;
+      const isRedeemLike = tx.fundSubtype === "redeem" || tx.fundSubtype === "switch_out";
+      const investmentAccId = isRedeemLike ? tx.accountId : tx.toAccountId;
+      if ((tx.metalTypeId || tx.fundProductType === "metal") && investmentAccId) {
+        metalAccountsToRecalc.add(investmentAccId);
+      } else if (tx.fundCode && tx.fundProductType) {
         if (investmentAccId) {
           const codes = fundAccountsToRecalc.get(investmentAccId) ?? [];
           if (!codes.includes(tx.fundCode)) {
@@ -75,16 +79,27 @@ export async function POST(req: Request) {
       where: { entryId: { in: txIds } },
     });
 
+    await tx.fundTransaction.deleteMany({
+      where: { cashEntryId: { in: txIds } },
+    });
+
+    await tx.fundTransactionCashFlow.deleteMany({
+      where: { txRecordId: { in: txIds } },
+    });
+
     const deleted = await tx.txRecord.deleteMany({
       where: { id: { in: txIds } },
     });
 
-    return { permanentlyDeleted: deleted.count, fundAccountsToRecalc };
+    return { permanentlyDeleted: deleted.count, fundAccountsToRecalc, metalAccountsToRecalc };
   });
 
   // 重新汇总持仓（事务外）
   for (const [accountId, fundCodes] of result.fundAccountsToRecalc) {
     await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "route.ts"));
+  }
+  for (const accountId of result.metalAccountsToRecalc) {
+    await recalcPreciousMetalPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
   }
 
   if (result.permanentlyDeleted > 0) {

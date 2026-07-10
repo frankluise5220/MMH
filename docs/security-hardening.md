@@ -11,7 +11,7 @@
 ## HTTPS 与 Cookie
 
 - 正式远程访问应通过 HTTPS 反向代理，例如 Caddy、Nginx、NAS 自带反代或可信网关。
-- 如果只允许固定域名或固定内网地址访问，设置 `MMH_ALLOWED_HOSTS`，例如 `MMH_ALLOWED_HOSTS="mmh.example.com,192.168.2.199,localhost,127.0.0.1"`。未列入的 Host 会被应用层直接拒绝。
+- 如果只允许固定域名或固定内网地址访问，请在系统设置里的“访问白名单”中维护允许访问的域名或 IP。开启后，未列入白名单的 Host 会被应用层直接拒绝。
 - 生产环境下，登录 Cookie 默认使用 `HttpOnly`、`SameSite=Lax`、`Secure`。
 - 如果只是可信内网 HTTP 测试，可以临时设置 `MMH_INSECURE_COOKIES=1`，不要用于公网。
 - 确认站点永远通过 HTTPS 访问后，可以设置 `MMH_ENABLE_HSTS=1` 开启 HSTS。

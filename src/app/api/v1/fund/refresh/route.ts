@@ -6,6 +6,8 @@ import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshLatestFundNav, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
@@ -24,6 +26,7 @@ export async function POST(req: NextRequest) {
     let entryFilled = 0;
     let entryFailed = 0;
     let entryNavFilled = 0;
+    const syncedEntryIds: string[] = [];
     const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
 
     // 直接查询 TxRecord 中未确认的基金交易（包括 fundSubtype 为 null 的记录）
@@ -58,6 +61,44 @@ export async function POST(req: NextRequest) {
       d.setDate(d.getDate() - 30);
       earliestDate = d.toISOString().slice(0, 10);
     }
+
+    const allRefundMatchEntries = await prisma.txRecord.findMany({
+      where: {
+        deletedAt: null,
+        OR: [
+          { toAccountId: accountId, fundCode: { not: null } },
+          { accountId: accountId, fundCode: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+        date: true,
+        createdAt: true,
+        fundConfirmDate: true,
+        fundArrivalDate: true,
+        accountId: true,
+        toAccountId: true,
+        fundCode: true,
+        fundSubtype: true,
+        source: true,
+        amount: true,
+        fundSourceEntryId: true,
+      },
+    });
+    const { refundAmountByBuyId } = allocateBuyFailedRefunds(allRefundMatchEntries.map((entry) => ({
+      id: entry.id,
+      date: entry.date,
+      createdAt: entry.createdAt,
+      fundConfirmDate: entry.fundConfirmDate,
+      fundArrivalDate: entry.fundArrivalDate,
+      accountId: entry.accountId,
+      toAccountId: entry.toAccountId,
+      fundCode: entry.fundCode,
+      fundSubtype: entry.fundSubtype,
+      source: entry.source,
+      amount: toNum(entry.amount),
+      fundSourceEntryId: entry.fundSourceEntryId,
+    })));
 
     // 为每个基金预加载历史净值（从最早申请日期到今天）
     for (const fundCode of fundCodes) {
@@ -112,8 +153,10 @@ export async function POST(req: NextRequest) {
         const feeRate = feeRateRaw / 100;
 
         const amount = Math.abs(toNum(entry.amount));
-        // 计算手续费 = 金额 × 费率
-        const fee = amount * feeRate;
+        const isBuyEntry = (entry.fundSubtype ?? (toNum(entry.amount) < 0 ? "buy" : "redeem")) === "buy";
+        const refundAmount = isBuyEntry ? refundAmountByBuyId.get(entry.id) ?? 0 : 0;
+        const confirmedAmount = isBuyEntry ? Math.max(0, amount - refundAmount) : amount;
+        const fee = confirmedAmount * feeRate;
 
         let units: number | null = null;
         if (hasExactNav && navData && navData.nav > 0) {
@@ -122,9 +165,13 @@ export async function POST(req: NextRequest) {
             const divisor = navData.nav * (1 - feeRate);
             units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
           } else {
-            // 买入: principal = amount - fee, units = principal / nav
-            const principal = amount - fee;
-            units = principal > 0 ? roundFundUnits(principal / navData.nav, fundUnitsDecimals) : null;
+            units = calculateConfirmedBuyUnits({
+              grossAmount: amount,
+              refundAmount,
+              fee,
+              nav: navData.nav,
+              roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+            });
           }
         }
 
@@ -160,6 +207,7 @@ export async function POST(req: NextRequest) {
           where: { id: entry.id },
           data: updateData as any,
         });
+        syncedEntryIds.push(entry.id);
         entryFilled++;
         if (hasExactNav) entryNavFilled++;
       } catch {
@@ -168,6 +216,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (entryFilled > 0) {
+      await syncFundTransactionsFromTxRecords(syncedEntryIds);
       await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 

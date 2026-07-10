@@ -1,15 +1,20 @@
-﻿"use client";
+"use client";
 
 import { DatabaseZap, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
+import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
+import { kindLabel } from "@/lib/account-kinds";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
   type FundSubtype,
@@ -52,6 +57,12 @@ function buildFundNavUrl(code: string, date: string, accountId?: string) {
   return `/api/v1/fund/nav?${params.toString()}`;
 }
 
+function normalizeYmd(value: string | Date | null | undefined): string {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).trim().slice(0, 10);
+}
+
 // 编辑模式的入口数据。
 export type InvestmentEntry = {
   id: string;
@@ -64,13 +75,22 @@ export type InvestmentEntry = {
   fundCode: string | null;
   fundName: string | null;
   fundUnits: number | null;
+  displayFundUnits?: number | null;
   fundNav: number | null;
   fundFee: number | null;
   fundProductType: string | null;
   fundSubtype: string | null;
+  metalTypeId?: string | null;
+  metalTypeName?: string | null;
+  metalUnitId?: string | null;
+  metalUnitName?: string | null;
+  metalQuantity?: number | null;
+  metalUnitPrice?: number | null;
+  metalFee?: number | null;
   source?: string | null;
   accountId?: string | null;
   toAccountId?: string | null;
+  fundSourceEntryId?: string | null;
   cashAccountId?: string | null;
   toAccountName?: string | null;
   fundArrivalDate?: string | null;
@@ -93,6 +113,64 @@ type OpenInvestmentCreateDetail = {
   defaultCashAccountId?: string;
   defaultDate?: string;
   defaultAmount?: number;
+  defaultProductType?: ProductType;
+};
+
+type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+type AccountOption = {
+  id: string;
+  label: string;
+  kind?: string;
+  investProductType?: string | null;
+  institutionId?: string | null;
+};
+type PreciousMetalTypeOption = { id: string; code: string; name: string; shortName?: string | null };
+type PreciousMetalUnitOption = { id: string; code: string; name: string; symbol?: string | null; decimals?: number | null };
+type BuyResultStatus = "normal" | "refund";
+type LinkedCandidateEntry = {
+  id: string;
+  date: string;
+  createdAt?: string | Date | null;
+  fundConfirmDate?: string | null;
+  fundArrivalDate?: string | null;
+  fundCode: string;
+  fundSubtype: string;
+  fundUnits: number | null;
+  source: string | null;
+  accountId?: string | null;
+  toAccountId?: string | null;
+  amount?: number;
+  fundSourceEntryId?: string | null;
+};
+
+type InvestmentEditDetail = {
+  requestId: string;
+  entryId: string;
+  type: string;
+  date: string;
+  confirmDate?: string | null;
+  amount: number;
+  note: string;
+  accountId?: string;
+  toAccountId?: string;
+  fundCode?: string;
+  fundName?: string;
+  fundSubtype?: string;
+  source?: string;
+  fundSourceEntryId?: string | null;
+  fundUnits?: number;
+  displayFundUnits?: number;
+  fundNav?: number;
+  fundFee?: number;
+  fundProductType?: string;
+  metalTypeId?: string | null;
+  metalTypeName?: string | null;
+  metalUnitId?: string | null;
+  metalUnitName?: string | null;
+  cashAccountId?: string;
+  fundArrivalDate?: string | null;
+  fundArrivalAmount?: number | null;
+  linkedCandidateEntries?: LinkedCandidateEntry[];
 };
 
 export function InvestmentFormModal({
@@ -105,6 +183,9 @@ export function InvestmentFormModal({
   investmentAccounts,
   cashAccountSSOptions,
   investmentAccountSSOptions,
+  metalTypes,
+  metalUnits,
+  nestedFieldData,
   holdings,
   allEntries,
   createAction,
@@ -118,32 +199,36 @@ export function InvestmentFormModal({
   accountProductType?: string | null;
   entry?: InvestmentEntry;
   defaults?: InvestmentDefaults;
-  cashAccounts?: { id: string; label: string }[];
-  investmentAccounts?: { id: string; label: string }[];
+  cashAccounts?: AccountOption[];
+  investmentAccounts?: AccountOption[];
   cashAccountSSOptions?: SmartSelectOption[];
   investmentAccountSSOptions?: SmartSelectOption[];
+  metalTypes?: PreciousMetalTypeOption[];
+  metalUnits?: PreciousMetalUnitOption[];
+  nestedFieldData?: NestedFieldData;
   holdings?: { fundCode: string; name: string; units: number }[];
-  allEntries?: { date: string; fundConfirmDate?: string | null; fundArrivalDate?: string | null; fundCode: string; fundSubtype: string; fundUnits: number | null; source: string | null }[];
+  allEntries?: LinkedCandidateEntry[];
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   openSignal?: number;
   hideTrigger?: boolean;
   fundUnitsDecimals?: number | null;
 }) {
+  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 3);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
 
   const fixedProductType: ProductType =
-    (["fund", "money", "wealth", "deposit"].includes(accountProductType ?? "")
+    (["fund", "money", "wealth", "deposit", "metal"].includes(accountProductType ?? "")
       ? accountProductType as ProductType
-      : (mode === "edit" && entry?.fundProductType && ["fund", "money", "wealth", "deposit"].includes(entry.fundProductType)
+      : (mode === "edit" && entry?.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(entry.fundProductType)
         ? entry.fundProductType as ProductType
         : "fund"));
 
   // 编辑旧记录时，把历史存储形态映射成当前表单展示类型。
-  const initDisplaySubtype: FundSubtype = mode === "edit" && entry?.fundSubtype === "buy_failed"
-    ? (entry?.source === "regular_invest_refund" ? "redeem" : "buy")
+  const initDisplaySubtype: FundSubtype = mode === "edit" && entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund"
+    ? "buy"
     : mode === "edit" && entry?.fundSubtype === "buy" && entry?.source === "dividend"
     ? "dividend_reinvest"
     : mode === "edit" && entry?.fundSubtype && SUBTYPE_LABELS[entry.fundSubtype as FundSubtype]
@@ -151,11 +236,21 @@ export function InvestmentFormModal({
     : (mode === "edit" && entry && entry.amount < 0 ? "buy" : "redeem");
   const initSubtype: FundSubtype = initDisplaySubtype;
   const initAmount = mode === "edit" && entry ? Math.abs(entry.amount) : "";
-  const initNav = mode === "edit" && entry?.fundNav != null ? String(entry.fundNav) : "";
-  const initUnits = mode === "edit" && entry?.fundUnits != null ? formatUnits(Number(entry.fundUnits))
+  const initNav = mode === "edit" && fixedProductType === "metal" && entry?.metalUnitPrice != null
+    ? String(entry.metalUnitPrice)
+    : mode === "edit" && entry?.fundNav != null ? String(entry.fundNav) : "";
+  const initUnits = mode === "edit" && fixedProductType === "metal" && entry?.metalQuantity != null
+    ? formatUnits(Number(entry.metalQuantity))
+    : mode === "edit" && (entry?.displayFundUnits ?? entry?.fundUnits) != null ? formatUnits(Number(entry?.displayFundUnits ?? entry?.fundUnits))
     : defaults?.fundUnits && defaults.fundUnits > 0 ? formatUnits(Number(defaults.fundUnits)) : "";
-  const initFee = mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
-  // 买入类：现金账户 -> 基金账户；赎回类：基金账户 -> 现金账户。
+  const initFee = mode === "edit" && fixedProductType === "metal" && entry?.metalFee != null
+    ? String(entry.metalFee)
+    : mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
+  // 买入类：现金账户 -> 基金账户；赎回：基金账户 -> 现金账户；买入退回统一回到买入编辑。
+  const isFailedRefundEntry =
+    mode === "edit" &&
+    entry?.fundSubtype === "buy_failed" &&
+    entry?.source === "regular_invest_refund";
   const isRedeemEntry = isRedeemLike(initSubtype);
   const initCashAccountId = mode === "edit"
     ? (isRedeemEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
@@ -169,6 +264,8 @@ export function InvestmentFormModal({
   const initFeeRate = mode === "edit" ? "" : (defaults?.feeRate ?? "0");
   const initFundCode = mode === "edit" ? (entry?.fundCode ?? "") : (defaults?.fundCode ?? "");
   const initFundName = mode === "edit" ? (entry?.fundName ?? entry?.fundCode ?? "") : (defaults?.fundName ?? "");
+  const initMetalTypeId = mode === "edit" ? (entry?.metalTypeId ?? (fixedProductType === "metal" ? initFundCode : "")) : "";
+  const initMetalUnitId = mode === "edit" ? (entry?.metalUnitId ?? "") : "";
   const initArrivalDate = mode === "edit"
     ? (entry?.fundArrivalDate ?? (() => {
         const dt = mode === "edit" && entry ? entry.date : today;
@@ -185,6 +282,10 @@ export function InvestmentFormModal({
   const initMemo = mode === "edit" ? (entry?.memo ?? entry?.note ?? "") : "";
   const initDate = mode === "edit" && entry ? entry.date : today;
   const initConfirmDate = mode === "edit" && entry ? (entry.confirmDate ?? "") : "";
+  const initHasRefund =
+    mode === "edit" &&
+    entry?.fundSubtype === "buy_failed" &&
+    entry?.source === "regular_invest_refund";
 
   const [open, setOpen] = useState(false);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
@@ -196,8 +297,11 @@ export function InvestmentFormModal({
   const cashAccountIdRef = useRef(initCashAccountId);
   const cashAccountTouchedRef = useRef(false);
   const cashAccountAutoRef = useRef(false);
+  const investmentAccountTouchedRef = useRef(mode === "edit");
   const [fundCode, setFundCode] = useState(initFundCode);
   const [fundName, setFundName] = useState(initFundName);
+  const [metalTypeId, setMetalTypeId] = useState(initMetalTypeId);
+  const [metalUnitId, setMetalUnitId] = useState(initMetalUnitId);
   const [nameLoading, setNameLoading] = useState(false);
   const [nav, setNav] = useState(initNav);
   const [navLoading, setNavLoading] = useState(false);
@@ -216,6 +320,10 @@ export function InvestmentFormModal({
   const [arrivalDays, setArrivalDays] = useState(2);
   const [deleting, setDeleting] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
+  const [buyResultStatus, setBuyResultStatus] = useState<BuyResultStatus>(initHasRefund ? "refund" : "normal");
+  const [eventEditEntry, setEventEditEntry] = useState<InvestmentEntry | null>(null);
+  const [eventLinkedEntries, setEventLinkedEntries] = useState<LinkedCandidateEntry[] | null>(null);
+  const [linkedRefundEntryId, setLinkedRefundEntryId] = useState<string | null>(null);
   const lastNavFetchedDate = useRef<string>("");
   const navDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   function setNavFromApi(navStr: string) {
@@ -228,6 +336,7 @@ export function InvestmentFormModal({
   const navEditedRef = useRef(false);
   const [holdingSearch, setHoldingSearch] = useState(initFundCode && initFundName ? `${initFundCode} ${initFundName}` : "");
   const [submitting, setSubmitting] = useState(false);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
   const dividendAmountRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef<string | null>(null);
   const pendingFundCodeFetchRef = useRef<string | null>(null);
@@ -235,50 +344,243 @@ export function InvestmentFormModal({
   const prevSavedDateRef = useRef<string | null>(null);
   const editAutoNavEnabledRef = useRef(mode !== "edit");
   const suppressFeeAutoCalcRef = useRef(mode === "edit");
+  const [localCashAccountList, setLocalCashAccountList] = useState(cashAccounts ?? []);
+  const [localInvestmentAccountList, setLocalInvestmentAccountList] = useState(investmentAccounts ?? []);
+  const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
+  const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
+
+  const currentEditEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
+
+  // Linked buy/refund records for display in the edit modal.
+  const linkedRecords = useMemo(() => {
+    const candidateEntries = allEntries ?? eventLinkedEntries;
+    if (mode !== "edit" || !currentEditEntry || !candidateEntries || candidateEntries.length === 0) return null;
+    const target: RefundLinkableEntry = {
+      id: currentEditEntry.id,
+      date: currentEditEntry.date,
+      fundConfirmDate: currentEditEntry.confirmDate ?? null,
+      fundArrivalDate: currentEditEntry.fundArrivalDate ?? null,
+      accountId: currentEditEntry.accountId,
+      toAccountId: currentEditEntry.toAccountId,
+      fundCode: currentEditEntry.fundCode,
+      fundSubtype: currentEditEntry.fundSubtype,
+      source: currentEditEntry.source,
+      amount: currentEditEntry.amount,
+      fundSourceEntryId: currentEditEntry.fundSourceEntryId ?? null,
+    };
+    const allMapped: RefundLinkableEntry[] = candidateEntries.map(e => ({
+      id: e.id,
+      date: e.date,
+      createdAt: e.createdAt,
+      fundConfirmDate: e.fundConfirmDate ?? null,
+      fundArrivalDate: e.fundArrivalDate ?? null,
+      accountId: e.accountId ?? null,
+      toAccountId: e.toAccountId ?? null,
+      fundCode: e.fundCode,
+      fundSubtype: e.fundSubtype,
+      source: e.source,
+      amount: e.amount ?? 0,
+      fundSourceEntryId: e.fundSourceEntryId ?? null,
+    }));
+    return findLinkedEntries(target, allMapped);
+  }, [mode, currentEditEntry, allEntries, eventLinkedEntries]);
+
+  const linkedRefundTotal = useMemo(() => {
+    if (mode !== "edit" || !linkedRecords || linkedRecords.linkedRefunds.length === 0) return 0;
+    return linkedRecords.linkedRefunds.reduce((sum, r) => sum + Math.abs(r.amount), 0);
+  }, [mode, linkedRecords]);
+
+  const firstLinkedRefund = useMemo(() => {
+    if (mode !== "edit" || !linkedRecords || linkedRecords.linkedRefunds.length === 0) return null;
+    return linkedRecords.linkedRefunds[0] ?? null;
+  }, [mode, linkedRecords]);
+
+  function applyLinkedRefundToForm(refund?: RefundLinkableEntry | null) {
+    if (!refund) return false;
+    setLinkedRefundEntryId(refund.id);
+    setArrivalAmount(Math.abs(Number(refund.amount) || 0).toFixed(2));
+    const refundDate = normalizeYmd(refund.fundArrivalDate ?? refund.date);
+    if (refundDate && !arrivalDateEditedRef.current) setArrivalDate(refundDate);
+    calculateBuyUnits(amount, fee, String(Math.abs(Number(refund.amount) || 0)), nav, true);
+    return true;
+  }
+
+  function toggleBuyRefund(enabled: boolean) {
+    setBuyResultStatus(enabled ? "refund" : "normal");
+    if (enabled) {
+      const applied = applyLinkedRefundToForm(firstLinkedRefund);
+      if (!applied && !arrivalDate) {
+        const baseDate = confirmDate || applyDate;
+        setArrivalDate(baseDate && arrivalDays > 0 ? addDays(baseDate, arrivalDays) : baseDate);
+      }
+      return;
+    }
+    setArrivalAmount("");
+    calculateUnitsAfterRefundChange("");
+  }
+
+  useEffect(() => {
+    if (mode !== "edit" || !open || subtype !== "buy" || linkedRefundTotal <= 0) return;
+    setBuyResultStatus("refund");
+    if (firstLinkedRefund && !linkedRefundEntryId) setLinkedRefundEntryId(firstLinkedRefund.id);
+    if (p(arrivalAmount) === 0) setArrivalAmount(linkedRefundTotal.toFixed(2));
+    const firstRefundDate = firstLinkedRefund?.fundArrivalDate ?? firstLinkedRefund?.date;
+    if (firstRefundDate && !arrivalDateEditedRef.current) setArrivalDate(normalizeYmd(firstRefundDate));
+  }, [mode, open, subtype, linkedRefundTotal, firstLinkedRefund, linkedRefundEntryId, arrivalAmount]);
+
+  useEffect(() => {
+    if (mode !== "edit" || !open || !editEntryId) return;
+    const controller = new AbortController();
+    fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(editEntryId)}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((d) => {
+        const candidates = d?.data?.linkedCandidateEntries;
+        if (Array.isArray(candidates)) setEventLinkedEntries(candidates);
+      })
+      .catch((err) => {
+        if (err?.name !== "AbortError") console.error("Load linked fund records failed:", err);
+      });
+    return () => controller.abort();
+  }, [mode, open, editEntryId]);
 
   const flatCashAccountOptions = useMemo<SmartSelectOption[]>(
-    () => (cashAccounts ?? []).map((account) => ({ id: account.id, label: account.label })),
-    [cashAccounts],
+    () => localCashAccountList.map((account) => ({ id: account.id, label: account.label })),
+    [localCashAccountList],
   );
   const flatInvestmentAccountOptions = useMemo<SmartSelectOption[]>(
-    () => (investmentAccounts ?? []).map((account) => ({ id: account.id, label: account.label })),
-    [investmentAccounts],
+    () => localInvestmentAccountList.map((account) => ({ id: account.id, label: account.label })),
+    [localInvestmentAccountList],
+  );
+  const investmentAccountMatchesProductType = (account: AccountOption) => {
+    if (productType === "metal") return account.investProductType === "metal";
+    if (productType === "wealth") return account.investProductType === "wealth";
+    if (productType === "deposit") return account.investProductType === "deposit" || account.kind === "deposit";
+    if (productType === "fund" || productType === "money") {
+      return account.investProductType === "fund" || account.investProductType === "money";
+    }
+    return true;
+  };
+  const productInvestmentAccountList = useMemo(
+    () => localInvestmentAccountList.filter(investmentAccountMatchesProductType),
+    [localInvestmentAccountList, productType],
+  );
+  const productInvestmentAccountIds = useMemo(
+    () => new Set(productInvestmentAccountList.map((account) => account.id)),
+    [productInvestmentAccountList],
+  );
+  const selectedCashInstitutionId = useMemo(
+    () => localCashAccountList.find((account) => account.id === cashAccountId)?.institutionId ?? null,
+    [localCashAccountList, cashAccountId],
+  );
+  const currentInvestmentAccountOption = useMemo(
+    () => localInvestmentAccountList.find((account) => account.id === toAccountId) ?? null,
+    [localInvestmentAccountList, toAccountId],
+  );
+  const productInvestmentSSOptions = useMemo(
+    () => (localInvestmentSSOptions ?? []).filter((option) => option.isHeader || productInvestmentAccountIds.has(option.id)),
+    [localInvestmentSSOptions, productInvestmentAccountIds],
+  );
+  const flatProductInvestmentAccountOptions = useMemo<SmartSelectOption[]>(
+    () => productInvestmentAccountList.map((account) => ({ id: account.id, label: account.label })),
+    [productInvestmentAccountList],
+  );
+  const metalTypeOptions = useMemo<SmartSelectOption[]>(
+    () => (metalTypes ?? []).map((item) => ({
+      id: item.id,
+      label: item.name,
+      subLabel: [item.shortName?.trim(), item.code].filter(Boolean).join(" · "),
+    })),
+    [metalTypes],
+  );
+  const metalUnitOptions = useMemo<SmartSelectOption[]>(
+    () => (metalUnits ?? []).map((item) => ({
+      id: item.id,
+      label: item.symbol ? `${item.name} (${item.symbol})` : item.name,
+      subLabel: item.code,
+    })),
+    [metalUnits],
   );
   const {
     ownerFilterLabel: cashOwnerFilterLabel,
     cycleOwnerFilter: cycleCashOwnerFilter,
     filteredOptions: cashAccountSSFiltered,
-  } = useAccountSSFilter(cashAccountSSOptions);
+  } = useAccountSSFilter(localCashSSOptions);
   const {
     ownerFilterLabel: investmentOwnerFilterLabel,
     cycleOwnerFilter: cycleInvestmentOwnerFilter,
     filteredOptions: investmentAccountSSFiltered,
-  } = useAccountSSFilter(investmentAccountSSOptions);
+  } = useAccountSSFilter(productInvestmentSSOptions);
   const recentAccountIds = useRecentAccountIds();
-  const visibleCashAccountOptions = sortOptionsByRecent(cashAccountSSFiltered ?? cashAccountSSOptions ?? flatCashAccountOptions, recentAccountIds);
-  const visibleInvestmentAccountOptions = sortOptionsByRecent(investmentAccountSSFiltered ?? investmentAccountSSOptions ?? flatInvestmentAccountOptions, recentAccountIds);
-  const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
-    <button
-      type="button"
-      onClick={cycleCashOwnerFilter}
-      title={`所有人：${cashOwnerFilterLabel}`}
-      aria-label={`切换所有人，当前 ${cashOwnerFilterLabel}`}
-      className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
-    >
-      <Repeat className="h-3.5 w-3.5" />
-    </button>
-  ) : undefined;
-  const investmentOwnerCycleButton = investmentAccountSSOptions?.some((option) => option.isHeader) ? (
-    <button
-      type="button"
-      onClick={cycleInvestmentOwnerFilter}
-      title={`所有人：${investmentOwnerFilterLabel}`}
-      aria-label={`切换所有人，当前 ${investmentOwnerFilterLabel}`}
-      className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
-    >
-      <Repeat className="h-3.5 w-3.5" />
-    </button>
-  ) : undefined;
+  const visibleCashAccountOptions = sortOptionsByRecent(localCashSSOptions ? (cashAccountSSFiltered ?? localCashSSOptions) : flatCashAccountOptions, recentAccountIds);
+  const visibleInvestmentAccountOptions = sortOptionsByRecent(productInvestmentSSOptions.length > 0 ? (investmentAccountSSFiltered ?? productInvestmentSSOptions) : flatProductInvestmentAccountOptions, recentAccountIds);
+  const cashCycleAction = localCashSSOptions?.some((option) => option.isHeader)
+    ? {
+        onClick: cycleCashOwnerFilter,
+        title: `所有人：${cashOwnerFilterLabel}`,
+        ariaLabel: `切换所有人，当前 ${cashOwnerFilterLabel}`,
+        icon: <Repeat className="h-3.5 w-3.5" />,
+      }
+    : undefined;
+  const investmentCycleAction = productInvestmentSSOptions.some((option) => option.isHeader)
+    ? {
+        onClick: cycleInvestmentOwnerFilter,
+        title: `所有人：${investmentOwnerFilterLabel}`,
+        ariaLabel: `切换所有人，当前 ${investmentOwnerFilterLabel}`,
+        icon: <Repeat className="h-3.5 w-3.5" />,
+      }
+    : undefined;
+
+  useEffect(() => {
+    setLocalCashAccountList(cashAccounts ?? []);
+  }, [cashAccounts]);
+
+  useEffect(() => {
+    setLocalInvestmentAccountList(investmentAccounts ?? []);
+  }, [investmentAccounts]);
+
+  useEffect(() => {
+    setLocalCashSSOptions(cashAccountSSOptions);
+  }, [cashAccountSSOptions]);
+
+  useEffect(() => {
+    setLocalInvestmentSSOptions(investmentAccountSSOptions);
+  }, [investmentAccountSSOptions]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (toAccountId && productInvestmentAccountIds.has(toAccountId)) return;
+    if (mode === "edit" && toAccountId) return;
+    if (investmentAccountTouchedRef.current) return;
+    const fallbackAccountId = productInvestmentAccountList[0]?.id ?? "";
+    if (fallbackAccountId) setToAccountId(fallbackAccountId);
+  }, [mode, open, productInvestmentAccountIds, productInvestmentAccountList, toAccountId]);
+
+  useEffect(() => {
+    if (mode !== "create" || !open) return;
+    if (!isBuyLike(subtype) || isDividend(subtype)) return;
+    if (!selectedCashInstitutionId) return;
+    if (investmentAccountTouchedRef.current) return;
+    if (currentInvestmentAccountOption?.institutionId === selectedCashInstitutionId) return;
+    const sameInstitutionAccount = productInvestmentAccountList.find(
+      (account) => account.institutionId && account.institutionId === selectedCashInstitutionId,
+    );
+    if (!sameInstitutionAccount) return;
+    setToAccountId(sameInstitutionAccount.id);
+  }, [
+    currentInvestmentAccountOption?.institutionId,
+    mode,
+    open,
+    productInvestmentAccountList,
+    selectedCashInstitutionId,
+    subtype,
+  ]);
+
+  useEffect(() => {
+    if (productType !== "metal") return;
+    if (!metalTypeId && metalTypes?.[0]) applyMetalType(metalTypes[0].id);
+    if (!metalUnitId && metalUnits?.[0]) setMetalUnitId(metalUnits[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productType, metalTypes, metalUnits]);
 
   function selectCashAccount(id: string) {
     cashAccountTouchedRef.current = true;
@@ -294,11 +596,13 @@ export function InvestmentFormModal({
         onChange={selectCashAccount}
         options={visibleCashAccountOptions}
         placeholder={placeholder}
+        onCreateClick={() => setNestedEntityType("cash-account")}
+        createLabel="新增账户"
+        cycleAction={cashCycleAction}
         behavior={{
           hierarchy: "auto",
           search: "auto",
           clearable: true,
-          headerExtra: cashOwnerCycleButton,
         }}
       />
     );
@@ -309,17 +613,87 @@ export function InvestmentFormModal({
       <SmartSelect
         mode="single"
         value={toAccountId}
-        onChange={setToAccountId}
+        onChange={(id) => {
+          investmentAccountTouchedRef.current = true;
+          setToAccountId(id);
+        }}
         options={visibleInvestmentAccountOptions}
         placeholder={placeholder}
+        onCreateClick={() => setNestedEntityType("invest-account")}
+        createLabel="新增账户"
+        cycleAction={investmentCycleAction}
         behavior={{
           hierarchy: "auto",
           search: "auto",
           clearable: true,
-          headerExtra: investmentOwnerCycleButton,
         }}
       />
     );
+  }
+
+  function renderMetalFields() {
+    return (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-slate-600">贵金属品种</div>
+          <SmartSelect
+            mode="single"
+            value={metalTypeId}
+            onChange={applyMetalType}
+            options={metalTypeOptions}
+            placeholder="选择品种"
+            searchable
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-slate-600">单位</div>
+          <SmartSelect
+            mode="single"
+            value={metalUnitId}
+            onChange={setMetalUnitId}
+            options={metalUnitOptions}
+            placeholder="选择单位"
+            searchable
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function handleNestedAccountCreated(id: string, name: string, extra?: { kind?: string }) {
+    const kind = extra?.kind || (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
+    const nextOption: SmartSelectOption = {
+      id,
+      label: name,
+      subLabel: kindLabel(kind),
+    };
+    if (nestedEntityType === "cash-account") {
+      setLocalCashAccountList((prev) => [...prev, { id, label: name }]);
+      setLocalCashSSOptions((prev) => (prev ? [...prev, nextOption] : [nextOption]));
+      selectCashAccount(id);
+    } else if (nestedEntityType === "invest-account") {
+      setLocalInvestmentAccountList((prev) => [...prev, { id, label: name, kind, investProductType: productType }]);
+      setLocalInvestmentSSOptions((prev) => (prev ? [...prev, nextOption] : [nextOption]));
+      investmentAccountTouchedRef.current = true;
+      setToAccountId(id);
+    }
+    setNestedEntityType(null);
+  }
+
+  function applyMetalType(nextId: string) {
+    setMetalTypeId(nextId);
+    const selected = metalTypes?.find((item) => item.id === nextId);
+    setFundCode(selected?.id ?? "");
+    setFundName(selected?.name ?? "");
+    setHoldingSearch(selected ? `${selected.name} ${selected.code}` : "");
+  }
+
+  function selectedMetalType() {
+    return metalTypes?.find((item) => item.id === metalTypeId) ?? null;
+  }
+
+  function selectedMetalUnit() {
+    return metalUnits?.find((item) => item.id === metalUnitId) ?? null;
   }
 
   function enableEditAutoNav() {
@@ -351,6 +725,8 @@ export function InvestmentFormModal({
     setToAccountId(initToAccountId);
     setFundCode(initFundCode);
     setFundName(initFundName);
+    setMetalTypeId(initMetalTypeId);
+    setMetalUnitId(initMetalUnitId);
     setNav(initNav);
     setUnits(initUnits);
     setAmount(String(initAmount));
@@ -400,16 +776,6 @@ export function InvestmentFormModal({
     }
   }, [open, toAccountId, subtype]);
 
-  // Always re-verify fund name from authoritative source when modal opens with a fundCode
-  useEffect(() => {
-    if (!open || !fundCode || fundCode.length !== 6) return;
-    setNameLoading(true);
-    fetch(`/api/v1/fund/name?code=${encodeURIComponent(fundCode)}`)
-      .then(r => r.json())
-      .then(d => { if (d.ok && d.name) setFundName(d.name); })
-      .catch(() => {})
-      .finally(() => setNameLoading(false));
-  }, [open, fundCode]);
 
   // AI 面板触发新增记账时，自动带入识别到的基金信息。
   useEffect(() => {
@@ -485,12 +851,28 @@ export function InvestmentFormModal({
 
       requestIdRef.current = detail.requestId;
       resetForCreate(false, { preferDefaults: true });
+      const requestedProductType: ProductType = detail.defaultProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.defaultProductType)
+        ? detail.defaultProductType as ProductType
+        : fixedProductType;
+      setProductType(requestedProductType);
+      if (requestedProductType === "metal") {
+        const nextType = metalTypes?.[0] ?? null;
+        const nextUnit = metalUnits?.[0] ?? null;
+        if (nextType) {
+          setMetalTypeId(nextType.id);
+          setFundCode(nextType.id);
+          setFundName(nextType.name);
+          setHoldingSearch(`${nextType.name} ${nextType.code}`);
+        }
+        if (nextUnit) setMetalUnitId(nextUnit.id);
+      }
       if (detail.defaultDate) setApplyDate(detail.defaultDate);
       if (typeof detail.defaultAmount === "number" && detail.defaultAmount > 0) {
         setAmount(String(detail.defaultAmount));
       }
-      if (detail.defaultAccountId) setToAccountId(detail.defaultAccountId);
-      if (detail.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
+      if ("defaultAccountId" in detail) setToAccountId(detail.defaultAccountId ?? "");
+      if ("defaultCashAccountId" in detail) setCashAccountId(detail.defaultCashAccountId ?? "");
+      investmentAccountTouchedRef.current = false;
       setOpen(true);
     }
 
@@ -498,65 +880,124 @@ export function InvestmentFormModal({
     return () => window.removeEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
   }, [mode, today, defaults]);
 
-  // Listen for edit events (dispatched by EntryRowActions for fund/money investment records)
+  // Listen for edit events (dispatched by EntryRowActions for fund/money investment records).
   useEffect(() => {
     if (mode !== "edit") return;
 
-    function onInvestmentEdit(ev: Event) {
-      const detail = (ev as CustomEvent<{
-        requestId: string;
-        entryId: string;
-        type: string;
-        date: string;
-        confirmDate?: string | null;
-        amount: number;
-        note: string;
-        accountId?: string;
-        toAccountId?: string;
-        fundCode?: string;
-        fundName?: string;
-        fundSubtype?: string;
-        fundUnits?: number;
-        fundNav?: number;
-        fundFee?: number;
-        fundProductType?: string;
-        cashAccountId?: string;
-        fundArrivalDate?: string | null;
-        fundArrivalAmount?: number | null;
-      }>).detail;
-      if (!detail?.requestId || !detail.entryId) return;
-      if (detail.type !== "investment") return;
+    const toLinkedCandidate = (value: Partial<LinkedCandidateEntry> & { entryId?: string }): RefundLinkableEntry => ({
+      id: value.id ?? value.entryId ?? "",
+      date: value.date ?? "",
+      createdAt: value.createdAt ?? null,
+      fundConfirmDate: value.fundConfirmDate ?? null,
+      fundArrivalDate: value.fundArrivalDate ?? null,
+      fundCode: value.fundCode ?? "",
+      fundSubtype: value.fundSubtype ?? "",
+      fundUnits: value.fundUnits ?? null,
+      source: value.source ?? null,
+      accountId: value.accountId ?? null,
+      toAccountId: value.toAccountId ?? null,
+      amount: Number(value.amount) || 0,
+      fundSourceEntryId: value.fundSourceEntryId ?? null,
+    });
 
+    const detailToEntry = (detail: InvestmentEditDetail): InvestmentEntry => ({
+      id: detail.entryId,
+      transactionId: detail.entryId,
+      date: detail.date || today,
+      confirmDate: detail.confirmDate ?? undefined,
+      amount: Number(detail.amount) || 0,
+      note: detail.note ?? null,
+      memo: detail.note ?? null,
+      fundCode: detail.fundCode ?? null,
+      fundName: detail.fundName ?? null,
+      fundUnits: detail.fundUnits ?? null,
+      displayFundUnits: detail.displayFundUnits ?? null,
+      fundNav: detail.fundNav ?? null,
+      fundFee: detail.fundFee ?? null,
+      fundProductType: detail.fundProductType ?? null,
+      fundSubtype: detail.fundSubtype ?? null,
+      fundSourceEntryId: detail.fundSourceEntryId ?? null,
+      metalTypeId: detail.metalTypeId ?? null,
+      metalTypeName: detail.metalTypeName ?? null,
+      metalUnitId: detail.metalUnitId ?? null,
+      metalUnitName: detail.metalUnitName ?? null,
+      source: detail.source ?? null,
+      accountId: detail.accountId ?? null,
+      toAccountId: detail.toAccountId ?? null,
+      cashAccountId: detail.cashAccountId ?? null,
+      fundArrivalDate: detail.fundArrivalDate ?? null,
+      fundArrivalAmount: detail.fundArrivalAmount ?? null,
+    });
+
+    const loadInvestmentDetail = async (entryId: string, requestId: string): Promise<InvestmentEditDetail | null> => {
+      const res = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(entryId)}`);
+      const json = await res.json();
+      if (!json?.ok || !json.data) return null;
+      const data = json.data;
+      return {
+        ...data,
+        requestId,
+        entryId: data.id ?? entryId,
+        confirmDate: data.fundConfirmDate ?? data.confirmDate ?? null,
+        note: data.note ?? "",
+        amount: Number(data.amount) || 0,
+        linkedCandidateEntries: Array.isArray(data.linkedCandidateEntries) ? data.linkedCandidateEntries : undefined,
+      };
+    };
+
+    const applyInvestmentDetail = (detail: InvestmentEditDetail, linkedRefund?: RefundLinkableEntry | null) => {
       requestIdRef.current = detail.requestId;
       setEditEntryId(detail.entryId);
-      if (detail.fundProductType && ["fund", "money", "wealth", "deposit"].includes(detail.fundProductType)) {
+      setEventEditEntry(detailToEntry(detail));
+      setEventLinkedEntries(detail.linkedCandidateEntries ?? null);
+      setBuyResultStatus(linkedRefund ? "refund" : "normal");
+      setLinkedRefundEntryId(linkedRefund?.id ?? null);
+      if (detail.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.fundProductType)) {
         setProductType(detail.fundProductType as ProductType);
       }
 
-      // Fill form from payload
       editAutoNavEnabledRef.current = false;
       setApplyDate(detail.date || today);
       setConfirmDate(detail.confirmDate ?? "");
-      setArrivalDate(detail.fundArrivalDate ?? "");
-      setArrivalAmount(detail.fundArrivalAmount != null ? String(detail.fundArrivalAmount) : "");
+      setArrivalDate(linkedRefund ? normalizeYmd(linkedRefund.fundArrivalDate ?? linkedRefund.date) : detail.fundArrivalDate ?? "");
+      setArrivalAmount(linkedRefund?.amount != null ? String(Math.abs(Number(linkedRefund.amount))) : "");
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setMemo(detail.note ?? "");
-      const isRedeemEntry = detail.fundSubtype === "redeem" || detail.fundSubtype === "switch_out";
+      const isRedeemEntry =
+        detail.fundSubtype === "redeem" ||
+        detail.fundSubtype === "switch_out";
       const nextFundAccountId = isRedeemEntry ? detail.accountId : detail.toAccountId;
       const nextCashAccountId = detail.cashAccountId ?? (isRedeemEntry ? detail.toAccountId : detail.accountId);
       setCashAccountId(nextCashAccountId ?? "");
+      investmentAccountTouchedRef.current = true;
       setToAccountId(nextFundAccountId ?? "");
       cashAccountTouchedRef.current = true;
       cashAccountAutoRef.current = false;
       setFundCode(detail.fundCode ?? "");
       setFundName(detail.fundName ?? "");
+      setMetalTypeId(detail.metalTypeId ?? (detail.fundProductType === "metal" ? detail.fundCode ?? "" : ""));
+      setMetalUnitId(detail.metalUnitId ?? "");
       setHoldingSearch(detail.fundCode ? `${detail.fundCode} ${detail.fundName ?? ""}` : "");
       if (detail.fundSubtype) {
-        const st = detail.fundSubtype === "buy_failed" ? "buy" : detail.fundSubtype as FundSubtype;
+        const st = detail.fundSubtype === "buy_failed" && detail.source === "regular_invest_refund"
+          ? "buy"
+          : detail.fundSubtype as FundSubtype;
         if (SUBTYPE_LABELS[st as FundSubtype]) setSubtype(st as FundSubtype);
       }
-      if (detail.fundUnits != null) setUnits(formatUnits(Number(detail.fundUnits)));
+      const linkedRefundAmount = linkedRefund ? Math.abs(Number(linkedRefund.amount) || 0) : 0;
+      const detailAmount = Math.max(0, Math.abs(Number(detail.amount) || 0));
+      const detailNav = Number(detail.fundNav) || 0;
+      const detailFee = Math.max(0, Number(detail.fundFee) || 0);
+      const calculatedRefundUnits =
+        detail.fundSubtype === "buy" && linkedRefundAmount > 0 && detailNav > 0
+          ? Math.max(0, detailAmount - linkedRefundAmount - detailFee) / detailNav
+          : null;
+      const displayUnits =
+        calculatedRefundUnits != null
+          ? calculatedRefundUnits
+          : detail.displayFundUnits ?? detail.fundUnits;
+      if (displayUnits != null) setUnits(formatUnits(Number(displayUnits)));
       if (detail.fundNav != null) setNav(String(detail.fundNav));
       if (detail.fundFee != null) setFee(String(detail.fundFee));
       if (detail.fundName) setFundName(detail.fundName);
@@ -568,6 +1009,44 @@ export function InvestmentFormModal({
       navEditedRef.current = false;
       suppressFeeAutoCalcRef.current = true;
       setOpen(true);
+    };
+
+    async function onInvestmentEdit(ev: Event) {
+      const detail = (ev as CustomEvent<InvestmentEditDetail>).detail;
+      if (!detail?.requestId || !detail.entryId) return;
+      if (detail.type !== "investment") return;
+
+      let currentDetail = detail;
+      try {
+        const freshDetail = await loadInvestmentDetail(detail.entryId, detail.requestId);
+        if (freshDetail) currentDetail = freshDetail;
+      } catch (err) {
+        console.error("Load investment detail failed:", err);
+      }
+
+      const candidates: RefundLinkableEntry[] = (currentDetail.linkedCandidateEntries ?? detail.linkedCandidateEntries ?? []).map(toLinkedCandidate);
+      const target = toLinkedCandidate(currentDetail);
+      const linked = findLinkedEntries(target, candidates);
+      const isFailedRefund =
+        currentDetail.fundSubtype === "buy_failed" &&
+        currentDetail.source === "regular_invest_refund";
+
+      if (isFailedRefund) {
+        const linkedBuy = linked.linkedBuys[0];
+        if (linkedBuy?.id) {
+          try {
+            const buyDetail = await loadInvestmentDetail(linkedBuy.id, detail.requestId);
+            if (buyDetail) {
+              applyInvestmentDetail(buyDetail, target);
+              return;
+            }
+          } catch (err) {
+            console.error("Load linked buy for refund failed:", err);
+          }
+        }
+      }
+
+      applyInvestmentDetail(currentDetail, currentDetail.fundSubtype === "buy" ? linked.linkedRefunds[0] ?? null : null);
     }
 
     window.addEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
@@ -613,9 +1092,15 @@ export function InvestmentFormModal({
     }));
   }, [holdings, holdingsAsOfDate]);
 
+  function findFundNameFromHoldings(code: string) {
+    const target = code.trim();
+    if (!target) return "";
+    const match = (effectiveHoldings ?? holdings ?? []).find((item) => item.fundCode === target);
+    return match?.name?.trim() ?? "";
+  }
+
   const subtypeGroups = PRODUCT_SUBTYPES[productType];
   const allSubtypes = subtypeGroups.flat();
-
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
       // 切到赎回时清空买入金额和费用，并优先带入当前持仓份额。
@@ -655,6 +1140,14 @@ export function InvestmentFormModal({
       }
     }
     setSubtype(nextSubtype);
+  }
+
+  function selectSubtypeOption(nextSubtype: FundSubtype) {
+    if (nextSubtype !== "buy") {
+      setBuyResultStatus("normal");
+      setLinkedRefundEntryId(null);
+    }
+    selectSubtype(nextSubtype);
   }
 
   useEffect(() => {
@@ -722,21 +1215,6 @@ export function InvestmentFormModal({
     return () => controller.abort();
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype]);
 
-  // 编辑模式打开后只刷新确认天数；手续费金额以当前记录为准，不重读费率库。
-  useEffect(() => {
-    if (mode !== "edit" || !open || !toAccountId || isDividend(subtype)) return;
-    if (fundCodeKey) {
-      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}`)
-        .then(r => r.json())
-        .then(d => { if (!confirmDaysEdited && d.ok && d.days != null) { setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-        .catch(() => {});
-    } else {
-      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}`)
-        .then(r => r.json())
-        .then(d => { if (!confirmDaysEdited && d.ok && d.days != null) { setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-        .catch(() => {});
-    }
-  }, [mode, open, toAccountId, fundCodeKey, subtype]);
 
   const redeemGrossAmount = useMemo(() => {
     const navN = p(nav);
@@ -744,20 +1222,42 @@ export function InvestmentFormModal({
     return isRedeemLike(subtype) && navN > 0 && unitsN > 0 ? navN * unitsN : 0;
   }, [nav, units, subtype]);
 
+  const confirmedBuyAmount = useMemo(() => {
+    if (!isBuyLike(subtype)) return p(amount);
+    const buyAmount = Math.max(0, p(amount));
+    const refundAmount = subtype === "buy" && buyResultStatus === "refund"
+      ? Math.min(buyAmount, Math.max(0, p(arrivalAmount)))
+      : 0;
+    return Math.max(0, buyAmount - refundAmount);
+  }, [amount, arrivalAmount, buyResultStatus, subtype]);
+
   const computedFee = useMemo(() => {
     const amountN = p(amount);
     const rateN = p(feeRate);
-    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0 ? redeemGrossAmount : amountN;
+    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0
+      ? redeemGrossAmount
+      : (subtype === "buy" && buyResultStatus === "refund" ? confirmedBuyAmount : amountN);
     if (baseAmount > 0 && rateN > 0 && showFeeFor(subtype, productType)) return (baseAmount * rateN / 100).toFixed(2);
     return "";
-  }, [amount, feeRate, subtype, productType, redeemGrossAmount]);
+  }, [amount, feeRate, subtype, productType, redeemGrossAmount, buyResultStatus, confirmedBuyAmount]);
+  const redeemPanelMode = isRedeemLike(subtype);
+
+  useEffect(() => {
+    if (buyResultStatus !== "refund" || subtype !== "buy") return;
+    if (linkedRefundEntryId) return;
+    if (confirmDate && !arrivalDateEditedRef.current) {
+      const nextArrivalDate = arrivalDays > 0 ? addDays(confirmDate, arrivalDays) : confirmDate;
+      if (arrivalDate !== nextArrivalDate) setArrivalDate(nextArrivalDate);
+    }
+  }, [buyResultStatus, subtype, confirmDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
 
   const computedUnits = useMemo(() => {
     const navN = p(nav);
     const amountN = p(amount);
+    const effectiveAmountN = isBuyLike(subtype) ? confirmedBuyAmount : amountN;
     const effectiveFee = p(fee) > 0 ? p(fee) : (!suppressFeeAutoCalcRef.current && computedFee ? p(computedFee) : 0);
     if (navN > 0 && amountN > 0 && isBuyLike(subtype)) {
-      const principal = amountN - effectiveFee;
+      const principal = effectiveAmountN - effectiveFee;
       return principal > 0 ? formatUnits(principal / navN) : "";
     }
     if (isRedeemLike(subtype) && defaults?.fundUnits && defaults.fundUnits > 0) {
@@ -767,18 +1267,31 @@ export function InvestmentFormModal({
       return formatUnits(amountN / navN);
     }
     return "";
-  }, [nav, amount, fee, computedFee, subtype, defaults?.fundUnits]);
+  }, [nav, amount, confirmedBuyAmount, fee, computedFee, subtype, defaults?.fundUnits]);
 
-  function calculateBuyUnits(nextAmountRaw: string, nextFeeRaw: string) {
+  function calculateBuyUnits(
+    nextAmountRaw: string,
+    nextFeeRaw: string,
+    nextRefundRaw = arrivalAmount,
+    nextNavRaw = nav,
+    refundEnabled = buyResultStatus === "refund",
+    force = false,
+  ) {
     suppressFeeAutoCalcRef.current = false;
-    if (!isBuyLike(subtype) || unitsEditedRef.current) return;
-    const navN = p(nav);
+    if (!isBuyLike(subtype) || (!force && unitsEditedRef.current)) return;
+    const navN = p(nextNavRaw);
     const amountN = p(nextAmountRaw);
-    const feeN = p(nextFeeRaw);
+    const refundAmountN = refundEnabled ? Math.min(amountN, Math.max(0, p(nextRefundRaw))) : 0;
+    const effectiveAmountN = Math.max(0, amountN - refundAmountN);
+    const feeInput = p(nextFeeRaw);
+    const rateN = p(feeRate);
+    const feeN = feeInput > 0
+      ? feeInput
+      : (rateN > 0 && showFeeFor(subtype, productType) ? effectiveAmountN * rateN / 100 : 0);
     if (navN <= 0 || amountN <= 0) return;
-    const principal = amountN - feeN;
+    const principal = effectiveAmountN - feeN;
     const nextUnits = principal > 0 ? formatUnits(principal / navN) : "";
-    if (nextUnits) setUnits(nextUnits);
+    setUnits(nextUnits);
   }
 
   function calculateUnitsAfterFeeChange(nextFeeRaw: string) {
@@ -789,11 +1302,18 @@ export function InvestmentFormModal({
     calculateBuyUnits(nextAmountRaw, fee);
   }
 
+  function calculateUnitsAfterRefundChange(nextRefundRaw: string) {
+    unitsEditedRef.current = false;
+    calculateBuyUnits(amount, fee, nextRefundRaw, nav, p(nextRefundRaw) > 0 || buyResultStatus === "refund", true);
+  }
+
   function calculateFeeFromRate(nextRateRaw: string) {
     suppressFeeAutoCalcRef.current = false;
     setFeeEdited(false);
     const rate = p(nextRateRaw) / 100;
-    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
+    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0
+      ? redeemGrossAmount
+      : (subtype === "buy" && buyResultStatus === "refund" ? confirmedBuyAmount : p(amount));
     const nextFee = baseAmount > 0 && rate > 0 ? (baseAmount * rate).toFixed(2) : "";
     const feeChanged = p(nextFee) !== p(fee);
     setFee(nextFee);
@@ -855,6 +1375,7 @@ export function InvestmentFormModal({
   useEffect(() => {
     const code = fundCode.trim();
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
+    if (productType === "metal") return;
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     // 防抖获取净值，避免日期和代码联动时连续请求。
     if (navDebounce.current) clearTimeout(navDebounce.current);
@@ -868,6 +1389,7 @@ export function InvestmentFormModal({
           if (d.ok && d.nav) {
             setNavFromApi(String(d.nav));
             setNavActualDate(d.date && d.date !== confirmDate ? d.date : null);
+            calculateBuyUnits(amount, fee, arrivalAmount, String(d.nav));
           }
         })
         .catch(() => {})
@@ -902,9 +1424,13 @@ export function InvestmentFormModal({
     }
 
     if (!keepSubtype) {
+      setProductType(fixedProductType);
       setSubtype("buy");
       setCashAccountId("");
+      investmentAccountTouchedRef.current = false;
       setToAccountId(defaultAccountId);
+      setMetalTypeId("");
+      setMetalUnitId("");
       const nextFundCode = urlFundCode ? urlFundCode : (defaults?.fundCode ?? "");
       const nextFundName = urlFundCode ? (defaults?.fundName ?? urlFundCode) : (defaults?.fundName ?? "");
       setFundCode(nextFundCode);
@@ -948,13 +1474,21 @@ export function InvestmentFormModal({
     const code = fundCode.trim();
     if (!code || code.length !== 6) return;
 
-    setNameLoading(true);
-    try {
-      const res = await fetch(`/api/v1/fund/name?code=${encodeURIComponent(code)}`);
-      const data = await res.json();
-      if (data.ok && data.name) setFundName(data.name);
-    } catch {} finally {
-      setNameLoading(false);
+    const unchangedEditCode = mode === "edit" && code === initFundCode && !!initFundName;
+    if (unchangedEditCode) return;
+
+    const holdingName = findFundNameFromHoldings(code);
+    if (holdingName) {
+      setFundName(holdingName);
+    } else {
+      setNameLoading(true);
+      try {
+        const res = await fetch(`/api/v1/fund/name?code=${encodeURIComponent(code)}`);
+        const data = await res.json();
+        if (data.ok && data.name) setFundName(data.name);
+      } catch {} finally {
+        setNameLoading(false);
+      }
     }
 
     fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
@@ -971,6 +1505,7 @@ export function InvestmentFormModal({
 
   async function fetchNav() {
     if (!fundCode) return;
+    if (productType === "metal") return;
     const fetchDate = confirmDate || applyDate;
     setNavLoading(true);
     try {
@@ -983,6 +1518,7 @@ export function InvestmentFormModal({
         const amountN = p(amount);
         const feeN = p(fee);
         const effectiveFee = feeN > 0 ? feeN : 0;
+        calculateBuyUnits(amount, fee, arrivalAmount, String(data.nav));
         if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
       } else {
         window.alert(data.error ?? `净值获取失败 code=${fundCode},date=${fetchDate})`);
@@ -1007,10 +1543,28 @@ export function InvestmentFormModal({
     }
     if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert("确认日期不能早于申请日期"); return; }
 
-    const rawFinalUnits = p(units) > 0 ? p(units) : (mode === "create" && computedUnits ? p(computedUnits) : 0);
+    const shouldUseConfirmedBuyUnits =
+      subtype === "buy" &&
+      buyResultStatus === "refund" &&
+      p(arrivalAmount) > 0;
+    const rawFinalUnits = shouldUseConfirmedBuyUnits
+      ? (computedUnits ? p(computedUnits) : 0)
+      : (p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0));
     const finalUnits = rawFinalUnits > 0 ? roundFundUnits(rawFinalUnits, fundUnitsDecimals) : 0;
     const finalFee = p(fee);
     const finalFeeRate = p(feeRate);
+    const currentMetalType = productType === "metal" ? selectedMetalType() : null;
+    const currentMetalUnit = productType === "metal" ? selectedMetalUnit() : null;
+    if (productType === "metal" && !currentMetalType) {
+      window.alert("请选择贵金属品种");
+      return;
+    }
+    if (productType === "metal" && !currentMetalUnit) {
+      window.alert("请选择贵金属单位");
+      return;
+    }
+    const finalFundCode = productType === "metal" ? "" : fundCode.trim();
+    const finalFundName = productType === "metal" ? "" : fundName.trim();
 
     // 分红再投资：金额 = 份额 * 净值。
     const effectiveAmount = subtype === "dividend_reinvest" && !(finalAmount > 0) && finalUnits > 0 && p(nav) > 0
@@ -1025,14 +1579,14 @@ export function InvestmentFormModal({
         body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), rate: finalFeeRate, feeType: isRedeemLike(subtype) ? "redeem" : "buy", effectiveDate: confirmDate || applyDate }),
       }).catch(() => {});
     }
-    if (isBuyLike(subtype) && confirmDays >= 0) {
+    if (productType !== "metal" && isBuyLike(subtype) && confirmDays >= 0) {
       fetch("/api/v1/fund/confirm-days", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim() || undefined, days: confirmDays, arrivalDays: mode === "create" && arrivalDays > 3 ? undefined : arrivalDays }),
       }).catch(() => {});
     }
-    if (fundCode.trim() && isRedeemLike(subtype)) {
+    if (productType !== "metal" && fundCode.trim() && isRedeemLike(subtype)) {
       fetch("/api/v1/fund/confirm-days", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1041,22 +1595,44 @@ export function InvestmentFormModal({
     }
 
     const formData = new FormData();
-    // 现金红利使用到账日期作为记账日期。
+    // 现金红利使用到账日期作为记账日期；买入退回由买入表单生成一条独立退回流水。
     const effectiveDate = isDividend(subtype) ? (arrivalDate || applyDate) : applyDate;
+    const submitSubtype: FundSubtype = subtype;
+    const submitEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
+    const submitSource = mode === "edit" ? (submitEntry?.source ?? "") : "";
 
-    if (mode === "edit" && (entry || editEntryId)) {
+    if (mode === "edit" && (submitEntry || editEntryId)) {
       formData.set("intent", "editInvestment");
-      formData.set("entryId", entry?.id || editEntryId || "");
-      formData.set("transactionId", entry?.transactionId || "");
-      formData.set("subtype", subtype);
+      formData.set("entryId", editEntryId || submitEntry?.id || "");
+      formData.set("transactionId", submitEntry?.transactionId || editEntryId || "");
+      formData.set("subtype", submitSubtype);
+      if (submitSource && !(submitSubtype === "buy" && submitSource === "regular_invest_refund")) formData.set("source", submitSource);
+      formData.set("buyResultStatus", submitSubtype === "buy" ? buyResultStatus : "normal");
+      if (linkedRefundEntryId) formData.set("linkedRefundEntryId", linkedRefundEntryId);
       formData.set("date", effectiveDate);
       formData.set("amount", String(effectiveAmount));
       formData.set("memo", memo.trim());
-      formData.set("fundCode", fundCode.trim());
-      formData.set("fundName", fundName.trim());
+      formData.set("fundCode", finalFundCode);
+      formData.set("fundName", finalFundName);
       formData.set("fundProductType", productType);
+      if (productType === "metal" && currentMetalType && currentMetalUnit) {
+        formData.set("metalTypeId", currentMetalType.id);
+        formData.set("metalTypeName", currentMetalType.name);
+        formData.set("metalUnitId", currentMetalUnit.id);
+        formData.set("metalUnitName", currentMetalUnit.symbol ? `${currentMetalUnit.name}(${currentMetalUnit.symbol})` : currentMetalUnit.name);
+        formData.set("metalQuantity", finalUnits > 0 ? String(finalUnits) : "");
+        formData.set("metalUnitPrice", nav.trim());
+        formData.set("metalFee", fee.trim());
+      }
       if (!isDividend(subtype) || subtype === "dividend_reinvest") {
-        if (units.trim() || subtype === "dividend_reinvest") formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
+        const shouldSubmitFundUnits =
+          subtype === "dividend_reinvest" ||
+          unitsEditedRef.current ||
+          amountEditedRef.current ||
+          navEditedRef.current ||
+          feeEdited ||
+          (subtype === "buy" && buyResultStatus === "refund");
+        if (shouldSubmitFundUnits) formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
       }
       if (!isDividend(subtype)) {
         formData.set("fundNav", nav.trim() ? String(p(nav)) : "");
@@ -1071,19 +1647,34 @@ export function InvestmentFormModal({
       } else {
         formData.set("fundArrivalDate", arrivalDate || "");
         formData.set("fundArrivalAmount", isRedeemLike(subtype) && arrivalAmount.trim() ? String(p(arrivalAmount)) : "");
+        if (subtype === "buy" && buyResultStatus === "refund") {
+          formData.set("refundAmount", arrivalAmount.trim() ? String(p(arrivalAmount)) : "");
+          formData.set("refundDate", arrivalDate || confirmDate || effectiveDate);
+        }
       }
       if (feeRateEdited && !isDividend(subtype)) formData.set("feeRate", feeRate.trim() ? feeRate : "");
       formData.set("confirmDays", isDividend(subtype) ? "0" : String(confirmDays));
     } else {
       formData.set("type", "investment");
       formData.set("subtype", subtype);
+      formData.set("buyResultStatus", subtype === "buy" ? buyResultStatus : "normal");
       formData.set("accountId", toAccountId);
       if (cashAccountId) formData.set("cashAccountId", cashAccountId);
       formData.set("date", effectiveDate);
       formData.set("amount", String(effectiveAmount));
-      formData.set("note", memo.trim() || fundName.trim() || fundCode.trim());
+      formData.set("note", memo.trim() || finalFundName || finalFundCode);
       formData.set("fundProductType", productType);
-      if (fundCode.trim()) formData.set("fundCode", fundCode.trim());
+      if (finalFundCode) formData.set("fundCode", finalFundCode);
+      if (finalFundName) formData.set("fundName", finalFundName);
+      if (productType === "metal" && currentMetalType && currentMetalUnit) {
+        formData.set("metalTypeId", currentMetalType.id);
+        formData.set("metalTypeName", currentMetalType.name);
+        formData.set("metalUnitId", currentMetalUnit.id);
+        formData.set("metalUnitName", currentMetalUnit.symbol ? `${currentMetalUnit.name}(${currentMetalUnit.symbol})` : currentMetalUnit.name);
+        formData.set("metalQuantity", finalUnits > 0 ? String(finalUnits) : "");
+        formData.set("metalUnitPrice", nav.trim());
+        formData.set("metalFee", fee.trim());
+      }
       if (!isDividend(subtype) || subtype === "dividend_reinvest") {
         if (finalUnits > 0) formData.set("fundUnits", String(finalUnits));
       }
@@ -1096,7 +1687,11 @@ export function InvestmentFormModal({
         if (arrivalDate) formData.set("fundArrivalDate", arrivalDate);
       } else if (isRedeemLike(subtype)) {
         if (arrivalDate) formData.set("fundArrivalDate", arrivalDate);
-        if (p(arrivalAmount) > 0) formData.set("fundArrivalAmount", String(p(arrivalAmount)));
+        if (isRedeemLike(subtype) && p(arrivalAmount) > 0) formData.set("fundArrivalAmount", String(p(arrivalAmount)));
+      } else if (subtype === "buy" && buyResultStatus === "refund") {
+        formData.set("fundArrivalDate", arrivalDate || confirmDate || effectiveDate);
+        formData.set("refundAmount", p(arrivalAmount) > 0 ? String(p(arrivalAmount)) : "");
+        formData.set("refundDate", arrivalDate || confirmDate || effectiveDate);
       }
       formData.set("redeemCostDays", String(redeemCostDays));
       formData.set('arrivalDays', String(arrivalDays));
@@ -1147,7 +1742,9 @@ export function InvestmentFormModal({
                   if (navN > 0 && amountN > 0) {
                     const feeN = p(fee);
                     const effectiveFee = feeEdited ? feeN : (feeN > 0 ? feeN : (amountN * (p(feeRate) / 100)));
-                    setUnits(formatUnits((amountN - effectiveFee) / navN));
+                    const refundAmountN = buyResultStatus === "refund" ? Math.max(0, p(arrivalAmount)) : 0;
+                    const principal = Math.max(0, amountN - refundAmountN) - effectiveFee;
+                    setUnits(principal > 0 ? formatUnits(principal / navN) : "");
                   }
                 }
               })
@@ -1155,13 +1752,15 @@ export function InvestmentFormModal({
           }
         }
         requestAnimationFrame(() => {
-          window.dispatchEvent(new Event("mmh:fund:refresh"));
+          dispatchFinanceDataChanged({ reason: "investment-save" });
+          setTimeout(() => router.refresh(), 120);
         });
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
         requestAnimationFrame(() => {
-          window.dispatchEvent(new Event("mmh:fund:refresh"));
+          dispatchFinanceDataChanged({ reason: "investment-save" });
+          setTimeout(() => router.refresh(), 120);
         });
       }
     } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
@@ -1181,7 +1780,8 @@ export function InvestmentFormModal({
       const data = await res.json();
       if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
       requestAnimationFrame(() => {
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "investment-delete", deletedEntryIds: [entry.id] });
+        setTimeout(() => router.refresh(), 120);
       });
     } catch {
       window.alert("删除失败");
@@ -1190,10 +1790,18 @@ export function InvestmentFormModal({
     }
   }
 
-  const showCode = productType === "fund" || productType === "money";
+  const showCode = productType === "fund" || productType === "money" || productType === "metal";
   const showFee = showFeeFor(subtype, productType);
+  const productShortLabel = productType === "metal" ? "贵金属" : "基金";
+  const productAccountLabel = `${productShortLabel}账户`;
+  const productCodeLabel = `${productShortLabel}代码`;
+  const productNameLabel = `${productShortLabel}名称`;
+  const productCodePlaceholder = productType === "metal" ? "代码/品种" : "6位代码";
+  const productNameReadOnly = productType !== "metal";
 
-  const title = mode === "edit" ? "编辑基金记录" : "投资记账";
+  const title = mode === "edit"
+    ? (`编辑${productShortLabel}记录`)
+    : "投资记账";
   useCloseOnNavigation(open, () => {
     setOpen(false);
     if (mode === "create") resetForCreate();
@@ -1226,7 +1834,7 @@ export function InvestmentFormModal({
 
       {open && typeof document !== "undefined" ? createPortal(
         <div className="app-modal-backdrop z-[1000]">
-          <div className="app-modal-panel max-w-md">
+          <div className="app-modal-panel max-w-2xl">
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
                   {title}
@@ -1242,12 +1850,16 @@ export function InvestmentFormModal({
                 <div className="space-y-1.5">
                   {PRODUCT_SUBTYPES[productType].map((group, gi) => (
                     <div key={gi} className="flex gap-1.5">
-                      {group.map((s) => (
-                        <button key={s} type="button" onClick={() => selectSubtype(s)}
-                          className={`segment-button h-8 flex-1 text-xs ${subtype === s ? "segment-button-active font-medium" : ""}`}>
-                          {productType === "deposit" ? (DEPOSIT_LABELS[s as FundSubtype] ?? SUBTYPE_LABELS[s as FundSubtype]) : SUBTYPE_LABELS[s as FundSubtype]}
-                        </button>
-                      ))}
+                      {group.map((s) => {
+                        const isActive = subtype === s;
+                        return (
+                          <button key={s} type="button" onClick={() => selectSubtypeOption(s)}
+                            className={`segment-button h-8 flex-1 text-xs ${isActive ? "segment-button-active font-medium" : ""}`}>
+                            {productType === "deposit" ? (DEPOSIT_LABELS[s as FundSubtype] ?? SUBTYPE_LABELS[s as FundSubtype]) : SUBTYPE_LABELS[s as FundSubtype]}
+                          </button>
+                        );
+                      })}
+
                     </div>
                   ))}
                 </div>
@@ -1257,8 +1869,8 @@ export function InvestmentFormModal({
                 <>
                   {subtype === "dividend_reinvest" && investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">基金账户</div>
-                      {renderInvestmentAccountSelect("选择基金账户")}
+                      <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
+                      {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
                     </div>
                   )}
 
@@ -1275,11 +1887,11 @@ export function InvestmentFormModal({
                           <div className="text-xs font-medium text-slate-600">到账日期</div>
                         <DateStepper value={arrivalDate} onChange={setArrivalDate} />
                       </div>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {investmentAccounts && investmentAccounts.length > 0 && (
                           <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">基金账户</div>
-                            {renderInvestmentAccountSelect("选择基金账户")}
+                            <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
+                            {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
                           </div>
                         )}
                         {cashAccounts && cashAccounts.length > 0 && (
@@ -1292,7 +1904,7 @@ export function InvestmentFormModal({
                     </>
                   )}
 
-                  {showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
+                  {productType === "metal" ? renderMetalFields() : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
                       fundCode={fundCode}
@@ -1305,23 +1917,28 @@ export function InvestmentFormModal({
                   ) : showCode ? (
                     <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">基金代码</div>
+                        <div className="text-xs font-medium text-slate-600">{productCodeLabel}</div>
                         <input
                           value={fundCode}
                           onChange={(e) => changeFundCode(e.target.value)}
                           onBlur={handleFundCodeBlur}
-                          placeholder="6位代码"
+                          placeholder={productCodePlaceholder}
                           className="form-input"
                         />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
-                          基金名称
+                          {productNameLabel}
                           {nameLoading ? (
                             <span className="ml-1 font-normal text-slate-400">获取中...</span>
                           ) : null}
                         </div>
-                        <input value={fundName} readOnly className="form-input" />
+                        <input
+                          value={fundName}
+                          onChange={(e) => setFundName(e.target.value)}
+                          readOnly={productNameReadOnly}
+                          className="form-input"
+                        />
                       </div>
                     </div>
                   ) : null}
@@ -1419,22 +2036,22 @@ export function InvestmentFormModal({
                 )}
               </div>
 
-              {isRedeemLike(subtype) ? (
+              {redeemPanelMode ? (
                 <>
                   {investmentAccounts && investmentAccounts.length > 0 && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">基金账户</div>
-                          {renderInvestmentAccountSelect("选择基金账户")}
+                          <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
+                          {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">赎回到账账户</div>
+                        <div className="text-xs font-medium text-slate-600">{"赎回到账账户"}</div>
                         {renderCashAccountSelect("请选择资金账户")}
                       </div>
                     </div>
                   )}
 
-                  {showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
+                  {productType === "metal" ? renderMetalFields() : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
                       fundCode={fundCode}
@@ -1451,23 +2068,28 @@ export function InvestmentFormModal({
                   ) : showCode ? (
                     <div className="grid grid-cols-[1fr_2fr] gap-2 items-end">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">基金代码</div>
+                        <div className="text-xs font-medium text-slate-600">{productCodeLabel}</div>
                         <input
                           value={fundCode}
                           onChange={(e) => changeFundCode(e.target.value)}
                           onBlur={handleFundCodeBlur}
-                          placeholder="6位代码"
+                          placeholder={productCodePlaceholder}
                           className="form-input"
                         />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
-                          基金名称
+                          {productNameLabel}
                           {nameLoading ? (
                             <span className="ml-1 font-normal text-slate-400">获取中...</span>
                           ) : null}
                         </div>
-                        <input value={fundName} readOnly className="form-input" />
+                        <input
+                          value={fundName}
+                          onChange={(e) => setFundName(e.target.value)}
+                          readOnly={productNameReadOnly}
+                          className="form-input"
+                        />
                       </div>
                     </div>
                   ) : null}
@@ -1480,54 +2102,54 @@ export function InvestmentFormModal({
                   )}
 
                   <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">份额</div>
-                      <CalcInput
-                        value={units}
-                        onChange={(v) => {
-                          unitsEditedRef.current = true;
-                          amountEditedRef.current = false;
-                          setUnits(v);
-                        }}
-                        placeholder="0.00"
-                        label="份额"
-                        precision={3}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={fetchNav}
-                      disabled={navLoading || !fundCode}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                      title="获取净值"
-                    >
-                      <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
-                    </button>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">
-                        净值
-                        {navLoading ? (
-                          <span className="ml-1 font-normal text-slate-400">获取中...</span>
-                        ) : null}
-                        {navActualDate && !navLoading ? (
-                          <span className="ml-1 font-normal text-amber-600">({navActualDate}净值)</span>
-                        ) : null}
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">份额</div>
+                        <CalcInput
+                          value={units}
+                          onChange={(v) => {
+                            unitsEditedRef.current = true;
+                            amountEditedRef.current = false;
+                            setUnits(v);
+                          }}
+                          placeholder="0.00"
+                          label="份额"
+                          precision={3}
+                        />
                       </div>
-                      <input
-                        inputMode="decimal"
-                        value={nav}
-                        onChange={(e) => {
-                          setNav(e.target.value);
-                          navEditedRef.current = true;
-                        }}
-                        placeholder="1.2345"
-                        style={{ caretColor: "var(--foreground)" }}
-                        className="form-input caret-slate-800"
-                      />
+                      <button
+                        type="button"
+                        onClick={fetchNav}
+                        disabled={navLoading || !fundCode || productType === "metal"}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
+                        title={productType === "metal" ? "贵金属单价请手动填写" : "获取净值"}
+                      >
+                        <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
+                      </button>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">
+                          {productType === "metal" ? "单价" : "净值"}
+                          {navLoading ? (
+                            <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                          ) : null}
+                          {navActualDate && !navLoading ? (
+                            <span className="ml-1 font-normal text-amber-600">({navActualDate}{productType === "metal" ? "单价" : "净值"})</span>
+                          ) : null}
+                        </div>
+                        <input
+                          inputMode="decimal"
+                          value={nav}
+                          onChange={(e) => {
+                            setNav(e.target.value);
+                            navEditedRef.current = true;
+                          }}
+                          placeholder="1.2345"
+                          style={{ caretColor: "var(--foreground)" }}
+                          className="form-input caret-slate-800"
+                        />
+                      </div>
                     </div>
-                  </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">赎回金额</div>
+                    <div className="text-xs font-medium text-slate-600">{"赎回金额"}</div>
                     <input inputMode="decimal" value={amount} onChange={(e) => {
                         const nextAmount = e.target.value;
                         amountEditedRef.current = true;
@@ -1539,7 +2161,7 @@ export function InvestmentFormModal({
                   </div>
 
                   {showFee && (
-                    <div className="grid grid-cols-2 items-end gap-2">
+                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">手续费率(%)</div>
                         <input
@@ -1551,7 +2173,7 @@ export function InvestmentFormModal({
                             setFeeRateEdited(true);
                             calculateFeeFromRate(nextRate);
                           }}
-                          placeholder="0.15"
+                          placeholder="0"
                           style={{ caretColor: "var(--foreground)" }}
                           className="form-input caret-slate-800"
                         />
@@ -1577,7 +2199,7 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">到账日期</div>
                       <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
@@ -1603,14 +2225,14 @@ export function InvestmentFormModal({
               ) : (
                 <>
               {showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 && investmentAccounts && investmentAccounts.length > 0 ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">资金来源账户</div>
                     {renderCashAccountSelect("请选择资金账户")}
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">基金账户</div>
-                    {renderInvestmentAccountSelect("选择基金账户")}
+                    <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
+                    {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
                   </div>
                 </div>
               ) : showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 ? (
@@ -1620,31 +2242,36 @@ export function InvestmentFormModal({
                 </div>
               ) : investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">基金账户</div>
-                  {renderInvestmentAccountSelect("选择基金账户")}
+                  <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
+                  {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
                 </div>
               ) : null}
 
-              {showCode ? (
+              {productType === "metal" ? renderMetalFields() : showCode ? (
                 <div className="grid grid-cols-[1fr_2fr] items-end gap-2">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">基金代码</div>
+                    <div className="text-xs font-medium text-slate-600">{productCodeLabel}</div>
                     <input
                       value={fundCode}
                       onChange={(e) => changeFundCode(e.target.value)}
                       onBlur={handleFundCodeBlur}
-                      placeholder="6位代码"
+                      placeholder={productCodePlaceholder}
                       className="form-input"
                     />
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      基金名称
+                      {productNameLabel}
                       {nameLoading ? (
                         <span className="ml-1 font-normal text-slate-400">获取中...</span>
                       ) : null}
                     </div>
-                    <input value={fundName} readOnly className="form-input" />
+                    <input
+                      value={fundName}
+                      onChange={(e) => setFundName(e.target.value)}
+                      readOnly={productNameReadOnly}
+                      className="form-input"
+                    />
                   </div>
                 </div>
               ) : null}
@@ -1657,21 +2284,25 @@ export function InvestmentFormModal({
                 </div>
               )}
 
-              <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+              <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[0.7fr_auto_1fr]">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
-                    净值
+                    {productType === "metal" ? "单价" : "净值"}
                     {navLoading ? (
                       <span className="ml-1 font-normal text-slate-400">获取中...</span>
                     ) : null}
                     {navActualDate && !navLoading ? (
-                      <span className="ml-1 font-normal text-amber-600">({navActualDate}净值)</span>
+                      <span className="ml-1 font-normal text-amber-600">({navActualDate}{productType === "metal" ? "单价" : "净值"})</span>
                     ) : null}
                   </div>
                   <input
                     inputMode="decimal"
                     value={nav}
-                    onChange={(e) => setNav(e.target.value)}
+                    onChange={(e) => {
+                      setNav(e.target.value);
+                      navEditedRef.current = true;
+                      calculateBuyUnits(amount, fee, arrivalAmount, e.target.value);
+                    }}
                     placeholder="1.2345"
                     className="form-input"
                   />
@@ -1679,35 +2310,77 @@ export function InvestmentFormModal({
                 <button
                   type="button"
                   onClick={fetchNav}
-                  disabled={navLoading || !fundCode}
+                  disabled={navLoading || !fundCode || productType === "metal"}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                  title="获取净值"
+                  title={productType === "metal" ? "贵金属单价请手动填写" : "获取净值"}
                 >
                   <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                 </button>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">
-                    {isBuyLike(subtype) ? "买入金额" : "金额"}
-                    {subtype === "dividend_reinvest" ? (
-                      <span className="ml-1 font-normal text-slate-400">（留空则=份额×净值）</span>
-                    ) : null}
+                <div className={`grid grid-cols-1 gap-2 ${isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? "sm:grid-cols-[1fr_1fr_1fr]" : ""}`}>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">
+                      {isBuyLike(subtype) ? "买入金额" : "金额"}
+                      {subtype === "dividend_reinvest" ? (
+                        <span className="ml-1 font-normal text-slate-400">（留空则=份额×净值）</span>
+                      ) : null}
+                    </div>
+                    <CalcInput
+                      value={amount}
+                      onChange={(v) => {
+                        amountEditedRef.current = true;
+                        setAmount(v);
+                        calculateUnitsAfterAmountChange(v);
+                      }}
+                      label="金额"
+                      placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined}
+                      precision={2}
+                    />
                   </div>
-                  <CalcInput
-                    value={amount}
-                    onChange={(v) => {
-                      amountEditedRef.current = true;
-                      setAmount(v);
-                      calculateUnitsAfterAmountChange(v);
-                    }}
-                    label="金额"
-                    placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined}
-                    precision={2}
-                  />
+                  {isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? (
+                    <div className="space-y-1">
+                      <div className="flex min-h-4 items-center justify-between gap-2">
+                        <div className="text-xs font-medium text-slate-600">退回金额</div>
+                        <button
+                          type="button"
+                          onClick={() => toggleBuyRefund(buyResultStatus !== "refund")}
+                          className={`h-4 rounded-full px-1.5 text-[10px] leading-none transition-colors ${buyResultStatus === "refund" ? "bg-amber-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                        >
+                          {buyResultStatus === "refund" ? "开" : "关"}
+                        </button>
+                      </div>
+                      <CalcInput
+                        value={arrivalAmount}
+                        onChange={(v) => {
+                          setArrivalAmount(v);
+                          if (p(v) > 0 && buyResultStatus !== "refund") setBuyResultStatus("refund");
+                          if (p(v) > 0 && !arrivalDate) {
+                            const baseDate = confirmDate || applyDate;
+                            setArrivalDate(baseDate && arrivalDays > 0 ? addDays(baseDate, arrivalDays) : baseDate);
+                          }
+                          calculateUnitsAfterRefundChange(v);
+                        }}
+                        placeholder="0.00"
+                        label="退回金额"
+                        precision={2}
+                      />
+                    </div>
+                  ) : null}
+                  {isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">确认金额</div>
+                      <input
+                        value={confirmedBuyAmount > 0 ? confirmedBuyAmount.toFixed(2) : ""}
+                        readOnly
+                        placeholder="0.00"
+                        className="form-input bg-slate-50 text-slate-500"
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
               {showFee && (
-                <div className="grid grid-cols-2 gap-2 items-end">
+                <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">手续费率(%)</div>
                     <input inputMode="decimal" value={feeRate}
@@ -1717,7 +2390,7 @@ export function InvestmentFormModal({
                         setFeeRateEdited(true);
                         calculateFeeFromRate(nextRate);
                       }}
-                      placeholder="0.15"
+                      placeholder="0"
                       className="form-input" />
                   </div>
                   <div className="space-y-1">
@@ -1737,7 +2410,7 @@ export function InvestmentFormModal({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2 items-end">
+              <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">到账日期</div>
                   <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
@@ -1786,6 +2459,21 @@ export function InvestmentFormModal({
           </div>
         </div>,
         document.body,
+      ) : null}
+      {nestedEntityType ? (
+        <NestedAddModal
+          mode="compact"
+          entityType="account"
+          open={true}
+          onClose={() => setNestedEntityType(null)}
+          onCreated={handleNestedAccountCreated}
+          extraFields={{
+            kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment",
+            investProductType: productType === "deposit" ? "fund" : productType,
+          }}
+          hiddenFields={["kind"]}
+          nestedFieldData={nestedFieldData}
+        />
       ) : null}
     </>
   );

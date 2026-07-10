@@ -65,11 +65,14 @@ export async function GET(request: Request) {
       creditIds.length > 0
         ? await prisma.creditCardCycle.findMany({
             where: { accountId: { in: creditIds }, isCurrentCycle: true },
-            select: { accountId: true, effectiveBill: true },
+            select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
           })
         : [];
     const currentCreditBalanceByAccountId = new Map(
-      currentCreditCycles.map((cycle) => [cycle.accountId, Number(cycle.effectiveBill ?? 0)]),
+      currentCreditCycles.map((cycle) => [
+        cycle.accountId,
+        Number(cycle.cumulativeRemain ?? 0) - Number(cycle.cumulativeOverpaid ?? 0),
+      ]),
     );
     const insuranceAccountIds = accounts
       .filter((account) => account.kind === AccountKind.insurance)

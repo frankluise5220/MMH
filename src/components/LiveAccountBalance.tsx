@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 
 function pnlCls(value: number, isRedUp: boolean) {
   if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-800";
@@ -64,9 +65,11 @@ export function LiveAccountBalance({
       }, 80);
     };
 
-    window.addEventListener("mmh:fund:refresh", refresh);
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
+    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
     return () => {
-      window.removeEventListener("mmh:fund:refresh", refresh);
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
+      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
   }, [accountId, mode]);

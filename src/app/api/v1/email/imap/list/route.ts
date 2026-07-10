@@ -18,6 +18,7 @@ const BodySchema = z.object({
   scanLimit: z.number().int().min(1).max(1000).optional(),
   sinceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   keyword: z.string().optional(),
+  keywords: z.array(z.string()).optional(),
   subjectIncludes: z.string().optional(),
   fromIncludes: z.string().optional(),
   debug: z.boolean().optional(),
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
 
-  let { host, port, secure, user, password, mailbox, limit, scanLimit, sinceDate, keyword, subjectIncludes, fromIncludes, debug } = parsed.data;
+  let { host, port, secure, user, password, mailbox, limit, scanLimit, sinceDate, keyword, keywords, subjectIncludes, fromIncludes, debug } = parsed.data;
 
   if (parsed.data.accountId) {
     const account = await prisma.emailAccount.findFirst({ where: { id: parsed.data.accountId, householdId } });
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
   try {
     const opened = await connectAndOpenBox({ host, port, secure, user, password, mailbox }, trace);
     client = opened.client;
-    const result = await listMails(client, { limit, scanLimit, sinceDate, keyword, subjectIncludes, fromIncludes }, trace);
+    const result = await listMails(client, { limit, scanLimit, sinceDate, keyword, keywords, subjectIncludes, fromIncludes }, trace);
     return NextResponse.json({ ok: true, items: result.items, meta: result.meta, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, `list ok ${result.items.length}`] } : {}) });
   } catch (e) {
     const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";

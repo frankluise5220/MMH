@@ -17,6 +17,7 @@ export type CreditBillSummary = {
 export type CreditBillCascadeRow = {
   month: string;
   bill: number;
+  billDelta?: number;
   paid: number;
 };
 
@@ -61,9 +62,10 @@ export function cycleForStatementMonth(
   const monthIndex = Number(match[2]) - 1;
   if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return null;
 
-  const end = new Date(Date.UTC(year, monthIndex, clampDay(year, monthIndex, billingDay)));
-  const prevEnd = new Date(Date.UTC(year, monthIndex - 1, clampDay(year, monthIndex - 1, billingDay)));
-  const start = addDaysUtc(prevEnd, 1);
+  const statementStart = new Date(Date.UTC(year, monthIndex - 1, clampDay(year, monthIndex - 1, billingDay)));
+  const nextStatementStart = new Date(Date.UTC(year, monthIndex, clampDay(year, monthIndex, billingDay)));
+  const start = statementStart;
+  const end = addDaysUtc(nextStatementStart, -1);
   const nextEnd = addDaysUtc(end, 1);
   const isCurrentCycle = today.getTime() >= start.getTime() && today.getTime() < nextEnd.getTime();
 
@@ -117,7 +119,7 @@ export function fillMissingCreditBillSummaries(params: {
 
 export function computeCreditBillCascade(params: {
   monthsForCascade: string[];
-  summaryByMonth: Map<string, Pick<CreditBillSummary, "bill" | "paid">>;
+  summaryByMonth: Map<string, Pick<CreditBillSummary, "bill" | "paid" | "expenseAbs" | "income">>;
   overrides: CreditBillOverrideInput[];
 }) {
   const { monthsForCascade, summaryByMonth, overrides } = params;
@@ -135,17 +137,18 @@ export function computeCreditBillCascade(params: {
       return {
         month,
         bill: summary?.bill ?? 0,
+        billDelta: summary ? summary.expenseAbs - summary.income : 0,
         paid: summary?.paid ?? 0,
       };
     });
 
   const effectiveBillByMonth = new Map<string, number>();
-  let prevEffective = 0;
+  let previousBill = 0;
   for (const row of allMonthsForCascade) {
     const override = overrideByMonth.get(row.month);
-    const effective = override !== undefined ? override : prevEffective + row.bill;
+    const effective = override !== undefined ? override : previousBill + (row.billDelta ?? row.bill);
     effectiveBillByMonth.set(row.month, effective);
-    prevEffective = effective;
+    previousBill = effective;
   }
 
   const cumulativeByMonth = new Map<string, CreditBillCumulative>();

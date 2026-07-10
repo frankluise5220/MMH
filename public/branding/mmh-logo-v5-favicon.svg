@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">MMH favicon logo</title>
+  <desc id="desc">A simplified custom M monogram optimized for very small sizes.</desc>
+  <rect width="64" height="64" rx="16" fill="#141414"/>
+  <path d="M12 50V15.8c0-1 .9-1.4 1.6-.8L32 35.6 50.4 15c.7-.7 1.6-.2 1.6.8V50H42V29.7l-8.2 8.9c-.9 1-2.7 1-3.6 0L22 29.7V50H12Z" fill="#F7F3E7"/>
+  <path d="M12 50V15.8c0-1 .9-1.4 1.6-.8L32 35.6 50.4 15c.7-.7 1.6-.2 1.6.8" fill="none" stroke="#D2B36A" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+</svg>

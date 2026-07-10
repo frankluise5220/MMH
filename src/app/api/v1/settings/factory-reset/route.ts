@@ -40,6 +40,7 @@ export async function POST(_req: NextRequest) {
     if (accountIds.length > 0) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
+      await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundFeeRate.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.billOverride.deleteMany({ where: { accountId: { in: accountIds } } });

@@ -5,6 +5,13 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { EntityCreateForm } from "./EntityCreateForm";
 import { institutionTypeLabel } from "@/lib/account-kinds";
 import { isDepositAccount } from "@/lib/account-kind-utils";
+import { supportsCostBasisMethod } from "@/lib/investment-config";
+import {
+  supportsTradingCalendarForAccount,
+  TRADING_CALENDARS,
+  TRADING_CALENDAR_LABELS,
+  type TradingCalendarValue,
+} from "@/lib/fund/trading-calendar";
 
 type GroupOption = { id: string; name: string };
 type InstitutionOption = { id: string; name: string; type?: string };
@@ -18,7 +25,7 @@ type AccountKindValue =
   | "investment"
   | "loan"
   | "other";
-type FundProductTypeValue = "fund" | "money" | "wealth";
+type FundProductTypeValue = "fund" | "money" | "wealth" | "metal";
 type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 const ACCOUNT_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
@@ -27,6 +34,7 @@ const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   fund: "开放式基金",
   money: "货币基金",
   wealth: "银行理财",
+  metal: "贵金属",
 };
 
 const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
@@ -62,6 +70,7 @@ export function AccountEditModalButton({
     costBasisMethod: string | null;
     defaultFundQueryApiId: string | null;
     fundUnitsDecimals?: number | null;
+    tradingCalendar?: string | null;
     debtDirection?: string | null;
   };
   groups: GroupOption[];
@@ -78,6 +87,9 @@ export function AccountEditModalButton({
   );
   const [costBasisMethod, setCostBasisMethod] = useState<CostBasisMethodValue>(
     (account.costBasisMethod as CostBasisMethodValue) ?? "moving_avg",
+  );
+  const [tradingCalendar, setTradingCalendar] = useState<TradingCalendarValue>(
+    ((account.tradingCalendar as TradingCalendarValue) ?? "cn_fund"),
   );
   const [groupId, setGroupId] = useState(account.groupId);
   const [institutionId, setInstitutionId] = useState(account.institutionId ?? "");
@@ -238,19 +250,40 @@ export function AccountEditModalButton({
                         />
                       </>
                     ) : null}
-                    <div className="mt-2 text-xs text-slate-500">成本摊薄方式</div>
-                    <select
-                      name="costBasisMethod"
-                      value={costBasisMethod}
-                      onChange={(e) => setCostBasisMethod(e.target.value as CostBasisMethodValue)}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    >
-                      {(Object.keys(COST_BASIS_LABELS) as CostBasisMethodValue[]).map((m) => (
-                        <option key={m} value={m}>
-                          {COST_BASIS_LABELS[m]}
-                        </option>
-                      ))}
-                    </select>
+                    {supportsTradingCalendarForAccount(kind, investProductType) ? (
+                      <>
+                        <div className="mt-2 text-xs text-slate-500">交易日历</div>
+                        <select
+                          name="tradingCalendar"
+                          value={tradingCalendar}
+                          onChange={(e) => setTradingCalendar(e.target.value as TradingCalendarValue)}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        >
+                          {TRADING_CALENDARS.map((calendar) => (
+                            <option key={calendar} value={calendar}>
+                              {TRADING_CALENDAR_LABELS[calendar]}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    ) : null}
+                    {supportsCostBasisMethod(investProductType) ? (
+                      <>
+                        <div className="mt-2 text-xs text-slate-500">成本摊薄方式</div>
+                        <select
+                          name="costBasisMethod"
+                          value={costBasisMethod}
+                          onChange={(e) => setCostBasisMethod(e.target.value as CostBasisMethodValue)}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        >
+                          {(Object.keys(COST_BASIS_LABELS) as CostBasisMethodValue[]).map((m) => (
+                            <option key={m} value={m}>
+                              {COST_BASIS_LABELS[m]}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    ) : null}
                     <div className="mt-2 text-xs text-slate-500">默认净值查询 API</div>
                     <select
                       name="defaultFundQueryApiId"

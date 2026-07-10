@@ -3,6 +3,7 @@ import { cache } from "react";
 import { prisma } from "@/lib/db/prisma";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
+import { getDefaultTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
 import { getCurrentUser, isAdmin, type CurrentUser } from "@/lib/server/auth";
 
 export type HouseholdContext = {
@@ -84,7 +85,16 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
   ];
   for (const a of defaultAccounts) {
     await prisma.account.create({
-      data: { name: a.name, kind: a.kind as any, groupId: a.groupId, investProductType: a.investProductType as any, householdId: household.id, isActive: true, currency: "CNY" },
+      data: {
+        name: a.name,
+        kind: a.kind as any,
+        groupId: a.groupId,
+        investProductType: a.investProductType as any,
+        tradingCalendar: getDefaultTradingCalendarForAccount(a.kind, a.investProductType) as any,
+        householdId: household.id,
+        isActive: true,
+        currency: "CNY",
+      },
     });
   }
 

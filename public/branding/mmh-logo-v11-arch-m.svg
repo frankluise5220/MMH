@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH arch M logo</title>
+  <desc id="desc">A softer M monogram with arch-like shoulders and stable pillars.</desc>
+  <rect width="128" height="128" rx="32" fill="#1E3A34"/>
+  <path
+    d="M24 98V43c0-10 12-14.4 19-6.8L64 59.2l21-23c7-7.6 19-3.2 19 6.8V98H86V56.2L71 72.5c-3.8 4.1-10.2 4.1-14 0L42 56.2V98H24Z"
+    fill="#F6EFE2"
+  />
+  <path
+    d="M24 98V43c0-10 12-14.4 19-6.8L64 59.2l21-23c7-7.6 19-3.2 19 6.8"
+    fill="none"
+    stroke="#D58B63"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="6"
+  />
+</svg>

@@ -2,7 +2,9 @@
 
 import { ChevronDown, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { clearStoredApiKeySession, getStoredApiKey } from "@/lib/client/apiKeySession";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { SmartSelect } from "./SmartSelect";
 
 type TxType = "expense" | "income" | "transfer" | "investment";
@@ -47,6 +49,7 @@ export function QuickAddTransaction({
   defaultAccountName?: string;
   accounts: Array<{ name: string; label: string }>;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -165,10 +168,16 @@ export function QuickAddTransaction({
         throw new Error(`记账失败：${err}`);
       }
 
+      const createdAccounts = Array.isArray((data as any).createdAccounts) ? (data as any).createdAccounts : [];
+      if (createdAccounts.length > 0) {
+        window.alert(`已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}`);
+      }
+
       setLastType(type);
       setOpen(false);
       await new Promise(resolve => setTimeout(resolve, 100));
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "quick-add-transaction" });
+      router.refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "记账失败";
       window.alert(msg);

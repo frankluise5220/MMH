@@ -60,12 +60,28 @@ export async function GET(req: Request) {
 const CATEGORY_TYPES = ["expense", "income", "advance"] as const;
 const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "代付", "投资"]);
 
+async function findDuplicateCategoryName(
+  householdId: string,
+  name: string,
+  exceptId?: string,
+) {
+  return prisma.category.findFirst({
+    where: {
+      householdId,
+      name,
+      ...(exceptId ? { NOT: { id: exceptId } } : {}),
+    },
+    select: { id: true },
+  });
+}
+
 /**
  * POST /api/v1/category
  * 新增分类。
  *
  * Body: { name: string, type?: "expense" | "income" | "advance", parentId?: string }
  * - parentId 存在时，分类类型继承上级分类。
+ * - 分类名称在同一账簿内必须全局唯一，不区分收支类型或上级分类。
  * - "支出"、"收入"、"代付"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
  * - 投资不使用分类树，投资交易通过产品类型、基金代码、交易子类型等结构化字段区分。
  *
@@ -101,12 +117,9 @@ export async function POST(req: NextRequest) {
       type = parent.type;
     }
 
-    const duplicate = await prisma.category.findFirst({
-      where: { householdId, type, parentId, name },
-      select: { id: true },
-    });
+    const duplicate = await findDuplicateCategoryName(householdId, name);
     if (duplicate) {
-      return NextResponse.json({ ok: false, error: "同级分类已存在" }, { status: 409 });
+      return NextResponse.json({ ok: false, error: "分类名称已存在" }, { status: 409 });
     }
 
     const category = await prisma.category.create({
@@ -123,11 +136,15 @@ export async function POST(req: NextRequest) {
 
 /**
  * PUT /api/v1/category
- * 修改分类名称。
+ * 修改分类名称或移动分类层级。
  *
- * Body: { id: string, name: string }
- * - 只修改名称，不改变分类类型和层级。
- * - 同步更新已记账记录中的 categoryName，避免旧流水继续显示旧名称。
+ * Body: { id: string, name?: string, parentId?: string | null }
+ * - name 存在时修改分类名称。
+ * - parentId 存在时移动整个分类节点；子分类会随该节点整体移动。
+ * - parentId 为空/null 表示移动到当前类型根目录下。
+ * - 不允许跨分类类型移动，不允许移动到自身或自己的后代下。
+ * - 分类名称在同一账簿内必须全局唯一，不区分收支类型或上级分类。
+ * - 修改名称时同步更新已记账记录中的 categoryName，避免旧流水继续显示旧名称。
  *
  * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
  */
@@ -136,50 +153,83 @@ export async function PUT(req: NextRequest) {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => ({}));
     const id = String(body.id ?? "").trim();
-    const name = String(body.name ?? "").trim();
+    const hasName = Object.prototype.hasOwnProperty.call(body, "name");
+    const hasParentId = Object.prototype.hasOwnProperty.call(body, "parentId");
+    const requestedName = hasName ? String(body.name ?? "").trim() : "";
+    const requestedParentId = hasParentId ? String(body.parentId ?? "").trim() || null : undefined;
 
     if (!id) {
       return NextResponse.json({ ok: false, error: "缺少分类 ID" }, { status: 400 });
     }
-    if (!name || name.length > 50) {
+    if (!hasName && !hasParentId) {
+      return NextResponse.json({ ok: false, error: "缺少修改内容" }, { status: 400 });
+    }
+    if (hasName && (!requestedName || requestedName.length > 50)) {
       return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
     }
-    if (RESERVED_CATEGORY_NAMES.has(name)) {
+    if (hasName && RESERVED_CATEGORY_NAMES.has(requestedName)) {
       return NextResponse.json({ ok: false, error: "支出、收入、代付、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
     }
 
     const current = await prisma.category.findFirst({
       where: { id, householdId },
-      select: { id: true, type: true, parentId: true },
+      select: { id: true, name: true, type: true, parentId: true },
     });
     if (!current) {
       return NextResponse.json({ ok: false, error: "分类不存在" }, { status: 404 });
     }
+    const name = hasName ? requestedName : current.name;
+    const parentId = hasParentId ? requestedParentId : current.parentId;
 
-    const duplicate = await prisma.category.findFirst({
-      where: {
-        householdId,
-        type: current.type,
-        parentId: current.parentId,
-        name,
-        NOT: { id },
-      },
-      select: { id: true },
-    });
+    if (parentId === id) {
+      return NextResponse.json({ ok: false, error: "不能移动到自身下面" }, { status: 400 });
+    }
+
+    if (parentId) {
+      const parent = await prisma.category.findFirst({
+        where: { id: parentId, householdId },
+        select: { id: true, type: true, parentId: true },
+      });
+      if (!parent) {
+        return NextResponse.json({ ok: false, error: "上级分类不存在" }, { status: 404 });
+      }
+      if (parent.type !== current.type) {
+        return NextResponse.json({ ok: false, error: "不能跨收支类型移动分类" }, { status: 400 });
+      }
+
+      let cursor: string | null = parent.parentId;
+      while (cursor) {
+        if (cursor === id) {
+          return NextResponse.json({ ok: false, error: "不能移动到自己的子分类下面" }, { status: 400 });
+        }
+        const ancestor = await prisma.category.findFirst({
+          where: { id: cursor, householdId },
+          select: { parentId: true },
+        });
+        cursor = ancestor?.parentId ?? null;
+      }
+    }
+
+    const duplicate = await findDuplicateCategoryName(householdId, name, id);
     if (duplicate) {
-      return NextResponse.json({ ok: false, error: "同级分类已存在" }, { status: 409 });
+      return NextResponse.json({ ok: false, error: "分类名称已存在" }, { status: 409 });
     }
 
     const category = await prisma.$transaction(async (tx) => {
       const updated = await tx.category.update({
         where: { id },
-        data: { name },
+        data: {
+          ...(hasName && name !== current.name ? { name } : {}),
+          ...(hasParentId && parentId !== current.parentId ? { parentId } : {}),
+        },
         select: { id: true, name: true, type: true, parentId: true, isSystem: true },
       });
-      await tx.txRecord.updateMany({
-        where: { householdId, categoryId: id },
-        data: { categoryName: name },
-      });
+      if (hasName && name !== current.name) {
+        await tx.txRecord.updateMany({
+          where: { householdId, categoryId: id },
+          data: { categoryName: name },
+        });
+      }
       return updated;
     });
 

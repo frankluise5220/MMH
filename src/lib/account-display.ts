@@ -1,4 +1,4 @@
-﻿import type { SmartSelectOption } from "@/components/SmartSelect";
+import type { SmartSelectOption } from "@/components/SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
 
 export type AccountDisplaySource = {
@@ -223,11 +223,23 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
 }
 
 export function buildFlatAccountOptions(
-  accounts: Array<Pick<AccountDisplayOption, "id" | "label" | "subLabel"> & { selectorLabel?: string }>,
+  accounts: Array<Pick<AccountDisplayOption, "id" | "label" | "subLabel"> & {
+    selectorLabel?: string;
+    kind?: string | null;
+    investProductType?: string | null;
+    debtDirection?: string | null;
+    institutionId?: string | null;
+    currency?: string | null;
+  }>,
 ): SmartSelectOption[] {
   return accounts.map((account) => ({
     id: account.id,
     label: account.selectorLabel ?? account.label,
     subLabel: account.subLabel,
+    kind: account.kind ?? null,
+    investProductType: account.investProductType ?? null,
+    debtDirection: account.debtDirection ?? null,
+    institutionId: account.institutionId ?? null,
+    currency: account.currency ?? null,
   }));
 }

@@ -1,26 +1,32 @@
 "use client";
 
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { EntryRowActions } from "./EntryRowActions";
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
+import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
 import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchReplaceButton,
   useBasicDetailSelection,
 } from "./BasicDetailSelection";
 import { useI18n } from "@/lib/i18n";
-import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 /* Types */
 
 export type DetailEntry = {
   id: string;
   date: string;
+  postedAt?: string | null;
   createdAt?: string | null;
+  dayOrder?: number | null;
   amount: number;
   runningBalance?: number | null;
   type: string;
@@ -28,19 +34,29 @@ export type DetailEntry = {
   categoryName: string | null;
   accountId: string | null;
   accountName: string | null;
+  accountKind?: string | null;
   accountInstitutionName?: string | null;
   counterpartyInstitutionId?: string | null;
   counterpartyInstitutionName?: string | null;
   toAccountId: string | null;
   toAccountName: string | null;
+  toAccountKind?: string | null;
   toAccountInstitutionName?: string | null;
   note: string | null;
   toNote?: string | null;
   fundSubtype: string | null;
   fundCode: string | null;
   fundName: string | null;
+  wealthProductId?: string | null;
   source: string | null;
   fundProductType: string | null;
+  metalTypeId?: string | null;
+  metalTypeName?: string | null;
+  metalUnitId?: string | null;
+  metalUnitName?: string | null;
+  metalQuantity?: number | null;
+  metalUnitPrice?: number | null;
+  metalFee?: number | null;
   insuranceProductId?: string | null;
   insuranceAction?: string | null;
   insuranceProductName?: string | null;
@@ -58,6 +74,7 @@ export type DetailEntry = {
   fundFee: number | null;
   fundConfirmDate: string | null;
   fundArrivalDate: string | null;
+  fundSourceEntryId?: string | null;
   fundArrivalAmount: number | null;
   entryTags: Array<{
     tagId: string;
@@ -159,14 +176,122 @@ function isDebtRepaymentEntry(entry: {
   return source === "scheduled_task" && String(entry.note ?? "").includes("还贷款");
 }
 
+function displaySecondRemark(entry: { toNote?: string | null }) {
+  return parseLoanPrepayStrategy(entry.toNote) ? "" : (entry.toNote ?? "");
+}
+
+function displayDetailRemark(entry: DetailEntry, currentAccountId?: string) {
+  if (entry.source === "insurance") return getInsuranceDetailNote(entry);
+  if (entry.type === "transfer" && currentAccountId && entry.toAccountId === currentAccountId) {
+    return (displaySecondRemark(entry).trim() || (entry.note ?? "").trim());
+  }
+  return (entry.note ?? "").trim();
+}
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function detailEntryDayKey(entry: DetailEntry, accountId: string) {
+  return localDateKey(getDetailEntryDisplayDate(entry, accountId));
+}
+
+function canManuallyReorderDetailEntry(entry: DetailEntry) {
+  return getBalanceReconcileTarget(entry) == null;
+}
+
+function reorderEntriesToTarget(entries: DetailEntry[], sourceId: string, targetId: string, position: AdvancedDataTableDropPosition) {
+  const sourceIndex = entries.findIndex((entry) => entry.id === sourceId);
+  const targetIndex = entries.findIndex((entry) => entry.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return entries;
+  const next = [...entries];
+  const [moving] = next.splice(sourceIndex, 1);
+  const targetIndexAfterRemoval = next.findIndex((entry) => entry.id === targetId);
+  if (targetIndexAfterRemoval < 0) return entries;
+  next.splice(position === "after" ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval, 0, moving);
+  if (next.every((entry, index) => entry.id === entries[index]?.id)) return entries;
+  return next;
+}
+
+function applyServerEntryOrder(entries: DetailEntry[], orderedEntryIds: string[]) {
+  if (orderedEntryIds.length === 0) return entries;
+  const orderedIdSet = new Set(orderedEntryIds);
+  const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+  const orderedEntries = orderedEntryIds
+    .map((id) => entryById.get(id))
+    .filter((entry): entry is DetailEntry => !!entry);
+  if (orderedEntries.length === 0) return entries;
+
+  let orderedIndex = 0;
+  let changed = false;
+  const next = entries.map((entry) => {
+    if (!orderedIdSet.has(entry.id)) return entry;
+    const replacement = orderedEntries[orderedIndex++] ?? entry;
+    if (replacement.id !== entry.id) changed = true;
+    return replacement;
+  });
+  return changed ? next : entries;
+}
+
+type ReorderResponse = {
+  ok?: boolean;
+  changed?: boolean;
+  orderedEntryIds?: string[];
+  error?: string;
+};
+
 function activityLabel(type: string, fundSubtype: string | null, source: string | null, t: (key: string) => string, balanceTarget: number | null = null): string {
   if (balanceTarget != null && source === BALANCE_INITIALIZATION_SOURCE) return "初始";
   if (source === BALANCE_RECONCILE_SOURCE) return "校准";
-  if (type === "investment" && fundSubtype) {
-    const info = subtypeLabelInfo(fundSubtype, source, t);
-    return info?.label ?? formatType(type, t);
-  }
+  if (type === "investment" && (source === "deposit" || source === "deposit_manual")) return "存款";
   return formatType(type, t);
+}
+
+function investmentCategoryLabel(
+  entry: DetailEntry,
+  entryFundProductType: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
+  const productType = entryFundProductType ?? null;
+  const subtype = String(entry.fundSubtype ?? "");
+  const source = String(entry.source ?? "");
+
+  if (!subtype) return entry.categoryName ?? "";
+
+  if (productType === "deposit") {
+    if (subtype === "redeem") return "存款取出";
+    if (subtype === "buy") return "存款存入";
+  }
+
+  if (productType === "wealth") {
+    if (subtype === "redeem") return "理财赎回";
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
+    if (subtype === "buy_failed") return "买入失败";
+    if (subtype === "buy") return "理财买入";
+  }
+
+  if (productType === "metal") {
+    if (subtype === "redeem") return "贵金属卖出";
+    if (subtype === "buy") return "贵金属买入";
+  }
+
+  if (productType === "fund" || productType === "money" || !productType) {
+    if (subtype === "buy" && source === "regular_invest") return "基金定投";
+    if (subtype === "buy" && source === "dividend") return "红利转投";
+    if (subtype === "redeem") return "基金赎回";
+    if (subtype === "dividend_cash") return "现金分红";
+    if (subtype === "dividend_reinvest") return "分红再投资";
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
+    if (subtype === "buy_failed") return "买入失败";
+    if (subtype === "buy") return "基金买入";
+  }
+
+  const info = subtypeLabelInfo(subtype, entry.source, t);
+  return info?.label ?? entry.categoryName ?? "";
 }
 
 /* Component */
@@ -182,6 +307,7 @@ export function DetailViewClient({
   toolbarMode = "default",
   toolbarTitle,
   toolbarRightContent,
+  resetKey,
   emptyText = "暂无记录",
 }: {
   accountId: string;
@@ -195,6 +321,7 @@ export function DetailViewClient({
   toolbarMode?: "default" | "custom" | "none";
   toolbarTitle?: ReactNode;
   toolbarRightContent?: ReactNode;
+  resetKey?: string;
   emptyText?: string;
 }) {
   const { t } = useI18n();
@@ -207,6 +334,26 @@ export function DetailViewClient({
   };
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
+  const linkedInvestmentCandidateEntries = useMemo(
+    () => entries
+      .filter((entry) => entry.type === "investment" && entry.fundCode && entry.fundSubtype)
+      .map((entry) => ({
+        id: entry.id,
+        date: (entry.date ?? "").slice(0, 10),
+        createdAt: entry.createdAt ?? null,
+        fundConfirmDate: entry.fundConfirmDate?.slice(0, 10) ?? null,
+        fundArrivalDate: entry.fundArrivalDate?.slice(0, 10) ?? null,
+        fundSourceEntryId: entry.fundSourceEntryId ?? null,
+        fundCode: entry.fundCode ?? "",
+        fundSubtype: entry.fundSubtype ?? "",
+        fundUnits: entry.fundUnits != null ? toNumber(entry.fundUnits) : null,
+        source: entry.source ?? null,
+        accountId: entry.accountId,
+        toAccountId: entry.toAccountId,
+        amount: toNumber(entry.amount),
+      })),
+    [entries],
+  );
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -215,12 +362,70 @@ export function DetailViewClient({
   const outflowCls = pnlColor(-1, colorScheme);
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
+  const detailRefreshSeqRef = useRef(0);
+  const lastResetKeyRef = useRef<string | undefined>(resetKey);
+
+  const persistEntryReorder = useCallback(async (payload: { entryId: string; targetEntryId: string; targetPosition: AdvancedDataTableDropPosition }) => {
+    const res = await fetch("/api/v1/transactions/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId, ...payload }),
+    });
+    const data = (await res.json().catch(() => null)) as ReorderResponse | null;
+    if (!data?.ok) {
+      throw new Error(data?.error ?? "调整顺序失败");
+    }
+    return data;
+  }, [accountId]);
+
+  const canDropDetailEntry = useCallback((source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => (
+    canManuallyReorderDetailEntry(source) &&
+    canManuallyReorderDetailEntry(target) &&
+    detailEntryDayKey(source, accountId) === detailEntryDayKey(target, accountId) &&
+    reorderEntriesToTarget(entries, source.id, target.id, position) !== entries
+  ), [accountId, entries]);
+
+  const reorderEntryByDrag = useCallback(async (source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => {
+    if (source.id === target.id) return;
+    if (!canManuallyReorderDetailEntry(source) || !canManuallyReorderDetailEntry(target)) return;
+    if (detailEntryDayKey(source, accountId) !== detailEntryDayKey(target, accountId)) {
+      window.alert("只能在同一天记录内拖动调整顺序");
+      return;
+    }
+    if (!canDropDetailEntry(source, target, position)) return;
+    const previousEntries = entries;
+    const nextEntries = reorderEntriesToTarget(entries, source.id, target.id, position);
+    if (nextEntries === entries) return;
+    detailRefreshSeqRef.current += 1;
+    setRefreshedEntries({ accountId, entries: nextEntries });
+    try {
+      const data = await persistEntryReorder({ entryId: source.id, targetEntryId: target.id, targetPosition: position });
+      if (data.orderedEntryIds?.length) {
+        setRefreshedEntries((current) => {
+          const currentEntries = current?.accountId === accountId ? current.entries : nextEntries;
+          return { accountId, entries: applyServerEntryOrder(currentEntries, data.orderedEntryIds ?? []) };
+        });
+      }
+      dispatchFinanceDataChanged({ reason: "entry-reorder", accountIds: [accountId], entryIds: [source.id] });
+    } catch (error) {
+      setRefreshedEntries({ accountId, entries: previousEntries });
+      window.alert(error instanceof Error ? error.message : "调整顺序失败");
+    }
+  }, [accountId, canDropDetailEntry, entries, persistEntryReorder]);
 
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
   }, [accountId]);
 
-  // Listen for mmh:fund:refresh → re-fetch from detail API
+  useEffect(() => {
+    if (resetKey == null) return;
+    if (lastResetKeyRef.current === resetKey) return;
+    lastResetKeyRef.current = resetKey;
+    setRefreshedEntries(null);
+    setSelection(new Set());
+  }, [resetKey]);
+
+  // Listen for financial data changes → re-fetch from detail API
   useEffect(() => {
     if (!refreshOnGlobalEvent) return;
     const handler = (event: Event) => {
@@ -239,9 +444,11 @@ export function DetailViewClient({
         page: detailAll ? "1" : detailPage,
         pageSize: detailAll ? "5000" : pageSize,
       });
+      const seq = ++detailRefreshSeqRef.current;
       fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((data) => {
+          if (seq !== detailRefreshSeqRef.current) return;
           if (data?.ok && Array.isArray(data?.data?.entries)) {
             setRefreshedEntries({ accountId, entries: data.data.entries });
             setSelection(new Set());
@@ -249,8 +456,12 @@ export function DetailViewClient({
         })
         .catch(() => {});
     };
-    window.addEventListener("mmh:fund:refresh", handler);
-    return () => window.removeEventListener("mmh:fund:refresh", handler);
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
+    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, handler);
+    return () => {
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
+      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handler);
+    };
   }, [accountId, entries, refreshOnGlobalEvent, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
@@ -264,14 +475,27 @@ export function DetailViewClient({
       render: (e) => <span className="tabular-nums text-slate-600">{(e.date ?? "").slice(0, 10)}</span>,
     },
     {
+      key: "postedAt",
+      label: t("detail.column.postedAt"),
+      width: 132,
+      minWidth: 110,
+      hideable: true,
+      filterKind: "dateRange",
+      filterText: (e) => (e.postedAt ?? "").slice(0, 10),
+      render: (e) => (
+        <span className="tabular-nums text-slate-500">
+          {e.postedAt ? e.postedAt.replace("T", " ") : ""}
+        </span>
+      ),
+    },
+    {
       key: "inflow",
       label: t("detail.column.inflow"),
       width: 96,
       minWidth: 76,
       align: "right",
       render: (e) => {
-        const amount = toNumber(e.amount);
-        const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+        const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
         return <span className={`tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>{inflow !== null ? formatMoney(inflow) : ""}</span>;
       },
@@ -283,8 +507,7 @@ export function DetailViewClient({
       minWidth: 76,
       align: "right",
       render: (e) => {
-        const amount = toNumber(e.amount);
-        const effectiveAmount = !accountId ? amount : e.toAccountId === accountId ? Math.abs(amount) : amount;
+        const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
         return <span className={`tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>{outflow !== null ? formatMoney(outflow) : ""}</span>;
       },
@@ -303,16 +526,11 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const debtLabel = debtActivityLabel(e);
         if (debtLabel) return debtLabel;
+        if (isCreditCardRepaymentTransfer(e)) return t("creditBill.repayment");
         const balanceTarget = getBalanceReconcileTarget(e);
-        const subtypeLabel = e.type === "investment" && e.fundSubtype
-          ? subtypeLabelInfo(e.fundSubtype, displaySource, t)
-          : null;
-        return e.type === "investment" && e.fundSubtype
-          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget))
-          : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
+        return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
       render: (e) => {
-        const dateStr = (e.date ?? "").slice(0, 10);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -321,34 +539,25 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
         const debtLabel = debtActivityLabel(e);
-        const subtypeLabel = e.type === "investment" && e.fundSubtype
-          ? subtypeLabelInfo(e.fundSubtype, displaySource, t)
-          : null;
-        const actLabel = debtLabel ?? (e.type === "investment" && e.fundSubtype
-          ? (subtypeLabel?.label ?? activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget))
-          : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget));
+        const repaymentLabel = isCreditCardRepaymentTransfer(e) ? t("creditBill.repayment") : null;
+        const actLabel = repaymentLabel ?? activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
-            <span className="sr-only">{dateStr}</span>
-              {debtLabel ? (
-                <span className="rounded bg-cyan-50 px-1 py-0.5 text-[10px] font-medium text-cyan-700">
-                  {debtLabel}
-                </span>
-              ) : balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (
-                <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600">
-                  初始
-                </span>
-              ) : e.source === BALANCE_RECONCILE_SOURCE ? (
-                <span className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-700">
-                  校准
-                </span>
-              ) : e.type === "investment" && subtypeLabel && "cls" in subtypeLabel ? (
-                <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${subtypeLabel.cls}`}>
-                  {subtypeLabel.label}
-                </span>
-              ) : (
-                <span className="text-xs text-slate-700">{actLabel}</span>
-              )}
+            {debtLabel ? (
+              <span className="rounded bg-cyan-50 px-1 py-0.5 text-[10px] font-medium text-cyan-700">
+                {debtLabel}
+              </span>
+            ) : balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (
+              <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600">
+                初始
+              </span>
+            ) : e.source === BALANCE_RECONCILE_SOURCE ? (
+              <span className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-700">
+                校准
+              </span>
+            ) : (
+              <span className="text-xs text-slate-700">{actLabel}</span>
+            )}
           </>
         );
       },
@@ -358,9 +567,29 @@ export function DetailViewClient({
       label: t("detail.column.category"),
       width: 140,
       minWidth: 90,
-      filterText: (e) => getInsuranceDetailCategoryName(e),
+      filterText: (e) => {
+        const entryFundProductType =
+          e.fundProductType ??
+          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
+          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
+          null;
+        return e.type === "investment"
+          ? investmentCategoryLabel(e, entryFundProductType, t)
+          : isCreditCardRepaymentTransfer(e)
+            ? t("creditBill.repayment")
+          : getInsuranceDetailCategoryName(e);
+      },
       render: (e) => {
-        const text = getInsuranceDetailCategoryName(e);
+        const entryFundProductType =
+          e.fundProductType ??
+          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
+          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
+          null;
+        const text = e.type === "investment"
+          ? investmentCategoryLabel(e, entryFundProductType, t)
+          : isCreditCardRepaymentTransfer(e)
+            ? t("creditBill.repayment")
+          : getInsuranceDetailCategoryName(e);
         return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     },
@@ -424,28 +653,18 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
-      filterText: (e) => getInsuranceDetailNote(e),
+      filterText: (e) => displayDetailRemark(e, accountId),
       render: (e) => {
-        const text = getInsuranceDetailNote(e);
+        const text = displayDetailRemark(e, accountId);
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
-    },
-    {
-      key: "secondRemark",
-      label: t("detail.column.secondRemark"),
-      width: 180,
-      minWidth: 110,
-      hideable: true,
-      defaultHidden: true,
-      filterText: (e) => e.toNote ?? "",
-      render: (e) => <span className="block truncate text-slate-500" title={e.toNote ?? ""}>{e.toNote || <span className="text-slate-300">-</span>}</span>,
     },
     { key: "attachment", label: t("detail.column.attachment"), width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
     {
       key: "actions",
       label: t("detail.column.actions"),
-      width: 92,
-      minWidth: 76,
+      width: 76,
+      minWidth: 64,
       align: "right",
       render: (e) => {
         const dateStr = (e.date ?? "").slice(0, 10);
@@ -455,11 +674,19 @@ export function DetailViewClient({
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
           (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
           null;
-        const isRedeemEditEntry = e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
+        const isRedeemEditEntry =
+          e.fundSubtype === "redeem" ||
+          e.fundSubtype === "switch_out" ||
+          (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
+        const targetInvestmentEditEntryId =
+          e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund" && e.fundSourceEntryId
+            ? e.fundSourceEntryId
+            : e.id;
         const editPayload =
           e.type !== "investment"
             ? undefined
             : {
+                targetEntryId: targetInvestmentEditEntryId,
                 id: e.id,
                 transactionId: e.id,
                 date: dateStr,
@@ -469,6 +696,7 @@ export function DetailViewClient({
                 note: e.note ?? "",
                 fundCode: e.fundCode,
                 fundName: e.fundName,
+                wealthProductId: e.wealthProductId ?? null,
                 insuranceProductId: e.insuranceProductId ?? null,
                 insuranceAction: e.insuranceAction ?? null,
                 insuranceProductName: e.insuranceProductName ?? null,
@@ -479,6 +707,13 @@ export function DetailViewClient({
                 depositSourceEntryId: e.depositSourceEntryId ?? null,
                 fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
                 fundProductType: entryFundProductType,
+                metalTypeId: e.metalTypeId ?? null,
+                metalTypeName: e.metalTypeName ?? null,
+                metalUnitId: e.metalUnitId ?? null,
+                metalUnitName: e.metalUnitName ?? null,
+                metalQuantity: e.metalQuantity ?? null,
+                metalUnitPrice: e.metalUnitPrice ?? null,
+                metalFee: e.metalFee ?? null,
                 fundSubtype: e.fundSubtype,
                 source: e.source,
                 accountId: e.accountId,
@@ -486,7 +721,9 @@ export function DetailViewClient({
                 cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId,
                 toAccountName: e.toAccountName,
                 fundArrivalDate: e.fundArrivalDate?.slice(0, 10),
+                fundSourceEntryId: e.fundSourceEntryId ?? null,
                 fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+                linkedCandidateEntries: linkedInvestmentCandidateEntries,
               };
         const otherEditPayload =
           e.type === "investment"
@@ -495,6 +732,7 @@ export function DetailViewClient({
                 id: e.id,
                 transactionId: e.id,
                 date: dateStr,
+                postedAt: e.postedAt ?? null,
                 type: e.type,
                 amount,
                 note: e.note ?? "",
@@ -543,6 +781,9 @@ export function DetailViewClient({
                   defaultPrincipal: debtPrincipalAmount,
                   defaultInterest: debtInterestAmount,
                   defaultPenalty: debtFeeAmount,
+                  defaultPrepayStrategy: e.source === "debt_prepay_out"
+                    ? parseLoanPrepayStrategy(e.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
+                    : undefined,
                 },
               }
             : undefined;
@@ -558,7 +799,7 @@ export function DetailViewClient({
         );
       },
     },
-  ], [accountId, accountOptions, inflowCls, investmentProductTypeByAccountId, outflowCls, t]);
+  ], [accountId, accountOptions, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -578,8 +819,13 @@ export function DetailViewClient({
       minTableWidth={1160}
       emptyText={emptyText === "暂无记录" ? t("detail.empty") : emptyText}
       selectable
+      selectOnRowClick
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
+      draggableRows
+      rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
+      rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}
+      onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
       batchActionSlot={toolbarMode === "default" ? (
         <>
           <BasicDetailBatchReplaceButton accountOptions={accountOptions} />

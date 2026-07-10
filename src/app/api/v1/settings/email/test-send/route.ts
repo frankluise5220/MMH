@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendEmailByResend } from "@/lib/mail/resend";
-import { sendEmail } from "@/lib/mail/smtp";
-import { prisma } from "@/lib/db/prisma";
+import { sendEmail, hasAnySmtpConfig } from "@/lib/mail/smtp";
 
 export const runtime = "nodejs";
 
@@ -19,17 +18,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少收件邮箱" }, { status: 400 });
   }
 
-  // 检查 SMTP 数据库配置
-  let hasSmtpDb = false;
-  try {
-    const users = await prisma.user.findMany({ where: { role: "admin" }, take: 1 });
-    if (users[0]) {
-      const settings = await prisma.userSettings.findUnique({ where: { userId: users[0].id } });
-      hasSmtpDb = Boolean(settings?.smtpHost && settings?.smtpUser && settings?.smtpPass);
-    }
-  } catch {}
-
-  if (hasSmtpDb) {
+  if (await hasAnySmtpConfig()) {
     const result = await sendEmail({
       to,
       subject: "MMH 邮件测试",

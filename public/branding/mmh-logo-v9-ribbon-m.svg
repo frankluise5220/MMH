@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH ribbon M logo</title>
+  <desc id="desc">A ribbon-like rounded M monogram.</desc>
+  <rect width="128" height="128" rx="32" fill="#204A5A"/>
+  <path
+    d="M26 97V31.5c0-2 2.4-2.9 3.8-1.5L64 64.8 98.2 30c1.4-1.4 3.8-.5 3.8 1.5V97"
+    fill="none"
+    stroke="#F7F2E8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="18"
+  />
+  <path
+    d="M26 97V31.5c0-2 2.4-2.9 3.8-1.5L64 64.8 98.2 30c1.4-1.4 3.8-.5 3.8 1.5"
+    fill="none"
+    stroke="#8FD0C9"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="6"
+  />
+</svg>

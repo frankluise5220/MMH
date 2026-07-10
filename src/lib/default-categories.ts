@@ -127,7 +127,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "其他支出",
-    children: ["其他", "公共服务", "临时支出", "未分类支出"],
+    children: ["其他杂项支出", "公共服务", "临时支出", "未分类支出"],
   },
   {
     type: "income",
@@ -162,12 +162,12 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "advance",
     name: "公司代付",
-    children: ["差旅费", "代购费", "其他"],
+    children: ["公司差旅费", "公司代购费", "公司其他代付"],
   },
   {
     type: "advance",
     name: "朋友代付",
-    children: ["差旅费", "代购费", "其他"],
+    children: ["朋友差旅费", "朋友代购费", "朋友其他代付"],
   },
 ];
 

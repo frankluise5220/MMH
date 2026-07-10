@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AccountKind } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 
 export const runtime = "nodejs";
 
@@ -57,11 +59,16 @@ const ParsedItemSchema = z.object({
 
 type ParsedItem = z.infer<typeof ParsedItemSchema>;
 type ParsedItemMeta = NonNullable<ParsedItem["_meta"]>;
-type ImportOptions = { autoCreateAccounts: boolean; importBatchId?: string | null };
+type ImportOptions = {
+  autoCreateAccounts: boolean;
+  importBatchId?: string | null;
+  createdAccounts?: Array<{ id: string; name: string; kind: string; institutionName?: string | null }>;
+};
 
 const MailSourceSchema = z.object({
   emailAccountId: z.string().min(1),
   uid: z.number().int().min(1),
+  hash: z.string().min(16).max(128).optional(),
   subject: z.string().optional(),
   from: z.string().optional(),
   date: z.string().optional(),
@@ -71,6 +78,56 @@ type MailSource = z.infer<typeof MailSourceSchema>;
 
 function buildMailImportNote(mailSource: Pick<MailSource, "emailAccountId" | "uid">) {
   return `email:${mailSource.emailAccountId}:${mailSource.uid}`;
+}
+
+function normalizeHash(value?: string | null) {
+  const hash = String(value ?? "").trim().toLowerCase();
+  return /^[a-f0-9]{32,128}$/.test(hash) ? hash : "";
+}
+
+function normalizeFingerprintPart(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function buildStatementFingerprint(items: ParsedItem[], defaultAccountName?: string) {
+  const firstMeta = items.find((item) => item._meta)?._meta;
+  const cardNumberMasked =
+    normalizeFingerprintPart(firstMeta?.cardNumberMasked) ||
+    normalizeFingerprintPart(items.map((item) => [item.account, item.fromAccount, item.toAccount].join(" ")).join(" ").match(/(\d{4})(?!.*\d)/)?.[1]) ||
+    normalizeFingerprintPart(defaultAccountName?.match(/(\d{4})(?!.*\d)/)?.[1]);
+  const datedItems = items
+    .map((item) => normalizeFingerprintPart(item.date).slice(0, 10))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+    .sort((a, b) => a.localeCompare(b));
+  const statementPeriod = datedItems.length > 0
+    ? `${datedItems[0]}~${datedItems[datedItems.length - 1]}`
+    : normalizeFingerprintPart(items.find((item) => item.postedDate)?.postedDate).slice(0, 7);
+  const payload = {
+    version: 2,
+    institutionName: normalizeFingerprintPart(
+      firstMeta?.institutionName ||
+      items.find((item) => item._meta?.institutionName)?._meta?.institutionName ||
+      items.find((item) => item.institution)?.institution,
+    ),
+    cardNumberMasked,
+    statementPeriod,
+  };
+  return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+}
+
+async function findExistingMailImport(householdId: string, mailSource: MailSource, statementFingerprint: string) {
+  const mailHash = normalizeHash(mailSource.hash);
+  const or: any[] = [{ note: buildMailImportNote(mailSource) }];
+  if (mailHash) or.push({ rawText: { contains: `"mailHash":"${mailHash}"` } });
+  if (statementFingerprint) or.push({ rawText: { contains: `"statementFingerprint":"${statementFingerprint}"` } });
+  return prisma.importBatch.findFirst({
+    where: {
+      householdId,
+      source: "credit_bill_mail",
+      OR: or,
+    },
+    select: { id: true, createdAt: true },
+  });
 }
 
 function parseDate(date?: string) {
@@ -100,7 +157,7 @@ function addMonthsUtc(date: Date, months: number) {
 
 function toStatementMonth(date: Date, billingDay: number) {
   const day = date.getUTCDate();
-  const monthBase = day <= billingDay ? date : addMonthsUtc(date, 1);
+  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
   const y = monthBase.getUTCFullYear();
   const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
@@ -113,6 +170,14 @@ async function statementMonthForAccountId(tx: Db, accountId: string | null, date
   if (acc.kind !== AccountKind.bank_credit && acc.kind !== AccountKind.loan) return null;
   if (!acc.billingDay) return null;
   return toStatementMonth(date, acc.billingDay);
+}
+
+async function accountCurrencyMeta(tx: Db, accountId: string | null) {
+  if (!accountId) return null;
+  return tx.account.findUnique({
+    where: { id: accountId },
+    select: { name: true, currency: true },
+  });
 }
 
 function postedDateForStatement(item: ParsedItem, fallbackDate: Date) {
@@ -167,6 +232,13 @@ function creditAccountNameCandidates(accountName: string, meta?: ParsedItemMeta)
     if (ownerName) names.add(`${ownerName}的${core}`);
   }
   return Array.from(names).filter(Boolean);
+}
+
+function inferCardLast4(accountName: string, meta?: ParsedItemMeta) {
+  const fromMeta = String(meta?.cardNumberMasked ?? "").trim();
+  if (fromMeta) return fromMeta;
+  const match = String(accountName ?? "").match(/(\d{4})(?!.*\d)/);
+  return match?.[1] ?? "";
 }
 
 async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
@@ -239,12 +311,27 @@ async function resolveUserIdByName(tx: Db, householdId: string, ownerName?: stri
 }
 
 async function findCreditAccount(tx: Db, householdId: string, accountName: string, meta?: ParsedItemMeta) {
-  const names = creditAccountNameCandidates(accountName, meta);
-  if (names.length > 0) {
-    const byName = await tx.account.findFirst({
-      where: { householdId, name: { in: names } },
+  const last4 = inferCardLast4(accountName, meta);
+  const bank = await findInstitution(tx, householdId, meta?.institutionName);
+  const exactName = normalizeAccountCell(accountName);
+  if (exactName && (!last4 || exactName !== last4)) {
+    const exact = await tx.account.findFirst({
+      where: {
+        householdId,
+        name: exactName,
+        kind: AccountKind.bank_credit,
+        ...(bank?.id ? { institutionId: bank.id } : {}),
+        ...(last4 ? {
+          OR: [
+            { numberMasked: last4 },
+            { name: last4 },
+            { name: { contains: last4 } },
+          ],
+        } : {}),
+      },
       select: {
         id: true,
+        name: true,
         kind: true,
         institutionId: true,
         userId: true,
@@ -252,23 +339,89 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
         creditLimit: true,
         billingDay: true,
         repaymentDay: true,
+        updatedAt: true,
+      },
+    });
+    if (exact) return exact;
+  }
+
+  if (last4) {
+    const matches = await tx.account.findMany({
+      where: {
+        householdId,
+        kind: AccountKind.bank_credit,
+        ...(bank?.id ? { institutionId: bank.id } : {}),
+        OR: [
+          { numberMasked: last4 },
+          { name: last4 },
+          { name: { contains: last4 } },
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        institutionId: true,
+        userId: true,
+        numberMasked: true,
+        creditLimit: true,
+        billingDay: true,
+        repaymentDay: true,
+        updatedAt: true,
+      },
+      orderBy: [
+        { updatedAt: "desc" },
+      ],
+      take: 10,
+    });
+    const ranked = matches.sort((a, b) => {
+      const score = (item: (typeof matches)[number]) =>
+        (item.numberMasked === last4 ? 100 : 0) +
+        (item.name === last4 ? -20 : 0) +
+        (bank?.id && item.institutionId === bank.id ? 10 : 0);
+      const byScore = score(b) - score(a);
+      if (byScore !== 0) return byScore;
+      return b.updatedAt.getTime() - a.updatedAt.getTime();
+    });
+    if (bank?.id) return ranked[0] ?? null;
+    if (ranked.length === 1 || ranked[0]?.numberMasked === last4) return ranked[0] ?? null;
+  }
+
+  const names = creditAccountNameCandidates(accountName, meta);
+  if (names.length > 0) {
+    const byName = await tx.account.findFirst({
+      where: { householdId, name: { in: names } },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        institutionId: true,
+        userId: true,
+        numberMasked: true,
+        creditLimit: true,
+        billingDay: true,
+        repaymentDay: true,
+        updatedAt: true,
       },
     });
     if (byName) return byName;
   }
 
-  const last4 = String(meta?.cardNumberMasked ?? "").trim();
   if (!last4) return null;
-  const bank = await findInstitution(tx, householdId, meta?.institutionName);
   const matches = await tx.account.findMany({
     where: {
       householdId,
       kind: AccountKind.bank_credit,
-      numberMasked: last4,
       ...(bank?.id ? { institutionId: bank.id } : {}),
+      OR: [
+        { numberMasked: last4 },
+        { name: last4 },
+        { name: { contains: last4 } },
+      ],
     },
     select: {
       id: true,
+      name: true,
       kind: true,
       institutionId: true,
       userId: true,
@@ -276,6 +429,7 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
+      updatedAt: true,
     },
     take: 2,
   });
@@ -324,7 +478,8 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
 async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
-  const isCreditCard = !!(_meta?.institutionName || _meta?.cardNumberMasked);
+  const inferredLast4 = inferCardLast4(name, _meta);
+  const isCreditCard = !!(_meta?.institutionName || _meta?.cardNumberMasked || inferredLast4);
   const existingCredit = isCreditCard ? await findCreditAccount(tx, householdId, name, _meta) : null;
   if (existingCredit?.id) {
     await updateCreditAccountMeta(tx, householdId, existingCredit.id, _meta);
@@ -351,14 +506,20 @@ async function ensureAccountId(tx: Db, householdId: string, accountName?: string
     accountData.debtDirection = "payable";
     accountData.institutionId = await ensureBankInstitutionId(tx, householdId, _meta?.institutionName);
     accountData.userId = await resolveUserIdByName(tx, householdId, _meta?.ownerName);
-    accountData.numberMasked = _meta.cardNumberMasked ?? null;
-    accountData.creditLimit = _meta.creditLimit != null ? String(_meta.creditLimit) : null;
-    accountData.billingDay = _meta.billingDay ?? null;
-    accountData.repaymentDay = _meta.repaymentDay ?? null;
+    accountData.numberMasked = inferredLast4 || null;
+    accountData.creditLimit = _meta?.creditLimit != null ? String(_meta.creditLimit) : null;
+    accountData.billingDay = _meta?.billingDay ?? null;
+    accountData.repaymentDay = _meta?.repaymentDay ?? null;
   }
 
   try {
     const created = await tx.account.create({ data: accountData });
+    options.createdAccounts?.push({
+      id: created.id,
+      name: created.name,
+      kind: created.kind,
+      institutionName: _meta?.institutionName ?? null,
+    });
     return created.id;
   } catch {
     return (await resolveAccountId(tx, householdId, name)) ?? null;
@@ -417,6 +578,13 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     ]);
 
     const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, confirmDate);
+    const [fromCurrencyMeta, toCurrencyMeta] = await Promise.all([
+      accountCurrencyMeta(tx, fromAccountId),
+      accountCurrencyMeta(tx, toAccountId),
+    ]);
+    const transactionCurrency = item.type === "transfer" && fromCurrencyMeta && toCurrencyMeta
+      ? resolveSameCurrencyTransfer(fromCurrencyMeta, toCurrencyMeta)
+      : normalizeCurrency(fromCurrencyMeta?.currency ?? toCurrencyMeta?.currency);
 
     // For investment type, query account kinds to determine fund fields
     let fundCode: string | null = null;
@@ -456,6 +624,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
         statementMonth: fromStatementMonth ?? undefined,
         importBatchId: options.importBatchId ?? undefined,
         source: options.importBatchId ? "statement_import" : undefined,
+        currency: transactionCurrency,
         // Include fund fields in create if investment account identified
         ...(displayFundCode && item.type === "investment" ? {
           fundCode: displayFundCode,
@@ -474,6 +643,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     resolveCategoryId(tx, householdId, item.category),
   ]);
   const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate);
+  const currencyMeta = await accountCurrencyMeta(tx, accountId);
 
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * amountAbs;
@@ -515,6 +685,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       statementMonth,
       importBatchId: options.importBatchId ?? undefined,
       source: options.importBatchId ? "statement_import" : undefined,
+      currency: normalizeCurrency(currencyMeta?.currency),
       // Include fund fields in create if investment account
       ...(displayFundCode ? {
         fundCode: displayFundCode,
@@ -564,15 +735,31 @@ export async function POST(req: Request) {
 
   const items = parse.data.items;
   const defaultAccountName = parse.data.defaultAccountName;
-  const options: ImportOptions = { autoCreateAccounts: parse.data.autoCreateAccounts };
+  const options: ImportOptions = { autoCreateAccounts: parse.data.autoCreateAccounts, createdAccounts: [] };
   const { householdId } = await getHouseholdScope();
 
   const created: { id: string }[] = [];
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
   const mailSource = parse.data.mailSource;
+  const statementFingerprint = mailSource ? buildStatementFingerprint(items, defaultAccountName) : "";
   let importBatchId: string | null = null;
 
   if (mailSource) {
+    const mailHash = normalizeHash(mailSource.hash);
+    const existingImport = await findExistingMailImport(householdId, mailSource, statementFingerprint);
+    if (existingImport) {
+      return NextResponse.json({
+        ok: true,
+        duplicate: true,
+        createdCount: 0,
+        skippedCount: items.length,
+        ids: [],
+        importBatchId: existingImport.id,
+        createdAccounts: [],
+        errors: [{ index: 0, rawText: items[0]?.rawText ?? "", error: "这封账单邮件已经导入过，无需重复导入。" }],
+      }, { headers: corsHeaders() });
+    }
+
     const importBatch = await prisma.importBatch.create({
       data: {
         source: "credit_bill_mail",
@@ -580,6 +767,8 @@ export async function POST(req: Request) {
         rawText: JSON.stringify({
           emailAccountId: mailSource.emailAccountId,
           uid: mailSource.uid,
+          mailHash,
+          statementFingerprint,
           subject: mailSource.subject ?? "",
           from: mailSource.from ?? "",
           date: mailSource.date ?? "",
@@ -615,6 +804,7 @@ export async function POST(req: Request) {
     skippedCount: errors.length,
     ids: created.map((t) => t.id),
     importBatchId,
+    createdAccounts: options.createdAccounts ?? [],
     errors,
   }, { headers: corsHeaders() });
 }

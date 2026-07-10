@@ -9,6 +9,7 @@ type EntryKind =
   | "advance"
   | "transfer"
   | "investment"
+  | "metal"
   | "wealth"
   | "deposit"
   | "deposit-buy"
@@ -32,6 +33,9 @@ type Props = {
     defaultCashAccountId?: string;
     defaultTransferFromAccountId?: string;
     defaultTransferToAccountId?: string;
+    defaultInvestmentAccountId?: string;
+    defaultMetalAccountId?: string;
+    defaultWealthAccountId?: string;
     defaultDepositAccountId?: string;
     defaultDepositSubtype?: "buy" | "redeem";
     defaultInsuranceAccountId?: string;
@@ -92,8 +96,21 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
         new CustomEvent("mmh:investment:create", {
           detail: {
             requestId,
-            defaultAccountId: context?.defaultAccountId ?? "",
+            defaultAccountId: context?.defaultInvestmentAccountId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultProductType: "fund",
+          },
+        }),
+      );
+      return;
+    case "metal":
+      window.dispatchEvent(
+        new CustomEvent("mmh:investment:create", {
+          detail: {
+            requestId,
+            defaultAccountId: context?.defaultMetalAccountId ?? "",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultProductType: "metal",
           },
         }),
       );
@@ -104,6 +121,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
           detail: {
             requestId,
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultWealthAccountId: context?.defaultWealthAccountId ?? "",
           },
         }),
       );

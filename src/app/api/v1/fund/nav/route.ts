@@ -6,6 +6,8 @@ import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
@@ -214,12 +216,63 @@ export async function POST(req: NextRequest) {
     // 从费率库查询申购手续费率（按确认日期查询）
     const feeRateRaw = await getFundFeeRateByDate(accountId, fundCode, confirmDateObj, "buy");
     const feeRate = feeRateRaw / 100;
-    // 计算手续费 = 金额 × 费率
-    const fee = amount * feeRate;
-    // 计算份额 = (金额 - 手续费) / 净值
-    const principal = amount - fee;
     const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
-    const units = nav > 0 ? roundFundUnits(principal / nav, fundUnitsDecimals) : null;
+    let refundAmount = 0;
+    if (txRecord.fundSubtype === "buy") {
+      const relatedEntries = await prisma.txRecord.findMany({
+        where: {
+          deletedAt: null,
+          fundCode,
+          OR: [
+            { id: txRecord.id },
+            { fundSourceEntryId: txRecord.id },
+            {
+              fundSubtype: "buy_failed",
+              source: "regular_invest_refund",
+              accountId,
+            },
+          ],
+        },
+        select: {
+          id: true,
+          date: true,
+          createdAt: true,
+          fundConfirmDate: true,
+          fundArrivalDate: true,
+          accountId: true,
+          toAccountId: true,
+          fundCode: true,
+          fundSubtype: true,
+          source: true,
+          amount: true,
+          fundSourceEntryId: true,
+        },
+      });
+      const { refundAmountByBuyId } = allocateBuyFailedRefunds(relatedEntries.map((entry) => ({
+        id: entry.id,
+        date: entry.date,
+        createdAt: entry.createdAt,
+        fundConfirmDate: entry.fundConfirmDate,
+        fundArrivalDate: entry.fundArrivalDate,
+        accountId: entry.accountId,
+        toAccountId: entry.toAccountId,
+        fundCode: entry.fundCode,
+        fundSubtype: entry.fundSubtype,
+        source: entry.source,
+        amount: toNum(entry.amount),
+        fundSourceEntryId: entry.fundSourceEntryId,
+      })));
+      refundAmount = refundAmountByBuyId.get(txRecord.id) ?? 0;
+    }
+    const confirmedAmount = txRecord.fundSubtype === "buy" ? Math.max(0, amount - refundAmount) : amount;
+    const fee = confirmedAmount * feeRate;
+    const units = calculateConfirmedBuyUnits({
+      grossAmount: amount,
+      refundAmount,
+      fee,
+      nav,
+      roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+    });
 
     // 写入 TxRecord
     const updateData: {
@@ -244,6 +297,7 @@ export async function POST(req: NextRequest) {
       where: { id: entryId },
       data: updateData,
     });
+    await syncFundTransactionsFromTxRecords([entryId]);
 
     // 重新计算持仓
     await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));

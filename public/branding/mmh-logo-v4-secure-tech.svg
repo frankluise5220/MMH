@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH secure tech logo</title>
+  <desc id="desc">A secure technology style MMH shield logo.</desc>
+  <rect width="128" height="128" rx="30" fill="#111827"/>
+  <path d="M64 17 101 31v28.8c0 24.2-14.4 41.1-37 52.2-22.6-11.1-37-28-37-52.2V31l37-14Z" fill="#1F2937"/>
+  <path d="M64 26.6 91 36.8v23.5c0 18.2-9.7 31.4-27 40.7-17.3-9.3-27-22.5-27-40.7V36.8l27-10.2Z" fill="#F5F7FA"/>
+  <path d="M43 74V47.5l21 24 21-24V74H73.5v-7.4L64 77.5 54.5 66.6V74H43Z" fill="#111827"/>
+  <path d="M43.5 46.5 64 35l20.5 11.5-4.7 8.4L64 46.1 48.2 54.9l-4.7-8.4Z" fill="#D6B15D"/>
+</svg>

@@ -28,6 +28,19 @@ export type SmartSelectOption = {
   isHeader?: boolean;
   isGroup?: boolean;
   parentId?: string;
+  kind?: string | null;
+  investProductType?: string | null;
+  debtDirection?: string | null;
+  institutionId?: string | null;
+  currency?: string | null;
+};
+
+export type SmartSelectCycleAction = {
+  onClick: () => void;
+  label?: string;
+  title?: string;
+  ariaLabel?: string;
+  icon?: ReactNode;
 };
 
 const SMART_SELECT_CREATED_EVENT = "mmh:smart-select:created";
@@ -51,6 +64,7 @@ export function notifySmartSelectOptionCreated(option: SmartSelectOption) {
 
 type SearchBehavior = boolean | "auto";
 type HierarchyBehavior = boolean | "auto";
+type SmartSelectDensity = "regular" | "compact";
 
 type SmartSelectSharedBehavior = {
   search?: SearchBehavior;
@@ -62,8 +76,11 @@ type SmartSelectSharedBehavior = {
   clearable?: boolean;
   cycleSelectionWithArrowKeys?: boolean;
   headerExtra?: ReactNode;
+  cycleAction?: SmartSelectCycleAction;
   minDropdownWidth?: number;
   dropdownMaxHeight?: number;
+  density?: SmartSelectDensity;
+  expandedGroupColumns?: number;
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
@@ -93,6 +110,7 @@ type SingleModeProps = {
   onCreateClick?: () => void;
   createLabel?: string;
   headerExtra?: ReactNode;
+  cycleAction?: SmartSelectCycleAction;
   onCycleOwnerFilter?: () => void;
   ownerFilterLabel?: string;
   behavior?: SmartSelectSingleBehavior;
@@ -209,13 +227,13 @@ function initialCollapsedGroups(
     if (option.isGroup || (collapseAll && option.isHeader)) collapsed.add(option.id);
   }
 
-  if (!selectedValue || collapseAll) return collapsed;
+  if (!selectedValue) return collapsed;
 
   const optionById = new Map(options.map((option) => [option.id, option]));
   let current = optionById.get(selectedValue);
-  while (current?.parentId) {
-    collapsed.delete(current.parentId);
-    current = optionById.get(current.parentId);
+  while (current) {
+    collapsed.delete(current.id);
+    current = current.parentId ? optionById.get(current.parentId) : undefined;
   }
   return collapsed;
 }
@@ -244,6 +262,19 @@ function buildVisibleOptions(
   return filtered.filter((option) => !hasCollapsedAncestor(option, collapsedGroups, optionById));
 }
 
+function isDescendantOf(
+  option: SmartSelectOption,
+  ancestorId: string,
+  optionById: Map<string, SmartSelectOption>,
+) {
+  let parentId = option.parentId;
+  while (parentId) {
+    if (parentId === ancestorId) return true;
+    parentId = optionById.get(parentId)?.parentId;
+  }
+  return false;
+}
+
 function findInitialFocusedIndex(
   visible: SmartSelectOption[],
   mode: "single" | "multi",
@@ -264,19 +295,31 @@ function isSelectable(option: SmartSelectOption) {
   return !option.isHeader;
 }
 
-function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOption[]) {
-  const behavior = props.behavior;
-  const legacyCycleButton = props.onCycleOwnerFilter ? (
+function renderCycleActionButton(action?: SmartSelectCycleAction) {
+  if (!action) return undefined;
+  return (
     <button
       type="button"
-      onClick={props.onCycleOwnerFilter}
-      title={`所有人：${props.ownerFilterLabel || "全部"}`}
-      aria-label={`切换所有人，当前 ${props.ownerFilterLabel || "全部"}`}
+      onClick={action.onClick}
+      title={action.title ?? action.label ?? "循环切换"}
+      aria-label={action.ariaLabel ?? action.label ?? "循环切换"}
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
     >
-      <Repeat className="h-3 w-3" />
+      {action.icon ?? <Repeat className="h-3 w-3" />}
     </button>
-  ) : undefined;
+  );
+}
+
+function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOption[]) {
+  const behavior = props.behavior;
+  const legacyCycleAction = props.onCycleOwnerFilter
+    ? {
+        onClick: props.onCycleOwnerFilter,
+        title: `所有人：${props.ownerFilterLabel || "全部"}`,
+        ariaLabel: `切换所有人，当前 ${props.ownerFilterLabel || "全部"}`,
+      }
+    : undefined;
+  const cycleAction = behavior?.cycleAction ?? props.cycleAction ?? legacyCycleAction;
 
   return {
     hierarchy: resolveHierarchyBehavior(options, behavior?.hierarchy),
@@ -291,9 +334,12 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
-    headerExtra: behavior?.headerExtra ?? props.headerExtra ?? legacyCycleButton,
+    headerExtra: behavior?.headerExtra ?? props.headerExtra,
+    cycleAction,
     minDropdownWidth: behavior?.minDropdownWidth,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
+    density: behavior?.density ?? "regular",
+    expandedGroupColumns: behavior?.expandedGroupColumns,
     create: behavior?.create ?? (props.onCreateClick
       ? {
           type: "button" as const,
@@ -320,8 +366,11 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
     headerExtra: behavior?.headerExtra,
+    cycleAction: behavior?.cycleAction,
     minDropdownWidth: behavior?.minDropdownWidth,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
+    density: behavior?.density ?? "regular",
+    expandedGroupColumns: behavior?.expandedGroupColumns,
     create: behavior?.create ?? (props.onInlineCreate
       ? {
           type: "inline" as const,
@@ -362,10 +411,20 @@ export function SmartSelect(props: SmartSelectProps) {
     accordionGroups,
     groupSelectOnDoubleClick,
     headerExtra,
+    cycleAction,
     minDropdownWidth,
     dropdownMaxHeight,
+    density,
+    expandedGroupColumns,
     create,
   } = normalizedBehavior;
+  const compact = density === "compact";
+  const rowHeight = compact ? 30 : 36;
+  const headerHeight = compact ? 34 : 42;
+  const singleGridColumns = mode === "single" && expandedGroupColumns
+    ? Math.max(2, Math.min(6, Math.floor(expandedGroupColumns)))
+    : undefined;
+  const fullGridRowStyle = singleGridColumns ? { gridColumn: "1 / -1" } : undefined;
 
   const isSingleCreateButton = mode === "single" && create?.type === "button" ? create : undefined;
   const isMultiInlineCreate = mode === "multi" && create?.type === "inline" ? create : undefined;
@@ -418,15 +477,15 @@ export function SmartSelect(props: SmartSelectProps) {
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const minWidth = Math.max(isSingleCreateButton ? 300 : 0, minDropdownWidth ?? 0);
+    const minWidth = Math.max(isSingleCreateButton && !compact ? 300 : 0, minDropdownWidth ?? 0);
     const width = Math.min(Math.max(rect.width, minWidth), window.innerWidth - 16);
     const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
-    const estimatedHeight = (searchable ? 42 : 0)
-      + ((isSingleCreateButton || isMultiInlineCreate) ? 42 : 0)
+    const estimatedHeight = (searchable ? headerHeight : 0)
+      + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
       + Math.min(
         visible.length || effectiveOptions.length || 1,
-        Math.max(4, Math.floor((dropdownMaxHeight ?? 240) / 36)),
-      ) * 36
+        Math.max(4, Math.floor((dropdownMaxHeight ?? 240) / rowHeight)),
+      ) * rowHeight
       + 16;
     const below = window.innerHeight - rect.bottom;
     const above = rect.top;
@@ -435,7 +494,7 @@ export function SmartSelect(props: SmartSelectProps) {
       ? Math.max(8, rect.top - estimatedHeight - 4)
       : rect.bottom + 4;
     setDropdownPos({ top, left, width });
-  }, [dropdownMaxHeight, effectiveOptions.length, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, searchable, visible.length]);
+  }, [compact, dropdownMaxHeight, effectiveOptions.length, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, rowHeight, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -461,9 +520,26 @@ export function SmartSelect(props: SmartSelectProps) {
     setCollapsedGroups((prev) => {
       if (accordionGroups) {
         const optionById = new Map(effectiveOptions.map((option) => [option.id, option]));
-        if (!prev.has(groupId)) {
-          const next = new Set(collapsibleOptionIds);
-          let current = optionById.get(groupId);
+        const target = optionById.get(groupId);
+        if (target && prev.has(groupId)) {
+          const next = new Set(prev);
+          next.delete(groupId);
+
+          for (const option of effectiveOptions) {
+            if (!(option.isHeader || option.isGroup) || option.id === groupId) continue;
+            const sameParent = option.parentId === target.parentId;
+            const underSibling = option.parentId
+              ? effectiveOptions.some((sibling) =>
+                  (sibling.isHeader || sibling.isGroup)
+                  && sibling.id !== groupId
+                  && sibling.parentId === target.parentId
+                  && isDescendantOf(option, sibling.id, optionById),
+                )
+              : false;
+            if (sameParent || underSibling) next.add(option.id);
+          }
+
+          let current: SmartSelectOption | undefined = target;
           while (current) {
             next.delete(current.id);
             current = current.parentId ? optionById.get(current.parentId) : undefined;
@@ -693,7 +769,7 @@ export function SmartSelect(props: SmartSelectProps) {
     <div
       ref={dropdownRef}
       onKeyDown={handleDropdownKeyDown}
-      className="overflow-hidden rounded-[12px] border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+      className={`overflow-hidden ${compact ? "rounded-[10px]" : "rounded-[12px]"} border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]`}
       style={{
         position: "fixed",
         top: dropdownPos.top,
@@ -704,8 +780,8 @@ export function SmartSelect(props: SmartSelectProps) {
     >
       {mode === "single" ? (
         <>
-          {(searchable || isSingleCreateButton || headerExtra) ? (
-            <div className="flex items-center gap-1 border-b border-slate-200/70 px-2 pt-2 pb-1">
+          {(searchable || isSingleCreateButton || cycleAction || headerExtra) ? (
+            <div className={`flex items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
               {searchable ? (
                 <input
                   data-search
@@ -734,6 +810,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   <Plus className="h-[18px] w-[18px]" />
                 </button>
               ) : null}
+              {renderCycleActionButton(cycleAction)}
               {headerExtra}
             </div>
           ) : null}
@@ -742,8 +819,11 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className="overflow-y-auto"
-            style={{ maxHeight: dropdownMaxHeight ?? 240 }}
+            className={`overflow-y-auto ${singleGridColumns ? "grid gap-1 p-1" : ""}`}
+            style={{
+              maxHeight: dropdownMaxHeight ?? 240,
+              ...(singleGridColumns ? { gridTemplateColumns: `repeat(${singleGridColumns}, minmax(0, 1fr))` } : {}),
+            }}
           >
             {visible.map((option, index) => {
               if (option.isHeader) {
@@ -751,7 +831,8 @@ export function SmartSelect(props: SmartSelectProps) {
                 return (
                   <div
                     key={option.id}
-                    className={`flex h-8 w-full items-center justify-between px-3 text-xs font-medium transition-colors ${
+                    style={fullGridRowStyle}
+                    className={`flex ${compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
                       index === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
                     }`}
                     onMouseEnter={() => setFocusedIndex(index)}
@@ -786,6 +867,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   <button
                     key={option.id}
                     id={`${listId}-${index}`}
+                    style={fullGridRowStyle}
                     type="button"
                     role="option"
                     aria-selected={selected}
@@ -800,7 +882,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       if (groupSelectOnDoubleClick) selectSingle(option.id);
                     }}
                     onMouseEnter={() => setFocusedIndex(index)}
-                    className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
+                    className={`flex ${compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
                       index === focusedIndex ? "bg-blue-50" : ""
                     } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                   >
@@ -824,7 +906,7 @@ export function SmartSelect(props: SmartSelectProps) {
                         </>
                       ) : null}
                     </span>
-                    <span className="flex-1 truncate">{option.label}</span>
+                    <span className="flex-1 truncate">{singleGridColumns ? stripIndent(option.label) : option.label}</span>
                     {option.subLabel ? (
                       <span className="shrink-0 text-[10px] text-slate-400">{option.subLabel}</span>
                     ) : null}
@@ -833,6 +915,7 @@ export function SmartSelect(props: SmartSelectProps) {
               }
 
               const selected = option.id === value;
+              const optionLabel = singleGridColumns ? stripIndent(option.label) : option.label;
               return (
                 <button
                   key={option.id}
@@ -842,11 +925,15 @@ export function SmartSelect(props: SmartSelectProps) {
                   aria-selected={selected}
                   onClick={() => selectSingle(option.id)}
                   onMouseEnter={() => setFocusedIndex(index)}
-                  className={`flex h-9 w-full items-center gap-1.5 px-3 text-left text-sm transition-colors ${
-                    index === focusedIndex ? "bg-blue-50" : ""
-                  } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
+                  className={singleGridColumns
+                    ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                        index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
+                      } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+                    : `flex ${compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                        index === focusedIndex ? "bg-blue-50" : ""
+                      } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                 >
-                  <span className="truncate">{option.label}</span>
+                  <span className="min-w-0 truncate">{optionLabel}</span>
                   {option.subLabel ? (
                     <span className="shrink-0 text-[10px] text-slate-400">{option.subLabel}</span>
                   ) : null}
@@ -854,7 +941,10 @@ export function SmartSelect(props: SmartSelectProps) {
               );
             })}
             {visible.length === 0 ? (
-              <div className="px-3 py-4 text-center text-xs text-slate-400">
+              <div
+                style={fullGridRowStyle}
+                className="px-3 py-4 text-center text-xs text-slate-400"
+              >
                 {search ? `没有匹配“${search}”的选项` : "暂无选项"}
               </div>
             ) : null}
@@ -862,18 +952,24 @@ export function SmartSelect(props: SmartSelectProps) {
         </>
       ) : (
         <>
-          {searchable ? (
-            <div className="border-b border-slate-200/70 px-2 pt-2 pb-1">
-              <input
-                data-search
-                value={search}
-                onChange={(event) => {
-                  setSearch(event.target.value);
-                  setFocusedIndex(0);
-                }}
-                className="h-7 w-full rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="搜索..."
-              />
+          {(searchable || cycleAction || headerExtra) ? (
+            <div className={`flex items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
+              {searchable ? (
+                <input
+                  data-search
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setFocusedIndex(0);
+                  }}
+                  className="h-7 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  placeholder="搜索..."
+                />
+              ) : (
+                <div className="flex-1" />
+              )}
+              {renderCycleActionButton(cycleAction)}
+              {headerExtra}
             </div>
           ) : null}
 
@@ -998,7 +1094,7 @@ export function SmartSelect(props: SmartSelectProps) {
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}
-        className="flex h-9 w-full items-center justify-between rounded-[10px] border border-slate-300/70 bg-surface-white px-3 text-sm outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100"
+        className={`flex ${compact ? "h-8 rounded-[8px] px-2 text-xs" : "h-9 rounded-[10px] px-3 text-sm"} w-full items-center justify-between border border-slate-300/70 bg-surface-white outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100`}
       >
         {mode === "single" ? (
           <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex min-w-0 items-center truncate`}>

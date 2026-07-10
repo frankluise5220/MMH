@@ -3,12 +3,13 @@
 import { useState, useEffect } from "react";
 import { Plus, Trash2, Pencil, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
-import { PRODUCT_LABELS, type ProductType } from "@/lib/investment-config";
+import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
 import { isDepositAccount } from "@/lib/account-kind-utils";
+import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
 
 /* ---- Render icon from kindIconName ---- */
@@ -36,6 +37,7 @@ type Account = {
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
   fundUnitsDecimals?: number | null;
+  tradingCalendar?: string | null;
 };
 
 const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
@@ -56,6 +58,7 @@ export default function SettingsAccountsPage() {
   const accountKindLabel = (kind: string) => t(`account.kind.${kind}`);
   const institutionKindLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
   const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
+  const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -164,6 +167,7 @@ export default function SettingsAccountsPage() {
       investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 3),
+      tradingCalendar: a.tradingCalendar || "cn_fund",
     });
   }
 
@@ -306,6 +310,8 @@ export default function SettingsAccountsPage() {
                       const normalizedKind = normalizedAccountKind(a);
                       const editKind = (editForm.kind || normalizedKind) as AccountKind;
                       const isInvestmentKind = editKind === "investment";
+                      const editInvestProductType = editForm.investProductType || "fund";
+                      const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
                       const isBillLikeKind = editKind === "bank_credit";
                       const filteredInstitutions = institutions.filter((institution) =>
                         editKind === "loan" ? institution.type === "debt" : institution.type !== "debt",
@@ -363,7 +369,7 @@ export default function SettingsAccountsPage() {
                       {isInvestmentKind && (
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
-                          <select value={editForm.investProductType || "fund"} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
+                          <select value={editInvestProductType} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
                             {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
                           </select>
@@ -373,16 +379,18 @@ export default function SettingsAccountsPage() {
 
                     {isInvestmentKind && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.costBasisMethod")}</label>
-                          <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                            <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
-                            <option value="fifo">{t("settings.accounts.fifo")}</option>
-                            <option value="lifo">{t("settings.accounts.lifo")}</option>
-                          </select>
-                        </div>
-                        {(editForm.investProductType || "fund") === "fund" && (
+                        {showCostBasisMethod && (
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.costBasisMethod")}</label>
+                            <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
+                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                              <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
+                              <option value="fifo">{t("settings.accounts.fifo")}</option>
+                              <option value="lifo">{t("settings.accounts.lifo")}</option>
+                            </select>
+                          </div>
+                        )}
+                        {editInvestProductType === "fund" && (
                           <div>
                             <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.fundUnitsDecimals")}</label>
                             <input
@@ -392,6 +400,20 @@ export default function SettingsAccountsPage() {
                               inputMode="numeric"
                               placeholder={t("settings.accounts.defaultUnitsDecimals")}
                             />
+                          </div>
+                        )}
+                        {supportsTradingCalendarForAccount(editKind, editInvestProductType) && (
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.tradingCalendar")}</label>
+                            <select
+                              value={editForm.tradingCalendar || "cn_fund"}
+                              onChange={e => setEditForm(f => ({ ...f, tradingCalendar: e.target.value }))}
+                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                            >
+                              {TRADING_CALENDARS.map((calendar) => (
+                                <option key={calendar} value={calendar}>{t(`tradingCalendar.${calendar}`)}</option>
+                              ))}
+                            </select>
                           </div>
                         )}
                       </div>
@@ -454,6 +476,11 @@ export default function SettingsAccountsPage() {
                       {normalizedAccountKind(a) === "investment" && (a.investProductType ?? "fund") === "fund" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
                           {tf("settings.accounts.unitsDecimals", { count: a.fundUnitsDecimals ?? 3 })}
+                        </span>
+                      )}
+                      {supportsTradingCalendarForAccount(normalizedAccountKind(a), a.investProductType) && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+                          {tradingCalendarLabel(a.tradingCalendar ?? "cn_fund")}
                         </span>
                       )}
                       {normalizedAccountKind(a) === "bank_credit" && (

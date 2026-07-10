@@ -41,6 +41,7 @@ model Account {
   costBasisMethod                                            CostBasisMethod?
   defaultConfirmDays                                         Int?
   defaultArrivalDays                                         Int?
+  tradingCalendar                                            TradingCalendar?
   defaultFundQueryApiId                                      String?
   fundUnitsDecimals                                          Int                 @default(3)
   FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
@@ -56,8 +57,10 @@ model Account {
   FundFeeRate                                                FundFeeRate[]
   FundHolding                                                FundHolding[]
   FundSnapshot                                               FundSnapshot[]
+  FundTransaction                                             FundTransaction[]
   InsuranceProduct                                           InsuranceProduct[]
   LoanRateAdjustment                                         LoanRateAdjustment[]
+  PreciousMetalHolding                                       PreciousMetalHolding[]
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[] @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[] @relation("RegularInvestPlan_cashAccountIdToAccount")
   transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
@@ -327,6 +330,61 @@ model FundSnapshot {
   @@index([snapshotDate])
 }
 
+model FundTransaction {
+  id                  String                    @id @default(cuid())
+  householdId         String
+  fundAccountId       String
+  cashAccountId       String?
+  cashEntryId         String?                   @unique
+  fundCode            String
+  fundName            String?
+  fundProductType     FundProductType           @default(fund)
+  fundSubtype         FundSubtype
+  source              String?                   @default("manual")
+  applyDate           DateTime
+  confirmDate         DateTime?
+  arrivalDate         DateTime?
+  grossAmount         Decimal                   @db.Decimal(18, 2)
+  refundAmount        Decimal                   @default(0) @db.Decimal(18, 2)
+  arrivalAmount       Decimal?                  @db.Decimal(18, 2)
+  fee                 Decimal?                  @db.Decimal(18, 2)
+  nav                 Decimal?                  @db.Decimal(18, 6)
+  units               Decimal?                  @db.Decimal(20, 6)
+  realizedProfit      Decimal?                  @db.Decimal(18, 2)
+  regularInvestPlanId String?
+  note                String?
+  deletedAt           DateTime?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @default(now()) @updatedAt
+  Account             Account                   @relation(fields: [fundAccountId], references: [id], onDelete: Cascade)
+  Household           Household                 @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  cashFlows           FundTransactionCashFlow[]
+
+  @@index([householdId, fundAccountId, fundCode])
+  @@index([cashEntryId])
+  @@index([fundAccountId, applyDate])
+  @@index([fundAccountId, fundCode, applyDate])
+  @@index([deletedAt])
+  @@map("fund_transactions")
+}
+
+model FundTransactionCashFlow {
+  id                String           @id @default(cuid())
+  fundTransactionId String
+  txRecordId        String           @unique
+  kind              FundCashFlowKind
+  amount            Decimal          @db.Decimal(18, 2)
+  flowDate          DateTime
+  accountId         String?
+  createdAt         DateTime         @default(now())
+  FundTransaction   FundTransaction  @relation(fields: [fundTransactionId], references: [id], onDelete: Cascade)
+
+  @@index([fundTransactionId])
+  @@index([txRecordId])
+  @@index([accountId, flowDate])
+  @@map("fund_transaction_cash_flows")
+}
+
 model Household {
   id                String              @id @default(cuid())
   name              String
@@ -338,14 +396,19 @@ model Household {
   Counterparty      Counterparty[]
   EmailAccount      EmailAccount[]
   FundQueryApi      FundQueryApi[]
+  FundTransaction   FundTransaction[]
   ImportBatch       ImportBatch[]
   InsuranceProductMaster InsuranceProductMaster[]
   InsuranceProduct  InsuranceProduct[]
   Institution       Institution[]
   LoanRateAdjustment LoanRateAdjustment[]
+  PreciousMetalType PreciousMetalType[]
+  PreciousMetalUnit PreciousMetalUnit[]
+  PreciousMetalHolding PreciousMetalHolding[]
   RegularInvestPlan RegularInvestPlan[]
   Tag               Tag[]
   User              User[]
+  WealthProduct     WealthProduct[]
   transactions      TxRecord[]
 }
 
@@ -389,6 +452,7 @@ model Institution {
   InsuranceProductAsPolicyholder InsuranceProduct[] @relation("InsuranceProductPolicyholder")
   InsuranceProductAsInsured InsuranceProduct[] @relation("InsuranceProductInsured")
   CounterpartyAsSource Counterparty[]
+  WealthProduct WealthProduct[]
   Household   Household? @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
@@ -413,6 +477,96 @@ model InsuranceProductMaster {
   @@unique([householdId, institutionId, name, productType])
   @@index([householdId, productType])
   @@index([institutionId])
+}
+
+model WealthProduct {
+  id            String      @id @default(cuid())
+  name          String
+  shortName     String?
+  currency      String      @default("CNY")
+  annualRate    Decimal?    @db.Decimal(10, 6)
+  termDays      Int?
+  note          String?
+  isActive      Boolean     @default(true)
+  householdId   String
+  institutionId String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @default(now()) @updatedAt
+  Household     Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution   Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  TxRecord      TxRecord[]
+
+  @@unique([householdId, institutionId, name])
+  @@index([householdId, isActive, name])
+  @@index([institutionId])
+}
+
+model PreciousMetalType {
+  id          String     @id @default(cuid())
+  code        String
+  name        String
+  shortName   String?
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  isSystem    Boolean    @default(false)
+  householdId String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @default(now()) @updatedAt
+  Household   Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  TxRecord    TxRecord[]
+  PreciousMetalHolding PreciousMetalHolding[]
+
+  @@unique([householdId, code])
+  @@index([householdId, isActive, sortOrder])
+  @@index([name])
+}
+
+model PreciousMetalUnit {
+  id          String     @id @default(cuid())
+  code        String
+  name        String
+  symbol      String?
+  decimals    Int        @default(3)
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  isSystem    Boolean    @default(false)
+  householdId String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @default(now()) @updatedAt
+  Household   Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  TxRecord    TxRecord[]
+  PreciousMetalHolding PreciousMetalHolding[]
+
+  @@unique([householdId, code])
+  @@index([householdId, isActive, sortOrder])
+  @@index([name])
+}
+
+model PreciousMetalHolding {
+  id               String   @id @default(cuid())
+  accountId        String
+  metalTypeId      String
+  metalTypeName    String
+  metalUnitId      String
+  metalUnitName    String
+  quantity         Decimal  @default(0) @db.Decimal(20, 6)
+  avgCost          Decimal  @default(0) @db.Decimal(20, 6)
+  cost             Decimal  @default(0) @db.Decimal(18, 2)
+  unitPrice        Decimal? @db.Decimal(20, 6)
+  marketValue      Decimal  @default(0) @db.Decimal(18, 2)
+  historicalProfit Decimal  @default(0) @db.Decimal(18, 2)
+  householdId      String
+  updatedAt        DateTime @default(now()) @updatedAt
+  Account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household        Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  PreciousMetalType PreciousMetalType @relation(fields: [metalTypeId], references: [id], onDelete: Cascade)
+  PreciousMetalUnit PreciousMetalUnit @relation(fields: [metalUnitId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, metalTypeId, metalUnitId])
+  @@index([householdId])
+  @@index([accountId])
+  @@index([metalTypeId])
+  @@index([metalUnitId])
 }
 
 model RegularInvestPlan {
@@ -636,6 +790,7 @@ model InsuranceProduct {
 model TxRecord {
   id                  String            @id @default(cuid())
   date                DateTime
+  postedAt            DateTime?
   type                TransactionType
   amount              Decimal           @db.Decimal(18, 2)
   accountId           String
@@ -646,6 +801,13 @@ model TxRecord {
   categoryName        String?
   fundCode            String?
   fundProductType     FundProductType?
+  metalTypeId         String?
+  metalTypeName       String?
+  metalUnitId         String?
+  metalUnitName       String?
+  metalQuantity       Decimal?          @db.Decimal(20, 6)
+  metalUnitPrice      Decimal?          @db.Decimal(20, 6)
+  metalFee            Decimal?          @db.Decimal(18, 2)
   confirmDate         DateTime?
   statementMonth      String?           @db.VarChar(7)
   note                String?
@@ -655,6 +817,7 @@ model TxRecord {
   householdId         String?
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @default(now()) @updatedAt
+  dayOrder            Int               @default(0)
   currency            String            @default("CNY")
   paymentChannelId    String?
   paymentChannelName  String?
@@ -666,6 +829,7 @@ model TxRecord {
   depositAnnualRate   Decimal?          @db.Decimal(10, 6)
   depositInterest     Decimal?          @db.Decimal(18, 2)
   depositSourceEntryId String?
+  fundSourceEntryId   String?
   debtPrincipalAmount Decimal?          @db.Decimal(18, 2)
   debtInterestAmount  Decimal?          @db.Decimal(18, 2)
   debtFeeAmount       Decimal?          @db.Decimal(18, 2)
@@ -677,6 +841,7 @@ model TxRecord {
   realizedProfit      Decimal?          @db.Decimal(18, 2)
   regularInvestPlanId String?
   fundName            String?
+  wealthProductId     String?
   insuranceProductId  String?
   insuranceAction     String?
   insuranceProductName String?
@@ -688,14 +853,23 @@ model TxRecord {
   Household           Household?        @relation(fields: [householdId], references: [id])
   ImportBatch         ImportBatch?      @relation(fields: [importBatchId], references: [id])
   InsuranceProduct    InsuranceProduct? @relation(fields: [insuranceProductId], references: [id], onDelete: SetNull)
+  WealthProduct       WealthProduct?    @relation(fields: [wealthProductId], references: [id], onDelete: SetNull)
+  PreciousMetalType   PreciousMetalType? @relation(fields: [metalTypeId], references: [id], onDelete: SetNull)
+  PreciousMetalUnit   PreciousMetalUnit? @relation(fields: [metalUnitId], references: [id], onDelete: SetNull)
   toAccount           Account?          @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
 
   @@index([accountId, date])
+  @@index([accountId, date, dayOrder])
+  @@index([accountId, postedAt])
   @@index([accountId, statementMonth])
   @@index([counterpartyInstitutionId])
   @@index([deletedAt])
   @@index([depositSourceEntryId])
+  @@index([fundSourceEntryId])
   @@index([insuranceProductId])
+  @@index([wealthProductId])
+  @@index([metalTypeId])
+  @@index([metalUnitId])
   @@index([regularInvestPlanId])
   @@index([toAccountId, fundProductType])
   @@index([type])
@@ -762,6 +936,14 @@ enum FundProductType {
   money
   wealth
   deposit
+  metal
+}
+
+enum TradingCalendar {
+  cn_fund
+  hk_fund
+  us_fund
+  generic_weekday
 }
 
 enum FundSubtype {
@@ -773,6 +955,17 @@ enum FundSubtype {
   switch_in
   switch_out
   buy_failed
+}
+
+enum FundCashFlowKind {
+  buy_out
+  refund_in
+  redeem_in
+  dividend_in
+  dividend_reinvest_internal
+  switch_in
+  switch_out
+  other
 }
 
 enum InsuranceProductType {

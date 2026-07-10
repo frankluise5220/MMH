@@ -149,7 +149,7 @@ export default function PasswordRecoverySettingsPage() {
         </div>
         {status.hasEmailService ? (
           <div className="mt-1 text-xs text-emerald-700">
-            已启用，登录页会显示“忘记密码”。当前可用：{status.hasSmtp ? "SMTP" : ""}{status.hasSmtp && status.hasResend ? "、" : ""}{status.hasResend ? "Resend" : ""}。
+            已启用，登录页会显示“忘记密码”。当前优先使用 {status.hasResend ? "Resend" : "SMTP"}{status.hasResend && status.hasSmtp ? "，SMTP 作为备用" : ""}。
           </div>
         ) : (
           <div className="mt-1 text-xs text-amber-700">未启用，请配置 SMTP 邮箱账户或 Resend 发件服务。</div>

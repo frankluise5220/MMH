@@ -1,12 +1,12 @@
-import { sendEmailByResend, hasResendConfig } from "./resend";
-import { sendEmail, hasSmtpConfig } from "./smtp";
-import { prisma } from "@/lib/db/prisma";
+import { sendEmailByResend, hasAnyResendConfig } from "./resend";
+import { sendEmail, hasAnySmtpConfig } from "./smtp";
 
 type PasswordResetEmailParams = {
   to: string;
   username: string;
   code: string;
   expiresMinutes: number;
+  householdId?: string | null;
 };
 
 export type SendEmailResult = {
@@ -30,51 +30,44 @@ function buildPasswordResetContent(params: PasswordResetEmailParams) {
 }
 
 /** 检查是否有可用的邮件发件服务（密码找回自动启用条件） */
-export async function hasEmailService(): Promise<boolean> {
-  // SMTP（env + EmailAccount + UserSettings）
-  if (hasSmtpConfig()) return true;
-  try {
-    const account = await prisma.emailAccount.findFirst({
-      where: { smtpHost: { not: null }, smtpFrom: { not: null } },
-    });
-    if (account?.smtpHost && account?.smtpFrom) return true;
-  } catch {}
+export async function hasEmailService(householdId?: string | null): Promise<boolean> {
+  // Resend 为首选通道
+  if (await hasAnyResendConfig()) return true;
 
-  // Resend（env + SystemSetting + UserSettings）
-  if (hasResendConfig()) return true;
-  try {
-    const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
-    if (setting) {
-      const parsed = JSON.parse(setting.value) as { apiKey?: string };
-      if (parsed.apiKey) return true;
-    }
-  } catch {}
+  // SMTP（env + EmailAccount + UserSettings）为备用
+  if (await hasAnySmtpConfig(householdId)) return true;
 
   return false;
 }
 
 export async function sendPasswordResetEmail(params: PasswordResetEmailParams): Promise<SendEmailResult> {
   // 检查是否有邮件服务
-  if (!await hasEmailService()) {
+  if (!await hasEmailService(params.householdId)) {
     return { ok: false, error: "未配置邮件服务，无法发送密码找回邮件。请在设置中配置 SMTP 或 Resend。" };
   }
 
   const content = buildPasswordResetContent(params);
 
-  // SMTP 优先（可发到任意邮箱），Resend 备选
-  if (hasSmtpConfig()) {
-    return sendEmail({ to: params.to, ...content });
-  }
-  // 尝试数据库 SMTP
-  try {
-    const account = await prisma.emailAccount.findFirst({
-      where: { smtpHost: { not: null }, smtpFrom: { not: null } },
-    });
-    if (account?.smtpHost && account?.smtpFrom) {
-      return sendEmail({ to: params.to, ...content });
+  // Resend 优先
+  if (await hasAnyResendConfig()) {
+    const resendResult = await sendEmailByResend({ to: params.to, ...content });
+    if (resendResult.ok) {
+      return resendResult;
     }
-  } catch {}
+    if (await hasAnySmtpConfig(params.householdId)) {
+      const smtpResult = await sendEmail({ to: params.to, householdId: params.householdId, ...content });
+      if (smtpResult.ok) {
+        return smtpResult;
+      }
+      return { ok: false, error: `${resendResult.error ?? "Resend 发信失败"}；SMTP 备用通道也发送失败：${smtpResult.error ?? "未知错误"}` };
+    }
+    return resendResult;
+  }
 
-  // Resend
-  return sendEmailByResend({ to: params.to, ...content });
+  // SMTP 备用
+  if (await hasAnySmtpConfig(params.householdId)) {
+    return sendEmail({ to: params.to, householdId: params.householdId, ...content });
+  }
+
+  return { ok: false, error: "未配置邮件服务，无法发送密码找回邮件。请在设置中配置 Resend 或 SMTP。" };
 }

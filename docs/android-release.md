@@ -61,6 +61,12 @@ Release 说明里写清楚：
 - 是否需要重新登录或重新同步本地缓存。
 - 主要变更和已知问题。
 
+可以直接参考：
+
+- [Release 说明模板](/E:/fs/wiseme/docs/release-notes-template.md)
+
+如果在 GitHub 创建 Release 时使用 `Generate release notes`，仓库会按 `.github/release.yml` 自动分组生成一版说明；再手工补一段“本次更新”摘要即可。
+
 ## 5. 手机安装和升级
 
 手机第一次安装需要允许“安装未知来源应用”。升级时直接安装新版 APK 即可覆盖旧版，但前提是新旧 APK 使用同一个 release keystore 签名。

@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Pencil, Trash2 } from "lucide-react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 type EditPayload = {
   requestId?: string;
   entryId: string;
+  targetEntryId?: string;
   type: "expense" | "income" | "transfer" | "investment";
   date: string;
+  postedAt?: string | null;
   amount: number;
   note: string;
   toNote?: string;
@@ -21,6 +23,14 @@ type EditPayload = {
   cashAccountId?: string;
   fundCode?: string;
   fundName?: string;
+  wealthProductId?: string | null;
+  metalTypeId?: string | null;
+  metalTypeName?: string | null;
+  metalUnitId?: string | null;
+  metalUnitName?: string | null;
+  metalQuantity?: number | null;
+  metalUnitPrice?: number | null;
+  metalFee?: number | null;
   insuranceProductId?: string | null;
   insuranceAction?: "premium" | "refund";
   insuranceProductName?: string;
@@ -35,6 +45,21 @@ type EditPayload = {
   fundArrivalDate?: string | null;
   fundProductType?: string;
   source?: string | null;
+  linkedCandidateEntries?: Array<{
+    id?: string;
+    date: string;
+    createdAt?: string | null;
+    fundConfirmDate?: string | null;
+    fundArrivalDate?: string | null;
+    fundCode: string;
+    fundSubtype: string;
+    fundUnits: number | null;
+    source: string | null;
+    accountId?: string | null;
+    toAccountId?: string | null;
+    fundSourceEntryId?: string | null;
+    amount?: number;
+  }>;
   tagIds?: string[];
 };
 
@@ -47,7 +72,6 @@ export function EntryRowActions({
   edit?: Omit<EditPayload, "entryId">;
   customEditEvent?: { name: string; detail: Record<string, unknown> };
 }) {
-  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
@@ -57,8 +81,9 @@ export function EntryRowActions({
       return;
     }
     if (!edit) return;
-    const requestId = `edit-${entryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const detail = { requestId, entryId, ...edit } satisfies EditPayload;
+    const editEntryId = edit.targetEntryId || entryId;
+    const requestId = `edit-${editEntryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const detail = { requestId, entryId: editEntryId, ...edit } satisfies EditPayload;
 
     const pt = edit.fundProductType;
     if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
@@ -96,8 +121,7 @@ export function EntryRowActions({
       if (!data?.ok) {
         throw new Error(data?.error ?? `删除失败（HTTP ${res.status}）`);
       }
-      window.dispatchEvent(new CustomEvent("mmh:fund:refresh", { detail: { deletedEntryIds: [entryId] } }));
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: [entryId], entryIds: [entryId] });
 
     } catch (e) {
       const msg =

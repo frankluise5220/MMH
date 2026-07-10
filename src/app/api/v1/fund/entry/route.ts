@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
@@ -73,6 +74,7 @@ export async function PUT(req: NextRequest) {
       where: { id },
       data: updateData,
     });
+    await syncFundTransactionsFromTxRecords([id]);
 
     // 重新计算持仓 — 区分买入/赎回确定投资账户ID
     // 买入类：accountId=资金账户, toAccountId=投资账户
@@ -133,6 +135,7 @@ export async function DELETE(req: NextRequest) {
       where: { id },
       data: { deletedAt: new Date() },
     });
+    await syncFundTransactionsFromTxRecords([id]);
 
     if (investmentAccId && fundCode) {
       await recalcFundPositions(investmentAccId, [fundCode]).catch(logger.catchLog("操作失败", "route.ts"));

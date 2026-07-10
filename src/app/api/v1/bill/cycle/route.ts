@@ -16,6 +16,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { addDaysUtc, clampDay, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 function parseDateOnly(value: unknown): Date | null {
   const raw = String(value ?? "").trim();
@@ -171,25 +172,13 @@ export async function PATCH(req: Request) {
           { statementMonth: null, date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) }, deletedAt: null },
         ],
       };
-      const [expenseAgg, incomeAgg, transferIncomeAgg, paidAgg] = await Promise.all([
+      const [expenseAgg, incomeAgg, paidAgg] = await Promise.all([
         prisma.txRecord.aggregate({
           where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.expense }] },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
           where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.income }] },
-          _sum: { amount: true },
-        }),
-        prisma.txRecord.aggregate({
-          where: {
-            AND: [
-              cycleWindow,
-              { OR: [{ accountId }, { toAccountId: accountId }] },
-              { type: TransactionType.transfer },
-              { toAccountId: accountId },
-              { amount: { lt: 0 } },
-            ],
-          },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
@@ -206,22 +195,21 @@ export async function PATCH(req: Request) {
         }),
       ]);
 
-      const transferIncome = Math.max(0, -toNumber(transferIncomeAgg._sum.amount ?? 0));
       const expenseAbs = Math.max(0, -toNumber(expenseAgg._sum.amount ?? 0));
-      const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0) + transferIncome);
-      const netCycle = toNumber(expenseAgg._sum.amount ?? 0) + toNumber(incomeAgg._sum.amount ?? 0) + transferIncome;
+      const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0));
+      const netCycle = toNumber(expenseAgg._sum.amount ?? 0) + toNumber(incomeAgg._sum.amount ?? 0);
       const rawBill = Math.max(0, -netCycle);
       const paid = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
 
       recalculated.push({ ...cycle, expenseAbs, income, paid, rawBill });
     }
 
-    let previousEffective = 0;
+    let previousBalance = 0;
     for (const cycle of recalculated) {
       const override = overrideByMonth.get(cycle.statementMonth);
-      const effectiveBill = override !== undefined ? override : previousEffective + cycle.rawBill;
-      previousEffective = effectiveBill;
+      const effectiveBill = override !== undefined ? override : Math.max(0, previousBalance + cycle.rawBill);
       const afterPaid = effectiveBill - cycle.paid;
+      previousBalance = afterPaid;
       cycle.effectiveBill = effectiveBill;
       cycle.cumulativeRemain = Math.max(0, afterPaid);
       cycle.cumulativeOverpaid = Math.max(0, -afterPaid);
@@ -253,6 +241,7 @@ export async function PATCH(req: Request) {
       }
     });
 
+    revalidateAfterTxChange();
     return NextResponse.json({
       ok: true,
       data: {

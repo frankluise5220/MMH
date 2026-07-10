@@ -1,8 +1,9 @@
-﻿"use client";
+"use client";
 
 import { ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
@@ -10,7 +11,9 @@ import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { kindLabel } from "@/lib/account-kinds";
+import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
@@ -20,6 +23,14 @@ type AccountOption = {
   label: string;
   icon?: string;
   subLabel?: string;
+  kind?: string | null;
+  investProductType?: string | null;
+  debtDirection?: string | null;
+  institutionId?: string | null;
+  currency?: string | null;
+  isHeader?: boolean;
+  isGroup?: boolean;
+  parentId?: string;
 };
 
 type CategoryOption = {
@@ -56,6 +67,21 @@ function normalizeYmd(value: string | undefined) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function toDateTimeLocalValue(value: string | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00`;
+  const normalized = raw.replace(" ", "T");
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) return normalized.slice(0, 16);
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "";
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    String(d.getDate()).padStart(2, "0"),
+  ].join("-") + `T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function findAccountIdByLabel(input: string | undefined, options: AccountOption[]) {
   const raw = (input ?? "").trim();
   if (!raw) return "";
@@ -68,6 +94,10 @@ function findAccountIdByLabel(input: string | undefined, options: AccountOption[
   return fuzzy?.id ?? "";
 }
 
+function makeRequestId(prefix: string) {
+  return prefix + "-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+}
+
 function findCategoryIdByLabel(input: string | undefined, options: CategoryOption[]) {
   const raw = (input ?? "").trim();
   if (!raw) return "";
@@ -78,6 +108,10 @@ function findCategoryIdByLabel(input: string | undefined, options: CategoryOptio
   const lower = raw.toLowerCase();
   const fuzzy = options.find((o) => o.label.toLowerCase().includes(lower) || lower.includes(o.label.toLowerCase()));
   return fuzzy?.id ?? "";
+}
+
+function getCategoryLeafName(label: string) {
+  return label.includes(".") ? label.split(".").pop() ?? label : label;
 }
 
 type TagOption = {
@@ -130,6 +164,7 @@ export function TransactionFormModal({
   nestedFieldData?: NestedFieldData;
   hideTrigger?: boolean;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
   const [submitting, setSubmitting] = useState(false);
@@ -142,6 +177,7 @@ export function TransactionFormModal({
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
   const [accountNestedOpen, setAccountNestedOpen] = useState(false);
   const [counterpartyNestedOpen, setCounterpartyNestedOpen] = useState(false);
+  const [institutionNestedOpen, setInstitutionNestedOpen] = useState(false);
   const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to">("account");
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
@@ -331,6 +367,8 @@ export function TransactionFormModal({
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const [date, setDate] = useState(today);
+  const [postedAt, setPostedAt] = useState(() => toDateTimeLocalValue(today));
+  const [postedAtEdited, setPostedAtEdited] = useState(false);
   const [amount, setAmount] = useState("");
   const [accountId, setAccountId] = useState(defaultAccountId ?? "");
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
@@ -338,7 +376,6 @@ export function TransactionFormModal({
   const [categoryId, setCategoryId] = useState("");
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
   const [note, setNote] = useState("");
-  const [toNote, setToNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
 
@@ -372,12 +409,101 @@ export function TransactionFormModal({
     }
     return sortOptionsByRecent(base, recentAccountIds);
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
-  const isEditingTransfer = !!editEntryId && txType === "transfer";
-  const readonlyFromAccountLabel =
-    displayTransferOptions.find((option) => option.id === fromAccountId)?.label
-    ?? transferAccountList.find((option) => option.id === fromAccountId)?.label
-    ?? "未选择";
+  const compactAccountSelectBehavior = useMemo(() => ({
+    density: "compact" as const,
+    minDropdownWidth: 0,
+    dropdownMaxHeight: 280,
+  }), []);
 
+  const accountMetaById = useMemo(() => {
+    const map = new Map<string, AccountOption>();
+    const add = (option: AccountOption | SmartSelectOption | undefined) => {
+      if (!option?.id || option.isHeader || option.isGroup) return;
+      const current = map.get(option.id);
+      const next = option as AccountOption;
+      if (!current || (!current.kind && next.kind)) {
+        map.set(option.id, next);
+      }
+    };
+    [...transferAccountList, ...accountList].forEach(add);
+    (localTransferAccountSSOpts ?? []).forEach(add);
+    (localAccountSSOpts ?? []).forEach(add);
+    return map;
+  }, [accountList, localAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
+
+  function openSpecialTransferTargetIfNeeded() {
+    if (txType !== "transfer") return false;
+    const targetAccount = accountMetaById.get(toAccountId);
+    const operation = getCashTargetOperation(targetAccount);
+    if (operation === "transfer") return false;
+
+    if (editEntryId) {
+      window.alert("这类目标账户需要用对应的专用记账窗口编辑，不能保存为普通转账。");
+      return true;
+    }
+    if (!fromAccountId) {
+      window.alert("请选择资金来源账户");
+      return true;
+    }
+    const amountNumber = Number(amount);
+    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+      window.alert("金额不正确");
+      return true;
+    }
+
+    const nextRequestId = requestId ?? makeRequestId(operation);
+    const baseDetail = {
+      requestId: nextRequestId,
+      defaultCashAccountId: fromAccountId,
+      defaultDate: date,
+      defaultAmount: amountNumber,
+    };
+
+    if (operation === "investment") {
+      const productType = targetAccount?.investProductType === "metal"
+        ? "metal"
+        : targetAccount?.investProductType === "money"
+          ? "money"
+          : "fund";
+      window.dispatchEvent(new CustomEvent("mmh:investment:create", {
+        detail: {
+          ...baseDetail,
+          defaultAccountId: toAccountId,
+          defaultProductType: productType,
+        },
+      }));
+    } else if (operation === "wealth") {
+      window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
+        detail: {
+          ...baseDetail,
+          defaultWealthAccountId: toAccountId,
+        },
+      }));
+    } else if (operation === "deposit") {
+      window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
+        detail: {
+          ...baseDetail,
+          defaultDepositAccountId: toAccountId,
+          defaultSubtype: "buy",
+        },
+      }));
+    } else if (operation === "debt") {
+      window.dispatchEvent(new CustomEvent("mmh:debt:create", {
+        detail: {
+          requestId: nextRequestId,
+          mode: targetAccount?.debtDirection === "receivable" ? "lend_out" : "repay_out",
+          defaultDebtAccountId: toAccountId,
+          defaultCashAccountId: fromAccountId,
+          defaultDate: date,
+          defaultPrincipal: amountNumber,
+        },
+      }));
+    }
+
+    setOpen(false);
+    resetDraft();
+    return true;
+  }
   useEffect(() => {
     if (!open || txType === "transfer" || !accountId) return;
     setLocalAccountSSOpts((prev) => {
@@ -392,6 +518,8 @@ export function TransactionFormModal({
   function resetDraft() {
     setTxType("expense");
     setDate(today);
+    setPostedAt(toDateTimeLocalValue(today));
+    setPostedAtEdited(false);
     setAmount("");
     setAccountId(defaultAccountId ?? "");
     if (isCreditCardAccount) {
@@ -402,8 +530,8 @@ export function TransactionFormModal({
       setToAccountId("");
     }
     setCategoryId("");
+    setCounterpartyInstitutionId("");
     setNote("");
-    setToNote("");
     setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -456,6 +584,8 @@ export function TransactionFormModal({
 
       const dateStr = normalizeYmd(item.date) || today;
       setDate(dateStr);
+      setPostedAt(toDateTimeLocalValue(dateStr));
+      setPostedAtEdited(false);
 
       const num = typeof item.amount === "number" && Number.isFinite(item.amount) ? item.amount : 0;
       setAmount(num > 0 ? String(num) : "");
@@ -493,6 +623,7 @@ export function TransactionFormModal({
         entryId: string;
         type: TxType;
         date: string;
+        postedAt?: string | null;
         amount: number;
         note: string;
         toNote?: string;
@@ -521,10 +652,17 @@ export function TransactionFormModal({
       setOpen(true);
       setTxType(detail.type);
       setDate(detail.date || today);
+      setPostedAt(toDateTimeLocalValue(detail.postedAt || detail.date || today));
+      setPostedAtEdited(Boolean(detail.postedAt));
       const numericAmount = Number(detail.amount);
-      setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
+      setAmount(
+        Number.isFinite(numericAmount) && numericAmount !== 0
+          ? detail.type === "expense" && numericAmount > 0
+            ? `-${Math.abs(numericAmount)}`
+            : String(Math.abs(numericAmount))
+          : "",
+      );
       setNote(detail.note ?? "");
-      setToNote(detail.toNote ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
       setSelectedTagIds(detail.tagIds ?? []);
       if (detail.type === "transfer") {
@@ -573,6 +711,11 @@ export function TransactionFormModal({
   ]);
 
   useEffect(() => {
+    if (!open || txType !== "expense" || postedAtEdited) return;
+    setPostedAt(toDateTimeLocalValue(date || today));
+  }, [date, open, postedAtEdited, today, txType]);
+
+  useEffect(() => {
     if (!open || !isCreditCardAccount || txType !== "transfer") return;
     if (fromAccountIdEdited || !toAccountId) return;
     fetch(`/api/v1/fund/last-repay-account?accountId=${encodeURIComponent(toAccountId)}`)
@@ -587,15 +730,18 @@ export function TransactionFormModal({
     e.preventDefault();
     if (submitting) return;
 
+    if (openSpecialTransferTargetIfNeeded()) return;
+
     if (editEntryId && editEntryOriginalType === "investment" && txType !== "investment" && editEntryHasFundDetail) {
       const confirmed = window.confirm("这条投资记录有对应的基金明细。\n\n选择「确定」将删除基金明细记录。\n选择「取消」将保留基金明细但清空资金来源关联。\n\n请选择：");
       if (!confirmed) {
         const formData = new FormData(e.currentTarget);
         formData.set("type", txType);
         formData.set("date", date);
+        if (txType === "expense") formData.set("postedAt", postedAt);
         formData.set("amount", amount);
         formData.set("note", note);
-        formData.set("toNote", toNote);
+        formData.set("toNote", txType === "transfer" ? note : "");
         formData.set("entryId", editEntryId);
         formData.set("keepFundDetail", "true");
         setSubmitting(true);
@@ -606,7 +752,8 @@ export function TransactionFormModal({
             return;
           }
           requestAnimationFrame(() => {
-            window.dispatchEvent(new Event("mmh:fund:refresh"));
+            dispatchFinanceDataChanged({ reason: "transaction-save" });
+            setTimeout(() => router.refresh(), 120);
           });
           resetDraft();
         } catch (err) {
@@ -625,16 +772,17 @@ export function TransactionFormModal({
       formData.set("date", date);
       formData.set("amount", amount);
       formData.set("note", note);
-      formData.set("toNote", toNote);
+      formData.set("toNote", "");
       formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
       if (editEntryId) formData.set("entryId", editEntryId);
     } else {
       formData = new FormData();
       formData.set("type", txType);
       formData.set("date", date);
+      if (txType === "expense") formData.set("postedAt", postedAt);
       formData.set("amount", amount);
       formData.set("note", note);
-      formData.set("toNote", toNote);
+      formData.set("toNote", txType === "transfer" ? note : "");
       formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
       if (editEntryId) formData.set("entryId", editEntryId);
       if (txType === "transfer") {
@@ -667,7 +815,8 @@ export function TransactionFormModal({
         );
       }
       requestAnimationFrame(() => {
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "transaction-save" });
+        setTimeout(() => router.refresh(), 120);
       });
       if (submitModeRef.current === "repeat" && !editEntryId) {
         repeatDraft();
@@ -691,7 +840,7 @@ export function TransactionFormModal({
           defaultAction="transaction"
           actions={[
             { key: "transaction", label: "记账" },
-            { key: "investment", label: "开放式基金 / 货币基金", disabled: !showInvestment },
+            { key: "investment", label: "开放式基金 / 货币基金 / 贵金属", disabled: !showInvestment },
             { key: "wealth", label: "银行理财" },
             { key: "deposit-buy", label: "存款存入" },
             { key: "insurance", label: "保险" },
@@ -832,6 +981,19 @@ export function TransactionFormModal({
                     onClick={() => {
                       setOpen(false);
                       resetDraft();
+                      window.dispatchEvent(new CustomEvent("mmh:investment:create", {
+                        detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId, defaultProductType: "metal" },
+                      }));
+                    }}
+                    className="h-10 w-full rounded-[10px] border border-yellow-200 bg-yellow-50 text-sm text-yellow-700 transition-colors hover:bg-yellow-100"
+                  >
+                    贵金属
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDraft();
                       window.dispatchEvent(new CustomEvent("mmh:wealth:create", {
                         detail: { requestId: `create-${Date.now()}`, defaultCashAccountId: accountId },
                       }));
@@ -886,7 +1048,8 @@ export function TransactionFormModal({
                         options={displayAccountOptions} placeholder="请选择"
                         onCreateClick={() => { void openAccountCreate("account"); }}
                         onCycleOwnerFilter={cycleOwnerFilter}
-                        ownerFilterLabel={ownerFilterLabel} />
+                        ownerFilterLabel={ownerFilterLabel}
+                        behavior={compactAccountSelectBehavior} />
                     </div>
                   </div>
 
@@ -903,8 +1066,10 @@ export function TransactionFormModal({
                           initialCollapsedAll: true,
                           accordionGroups: true,
                           groupSelectOnDoubleClick: true,
-                          minDropdownWidth: 360,
-                          dropdownMaxHeight: 360,
+                          minDropdownWidth: 560,
+                          dropdownMaxHeight: 420,
+                          density: "compact",
+                          expandedGroupColumns: 4,
                         }}
                       />
                     </div>
@@ -931,117 +1096,143 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* 第三行：金额 | 附件 */}
+                  {/* 第三行：金额 | 入账时间 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">金额</div>
                       <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
                     </div>
+                    {txType === "expense" ? (
+                      <div className="space-y-1">
+                        <div className="form-label">入账时间</div>
+                        <input
+                          type="datetime-local"
+                          value={postedAt}
+                          onChange={(event) => {
+                            setPostedAt(event.target.value);
+                            setPostedAtEdited(true);
+                          }}
+                          className="form-input"
+                        />
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="form-label">{txType === "advance" ? "往来对象" : "收支机构"}</div>
+                        <SmartSelect
+                          mode="single"
+                          value={counterpartyInstitutionId}
+                          onChange={setCounterpartyInstitutionId}
+                          options={((txType === "advance" ? localNestedFieldData?.counterpartyId : localNestedFieldData?.institutionId) ?? [])
+                            .filter((item) => txType !== "advance" || COUNTERPARTY_TYPES.has(item.type ?? "other"))
+                            .map((item) => ({ id: item.id, label: item.name }))}
+                          placeholder={txType === "advance" ? "请选择" : "可选"}
+                          onCreateClick={txType === "advance" ? () => setCounterpartyNestedOpen(true) : undefined}
+                          createLabel="新增往来对象"
+                          searchable
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 第四行：收支机构 */}
+                  {txType === "expense" ? (
                     <div className="space-y-1">
-                      <div className="form-label">{txType === "advance" ? "往来对象" : "收支机构"}</div>
+                      <div className="form-label">收支机构</div>
                       <SmartSelect
                         mode="single"
                         value={counterpartyInstitutionId}
                         onChange={setCounterpartyInstitutionId}
-                        options={((txType === "advance" ? localNestedFieldData?.counterpartyId : localNestedFieldData?.institutionId) ?? [])
-                          .filter((item) => txType !== "advance" || COUNTERPARTY_TYPES.has(item.type ?? "other"))
-                          .map((item) => ({ id: item.id, label: item.name }))}
-                        placeholder={txType === "advance" ? "请选择" : "可选"}
-                        onCreateClick={txType === "advance" ? () => setCounterpartyNestedOpen(true) : undefined}
+                        options={(localNestedFieldData?.institutionId ?? []).map((item) => ({ id: item.id, label: item.name }))}
+                        placeholder="可选"
                         createLabel="新增往来对象"
                         searchable
                       />
                     </div>
-                  </div>
+                  ) : null}
 
-                  {/* 第四行：备注 */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">转出备注</div>
-                      <input
-                        name="note"
-                        placeholder="可选"
-                        value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        className="form-input"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="form-label">转入备注</div>
-                      <input
-                        name="toNote"
-                        placeholder="可选"
-                        value={toNote}
-                        onChange={(e) => setToNote(e.target.value)}
-                        className="form-input"
-                      />
-                    </div>
+                  {/* 第五行：备注 */}
+                  <div className="space-y-1">
+                    <div className="form-label">备注</div>
+                    <input
+                      name="note"
+                      placeholder="可选"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      className="form-input"
+                    />
                   </div>
                 </div>
               )}
 
               {txType === "transfer" && (
                 <div className="space-y-3">
-                  {/* 第一行：日期 */}
-                  <div className="space-y-1">
-                    <div className="form-label">日期</div>
-                    <DateStepper name="date" value={date} onChange={setDate} />
+                  {/* 第一行：日期 | 收支机构 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">日期</div>
+                      <DateStepper name="date" value={date} onChange={setDate} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">收支机构</div>
+                      <SmartSelect
+                        mode="single"
+                        value={counterpartyInstitutionId}
+                        onChange={setCounterpartyInstitutionId}
+                        options={(localNestedFieldData?.institutionId ?? []).map((item) => ({ id: item.id, label: item.name }))}
+                        placeholder="可选"
+                        onCreateClick={() => setInstitutionNestedOpen(true)}
+                        createLabel="新增收支机构"
+                        searchable
+                      />
+                    </div>
                   </div>
 
                   {/* 第二行：转出账户 | 互换 | 转入账户 */}
                   {isCreditCardAccount ? (
-                    <div className={`grid gap-3 items-end ${isEditingTransfer ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
-                        {isEditingTransfer ? (
-                          <div className="form-input flex items-center bg-slate-50 text-slate-600">{readonlyFromAccountLabel}</div>
-                        ) : (
-                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
-                            options={displayTransferOptions} placeholder="请选择"
-                            onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
-                            onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
-                        )}
+                        <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
                       </div>
-                      {!isEditingTransfer ? (
-                        <div className="flex flex-col items-center pb-0.5">
-                          <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
-                          <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                        </div>
-                      ) : null}
+                      <div className="flex flex-col items-center pb-0.5">
+                        <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
+                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                      </div>
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
-                        <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
+                        <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
                           options={displayTransferOptions} placeholder="请选择"
                           onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
-                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
                       </div>
                     </div>
                   ) : (
-                    <div className={`grid gap-3 items-end ${isEditingTransfer ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>
-                        {isEditingTransfer ? (
-                          <div className="form-input flex items-center bg-slate-50 text-slate-600">{readonlyFromAccountLabel}</div>
-                        ) : (
-                          <SmartSelect mode="single" value={fromAccountId} onChange={setFromAccountId}
-                            options={displayTransferOptions} placeholder="请选择"
-                            onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
-                            onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
-                        )}
+                        <SmartSelect mode="single" value={fromAccountId} onChange={(v) => { setFromAccountId(v); recordRecentAccount(v); }}
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
                       </div>
-                      {!isEditingTransfer ? (
-                        <div className="flex items-center justify-center pb-0.5">
-                          <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                            onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
-                        </div>
-                      ) : null}
+                      <div className="flex items-center justify-center pb-0.5">
+                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                      </div>
                       <div className="space-y-1">
                         <div className="form-label">转入账户</div>
-                        <SmartSelect mode="single" value={toAccountId} onChange={setToAccountId}
+                        <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
                           options={displayTransferOptions} placeholder="请选择"
                           onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
-                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel} />
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
                       </div>
                     </div>
                   )}
@@ -1105,6 +1296,7 @@ export function TransactionFormModal({
         defaultType={currentCategoryType}
         hiddenFields={["type"]}
         parentCategories={categoryParentOptions}
+        existingNames={categoryList.map((category) => getCategoryLeafName(category.label))}
         onCreated={(id, name, extra) => {
           const parentId = extra?.parentId;
           const type = extra?.type ?? currentCategoryType;
@@ -1168,6 +1360,36 @@ export function TransactionFormModal({
           }));
           setCounterpartyInstitutionId(id);
           setCounterpartyNestedOpen(false);
+        }}
+      />,
+      document.body,
+    )}
+    {open && institutionNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="institution"
+        open={institutionNestedOpen}
+        onClose={() => setInstitutionNestedOpen(false)}
+        defaultType="other"
+        title="新增收支机构"
+        nameLabel="机构名称"
+        namePlaceholder="例如：支付宝、工商银行、某商户"
+        allowedInstitutionTypes={["bank", "insurance", "brokerage", "payment", "ewallet", "organization", "other"]}
+        existingNames={(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []).map((item) => item.name)}
+        onCreated={(id, name, extra) => {
+          const next = { id, name, type: extra?.type ?? "other" };
+          setLocalNestedFieldData((prev) => {
+            const base = prev ?? nestedFieldData ?? {};
+            return {
+              ...base,
+              institutionId: [...(base.institutionId ?? []), next],
+              counterpartyId: COUNTERPARTY_TYPES.has(next.type ?? "")
+                ? [...(base.counterpartyId ?? []), next]
+                : base.counterpartyId ?? [],
+            };
+          });
+          setCounterpartyInstitutionId(id);
+          setInstitutionNestedOpen(false);
         }}
       />,
       document.body,

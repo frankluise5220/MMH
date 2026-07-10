@@ -5,8 +5,10 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -313,7 +315,7 @@ export async function POST(req: NextRequest) {
       // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
       // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
       if (sgzt === "暂停申购") {
-        await tx.txRecord.create({
+        const failedBuy = await tx.txRecord.create({
           data: {
             householdId,
             type: TransactionType.investment,
@@ -337,7 +339,7 @@ export async function POST(req: NextRequest) {
             note: `基金暂停申购 ${plan.fundCode}`,
           },
         });
-        await tx.txRecord.create({
+        const refund = await tx.txRecord.create({
           data: {
             householdId,
             type: TransactionType.investment,
@@ -354,12 +356,15 @@ export async function POST(req: NextRequest) {
             source: "regular_invest_refund",
             fundFee: null,
             fundConfirmDate: confirmDate,
+            fundArrivalDate: arrivalDate,
             fundNav: null,
             fundUnits: null,
+            fundSourceEntryId: failedBuy.id,
             regularInvestPlanId: planId,
             note: `基金暂停申购，资金退回 ${plan.fundCode}`,
           },
         });
+        await syncFundTransactionsFromTxRecords([failedBuy.id, refund.id], tx);
 
         // 更新定投计划（暂停申购也算一次执行）
         await tx.regularInvestPlan.update({
@@ -381,8 +386,8 @@ export async function POST(req: NextRequest) {
         feeRateRaw = await getFundFeeRate(plan.accountId, plan.fundCode, "buy");
       }
       const feeRate = feeRateRaw / 100;
-      const feeAmount = feeRate > 0 ? new Prisma.Decimal(amountNum * feeRate) : null;
-      const principal = feeRate > 0 ? amountNum * (1 - feeRate) : amountNum;
+      const feeAmountNumber = feeRate > 0 ? amountNum * feeRate : 0;
+      const feeAmount = feeAmountNumber > 0 ? new Prisma.Decimal(feeAmountNumber) : null;
 
       // 查询确认日净值（仅用缓存，不调外部API）
       // 缓存已在 execute 前通过 refresh 预装，或此基金已无缓存则跳过净值
@@ -391,11 +396,17 @@ export async function POST(req: NextRequest) {
       const foundNavInfo = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
       if (foundNavInfo && foundNavInfo.nav > 0) {
         fundNav = foundNavInfo.nav;
-        fundUnits = roundFundUnits(principal / foundNavInfo.nav, fundUnitsDecimals);
+        fundUnits = calculateConfirmedBuyUnits({
+          grossAmount: amountNum,
+          refundAmount: 0,
+          fee: feeAmountNumber,
+          nav: foundNavInfo.nav,
+          roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+        });
       }
 
       // 创建 TxRecord，直接包含所有基金字段
-      await tx.txRecord.create({
+      const createdBuy = await tx.txRecord.create({
         data: {
           householdId,
           type: TransactionType.investment,
@@ -419,6 +430,7 @@ export async function POST(req: NextRequest) {
           note: `基金定期定额申购 ${plan.fundCode}`,
         },
       });
+      await syncFundTransactionsFromTxRecords([createdBuy.id], tx);
 
       // 更新定投计划
       await tx.regularInvestPlan.update({

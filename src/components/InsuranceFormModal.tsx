@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
@@ -11,6 +12,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 type Entry = {
   id?: string;
@@ -290,6 +292,7 @@ export function InsuranceFormModal({
   cashAccountSSOptions?: SmartSelectOption[];
   nestedFieldData?: NestedFieldData;
 }) {
+  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
@@ -815,7 +818,10 @@ export function InsuranceFormModal({
       }
       setOpen(false);
       if (!isEdit) resetForm();
-      requestAnimationFrame(() => window.dispatchEvent(new Event("mmh:fund:refresh")));
+      requestAnimationFrame(() => {
+        dispatchFinanceDataChanged({ reason: "insurance-save" });
+        setTimeout(() => router.refresh(), 120);
+      });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存失败");
     } finally {

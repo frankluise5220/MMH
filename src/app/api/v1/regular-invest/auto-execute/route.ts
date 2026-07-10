@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -10,6 +11,7 @@ import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
@@ -132,7 +134,7 @@ export async function POST() {
       arrivalDate: Date;
       amountNum: number;
       feeRate: number;
-      principal: number;
+      feeAmount: number;
       newExecutedRuns: number;
       willComplete: boolean;
       nextRun: Date;
@@ -179,7 +181,7 @@ export async function POST() {
 
       execs.push({
         plan, fundAcc, cashAcc, runDate, confirmDate, confirmDateStr, arrivalDate,
-        amountNum, feeRate: 0, principal: amountNum, newExecutedRuns, willComplete, nextRun,
+        amountNum, feeRate: 0, feeAmount: 0, newExecutedRuns, willComplete, nextRun,
       });
     }
 
@@ -239,14 +241,15 @@ export async function POST() {
     for (const e of execs) {
       const fr = feeRateMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? 0;
       e.feeRate = fr;
-      e.principal = fr > 0 ? e.amountNum * (1 - fr) : e.amountNum;
+      e.feeAmount = fr > 0 ? e.amountNum * fr : 0;
     }
 
     // ONE transaction: create all records + update all plans
-    const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; principal: number; fundUnitsDecimals: number }> = [];
+    const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; grossAmount: number; feeAmount: number; fundUnitsDecimals: number }> = [];
     const affectedFunds = new Set<string>();
 
     await prisma.$transaction(async (tx) => {
+      const changedFundEntryIds: string[] = [];
       // Batch all sgzt & nav checks
       const navChecks = await Promise.all(execs.map(e =>
         tx.fundNavCache.findUnique({ where: { fundCode_navDate: { fundCode: e.plan.fundCode, navDate: e.confirmDate } }, select: { sgzt: true, purchaseLimit: true, nav: true } })
@@ -257,7 +260,7 @@ export async function POST() {
         const e = execs[i];
         const navCheck = navChecks[i];
         const sgzt = navCheck?.sgzt ?? "";
-        const feeAmount = e.feeRate > 0 ? e.amountNum * e.feeRate : null;
+        const feeAmount = e.feeAmount > 0 ? e.feeAmount : null;
 
         // 跳过暂停申购 + 无净值间隙
         if (e.plan.skipPendingPreceding !== false) {
@@ -283,15 +286,18 @@ export async function POST() {
 
         if (sgzt === "暂停申购") {
           // skipPendingPreceding=false 的旧行为：生成两条对冲 buy_failed 记录
-          await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购 ${e.plan.fundCode}` } });
-          await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
+          const failedBuy = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购 ${e.plan.fundCode}` } });
+          const refund = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, fundSourceEntryId: failedBuy.id, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
+          changedFundEntryIds.push(failedBuy.id, refund.id);
         } else {
           const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金定期定额申购 ${e.plan.fundCode}` } });
+          changedFundEntryIds.push(rec.id);
           generatedRecords.push({
             id: rec.id,
             fundCode: e.plan.fundCode,
             confirmDate: e.confirmDateStr,
-            principal: e.principal,
+            grossAmount: e.amountNum,
+            feeAmount: e.feeAmount,
             fundUnitsDecimals: normalizeFundUnitsDecimals(e.fundAcc.fundUnitsDecimals),
           });
         }
@@ -306,6 +312,7 @@ export async function POST() {
           details.push({ planId: e.plan.id, fundCode: e.plan.fundCode, action: "executed" });
         }
       }
+      await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
     });
     logger.info("Phase2 生成记录完成: " + generatedRecords.length + " 条 buy+" + (execs.length - generatedRecords.length) + " 条 buy_failed, 耗时 " + (Date.now() - genStart) + "ms", "auto-execute");
 
@@ -375,7 +382,13 @@ export async function POST() {
         const n = cacheResults[i];
         if (n && Number(n.nav) > 0) {
           const nav = Number(n.nav);
-          const units = roundFundUnits(r.principal / nav, r.fundUnitsDecimals);
+          const units = calculateConfirmedBuyUnits({
+            grossAmount: r.grossAmount,
+            refundAmount: 0,
+            fee: r.feeAmount,
+            nav,
+            roundUnits: (value) => roundFundUnits(value, r.fundUnitsDecimals),
+          });
           const name = (n.name ?? "").trim();
           await prisma.txRecord.update({
             where: { id: r.id },
@@ -391,6 +404,9 @@ export async function POST() {
       });
       const updateResults = await Promise.all(updates);
       const updatedCount = updateResults.filter(Boolean).length;
+      if (updatedCount > 0) {
+        await syncFundTransactionsFromTxRecords(generatedRecords.map((record) => record.id));
+      }
       logger.info("Phase4 净值回填完成: " + updatedCount + "/" + generatedRecords.length + " 条, 耗时 " + (Date.now() - updateStart) + "ms", "auto-execute");
     }
 

@@ -6,6 +6,7 @@ import { Download, FileSpreadsheet, RotateCcw, Shield, Upload, RefreshCw } from 
 const DEFAULT_ORIGINS_LABEL = "默认白名单：局域网 IP + localhost";
 const RESET_CONFIRM_TEXT = "系统初始化";
 const RESTORE_CONFIRM_TEXT = "恢复当前账簿";
+const LEDGER_INVITE_CODE_KEY = "ledger_creation_invite_code";
 
 function filenameFromDisposition(value: string | null) {
   if (!value) return "";
@@ -43,6 +44,11 @@ export default function DatabaseSettingsPage() {
   const [originsLoading, setOriginsLoading] = useState(false);
   const [newOrigin, setNewOrigin] = useState("");
   const [originCheckEnabled, setOriginCheckEnabled] = useState(true);
+  const [ledgerInviteCode, setLedgerInviteCode] = useState("");
+  const [ledgerInviteLoading, setLedgerInviteLoading] = useState(false);
+  const [ledgerInviteSaving, setLedgerInviteSaving] = useState(false);
+  const [ledgerInviteMessage, setLedgerInviteMessage] = useState("");
+  const [ledgerInviteError, setLedgerInviteError] = useState("");
 
   const [backuping, setBackuping] = useState<"" | "json" | "xlsx">("");
   const [backupMessage, setBackupMessage] = useState("");
@@ -71,6 +77,7 @@ export default function DatabaseSettingsPage() {
   useEffect(() => {
     void checkStatus();
     void loadOrigins();
+    void loadLedgerInviteCode();
   }, []);
 
   async function checkStatus() {
@@ -107,6 +114,45 @@ export default function DatabaseSettingsPage() {
       setOrigins([]);
     } finally {
       setOriginsLoading(false);
+    }
+  }
+
+  async function loadLedgerInviteCode() {
+    setLedgerInviteLoading(true);
+    setLedgerInviteError("");
+    try {
+      const res = await fetch(`/api/v1/settings/system?key=${LEDGER_INVITE_CODE_KEY}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null) as { ok?: boolean; value?: string | null; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "读取邀请码失败");
+      }
+      setLedgerInviteCode(String(data.value ?? ""));
+    } catch (error) {
+      setLedgerInviteError(error instanceof Error ? error.message : "读取邀请码失败");
+    } finally {
+      setLedgerInviteLoading(false);
+    }
+  }
+
+  async function saveLedgerInviteCode() {
+    setLedgerInviteSaving(true);
+    setLedgerInviteError("");
+    setLedgerInviteMessage("");
+    try {
+      const res = await fetch("/api/v1/settings/system", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: LEDGER_INVITE_CODE_KEY, value: ledgerInviteCode.trim() }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "保存邀请码失败");
+      }
+      setLedgerInviteMessage(ledgerInviteCode.trim() ? "邀请码已保存" : "已关闭登录页新建账簿");
+    } catch (error) {
+      setLedgerInviteError(error instanceof Error ? error.message : "保存邀请码失败");
+    } finally {
+      setLedgerInviteSaving(false);
     }
   }
 
@@ -489,6 +535,55 @@ export default function DatabaseSettingsPage() {
             </div>
           </>
         ) : null}
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-slate-800">登录页新建账簿邀请码</div>
+            <div className="mt-1 text-xs text-slate-500">
+              登录页“新建账簿”要输入这里设置的邀请码。留空后，登录页仍可看到入口，但无法真正创建新账簿。
+            </div>
+            {ledgerInviteMessage ? <div className="mt-2 text-xs text-emerald-600">{ledgerInviteMessage}</div> : null}
+            {ledgerInviteError ? <div className="mt-2 text-xs text-red-600">{ledgerInviteError}</div> : null}
+          </div>
+          <div className="flex w-full max-w-[420px] flex-col gap-2">
+            <input
+              type="text"
+              value={ledgerInviteCode}
+              onChange={(event) => {
+                setLedgerInviteCode(event.target.value);
+                setLedgerInviteError("");
+                setLedgerInviteMessage("");
+              }}
+              placeholder={ledgerInviteLoading ? "读取中..." : "输入邀请码，留空表示关闭"}
+              disabled={ledgerInviteLoading || ledgerInviteSaving}
+              className="h-9 rounded-md border border-slate-200 px-3 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void saveLedgerInviteCode()}
+                disabled={ledgerInviteLoading || ledgerInviteSaving}
+                className="h-8 rounded-md border border-blue-200 bg-white px-3 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+              >
+                {ledgerInviteSaving ? "保存中..." : "保存邀请码"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLedgerInviteCode("");
+                  setLedgerInviteError("");
+                  setLedgerInviteMessage("");
+                }}
+                disabled={ledgerInviteLoading || ledgerInviteSaving}
+                className="h-8 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                清空
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">

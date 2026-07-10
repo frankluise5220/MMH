@@ -74,10 +74,11 @@
 
 #### TxRecord 表字段（基础交易）
 **存在的字段**：
-- `type`, `date`, `accountId`, `accountName`, `amount`
+- `type`, `date`, `postedAt`, `accountId`, `accountName`, `amount`
 - `toAccountId`, `toAccountName`
 - `categoryId`, `categoryName`
 - `fundCode`, `fundProductType`, `note`
+- 贵金属交易额外字段：`metalTypeId`, `metalTypeName`, `metalUnitId`, `metalUnitName`, `metalQuantity`, `metalUnitPrice`, `metalFee`
 - `linkId`, `linkType`
 - `statementMonth`, `deletedAt`
 
@@ -116,7 +117,7 @@ async function testEditWindowDataConsistency(entryId: string) {
   // （需要模拟或手动操作）
 
   // 3. 对比字段值
-  const fieldsToCheck = ['date', 'amount', 'accountId', 'toAccountId', 'fundCode', 'note'];
+  const fieldsToCheck = ['date', 'postedAt', 'amount', 'accountId', 'toAccountId', 'fundCode', 'note'];
   for (const field of fieldsToCheck) {
     if (dbData[field] !== displayData[field]) {
       console.error(`字段 ${field} 不一致: DB=${dbData[field]}, Display=${displayData[field]}`);

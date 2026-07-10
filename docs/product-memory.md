@@ -61,14 +61,28 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Insurance cash value belongs to the same family as balance/value displays.
 - Coverage amount must be shown separately from cash value/balance, not merged into one ambiguous metric.
 - Credit card amounts are liabilities and should follow the unified liability color/sign semantics.
+- Transfers from debit/cash asset accounts into credit card accounts remain transfer records in storage, but all detail/display semantics should recognize them as credit card repayments ("还款") rather than ordinary transfers.
+- Credit card unbilled/current-cycle rows may show cycle expense and refund/income activity, but should not show a bill amount or expose manual bill-amount editing before the statement is generated.
+- Credit card billed-cycle rows that have been fully paid should show a clear settled marker in the repayment column, instead of requiring the user to infer settled status from amounts.
+- Credit card bill amount is a rolling statement amount: previous bill amount plus current-cycle expense minus current-cycle income/refunds. It may cross below zero when income/refunds exceed the rolling bill; the UI should show that as an overpaid/credit-balance state instead of clamping it to zero. Repayments affect settled status and remaining balance, but must not reduce the displayed bill amount formula.
+- Credit card billed-cycle settled status and paid amount should be derived from the next statement cycle's income/repayment inflow covering the current bill amount. Repayment belongs to the cycle after the bill is generated, not to the bill cycle's own income.
+- Credit card billing day is the first day of the next statement cycle. For example, billing day 10 means the cycle runs from the 10th through the 9th of the next month, and transactions on the 10th belong to the next statement month.
+- Credit card sidebar account numbers should show the current bill balance after repayments and overpayment are applied (`cumulativeRemain - cumulativeOverpaid`), not the current statement bill amount (`effectiveBill`).
+- Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
+- Credit card email bill import must block duplicates at the server import layer. Use mailbox UID for old records, envelope hash for mail-list marking, and a stable parsed statement fingerprint for forwarded or re-synced messages whose sender, subject, or UID changed. The stable statement fingerprint should use institution, card last four digits, and statement month/cycle, not parser-sensitive fields such as category, note, or raw detail text.
+- Ordinary transfer records are same-currency only. If two accounts use different currencies, the app should require a dedicated foreign-exchange/cross-currency flow that records both-side amounts and exchange rate instead of silently saving one amount.
 - Insurance cash value should be treated like balance/value; coverage amount should remain a separate non-cash metric.
+- Expense entries may use a negative input amount to represent a refund or reduction within the same expense category. Store it as `type=expense` with a positive cash-flow amount, not as income, so category statistics can offset the original expense.
+- Expense entries may have a separate posting time (`postedAt`) when spending is recorded later than it happened. `TxRecord.date` remains the business/occurred date for category statistics and existing detail ordering unless a specific view explicitly switches to posting-time sorting.
 
 ### SS Dropdowns
 
 - SS dropdown is a shared system, not a one-off control.
+- `SmartSelect` is the shared base for SS dropdown behavior. New SS variants should extend it through parameters or thin adapters instead of forking a separate dropdown UI.
 - It should support nested add flows, search, keyboard movement, and owner/group cycling where appropriate.
 - Different dropdowns may apply different filtering, but should reuse the same shared component behavior.
 - Account-picking dropdowns should follow the established account SS behavior instead of each screen inventing a slightly different selector.
+- Account selectors are still part of the same shared SS system. Their extra behavior should be limited to account-specific filtering and one cycle control for owner/group switching.
 - Account SS dropdowns should generally support:
   - nested add
   - search
@@ -77,6 +91,12 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
   - context-aware filtering
 - The account SS experience used in the preferred transaction entry flow is the reference behavior that other account selectors should converge toward.
 - Do not add extra always-visible owner header rows above the dropdown body when the cycling control already expresses owner switching.
+
+### Categories
+
+- 收支分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付类型，也不区分上级分类。
+- 分类树可以表达层级和归属，但不能靠不同父级来区分同名分类。
+- 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
 
 ### Table Column Filters
 
@@ -93,9 +113,12 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Settings that affect multiple screens should be centralized as a shared source of truth, not duplicated page by page.
 - When the user changes a setting in one place, prefer reusing that setting everywhere the concept applies.
 - If a page needs a different default, override only the default value, not the underlying setting shape or behavior.
+- Login page "新建账簿" is not the same as creating a user or account. It should create a new ledger/household and must be gated by a higher-level permission such as an invite code.
+- For password recovery, Resend is the preferred sending channel. SMTP or configured mailbox accounts are backup channels rather than the primary path.
 
 ### Accounts
 
+- In cash/debit account entry, the counter/target account determines the business operation: normal cash targets save as transfers; fund/investment targets open investment entry; deposit targets open deposit-in/out entry; debt/settlement targets open borrow/lend/repay entry. Do not save these special targets as ordinary transfers.
 - Account uniqueness matters. Avoid allowing indistinguishable duplicate accounts when institution and name are the same and there is no differentiator such as last four digits.
 - Dropdown display names are not constrained by sidebar display settings. They should favor clarity.
 - Sidebar display formatting rules and dropdown display formatting rules are separate concerns.
@@ -210,6 +233,26 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - The user strongly prefers direct inline workflows over hidden corner controls or disconnected secondary panels.
 - Repeatedly broken create/edit round-trips are considered a major product quality problem and should be treated as first-class regressions.
 - When the user repeatedly corrects wording or layout, that preference should be promoted here instead of being left only in chat history.
+- Saving any change that can affect amounts, balances, bill summaries, holdings, or related account totals must trigger a cascade refresh: sidebar account numbers, page-header totals, current list/table rows, and affected summaries should all update together.
+- All create/edit/import-preview windows should expose only one user-facing remark field. `toNote` is an internal compatibility/display field for transfer-like or specialized linked records; it must not appear as a second ordinary remark input.
+
+### Investments And Precious Metals
+
+- Precious metals should use dedicated dictionaries for metal type and unit. The UI should let users select "黄金/白银/铂金/钯金" and "克/千克/盎司/钱" style entries instead of asking users to type a fund-like code.
+- Precious metal transaction create/edit flows must round-trip the selected type ID, unit ID, quantity, unit price, and fee through dedicated metal fields. Do not store precious-metal identity or quantity in fund fields such as `fundCode`, `fundName`, `fundUnits`, or `fundNav`.
+- Precious metal buy/sell account SS must only show investment accounts whose `investProductType` is `metal`; fund, money-fund, wealth, and deposit accounts must not appear in that selector.
+- Fund-like investment accounts should keep trading-calendar ownership at the account level. Confirm/arrival T+N calculation must read that account setting instead of assuming every fund account follows the same market calendar.
+- Fund buy-refund matching should persist the refund row's `fundSourceEntryId` to the source buy row. Date fallback is only for old data migration and must not be the primary edit/save rule. In cash/debit account detail views, a buy-refund cash receipt displays and sorts by its actual arrival date (`fundArrivalDate`, falling back to `date`), the same as redemption cash receipts. In fund transaction detail views, linked buy-refund rows display and sort under the source buy row's application date (`date`), while the refund's own `fundArrivalDate` remains in the arrival-date column. `TxRecord.date` remains the original ledger/import transaction date and must not be overwritten by computed confirmation or arrival dates.
+- Balance reconciliation and balance initialization rows that carry a `balance_reconcile_target:` marker are balance anchors. They represent the final balance at the end of their displayed local date, so they must sort after all ordinary records on the same displayed date for balance calculation, and before those ordinary same-day records in descending detail views.
+- Ordinary transactions on the same displayed date may be manually reordered without changing their date. `TxRecord.dayOrder` stores this same-day business order: larger values mean later within the day, so they appear higher in descending detail views and later in ascending balance calculations. Balance anchors still outrank manual same-day order and remain the end-of-day record.
+- Cash/debit card ledgers and fund transaction semantics are separate concepts even when both currently live in `TxRecord`. The cash/debit side should only render actual cash movement rows and dates. The fund side should render the fund business order, including application date, confirmation date, NAV, units, fee, and linked refund amount. A buy with a refund should be edited as one fund buy order that owns/updates the linked refund cash row, not as two unrelated edit windows.
+- Fund buy units must be calculated from the net confirmed amount: `gross buy amount - linked refund amount - fee`, divided by NAV. The buy row's `fundUnits` stores this net confirmed units value. Linked buy-refund rows are cash-flow/relationship rows only and must not reduce units a second time in display, holding recalculation, NAV fill, import, or batch-edit paths.
+- On app startup, the system should run a lightweight background check after login: execute due scheduled tasks, then fill due pending fund buy rows whose NAV or units are missing. This startup check must run from server-side database queries, not by loading every fund page in the client, and pending buy unit calculation must use the same net confirmed amount rule including linked refunds.
+- Bank wealth products should use reusable wealth product master data. Wealth buy/redeem flows must select the product through SS and persist `wealthProductId` while keeping `fundName` only as display text.
+- Wealth buy/redeem account SS must only show investment accounts whose `investProductType` is `wealth`; fund, money-fund, deposit, and precious-metal accounts must not appear in that selector.
+- Wealth redemption should select from held wealth products under the selected wealth account. The principal reduces the holding, while the arrival amount is principal plus any entered interest.
+- Wealth cash dividends should select from held wealth products under the selected wealth account, use a same-institution debit card as the arrival account, and must not reduce the held principal.
+- Wealth holding selectors for redemption and dividends should respect the selected transaction date, so historical dividends can choose products that were held at that date even if they are now fully redeemed.
 
 ## Working Agreement For Future Changes
 

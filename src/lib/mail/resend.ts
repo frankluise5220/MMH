@@ -68,6 +68,10 @@ export function hasResendConfig(): boolean {
   return getEnvResendConfig() !== null;
 }
 
+export async function hasAnyResendConfig(): Promise<boolean> {
+  return (await resolveResendConfig()) !== null;
+}
+
 export async function sendEmailByResend(params: {
   to: string;
   subject: string;

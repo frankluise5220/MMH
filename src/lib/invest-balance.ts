@@ -1,8 +1,8 @@
 /**
  * 投资余额与持仓显示层计算
  *
- * 显示层规则：所有投资类显示数据统一从 fundHolding 表读取，
- * fundHolding 是持仓的单一数据源（由 recalcFundPositions 在数据写入时维护）。
+ * 显示层规则：基金类显示数据从 FundHolding 读取，贵金属从 PreciousMetalHolding 读取。
+ * 不同资产类型保持独立数据源，避免把贵金属混入基金持仓。
  * 读取时不再触发重算，避免重复计算。
  */
 
@@ -63,8 +63,16 @@ export const computeInvestBalances = cache(
   const investIds = accounts.filter(isPureInvestmentAccount).map(a => a.id);
   if (investIds.length === 0) return new Map();
 
+  const metalAccountIds = accounts
+    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "metal")
+    .map((account) => account.id);
+  const fundAccountIds = investIds.filter((id) => !metalAccountIds.includes(id));
+
   const allHoldings = await prisma.fundHolding.findMany({
-    where: { accountId: { in: investIds } },
+    where: { accountId: { in: fundAccountIds } },
+  });
+  const allMetalHoldings = await prisma.preciousMetalHolding.findMany({
+    where: { accountId: { in: metalAccountIds } },
   });
 
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
@@ -111,6 +119,13 @@ export const computeInvestBalances = cache(
     result.set(acctId, { marketValue, totalCost, floatingPnL });
   }
 
+  for (const acctId of metalAccountIds) {
+    const holdings = allMetalHoldings.filter((holding) => holding.accountId === acctId);
+    const marketValue = holdings.reduce((sum, holding) => sum + toNumber(holding.marketValue), 0);
+    const totalCost = holdings.reduce((sum, holding) => sum + toNumber(holding.cost), 0);
+    result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
+  }
+
   return result;
 },
 );
@@ -118,7 +133,7 @@ export const computeInvestBalances = cache(
 /**
  * 计算单个投资账户的持仓明细显示数据（显示层）
  *
- * 数据源：fundHolding 表 + fundNavCache 表
+ * 数据源：基金账户读 FundHolding + FundNavCache；贵金属账户读 PreciousMetalHolding。
  * 不再从 entries 逐条累加计算，保证与 Sidebar/invest 页面数字一致
  */
 /** 缓存版本：同一 HTTP 请求内不重复计算 */
@@ -139,6 +154,40 @@ export const computePositionDisplay = cache(
   });
   if (!account) {
     return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, totalHistoricalProfit: 0 };
+  }
+
+  if (account.investProductType === "metal") {
+    const metalHoldings = await prisma.preciousMetalHolding.findMany({
+      where: { accountId },
+      orderBy: [{ metalTypeName: "asc" }, { metalUnitName: "asc" }],
+    });
+    const positions: PositionDisplayRow[] = metalHoldings
+      .filter((holding) => toNumber(holding.quantity) > 0.000001)
+      .map((holding) => {
+        const quantity = toNumber(holding.quantity);
+        const cost = toNumber(holding.cost);
+        const unitPrice = holding.unitPrice != null ? toNumber(holding.unitPrice) : null;
+        const marketValue = toNumber(holding.marketValue);
+        const floatingPnL = marketValue - cost;
+        return {
+          fundCode: holding.metalTypeId,
+          name: `${holding.metalTypeName} · ${holding.metalUnitName}`,
+          units: quantity,
+          avgCost: toNumber(holding.avgCost),
+          cost,
+          nav: unitPrice,
+          navDate: "",
+          marketValue,
+          floatingPnL,
+          floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+          pendingCost: 0,
+          historicalProfit: toNumber(holding.historicalProfit),
+        };
+      });
+    const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+    const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+    const totalHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    return { positions, clearedPositions: [], totalMarketValue, totalCost, totalHistoricalProfit };
   }
 
   const holdings = await prisma.fundHolding.findMany({

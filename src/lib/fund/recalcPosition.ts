@@ -1,5 +1,7 @@
-﻿import { prisma } from "@/lib/db/prisma";
+import { prisma } from "@/lib/db/prisma";
+import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
+import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 
 function toNum(v: unknown): number {
@@ -24,6 +26,8 @@ export type FundPositionEntryLike = {
   isPending: boolean;
   confirmDate: string | null;
   arrivalDate: string | null;
+  netBuyAmount?: number | null;
+  effectiveUnits?: number | null;
 };
 
 function entryCalcDate(e: FundPositionEntryLike): string {
@@ -77,8 +81,8 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     const rec = map.get(code) ?? emptyHolding();
 
     if (subtype === "buy") {
-      const costBasis = buyCostBasis(amount);
-      const a = Math.abs(toNum(amount));
+      const costBasis = e.netBuyAmount != null ? e.netBuyAmount : buyCostBasis(amount);
+      const a = e.netBuyAmount != null ? e.netBuyAmount : Math.abs(toNum(amount));
       const u = e.units ?? 0;
       if (u === 0) rec.pendingCost += a;
       else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
@@ -135,8 +139,8 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     const rec = result.get(code) ?? emptyHolding();
 
     if (subtype === "buy") {
-      const costBasis = buyCostBasis(amount);
-      const a = Math.abs(toNum(amount));
+      const costBasis = e.netBuyAmount != null ? e.netBuyAmount : buyCostBasis(amount);
+      const a = e.netBuyAmount != null ? e.netBuyAmount : Math.abs(toNum(amount));
       const u = e.units ?? 0;
       if (u === 0) { rec.pendingCost += a; }
       else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
@@ -149,13 +153,14 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
       for (const se of sorted) {
         if (se === e) break;
         if (se.fundCode !== code) continue;
-        const sSubtype = se.subtype ?? (se.amount < 0 ? "buy" : "redeem");
-        if (sSubtype !== "buy") continue;
-        const u = se.units ?? 0;
-        if (u <= 0) continue;
-        const availableDate = buyAvailableDate(se);
-        if (!availableDate || availableDate > cutoff) continue;
-        eligibleLots.push({ units: u, costPerUnit: buyCostBasis(toNum(se.amount)) / u });
+       const sSubtype = se.subtype ?? (se.amount < 0 ? "buy" : "redeem");
+       if (sSubtype !== "buy") continue;
+       const u = se.units ?? 0;
+       if (u <= 0) continue;
+       const availableDate = buyAvailableDate(se);
+       if (!availableDate || availableDate > cutoff) continue;
+       const sCost = se.netBuyAmount != null ? se.netBuyAmount : buyCostBasis(se.amount);
+       eligibleLots.push({ units: u, costPerUnit: u > 0 ? sCost / u : 0 });
       }
 
       let toRedeem = e.units ?? 0;
@@ -206,7 +211,69 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
   if (account.kind !== "investment") return;
   const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals);
 
-  const rawEntries = await prisma.txRecord.findMany({
+  const fundTransactions = await prisma.fundTransaction.findMany({
+    where: {
+      fundAccountId: accountId,
+      deletedAt: null,
+      ...(fundCodes ? { fundCode: { in: fundCodes } } : {}),
+    },
+    include: { cashFlows: true },
+    orderBy: [{ confirmDate: "asc" }, { applyDate: "asc" }, { createdAt: "asc" }],
+  });
+
+  const rawEntries: any[] = fundTransactions.length > 0
+    ? fundTransactions.flatMap((entry) => {
+        const cashReceipt = entry.fundSubtype === FundSubtype.redeem ||
+          entry.fundSubtype === FundSubtype.switch_out ||
+          entry.fundSubtype === FundSubtype.dividend_cash;
+        const amount = entry.fundSubtype === FundSubtype.buy || entry.fundSubtype === FundSubtype.switch_in
+          ? -Math.abs(toNum(entry.grossAmount))
+          : Math.abs(toNum(entry.arrivalAmount ?? entry.grossAmount));
+        const main = {
+          id: entry.cashEntryId ?? entry.id,
+          fundCode: entry.fundCode,
+          fundName: entry.fundName,
+          toAccountName: null,
+          amount,
+          fundFee: entry.fee,
+          fundArrivalAmount: entry.arrivalAmount,
+          fundUnits: entry.units,
+          fundSubtype: entry.fundSubtype,
+          fundConfirmDate: entry.confirmDate,
+          fundArrivalDate: entry.arrivalDate,
+          source: entry.source,
+          date: entry.applyDate,
+          createdAt: entry.createdAt,
+          accountId: cashReceipt ? entry.fundAccountId : entry.cashAccountId,
+          toAccountId: cashReceipt ? entry.cashAccountId : entry.fundAccountId,
+          fundSourceEntryId: null,
+          realizedProfit: entry.realizedProfit,
+        };
+        const refundRows = entry.cashFlows
+          .filter((flow) => flow.kind === FundCashFlowKind.refund_in)
+          .map((flow) => ({
+            id: flow.txRecordId,
+            fundCode: entry.fundCode,
+            fundName: entry.fundName,
+            toAccountName: null,
+            amount: Math.abs(toNum(flow.amount)),
+            fundFee: null,
+            fundArrivalAmount: flow.amount,
+            fundUnits: null,
+            fundSubtype: FundSubtype.buy_failed,
+            fundConfirmDate: entry.applyDate,
+            fundArrivalDate: flow.flowDate,
+            source: "regular_invest_refund",
+            date: flow.flowDate,
+            createdAt: flow.createdAt,
+            accountId: entry.fundAccountId,
+            toAccountId: flow.accountId ?? entry.cashAccountId,
+            fundSourceEntryId: entry.cashEntryId ?? entry.id,
+            realizedProfit: null,
+          }));
+        return [main, ...refundRows];
+      })
+    : await prisma.txRecord.findMany({
     where: {
       OR: [{ toAccountId: accountId }, { accountId: accountId }],
       fundCode: { not: null },
@@ -217,25 +284,53 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
       amount: true, fundFee: true, fundArrivalAmount: true,
       fundUnits: true, fundSubtype: true, fundConfirmDate: true, fundArrivalDate: true,
       source: true, date: true, createdAt: true,
+      accountId: true, toAccountId: true, fundSourceEntryId: true,
     },
     orderBy: [{ fundConfirmDate: "asc" }, { date: "asc" }, { createdAt: "asc" }],
   });
 
+  const { refundAmountByBuyId } = allocateBuyFailedRefunds(rawEntries.map(e => ({
+    id: e.id,
+    date: e.date,
+    createdAt: e.createdAt,
+    fundConfirmDate: e.fundConfirmDate,
+    fundArrivalDate: e.fundArrivalDate,
+    accountId: e.accountId,
+    toAccountId: e.toAccountId,
+    fundCode: e.fundCode,
+    fundSubtype: e.fundSubtype,
+    source: e.source,
+    amount: toNum(e.amount),
+    fundSourceEntryId: e.fundSourceEntryId,
+  })));
+
   const entries: FundPositionEntryLike[] = rawEntries
     .filter(e => !fundCodes || (e.fundCode && fundCodes.includes(e.fundCode)))
-    .map(e => ({
-      id: e.id,
-      fundCode: e.fundCode,
-      amount: toNum(e.amount),
-      fee: toNum(e.fundFee ?? 0),
-      arrivalAmount: e.fundArrivalAmount != null ? toNum(e.fundArrivalAmount) : null,
-      units: e.fundUnits != null ? roundFundUnits(toNum(e.fundUnits), fundUnitsDecimals) : null,
-      subtype: e.fundSubtype ?? null,
-      source: e.source ?? null,
-      isPending: e.fundSubtype === "buy_failed" || (e.fundConfirmDate == null && e.fundSubtype === "buy"),
-      confirmDate: e.fundConfirmDate ? e.fundConfirmDate.toISOString().slice(0, 10) : null,
-      arrivalDate: e.fundArrivalDate ? e.fundArrivalDate.toISOString().slice(0, 10) : null,
-    }));
+    .map(e => {
+      const amount = toNum(e.amount);
+      const storedUnits = e.fundUnits != null ? roundFundUnits(toNum(e.fundUnits), fundUnitsDecimals) : null;
+      const netBuyAmount = e.fundSubtype === "buy"
+        ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(e.id) ?? 0))
+        : null;
+      const effectiveUnits = e.fundSubtype === "buy" && storedUnits != null
+        ? roundFundUnits(getEffectiveBuyUnits(storedUnits, amount, netBuyAmount), fundUnitsDecimals)
+        : storedUnits;
+      return {
+        id: e.id,
+        fundCode: e.fundCode,
+        amount,
+        fee: toNum(e.fundFee ?? 0),
+        arrivalAmount: e.fundArrivalAmount != null ? toNum(e.fundArrivalAmount) : null,
+        units: effectiveUnits,
+        subtype: e.fundSubtype ?? null,
+        source: e.source ?? null,
+        isPending: e.fundSubtype === "buy_failed" || (e.fundConfirmDate == null && e.fundSubtype === "buy"),
+        confirmDate: e.fundConfirmDate ? e.fundConfirmDate.toISOString().slice(0, 10) : null,
+        arrivalDate: e.fundArrivalDate ? e.fundArrivalDate.toISOString().slice(0, 10) : null,
+        netBuyAmount,
+        effectiveUnits,
+      };
+    });
 
   const codesToCalc = fundCodes ?? [...new Set(entries.map(e => e.fundCode).filter(Boolean))] as string[];
 

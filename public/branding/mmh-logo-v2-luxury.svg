@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH luxury monogram logo</title>
+  <desc id="desc">A luxury geometric MMH monogram with a home roof and premium gold accent.</desc>
+  <rect width="128" height="128" rx="28" fill="#0F1115"/>
+  <path d="M27 86V42l37 42 37-42v44H87V71.5L64 97 41 71.5V86H27Z" fill="#F8F5EC"/>
+  <path d="M25 43.5 64 23l39 20.5-5.4 10.2L64 36.1 30.4 53.7 25 43.5Z" fill="#C8A85A"/>
+  <path d="M52.2 57.5 64 70.9l11.8-13.4 7.5 8.6L64 88.3 44.7 66.1l7.5-8.6Z" fill="#C8A85A"/>
+</svg>

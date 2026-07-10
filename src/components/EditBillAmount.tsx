@@ -5,6 +5,7 @@ import { Check, Unlock } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { formatMoneyYuan as formatMoney } from "@/lib/format";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export default function EditBillAmount({
   accountId,
@@ -107,7 +108,8 @@ export default function EditBillAmount({
             },
           }),
         );
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "bill-override", accountIds: [accountId], statementMonth });
+        setTimeout(() => router.refresh(), 120);
         setEditing(false);
         setSaving(false);
         return;
@@ -125,7 +127,7 @@ export default function EditBillAmount({
     try {
       await fetch(`/api/v1/bill/override?accountId=${accountId}&statementMonth=${statementMonth}`, { method: "DELETE" });
       await new Promise((resolve) => setTimeout(resolve, 60));
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "bill-override-reset", accountIds: [accountId], statementMonth });
       router.refresh();
     } catch {
       // ignore

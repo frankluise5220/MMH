@@ -2,10 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { hashPassword } from "@/lib/auth/password";
-import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
-import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -69,49 +67,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
   }
 
-  const household = await prisma.household.create({
-    data: { name },
-  });
-
-  // 创建默认所有人。账簿的第一个所有人默认使用管理员用户名。
-  const defaultOwner = await prisma.accountGroup.create({
-    data: { name: adminName, householdId: household.id, sortOrder: 0 },
-  });
-
-  // 创建默认账户
-  const defaultAccounts: { name: string; kind: string; groupId: string; investProductType?: string }[] = [
-    { name: "现金钱包", kind: "cash", groupId: defaultOwner.id },
-    { name: "银行储蓄", kind: "bank_debit", groupId: defaultOwner.id },
-    { name: "投资账户", kind: "investment", groupId: defaultOwner.id, investProductType: "fund" },
-  ];
-  for (const a of defaultAccounts) {
-    await prisma.account.create({
-      data: { name: a.name, kind: a.kind as any, groupId: a.groupId, investProductType: a.investProductType as any, householdId: household.id, isActive: true, currency: "CNY" },
-    });
-  }
-
-  // 创建默认分类和机构模板
-  await createDefaultCategoriesForHousehold(prisma, household.id);
-  await createDefaultInstitutionsForHousehold(prisma, household.id);
-
-  // 为新账簿创建管理员用户（创建时即设置密码哈希）。
-  // 用户名允许在不同账簿中重复，登录时由账簿身份区分。
-  const passwordHash = await hashPassword(adminPassword);
-  await prisma.user.create({
-    data: {
-      name: adminName,
-      role: "admin",
-      isSystem: false,
-      passwordHash,
-      email: adminEmail,
-      householdId: household.id,
-    },
-  });
-
-  // 非 admin 用户创建新账簿 → 自动将用户的 householdId 更新为新账簿
-  if (user && !isAdmin(user)) {
-    await prisma.user.update({ where: { id: user.id }, data: { householdId: household.id } });
-  }
+  const { household } = await prisma.$transaction((tx) =>
+    createLedgerWithDefaults(
+      tx,
+      { name, adminName, adminPassword, adminEmail },
+      { currentUser: user },
+    ),
+  );
 
   return NextResponse.json({ ok: true, household });
 }
@@ -209,6 +171,7 @@ export async function DELETE(req: NextRequest) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
       // 删除持仓
       await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
+      await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
       // 删除确认天数、费率、账单覆盖、信用卡周期
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundFeeRate.deleteMany({ where: { accountId: { in: accountIds } } });

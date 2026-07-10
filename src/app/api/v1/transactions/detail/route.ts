@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API: /api/v1/transactions/detail
  *
  * 交易详情的增删改查接口
@@ -7,6 +7,11 @@
  * POST   JSON body                    创建交易
  * PUT    JSON body { id, ... }         更新交易
  * DELETE ?id=xxx 或 POST { id }         删除交易（软删除）
+ *
+ * 贵金属交易:
+ * - 接收 metalTypeId、metalUnitId、metalQuantity、metalUnitPrice、metalFee。
+ * - 服务端会按当前账簿或系统字典校验品种和单位，并回写 metalTypeName / metalUnitName。
+ * - 贵金属不使用 fundCode / fundUnits / fundNav 作为事实字段。
  *
  * 接受的实体类型: TxRecord.id
  *
@@ -20,20 +25,26 @@ import { AccountKind, TransactionType, FundSubtype, IntervalUnit, RegularInvestS
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
-import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc } from "@/lib/date-utils";
+import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
 import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
+import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { resolveSameCurrencyTransfer } from "@/lib/currency";
 
 export const runtime = "nodejs";
 
@@ -66,6 +77,134 @@ function toDateOrNull(val: unknown): Date | null {
   if (!s) return null;
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toDateTimeLocal(value: Date | null | undefined): string | null {
+  if (!value) return null;
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, "0"),
+    String(value.getDate()).padStart(2, "0"),
+  ].join("-") + `T${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+}
+
+function dateFromYmd(value: string | null | undefined): Date | null {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return new Date(`${text.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function ymdFromDate(value: Date | null | undefined): string {
+  return value ? value.toISOString().slice(0, 10) : "";
+}
+
+async function upsertFundBuyRefundRecord(
+  tx: any,
+  params: {
+    householdId: string;
+    linkedRefundEntryId?: string | null;
+    buyEntryId?: string | null;
+    buyDate: Date;
+    refundDate: Date;
+    refundAmount: number;
+    fundAccountId: string;
+    fundAccountName: string;
+    cashAccountId: string;
+    cashAccountName: string;
+    currency?: string | null;
+    fundCode: string | null;
+    fundName: string | null;
+    fundProductType: string | null;
+    fundConfirmDate?: Date | null;
+    fundArrivalDate?: Date | null;
+    regularInvestPlanId?: string | null;
+    note?: string | null;
+  },
+) {
+  const refundAmount = Math.max(0, Math.abs(Number(params.refundAmount) || 0));
+  if (refundAmount <= 0 || !params.fundAccountId || !params.cashAccountId || !params.fundCode) return null;
+
+  const directMatch = params.linkedRefundEntryId
+    ? await tx.txRecord.findFirst({
+        where: {
+          id: params.linkedRefundEntryId,
+          householdId: params.householdId,
+          fundSubtype: FundSubtype.buy_failed,
+          source: "regular_invest_refund",
+          deletedAt: null,
+        },
+      })
+    : null;
+  const refundDateYmd = ymdFromDate(params.refundDate);
+  const refundConfirmDateYmd = ymdFromDate(params.fundConfirmDate ?? null);
+  const fallbackMatch = directMatch
+    ? null
+    : params.buyEntryId
+      ? await tx.txRecord.findFirst({
+          where: {
+            householdId: params.householdId,
+            deletedAt: null,
+            type: TransactionType.investment,
+            fundSubtype: FundSubtype.buy_failed,
+            source: "regular_invest_refund",
+            fundSourceEntryId: params.buyEntryId,
+          },
+          orderBy: [{ createdAt: "asc" }],
+        })
+      : null;
+  const dateFallbackMatch = directMatch || fallbackMatch
+    ? null
+    : await tx.txRecord.findFirst({
+        where: {
+          householdId: params.householdId,
+          deletedAt: null,
+          type: TransactionType.investment,
+          fundSubtype: FundSubtype.buy_failed,
+          source: "regular_invest_refund",
+          fundCode: params.fundCode,
+          accountId: params.fundAccountId,
+          toAccountId: params.cashAccountId,
+          date: dateFromYmd(refundDateYmd) ?? params.refundDate,
+          ...(refundConfirmDateYmd ? { fundConfirmDate: dateFromYmd(refundConfirmDateYmd) } : {}),
+        },
+        orderBy: [{ createdAt: "asc" }],
+      });
+
+  const refundRecordData = {
+    date: params.refundDate,
+    accountId: params.fundAccountId,
+    accountName: params.fundAccountName,
+    toAccountId: params.cashAccountId,
+    toAccountName: params.cashAccountName,
+    amount: refundAmount,
+    currency: params.currency ?? "CNY",
+    fundCode: params.fundCode,
+    fundName: params.fundName,
+    fundProductType: params.fundProductType as any,
+    fundSubtype: FundSubtype.buy_failed,
+    source: "regular_invest_refund",
+    fundUnits: null,
+    fundNav: null,
+    fundFee: null,
+    fundConfirmDate: params.fundConfirmDate ?? params.buyDate,
+    fundArrivalDate: params.fundArrivalDate ?? params.refundDate,
+    fundArrivalAmount: refundAmount,
+    fundSourceEntryId: params.buyEntryId ?? null,
+    regularInvestPlanId: params.regularInvestPlanId ?? null,
+    note: params.note || `买入退回 ${params.fundName || params.fundCode}`,
+    deletedAt: null,
+  };
+
+  const existing = directMatch ?? fallbackMatch ?? dateFallbackMatch;
+  return existing
+    ? tx.txRecord.update({ where: { id: existing.id }, data: refundRecordData })
+    : tx.txRecord.create({
+        data: {
+          ...refundRecordData,
+          type: TransactionType.investment,
+          householdId: params.householdId,
+        },
+      });
 }
 
 async function ensureFamilyMemberInstitutionInTx(input: {
@@ -148,6 +287,97 @@ function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: str
   }));
 }
 
+function mapFundLinkCandidate(entry: {
+  id: string;
+  date: Date;
+  createdAt: Date;
+  fundConfirmDate: Date | null;
+  fundArrivalDate: Date | null;
+  fundCode: string | null;
+  fundSubtype: FundSubtype | null;
+  fundUnits: unknown;
+  source: string | null;
+  accountId: string;
+  toAccountId: string | null;
+  amount: unknown;
+  fundSourceEntryId: string | null;
+}) {
+  return {
+    id: entry.id,
+    date: formatDateLocal(entry.date),
+    createdAt: entry.createdAt.toISOString(),
+    fundConfirmDate: entry.fundConfirmDate ? formatDateLocal(entry.fundConfirmDate) : null,
+    fundArrivalDate: entry.fundArrivalDate ? formatDateLocal(entry.fundArrivalDate) : null,
+    fundCode: entry.fundCode ?? "",
+    fundSubtype: entry.fundSubtype ?? "",
+    fundUnits: entry.fundUnits ? toNumber(entry.fundUnits) : null,
+    source: entry.source ?? null,
+    accountId: entry.accountId,
+    toAccountId: entry.toAccountId,
+    amount: toNumber(entry.amount),
+    fundSourceEntryId: entry.fundSourceEntryId ?? null,
+  };
+}
+
+async function getFundLinkCandidateEntries(record: {
+  id: string;
+  type: TransactionType;
+  fundCode: string | null;
+  fundSubtype: FundSubtype | null;
+  source: string | null;
+  accountId: string;
+  toAccountId: string | null;
+}, householdId: string) {
+  if (record.type !== TransactionType.investment || !record.fundCode) return [];
+  const isBuy = record.fundSubtype === FundSubtype.buy;
+  const isRefund = record.fundSubtype === FundSubtype.buy_failed && record.source === "regular_invest_refund";
+  if (!isBuy && !isRefund) return [];
+
+  const fundAccountId = isBuy ? record.toAccountId : record.accountId;
+  const cashAccountId = isBuy ? record.accountId : record.toAccountId;
+  if (!fundAccountId || !cashAccountId) return [];
+
+  const entries = await prisma.txRecord.findMany({
+    where: {
+      householdId,
+      deletedAt: null,
+      type: TransactionType.investment,
+      fundCode: record.fundCode,
+      OR: [
+        {
+          fundSubtype: FundSubtype.buy,
+          accountId: cashAccountId,
+          toAccountId: fundAccountId,
+        },
+        {
+          fundSubtype: FundSubtype.buy_failed,
+          source: "regular_invest_refund",
+          accountId: fundAccountId,
+          toAccountId: cashAccountId,
+        },
+      ],
+    },
+    select: {
+      id: true,
+      date: true,
+      createdAt: true,
+      fundConfirmDate: true,
+      fundArrivalDate: true,
+      fundCode: true,
+      fundSubtype: true,
+      fundUnits: true,
+      source: true,
+      accountId: true,
+      toAccountId: true,
+      amount: true,
+      fundSourceEntryId: true,
+    },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+  });
+
+  return entries.map(mapFundLinkCandidate);
+}
+
 /* ────────────────── GET ────────────────── */
 
 export async function GET(req: Request) {
@@ -175,24 +405,29 @@ export async function GET(req: Request) {
       }
       const entry = {
         id: record.id,
-        date: record.date.toISOString().slice(0, 10),
+        date: formatDateLocal(record.date),
+        postedAt: toDateTimeLocal(record.postedAt),
+        dayOrder: record.dayOrder,
         amount: toNumber(record.amount),
         type: record.type,
         categoryId: record.categoryId,
         categoryName: record.categoryName,
         accountId: record.accountId,
         accountName: record.accountName,
+        accountKind: record.account?.kind ?? null,
         accountInstitutionName: record.account?.Institution?.name ?? "",
         counterpartyInstitutionId: record.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
         toAccountId: record.toAccountId,
         toAccountName: record.toAccountName,
+        toAccountKind: record.toAccount?.kind ?? null,
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
         toNote: record.toNote,
         fundSubtype: record.fundSubtype,
         fundCode: record.fundCode,
         fundName: record.fundName,
+        wealthProductId: record.wealthProductId ?? null,
         insuranceProductId: record.insuranceProductId ?? null,
         insuranceAction: record.insuranceAction ?? null,
         insuranceProductName: record.insuranceProductName ?? record.fundName ?? null,
@@ -200,17 +435,26 @@ export async function GET(req: Request) {
         debtInterestAmount: record.debtInterestAmount ? toNumber(record.debtInterestAmount) : null,
         debtFeeAmount: record.debtFeeAmount ? toNumber(record.debtFeeAmount) : null,
         fundProductType: record.fundProductType,
+        metalTypeId: record.metalTypeId ?? null,
+        metalTypeName: record.metalTypeName ?? null,
+        metalUnitId: record.metalUnitId ?? null,
+        metalUnitName: record.metalUnitName ?? null,
+        metalQuantity: record.metalQuantity ? toNumber(record.metalQuantity) : null,
+        metalUnitPrice: record.metalUnitPrice ? toNumber(record.metalUnitPrice) : null,
+        metalFee: record.metalFee ? toNumber(record.metalFee) : null,
         fundNav: record.fundNav ? toNumber(record.fundNav) : null,
         depositAnnualRate: record.depositAnnualRate ? toNumber(record.depositAnnualRate) : null,
         depositInterest: record.depositInterest ? toNumber(record.depositInterest) : null,
         depositSourceEntryId: record.depositSourceEntryId ?? null,
+        fundSourceEntryId: record.fundSourceEntryId ?? null,
         fundUnits: record.fundUnits ? toNumber(record.fundUnits) : null,
         fundFee: record.fundFee ? toNumber(record.fundFee) : null,
-        fundConfirmDate: record.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
-        fundArrivalDate: record.fundArrivalDate?.toISOString().slice(0, 10) ?? null,
+        fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
+        fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
         fundArrivalAmount: record.fundArrivalAmount ? toNumber(record.fundArrivalAmount) : null,
         source: record.source,
         entryTags: mapEntryTags(record),
+        linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
       };
       return NextResponse.json({ ok: true, data: entry });
     }
@@ -259,8 +503,10 @@ export async function GET(req: Request) {
     const pagedEntries = orderedEntries.slice((page - 1) * pageSize, page * pageSize);
     const entries = pagedEntries.map((e) => ({
       id: e.id,
-      date: getDetailEntryDisplayDate(e, accountId).toISOString().slice(0, 10),
+      date: formatDateLocal(getDetailEntryDisplayDate(e, accountId)),
+      postedAt: toDateTimeLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
+      dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
       runningBalance: runningBalanceById.get(e.id) ?? null,
       type: e.type,
@@ -268,17 +514,20 @@ export async function GET(req: Request) {
       categoryName: e.categoryName,
       accountId: e.accountId,
       accountName: e.accountName,
+      accountKind: e.account?.kind ?? null,
       accountInstitutionName: e.account?.Institution?.name ?? "",
       counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
       counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
       toAccountId: e.toAccountId,
       toAccountName: e.toAccountName,
+      toAccountKind: e.toAccount?.kind ?? null,
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
       toNote: e.toNote,
       fundSubtype: e.fundSubtype,
       fundCode: e.fundCode,
       fundName: e.fundName,
+      wealthProductId: e.wealthProductId ?? null,
       insuranceProductId: e.insuranceProductId ?? null,
       insuranceAction: e.insuranceAction ?? null,
       insuranceProductName: e.insuranceProductName ?? e.fundName ?? null,
@@ -286,14 +535,22 @@ export async function GET(req: Request) {
       debtInterestAmount: e.debtInterestAmount ? toNumber(e.debtInterestAmount) : null,
       debtFeeAmount: e.debtFeeAmount ? toNumber(e.debtFeeAmount) : null,
       fundProductType: e.fundProductType,
+      metalTypeId: e.metalTypeId ?? null,
+      metalTypeName: e.metalTypeName ?? null,
+      metalUnitId: e.metalUnitId ?? null,
+      metalUnitName: e.metalUnitName ?? null,
+      metalQuantity: e.metalQuantity ? toNumber(e.metalQuantity) : null,
+      metalUnitPrice: e.metalUnitPrice ? toNumber(e.metalUnitPrice) : null,
+      metalFee: e.metalFee ? toNumber(e.metalFee) : null,
       fundNav: e.fundNav ? toNumber(e.fundNav) : null,
       depositAnnualRate: e.depositAnnualRate ? toNumber(e.depositAnnualRate) : null,
       depositInterest: e.depositInterest ? toNumber(e.depositInterest) : null,
       depositSourceEntryId: e.depositSourceEntryId ?? null,
+      fundSourceEntryId: e.fundSourceEntryId ?? null,
       fundUnits: e.fundUnits ? toNumber(e.fundUnits) : null,
       fundFee: e.fundFee ? toNumber(e.fundFee) : null,
-      fundConfirmDate: e.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
-      fundArrivalDate: e.fundArrivalDate?.toISOString().slice(0, 10) ?? null,
+      fundConfirmDate: e.fundConfirmDate ? formatDateLocal(e.fundConfirmDate) : null,
+      fundArrivalDate: e.fundArrivalDate ? formatDateLocal(e.fundArrivalDate) : null,
       fundArrivalAmount: e.fundArrivalAmount ? toNumber(e.fundArrivalAmount) : null,
       source: e.source,
       entryTags: mapEntryTags(e),
@@ -325,18 +582,20 @@ export async function GET(req: Request) {
  * Body (JSON):
  *   type: "expense" | "income" | "transfer" | "investment"
  *   date: string (YYYY-MM-DD)
+ *   postedAt?: string (YYYY-MM-DDTHH:mm; expense only, defaults to date)
  *   amount: number
  *   accountId: string
  *   categoryId?: string
  *   categoryName?: string
- *   toAccountId?: string (transfer)
+ *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and debt targets must use their specialized transaction payloads.)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
  *   --- investment fields ---
  *   fundCode?: string
  *   fundName?: string
- *   fundProductType?: "fund" | "money" | "wealth" | "deposit"
+ *   wealthProductId?: string
+ *   fundProductType?: "fund" | "money" | "wealth" | "deposit" | "metal"
  *   fundSubtype?: "buy" | "redeem" | "dividend_reinvest" | "dividend_cash" | "regular_invest" | "switch_in" | "switch_out" | "buy_failed"
  *   fundNav?: number
  *   fundUnits?: number
@@ -359,7 +618,8 @@ export async function POST(req: Request) {
 
     const type = String(body.type ?? "").trim();
     const dateStr = String(body.date ?? "").trim();
-    const amountAbs = Math.abs(parseMoney(body.amount));
+    const amountRaw = parseMoney(body.amount);
+    const amountAbs = Math.abs(amountRaw);
     const note = String(body.note ?? "").trim();
     const toNote = String(body.toNote ?? "").trim();
     const counterpartyInstitutionId = String(body.counterpartyInstitutionId ?? "").trim();
@@ -369,6 +629,7 @@ export async function POST(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+    const postedAt = type === "expense" ? (toDateOrNull(body.postedAt) ?? date) : null;
     const { householdId } = ctx;
 
     if (!amountAbs) {
@@ -395,6 +656,10 @@ export async function POST(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId }, include: { Institution: true } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        if (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) {
+          throw new Error("基金、存款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
+        }
+        const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const toStatementMonthValue =
           (toAcc.kind === AccountKind.bank_credit || toAcc.kind === AccountKind.loan) && toAcc.billingDay
@@ -411,16 +676,15 @@ export async function POST(req: Request) {
             type: TransactionType.transfer,
             date,
             note: note || null,
-            toNote: toNote || null,
+            toNote: (toNote || note) || null,
+            currency: transferCurrency,
             statementMonth: toStatementMonthValue,
             householdId,
           },
         });
         createdId = created.id;
 
-        if (tagIds.length > 0) {
-          await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
-        }
+        await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
       await recalcAndSaveAccountBalance(fromAccountId).catch(logger.catchLog("操作失败", "route.ts"));
@@ -453,9 +717,10 @@ export async function POST(req: Request) {
             categoryName: cat?.name ?? null,
             counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
             counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
-            amount: -amountAbs,
+            amount: amountRaw < 0 ? amountAbs : -amountAbs,
             type: TransactionType.expense,
             date,
+            postedAt,
             note: note || null,
             statementMonth,
             householdId,
@@ -463,9 +728,7 @@ export async function POST(req: Request) {
         });
         createdId = created.id;
 
-        if (tagIds.length > 0) {
-          await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
-        }
+        await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
       await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
@@ -505,9 +768,7 @@ export async function POST(req: Request) {
         });
         createdId = created.id;
 
-        if (tagIds.length > 0) {
-          await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
-        }
+        await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
@@ -517,6 +778,11 @@ export async function POST(req: Request) {
       const subtype = String(body.fundSubtype ?? "buy").trim();
       let fundCode = String(body.fundCode ?? "").trim() || null;
       const fundProductType = String(body.fundProductType ?? "").trim() || null;
+      const metalTypeIdInput = String(body.metalTypeId ?? "").trim();
+      const metalUnitIdInput = String(body.metalUnitId ?? "").trim();
+      const metalQuantityRaw = parseMoney(body.metalQuantity ?? body.fundUnits);
+      const metalUnitPriceRaw = parseMoney(body.metalUnitPrice ?? body.fundNav);
+      const metalFeeRaw = parseMoney(body.metalFee ?? body.fundFee);
       const fundUnitsRaw = parseMoney(body.fundUnits);
       const fundNavRaw = parseMoney(body.fundNav);
       const depositAnnualRateRaw = parseMoney(body.depositAnnualRate);
@@ -525,14 +791,22 @@ export async function POST(req: Request) {
       const fundConfirmDateStr = String(body.fundConfirmDate ?? "").trim();
       const fundArrivalDateStr = String(body.fundArrivalDate ?? "").trim();
       const fundArrivalAmountRaw = parseMoney(body.fundArrivalAmount);
+      const buyResultStatus = String(body.buyResultStatus ?? "normal").trim();
+      const refundAmountRaw = parseMoney(body.refundAmount);
+      const refundDateStr = String(body.refundDate ?? "").trim();
       const depositSourceEntryId = String(body.depositSourceEntryId ?? "").trim() || null;
       const cashAccountIdInput = String(body.cashAccountId ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
       const fundArrivalAmount = fundArrivalAmountRaw > 0 ? fundArrivalAmountRaw : null;
+      const refundAmount = refundAmountRaw > 0 ? Math.abs(refundAmountRaw) : null;
+      const refundDate = refundDateStr ? dateFromYmd(refundDateStr) : null;
       const fundUnits = fundUnitsRaw > 0 ? fundUnitsRaw : null;
       const fundNav = fundNavRaw > 0 ? fundNavRaw : null;
       const fundFee = fundFeeRaw > 0 ? fundFeeRaw : null;
+      const metalQuantity = metalQuantityRaw > 0 ? metalQuantityRaw : fundUnits;
+      const metalUnitPrice = metalUnitPriceRaw > 0 ? metalUnitPriceRaw : fundNav;
+      const metalFee = metalFeeRaw > 0 ? metalFeeRaw : null;
       const depositAnnualRate = depositAnnualRateRaw > 0 ? depositAnnualRateRaw : null;
       const depositInterest = depositInterestRaw >= 0 ? depositInterestRaw : null;
 
@@ -542,6 +816,7 @@ export async function POST(req: Request) {
       }
 
       const fundNameInput = String(body.fundName ?? "").trim();
+      const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
       let insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
       const insuranceProductMasterId = String(body.insuranceProductMasterId ?? "").trim() || null;
       const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
@@ -719,8 +994,47 @@ export async function POST(req: Request) {
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true } })
           : null;
 
-        const entryFundCode = fundCode || null;
-        const entryFundName = resolvedInsuranceProductName || fundNameInput || fundCode || null;
+        const metalType = fundProductType === "metal" && metalTypeIdInput
+          ? await tx.preciousMetalType.findFirst({
+              where: {
+                id: metalTypeIdInput,
+                isActive: true,
+                OR: [{ householdId }, { householdId: null }],
+              },
+            })
+          : null;
+        const metalUnit = fundProductType === "metal" && metalUnitIdInput
+          ? await tx.preciousMetalUnit.findFirst({
+              where: {
+                id: metalUnitIdInput,
+                isActive: true,
+                OR: [{ householdId }, { householdId: null }],
+              },
+            })
+          : null;
+        if (fundProductType === "metal" && !metalType) throw new Error("请选择贵金属品种");
+        if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
+        const wealthProduct = fundProductType === "wealth"
+          ? (wealthProductIdInput
+              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+              : fundNameInput
+                ? await tx.wealthProduct.findFirst({
+                    where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
+                  }) ?? await tx.wealthProduct.create({
+                    data: {
+                      householdId,
+                      institutionId: investAcc.institutionId ?? null,
+                      name: fundNameInput,
+                      currency: investAcc.currency ?? "CNY",
+                    },
+                  })
+                : null)
+          : null;
+        if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+
+        const isMetalProduct = fundProductType === "metal";
+        const entryFundCode = isMetalProduct ? null : fundCode || null;
+        const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode || null;
         const isInsurancePremiumBuy = isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike;
         const premiumFrequencyMonths = insuranceProductForPlan
           ? Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0)
@@ -873,7 +1187,7 @@ export async function POST(req: Request) {
         let computedConfirmDate: Date | null = fundConfirmDate;
         let computedArrivalDate: Date | null = fundArrivalDate;
 
-        if (shouldComputeArrival && entryFundCode) {
+        if (!isMetalProduct && shouldComputeArrival && entryFundCode) {
           const confirmStr = computedConfirmDate
             ? computedConfirmDate.toISOString().slice(0, 10)
             : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
@@ -896,22 +1210,30 @@ export async function POST(req: Request) {
             amount: signedAmount,
             fundCode: entryFundCode,
             fundName: entryFundName,
+            wealthProductId: wealthProduct?.id ?? undefined,
+            metalTypeId: metalType?.id ?? undefined,
+            metalTypeName: metalType?.name ?? undefined,
+            metalUnitId: metalUnit?.id ?? undefined,
+            metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : undefined,
+            metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : undefined) : undefined,
+            metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
+            metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
             insuranceProductId: insuranceProductId ?? undefined,
             insuranceAction: isInsurance
               ? (redeemLike ? "refund" : "premium")
               : undefined,
             insuranceProductName: isInsurance ? entryFundName : undefined,
-            fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | null | undefined,
+            fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
-            fundUnits: roundedFundUnits ?? undefined,
-            fundNav: fundProductType === "deposit" ? undefined : fundNav ?? undefined,
+            fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
+            fundNav: isMetalProduct || fundProductType === "deposit" ? undefined : fundNav ?? undefined,
             depositAnnualRate: depositAnnualRate ?? undefined,
             depositInterest: depositInterest ?? undefined,
             depositSourceEntryId: depositSourceEntryId ?? undefined,
-            fundFee: fundFee ?? undefined,
-            fundConfirmDate: computedConfirmDate ?? undefined,
-            fundArrivalDate: computedArrivalDate ?? undefined,
+            fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
+            fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
+            fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
             fundArrivalAmount: fundArrivalAmount ?? undefined,
             note: note || (isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike ? `保险缴费：${entryFundName}` : undefined),
             householdId,
@@ -919,8 +1241,37 @@ export async function POST(req: Request) {
         });
         createdId = created.id;
 
-        if (tagIds.length > 0) {
-          await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId: created.id, tagId })) });
+        await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+        if (
+          finalFundSubtype === FundSubtype.buy &&
+          sourceValue !== "insurance" &&
+          !isMetalProduct &&
+          buyResultStatus === "refund" &&
+          refundAmount &&
+          refundAmount > 0 &&
+          cashAcc &&
+          entryFundCode
+        ) {
+          const effectiveRefundDate = refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date;
+          await upsertFundBuyRefundRecord(tx, {
+            householdId,
+            buyEntryId: created.id,
+            buyDate: date,
+            refundDate: effectiveRefundDate,
+            refundAmount,
+            fundAccountId: investAcc.id,
+            fundAccountName: investAcc.name,
+            cashAccountId: cashAcc.id,
+            cashAccountName: cashAcc.name,
+            currency: investAcc.currency ?? "CNY",
+            fundCode: entryFundCode,
+            fundName: entryFundName,
+            fundProductType,
+            fundConfirmDate: computedConfirmDate,
+            fundArrivalDate: effectiveRefundDate,
+            regularInvestPlanId: created.regularInvestPlanId ?? null,
+            note: note || `买入退回 ${entryFundName || entryFundCode}`,
+          });
         }
       });
 
@@ -937,7 +1288,9 @@ export async function POST(req: Request) {
         }
       }
 
-      if (!isInsurance && fundProductType !== "deposit" && finalInvestmentAccId) {
+      if (!isInsurance && fundProductType === "metal" && finalInvestmentAccId) {
+        await recalcPreciousMetalPositions(finalInvestmentAccId).catch(logger.catchLog("操作失败", "route.ts"));
+      } else if (!isInsurance && fundProductType !== "deposit" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
       }
       if (finalInvestmentAccId) {
@@ -950,6 +1303,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "类型不正确" }, { status: 400 });
     }
 
+    if (changedInvestment && createdId) {
+      await syncFundTransactionsFromTxRecords([createdId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
+    }
+    if (createdId) {
+      const createdAccounts = await prisma.txRecord.findUnique({
+        where: { id: createdId },
+        select: { accountId: true, toAccountId: true },
+      });
+      if (createdAccounts) {
+        await invalidateCreditCardCycleCacheForAccountIds([createdAccounts.accountId, createdAccounts.toAccountId]).catch(
+          logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
+        );
+      }
+    }
     if (changedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
 
@@ -968,21 +1335,26 @@ export async function POST(req: Request) {
           ok: true,
           data: {
             id: created.id,
-            date: created.date.toISOString().slice(0, 10),
+            date: formatDateLocal(created.date),
+            postedAt: toDateTimeLocal(created.postedAt),
+            dayOrder: created.dayOrder,
             amount: toNumber(created.amount),
             type: created.type,
             categoryId: created.categoryId,
             categoryName: created.categoryName,
             accountId: created.accountId,
             accountName: created.accountName,
+            accountKind: created.account?.kind ?? null,
             accountInstitutionName: created.account?.Institution?.name ?? "",
             toAccountId: created.toAccountId,
             toAccountName: created.toAccountName,
+            toAccountKind: created.toAccount?.kind ?? null,
             toAccountInstitutionName: created.toAccount?.Institution?.name ?? "",
             note: created.note,
             fundSubtype: created.fundSubtype,
             fundCode: created.fundCode,
             fundName: created.fundName,
+            wealthProductId: created.wealthProductId ?? null,
             insuranceProductId: created.insuranceProductId ?? null,
             fundProductType: created.fundProductType,
             fundNav: created.fundNav ? toNumber(created.fundNav) : null,
@@ -991,8 +1363,8 @@ export async function POST(req: Request) {
             depositSourceEntryId: created.depositSourceEntryId ?? null,
             fundUnits: created.fundUnits ? toNumber(created.fundUnits) : null,
             fundFee: created.fundFee ? toNumber(created.fundFee) : null,
-            fundConfirmDate: created.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
-            fundArrivalDate: created.fundArrivalDate?.toISOString().slice(0, 10) ?? null,
+            fundConfirmDate: created.fundConfirmDate ? formatDateLocal(created.fundConfirmDate) : null,
+            fundArrivalDate: created.fundArrivalDate ? formatDateLocal(created.fundArrivalDate) : null,
             fundArrivalAmount: created.fundArrivalAmount ? toNumber(created.fundArrivalAmount) : null,
             source: created.source,
             entryTags: mapEntryTags(created),
@@ -1018,17 +1390,19 @@ export async function POST(req: Request) {
  * Body (JSON):
  *   id: string (必填)
  *   date?: string (YYYY-MM-DD)
+ *   postedAt?: string (YYYY-MM-DDTHH:mm; expense only, defaults to date)
  *   amount?: number
  *   type?: "expense" | "income" | "transfer" | "investment"
  *   accountId?: string
  *   categoryId?: string
- *   toAccountId?: string
+ *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and debt targets must use their specialized transaction payloads.)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
  *   --- investment fields ---
  *   fundCode?: string
  *   fundName?: string
+ *   wealthProductId?: string
  *   insuranceProductId?: string
  *   fundProductType?: string
  *   fundSubtype?: string
@@ -1059,7 +1433,7 @@ export async function PUT(req: Request) {
     const type = String(body.type ?? "").trim();
     const dateStr = String(body.date ?? "").trim();
     const amountRaw = parseMoney(body.amount);
-    const amountAbs = amountRaw > 0 ? Math.abs(amountRaw) : 0;
+    const amountAbs = type === "expense" ? Math.abs(amountRaw) : amountRaw > 0 ? Math.abs(amountRaw) : 0;
     const note = String(body.note ?? "").trim();
     const toNote = String(body.toNote ?? "").trim();
     const counterpartyInstitutionId = String(body.counterpartyInstitutionId ?? "").trim();
@@ -1069,6 +1443,7 @@ export async function PUT(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+    const postedAt = type === "expense" ? (toDateOrNull(body.postedAt) ?? date) : null;
     if (!amountAbs) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
@@ -1091,11 +1466,7 @@ export async function PUT(req: Request) {
       oldAccountId = entry.accountId ?? undefined;
       oldToAccountId = entry.toAccountId ?? undefined;
 
-      // Update tags: delete old, create new
-      await tx.entryTag.deleteMany({ where: { entryId } });
-      if (tagIds.length > 0) {
-        await tx.entryTag.createMany({ data: tagIds.map((tagId) => ({ entryId, tagId })) });
-      }
+      await replaceEntryTags({ tx, entryId, householdId: entry.householdId, tagIds });
 
       if (type === "transfer") {
         const fromAccountId = String(body.fromAccountId ?? body.accountId ?? "").trim();
@@ -1108,6 +1479,10 @@ export async function PUT(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        if (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) {
+          throw new Error("基金、存款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
+        }
+        const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const toStatementMonthValue =
           (toAcc.kind === AccountKind.bank_credit || toAcc.kind === AccountKind.loan) && toAcc.billingDay
@@ -1126,9 +1501,11 @@ export async function PUT(req: Request) {
             categoryName: null,
             statementMonth: toStatementMonthValue,
             date,
+            postedAt: null,
             type: TransactionType.transfer,
             note: note || null,
-            toNote: toNote || null,
+            toNote: (toNote || note) || null,
+            currency: transferCurrency,
           },
         });
         return;
@@ -1139,14 +1516,23 @@ export async function PUT(req: Request) {
     const accountIdFormData = String(body.accountId ?? body.investAccountId ?? "").trim();
     const cashAccountIdFormData = String(body.cashAccountId ?? "").trim();
     const fundCode = String(body.fundCode ?? "").trim() || null;
+    const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
+    const metalTypeIdInput = String(body.metalTypeId ?? "").trim();
+    const metalUnitIdInput = String(body.metalUnitId ?? "").trim();
     const insuranceProductId = String(body.insuranceProductId ?? "").trim() || entry.insuranceProductId || null;
     const ownerGroupIdFromBody = String(body.ownerGroupId ?? "").trim() || null;
     const productType = String(body.fundProductType ?? "fund").trim();
     const subtype = String(body.fundSubtype ?? "buy").trim();
+    const buyResultStatus = String(body.buyResultStatus ?? "normal").trim();
+    const linkedRefundEntryId = String(body.linkedRefundEntryId ?? "").trim() || null;
+    const refundAmountRaw = parseMoney(body.refundAmount);
+    const refundDateStr = String(body.refundDate ?? "").trim();
+    const refundAmount = refundAmountRaw > 0 ? Math.abs(refundAmountRaw) : null;
+    const refundDate = refundDateStr ? dateFromYmd(refundDateStr) : null;
     const redeemLike = subtype === "redeem" || subtype === "switch_out";
-    const cashReceivingLike = redeemLike || subtype === "dividend_cash";
-
     const sourceValue = String(body.source ?? entry.source ?? "manual").trim();
+    const isBuyFailedRefund = subtype === "buy_failed" && sourceValue === "regular_invest_refund";
+    const cashReceivingLike = redeemLike || subtype === "dividend_cash" || isBuyFailedRefund;
     const isInsuranceEdit = sourceValue === "insurance";
 
     let investAcc = isInsuranceEdit && !accountIdFormData
@@ -1182,9 +1568,53 @@ export async function PUT(req: Request) {
 
     if (!investAcc) throw new Error("请选择投资账户");
     investmentAccId = investAcc.id;
-    const fundUnitsInput = positiveNumber(body.fundUnits);
+    const hasFundUnits = Object.prototype.hasOwnProperty.call(body, "fundUnits");
+    const fundUnitsInput = hasFundUnits ? positiveNumber(body.fundUnits) : null;
+    const metalQuantityInput = positiveNumber(body.metalQuantity ?? body.fundUnits);
+    const metalUnitPriceInput = positiveNumber(body.metalUnitPrice ?? body.fundNav);
+    const metalFeeInput = positiveNumber(body.metalFee ?? body.fundFee);
     const fundUnitsDecimals = normalizeFundUnitsDecimals(investAcc.fundUnitsDecimals);
     const roundedFundUnits = fundUnitsInput != null ? roundFundUnits(fundUnitsInput, fundUnitsDecimals) : null;
+    const roundedMetalQuantity = metalQuantityInput != null ? roundFundUnits(metalQuantityInput, fundUnitsDecimals) : roundedFundUnits;
+    const isMetalProduct = productType === "metal";
+    const metalType = productType === "metal" && metalTypeIdInput
+      ? await tx.preciousMetalType.findFirst({
+          where: {
+            id: metalTypeIdInput,
+            isActive: true,
+            OR: [{ householdId }, { householdId: null }],
+          },
+        })
+      : null;
+    const metalUnit = productType === "metal" && metalUnitIdInput
+      ? await tx.preciousMetalUnit.findFirst({
+          where: {
+            id: metalUnitIdInput,
+            isActive: true,
+            OR: [{ householdId }, { householdId: null }],
+          },
+        })
+      : null;
+    if (productType === "metal" && !metalType) throw new Error("请选择贵金属品种");
+    if (productType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
+    const fundNameInput = String(body.fundName ?? "").trim();
+    const wealthProduct = productType === "wealth"
+      ? (wealthProductIdInput
+          ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+          : fundNameInput
+            ? await tx.wealthProduct.findFirst({
+                where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
+              }) ?? await tx.wealthProduct.create({
+                data: {
+                  householdId,
+                  institutionId: investAcc.institutionId ?? null,
+                  name: fundNameInput,
+                  currency: investAcc.currency ?? "CNY",
+                },
+              })
+            : null)
+      : null;
+    if (productType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
 
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
@@ -1235,6 +1665,23 @@ export async function PUT(req: Request) {
           signedAmount = -amountAbs;
         }
 
+        const recalculatedRefundUnits = (
+          (subtype as FundSubtype) === FundSubtype.buy &&
+          sourceValue !== "insurance" &&
+          !isMetalProduct &&
+          buyResultStatus === "refund" &&
+          refundAmount &&
+          refundAmount > 0
+        )
+          ? calculateConfirmedBuyUnits({
+              grossAmount: amountAbs,
+              refundAmount,
+              fee: fundFee > 0 ? fundFee : 0,
+              nav: positiveNumber(body.fundNav) ?? toNumber(entry.fundNav),
+              roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+            })
+          : null;
+
         await tx.txRecord.update({
           where: { id: entryId },
           data: {
@@ -1245,8 +1692,16 @@ export async function PUT(req: Request) {
             categoryName: null,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
-            fundCode: fundCode || null,
-            fundName: resolvedInsuranceProductName ?? entry.fundName,
+            fundCode: isMetalProduct ? null : fundCode || null,
+            fundName: isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || entry.fundName),
+            wealthProductId: wealthProduct?.id ?? null,
+            metalTypeId: metalType?.id ?? null,
+            metalTypeName: metalType?.name ?? null,
+            metalUnitId: metalUnit?.id ?? null,
+            metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : null,
+            metalQuantity: isMetalProduct ? roundedMetalQuantity : null,
+            metalUnitPrice: isMetalProduct ? metalUnitPriceInput : null,
+            metalFee: isMetalProduct ? (metalFeeInput ?? (hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.metalFee != null ? toNumber(entry.metalFee) : null)) : null,
             insuranceProductId,
             insuranceAction: isInsuranceEdit
               ? (redeemLike ? "refund" : "premium")
@@ -1256,22 +1711,72 @@ export async function PUT(req: Request) {
               : entry.insuranceProductName,
             fundProductType: isInsuranceEdit ? null : (productType as any) || null,
             fundSubtype: (subtype as any) || null,
-            fundConfirmDate: toDateOrNull(body.fundConfirmDate),
-            fundArrivalDate: toDateOrNull(body.fundArrivalDate),
+            fundConfirmDate: isMetalProduct ? null : toDateOrNull(body.fundConfirmDate),
+            fundArrivalDate: isMetalProduct ? null : toDateOrNull(body.fundArrivalDate),
             fundArrivalAmount: parseMoney(body.fundArrivalAmount) || null,
-            fundUnits: roundedFundUnits,
-            fundNav: positiveNumber(body.fundNav),
-            fundFee: hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.fundFee,
+            fundUnits: isMetalProduct ? null : (recalculatedRefundUnits ?? (hasFundUnits ? roundedFundUnits : entry.fundUnits)),
+            fundNav: isMetalProduct ? null : positiveNumber(body.fundNav),
+            fundFee: isMetalProduct ? null : hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.fundFee,
             depositAnnualRate: parseMoney(body.depositAnnualRate) || null,
             depositInterest: parseMoney(body.depositInterest) || null,
             depositSourceEntryId,
             date,
+            postedAt: null,
             type: TransactionType.investment,
             note: note || null,
           },
         });
 
-if (!isInsuranceEdit) {
+        if (
+          (subtype as FundSubtype) === FundSubtype.buy &&
+          sourceValue !== "insurance" &&
+          !isMetalProduct &&
+          buyResultStatus === "refund" &&
+          refundAmount &&
+          refundAmount > 0 &&
+          fundCode &&
+          cashAccId
+        ) {
+          const effectiveRefundDate =
+            refundDate ??
+            toDateOrNull(body.fundArrivalDate) ??
+            toDateOrNull(body.fundConfirmDate) ??
+            date;
+          await upsertFundBuyRefundRecord(tx, {
+            householdId,
+            linkedRefundEntryId,
+            buyEntryId: entry.id,
+            buyDate: date,
+            refundDate: effectiveRefundDate,
+            refundAmount,
+            fundAccountId: investAcc.id,
+            fundAccountName: investAcc.name,
+            cashAccountId: cashAccId,
+            cashAccountName: cashAccName ?? "",
+            currency: investAcc.currency ?? entry.currency ?? "CNY",
+            fundCode,
+            fundName: resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || entry.fundName,
+            fundProductType: productType,
+            fundConfirmDate: toDateOrNull(body.fundConfirmDate),
+            fundArrivalDate: effectiveRefundDate,
+            regularInvestPlanId: entry.regularInvestPlanId ?? null,
+            note: note || `买入退回 ${resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode}`,
+          });
+        } else if ((subtype as FundSubtype) === FundSubtype.buy && linkedRefundEntryId) {
+          await tx.txRecord.updateMany({
+            where: {
+              id: linkedRefundEntryId,
+              householdId,
+              fundSubtype: FundSubtype.buy_failed,
+              source: "regular_invest_refund",
+            },
+            data: { deletedAt: new Date() },
+          });
+        }
+
+if (!isInsuranceEdit && isMetalProduct) {
+  await recalcPreciousMetalPositions(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+} else if (!isInsuranceEdit) {
   await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
 }
 if (!isInsuranceEdit || isInsuranceAccount(investAcc)) {
@@ -1336,7 +1841,7 @@ return;
       await tx.txRecord.update({
         where: { id: entryId },
         data: {
-          amount: type === "income" ? amountAbs : -amountAbs,
+          amount: type === "income" ? amountAbs : amountRaw < 0 ? amountAbs : -amountAbs,
           accountId: acc.id,
           accountName: acc.name,
           categoryId: cat ? cat.id : null,
@@ -1355,14 +1860,16 @@ return;
         where: { id: entry.id },
         data: {
           date,
+          postedAt,
           type: type === "income" ? TransactionType.income : TransactionType.expense,
           note: note || null,
         },
       });
     });
 
-    if (changedInvestment) revalidateAfterInvestChange();
-    else revalidateAfterTxChange();
+    if (changedInvestment) {
+      await syncFundTransactionsFromTxRecords([entryId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
+    }
 
     // 重算余额：所有涉及的旧/新账户
     const accountsToRecalc = new Set<string>();
@@ -1386,6 +1893,11 @@ return;
     for (const acctId of accountsToRecalc) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+    await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalc).catch(
+      logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
+    );
+    if (changedInvestment) revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
 
     // 返回更新后的记录
     const updated = await prisma.txRecord.findUnique({
@@ -1405,33 +1917,45 @@ return;
       ok: true,
       data: {
         id: updated.id,
-        date: updated.date.toISOString().slice(0, 10),
+        date: formatDateLocal(updated.date),
+        postedAt: toDateTimeLocal(updated.postedAt),
+        dayOrder: updated.dayOrder,
         amount: toNumber(updated.amount),
         type: updated.type,
         categoryId: updated.categoryId,
         categoryName: updated.categoryName,
         accountId: updated.accountId,
         accountName: updated.accountName,
+        accountKind: updated.account?.kind ?? null,
         accountInstitutionName: updated.account?.Institution?.name ?? "",
         counterpartyInstitutionId: updated.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: updated.counterpartyInstitutionName ?? null,
         toAccountId: updated.toAccountId,
         toAccountName: updated.toAccountName,
+        toAccountKind: updated.toAccount?.kind ?? null,
         toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",
         note: updated.note,
         fundSubtype: updated.fundSubtype,
         fundCode: updated.fundCode,
         fundName: updated.fundName,
+        wealthProductId: updated.wealthProductId ?? null,
         insuranceProductId: updated.insuranceProductId ?? null,
         fundProductType: updated.fundProductType,
+        metalTypeId: updated.metalTypeId ?? null,
+        metalTypeName: updated.metalTypeName ?? null,
+        metalUnitId: updated.metalUnitId ?? null,
+        metalUnitName: updated.metalUnitName ?? null,
+        metalQuantity: updated.metalQuantity ? toNumber(updated.metalQuantity) : null,
+        metalUnitPrice: updated.metalUnitPrice ? toNumber(updated.metalUnitPrice) : null,
+        metalFee: updated.metalFee ? toNumber(updated.metalFee) : null,
         fundNav: updated.fundNav ? toNumber(updated.fundNav) : null,
         depositAnnualRate: updated.depositAnnualRate ? toNumber(updated.depositAnnualRate) : null,
         depositInterest: updated.depositInterest ? toNumber(updated.depositInterest) : null,
         depositSourceEntryId: updated.depositSourceEntryId ?? null,
         fundUnits: updated.fundUnits ? toNumber(updated.fundUnits) : null,
         fundFee: updated.fundFee ? toNumber(updated.fundFee) : null,
-        fundConfirmDate: updated.fundConfirmDate?.toISOString().slice(0, 10) ?? null,
-        fundArrivalDate: updated.fundArrivalDate?.toISOString().slice(0, 10) ?? null,
+        fundConfirmDate: updated.fundConfirmDate ? formatDateLocal(updated.fundConfirmDate) : null,
+        fundArrivalDate: updated.fundArrivalDate ? formatDateLocal(updated.fundArrivalDate) : null,
         fundArrivalAmount: updated.fundArrivalAmount ? toNumber(updated.fundArrivalAmount) : null,
         source: updated.source,
         entryTags: mapEntryTags(updated),

@@ -12,6 +12,7 @@ const BodySchema = z.object({
   username: z.string().min(1).max(80),
   email: z.string().email().optional(),
   householdId: z.string().min(1).optional(),
+  preview: z.boolean().optional(),
 });
 
 function getClientIp(req: NextRequest) {
@@ -24,6 +25,14 @@ function getClientIp(req: NextRequest) {
 
 function normalizeEmail(v: string) {
   return v.trim().toLowerCase();
+}
+
+function maskEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  const [localPart, domain = ""] = normalized.split("@");
+  if (!localPart || !domain) return normalized;
+  const visibleLocal = localPart.length <= 2 ? localPart.slice(0, 1) : localPart.slice(0, 2);
+  return `${visibleLocal}***@${domain}`;
 }
 
 type ResetUser = {
@@ -48,6 +57,18 @@ function householdChoicesForUsers(users: ResetUser[]) {
     });
 }
 
+function ambiguousHouseholdResponse(users: ResetUser[], error: string) {
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "AMBIGUOUS_USER",
+      error,
+      households: householdChoicesForUsers(users),
+    },
+    { status: 409 },
+  );
+}
+
 async function findTargetUser(params: { username: string; email?: string | null; householdId?: string | null }) {
   const username = params.username.trim();
   if (!username) return null;
@@ -65,7 +86,9 @@ async function findTargetUser(params: { username: string; email?: string | null;
     : null;
   if (byCookie) return byCookie;
 
-  if (!providedEmail && users.length > 1) return null;
+  if (!providedEmail && users.length > 1) {
+    return ambiguousHouseholdResponse(users, "该用户名存在于多个账簿，请先选择账簿");
+  }
 
   const emailMatches = providedEmail
     ? users.filter((u) => u.email && normalizeEmail(u.email) === providedEmail)
@@ -74,15 +97,7 @@ async function findTargetUser(params: { username: string; email?: string | null;
   if (emailMatches.length === 0) return null;
   if (emailMatches.length === 1) return emailMatches[0]!;
 
-  return NextResponse.json(
-    {
-      ok: false,
-      code: "AMBIGUOUS_USER",
-      error: "该用户名和邮箱匹配多个账簿，请选择要找回的账簿",
-      households: householdChoicesForUsers(emailMatches),
-    },
-    { status: 409 },
-  );
+  return ambiguousHouseholdResponse(emailMatches, "该用户名和邮箱匹配多个账簿，请选择要找回的账簿");
 }
 
 function hashCode(params: { userId: string; code: string }) {
@@ -103,11 +118,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
   }
 
-  const { username, email, householdId } = parse.data;
+  const { username, email, householdId, preview } = parse.data;
   const cookieHouseholdId = householdId ?? req.cookies.get("householdId")?.value ?? null;
   const user = await findTargetUser({ username, email, householdId: cookieHouseholdId });
   if (user instanceof NextResponse) {
     return user;
+  }
+
+  const userEmail = user?.email ? normalizeEmail(user.email) : null;
+
+  if (preview) {
+    return NextResponse.json({
+      ok: true,
+      householdId: user?.householdId ?? cookieHouseholdId,
+      maskedEmailHint: userEmail ? maskEmail(userEmail) : null,
+      message: userEmail
+        ? `请输入绑定邮箱并补全这部分：${maskEmail(userEmail)}`
+        : "如果该用户已绑定邮箱，请继续补全绑定邮箱后发送验证码。",
+    });
   }
 
   const ip = getClientIp(req);
@@ -118,8 +146,10 @@ export async function POST(req: NextRequest) {
     message: "如果该用户已绑定邮箱，将收到一封验证码邮件。",
   });
 
-  const userEmail = user?.email ? normalizeEmail(user.email) : null;
   const providedEmail = email ? normalizeEmail(email) : null;
+  if (providedEmail && user && userEmail && providedEmail !== userEmail) {
+    return NextResponse.json({ ok: false, error: "用户名和绑定邮箱不匹配" }, { status: 400 });
+  }
   if (!user || !userEmail || (providedEmail && userEmail !== providedEmail)) {
     return response;
   }
@@ -154,6 +184,7 @@ export async function POST(req: NextRequest) {
       username: user.name,
       code,
       expiresMinutes,
+      householdId: user.householdId ?? cookieHouseholdId ?? undefined,
     });
     if (!mailRes.ok) {
       await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除未发送验证码", "password-reset"));
@@ -163,8 +194,12 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除发送失败验证码", "password-reset"));
     logger.error("验证码邮件发送失败", "password-reset", error);
-    return NextResponse.json({ ok: false, error: "验证码邮件发送失败，请检查 SMTP 配置或邮箱授权码" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "验证码邮件发送失败" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。", householdId: user.householdId });
+  return NextResponse.json({
+    ok: true,
+    message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。",
+    householdId: user.householdId,
+  });
 }

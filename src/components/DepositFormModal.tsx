@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -12,6 +12,7 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { Repeat } from "lucide-react";
 
 type Entry = {
@@ -479,6 +480,8 @@ export function DepositFormModal({
   }
 
   useEffect(() => {
+    if (mode !== "edit") return;
+
     function onEdit(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId: string;
@@ -587,7 +590,7 @@ export function DepositFormModal({
     }
     window.addEventListener("mmh:deposit:edit", onEdit as EventListener);
     return () => window.removeEventListener("mmh:deposit:edit", onEdit as EventListener);
-  }, [allRedeemLotOptions, defaultAccountId, depositAccountList, redeemLotOptions, today]);
+  }, [allRedeemLotOptions, defaultAccountId, depositAccountList, mode, redeemLotOptions, today]);
 
   useEffect(() => {
     if (mode !== "create") return;
@@ -598,13 +601,16 @@ export function DepositFormModal({
         defaultCashAccountId?: string;
         defaultDepositAccountId?: string;
         defaultSubtype?: "buy" | "redeem";
+        defaultDate?: string;
+        defaultAmount?: number;
       }>).detail;
       const nextSubtype = detail?.defaultSubtype === "redeem" ? "redeem" : "buy";
       setRequestId(detail?.requestId ?? null);
       reset();
       setSubtype(nextSubtype);
       setCashAccountId(detail?.defaultCashAccountId ?? "");
-      setDate(today);
+      setDate(detail?.defaultDate || today);
+      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
       setLockedSubtype(null);
       if (nextSubtype === "redeem") {
         applyRedeemDefaults(detail);
@@ -870,7 +876,7 @@ export function DepositFormModal({
         if (mode === "create") reset();
       }
       requestAnimationFrame(() => {
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "deposit-save" });
       });
       router.refresh();
     } catch (err) {
@@ -886,7 +892,16 @@ export function DepositFormModal({
   }
 
   const recentAccountIds = useRecentAccountIds();
-  const visibleCashOptions = sortOptionsByRecent(cashFiltered ?? localCashSSOpts ?? cashAccountList, recentAccountIds);
+  const cashFallbackSSOptions: SmartSelectOption[] = (localCashSSOpts ?? cashAccountList.map((option) => ({
+    id: option.id,
+    label: option.label,
+    subLabel: option.subLabel,
+    kind: option.kind,
+    investProductType: option.investProductType,
+    institutionId: option.institutionId,
+    currency: option.currency,
+  })));
+  const visibleCashOptions = sortOptionsByRecent(cashFiltered ?? cashFallbackSSOptions, recentAccountIds);
 
   useCloseOnNavigation(open, () => {
     setOpen(false);

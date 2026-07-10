@@ -14,6 +14,7 @@ import {
   MORTGAGE_BASE_BENCHMARK_RATE,
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
+import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 
 type DebtRow = {
   key: string;
@@ -93,8 +94,6 @@ type RateAdjustmentDraft = {
   annualRate: string;
 };
 
-type RecalculateStrategy = "reduce_payment" | "reduce_term";
-
 function amountClass(value: number) {
   if (value > 0) return "text-emerald-700";
   if (value < 0) return "text-rose-700";
@@ -151,7 +150,6 @@ export function DebtShell({
   const [rateDrafts, setRateDrafts] = useState<RateAdjustmentDraft[]>([]);
   const [lprDiscount, setLprDiscount] = useState("");
   const [recalcOpen, setRecalcOpen] = useState(false);
-  const [recalcStrategy, setRecalcStrategy] = useState<RecalculateStrategy>("reduce_payment");
   const [recalcStartDate, setRecalcStartDate] = useState("");
   const [recalcSaving, setRecalcSaving] = useState(false);
   const [showSettledRows, setShowSettledRows] = useState(() => {
@@ -364,7 +362,6 @@ export function DebtShell({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: selectedRow.accountId,
-          strategy: recalcStrategy,
           startDate: recalcStartDate,
         }),
       });
@@ -373,6 +370,7 @@ export function DebtShell({
         window.alert(data?.error || "重算失败");
         return;
       }
+      window.alert(formatLoanRecalculateSuccessMessage(data.data));
       setRecalcOpen(false);
       router.refresh();
     } finally {
@@ -892,33 +890,9 @@ export function DebtShell({
                   </div>
                 </div>
 
-                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <input
-                    type="radio"
-                    name="loan-recalculate-strategy"
-                    checked={recalcStrategy === "reduce_payment"}
-                    onChange={() => setRecalcStrategy("reduce_payment")}
-                    className="mt-0.5 h-4 w-4 accent-blue-600"
-                  />
-                  <span>
-                    <span className="block font-medium text-slate-800">期限不变，重算月供</span>
-                    <span className="block text-xs text-slate-500">保持当前剩余期数，按当前贷款余额和生效利率重新计算每期还款额。</span>
-                  </span>
-                </label>
-
-                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <input
-                    type="radio"
-                    name="loan-recalculate-strategy"
-                    checked={recalcStrategy === "reduce_term"}
-                    onChange={() => setRecalcStrategy("reduce_term")}
-                    className="mt-0.5 h-4 w-4 accent-blue-600"
-                  />
-                  <span>
-                    <span className="block font-medium text-slate-800">月供不变，重算剩余期数</span>
-                    <span className="block text-xs text-slate-500">保持当前计划金额，按当前贷款余额向后模拟，缩短或修正剩余还款期数。</span>
-                  </span>
-                </label>
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">
+                  重算方式从对应提前还款记录读取；需要调整方式时，先编辑那条提前还款记录里的“处理后续还款计划”。
+                </div>
 
                 <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                   <div>

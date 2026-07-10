@@ -20,6 +20,8 @@ const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
 const investProductTypeLabel = (type: string | null) => {
   if (type === "fund") return "开放式基金";
   if (type === "money") return "货币基金";
+  if (type === "wealth") return "银行理财";
+  if (type === "metal") return "贵金属";
   return "投资账户";
 };
 

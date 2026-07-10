@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { MailSearch, RefreshCw, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 type EmailAccount = {
   id: string;
@@ -18,6 +19,7 @@ type MailItem = {
   subject: string;
   from: string;
   date: string;
+  hash?: string;
   emailAccountId: string;
   emailAccountLabel: string;
   imported?: boolean;
@@ -138,9 +140,13 @@ function canImportItem(item: ParsedItem) {
 export function CreditBillMailImportButton({
   accountName,
   institutionName,
+  institutionShortName,
+  accountNumberMasked,
 }: {
   accountName: string;
   institutionName?: string | null;
+  institutionShortName?: string | null;
+  accountNumberMasked?: string | null;
 }) {
   const router = useRouter();
   const { t } = useI18n();
@@ -151,7 +157,29 @@ export function CreditBillMailImportButton({
     }
     return text;
   };
-  const keyword = (institutionName || accountName || "").trim();
+  const mailKeywords = useMemo(() => {
+    const bankAliases: Record<string, string[]> = {
+      工商银行: ["工商银行", "工行", "工银", "ICBC"],
+      农业银行: ["农业银行", "农行", "ABC"],
+      中国银行: ["中国银行", "中行", "BOC"],
+      建设银行: ["建设银行", "建行", "CCB"],
+      交通银行: ["交通银行", "交行", "BOCOM"],
+      招商银行: ["招商银行", "招行", "CMB"],
+    };
+    const seeds = [
+      institutionName,
+      institutionShortName,
+      accountName,
+      accountNumberMasked,
+      ...(institutionName ? bankAliases[institutionName] ?? [] : []),
+    ];
+    return Array.from(new Set(
+      seeds
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => item.length >= 2),
+    ));
+  }, [accountName, accountNumberMasked, institutionName, institutionShortName]);
+  const keyword = mailKeywords[0] || accountName.trim();
   const [open, setOpen] = useState(false);
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedEmailAccountId, setSelectedEmailAccountId] = useState("");
@@ -200,6 +228,12 @@ export function CreditBillMailImportButton({
       const rememberedAccount = nextAccounts.find((account) => account.id === rememberedAccountId);
       const defaultAccount = rememberedAccount ?? nextAccounts[0];
       setSelectedEmailAccountId(defaultAccount?.id ?? "");
+      if (nextAccounts.length === 1) {
+        setInfo(`已选择邮箱：${defaultAccount?.label || defaultAccount?.username}，正在读取账单邮件。`);
+        await loadMailsForAccount(defaultAccount!);
+        return;
+      }
+
       setInfo(rememberedAccount
         ? `已默认选中上次可正常获取的邮箱：${rememberedAccount.label || rememberedAccount.username}，请确认后读取。`
         : "请选择一个邮箱读取账单邮件。");
@@ -224,6 +258,7 @@ export function CreditBillMailImportButton({
         body: JSON.stringify({
           accountId: account.id,
           keyword,
+          keywords: mailKeywords,
           limit: 12,
           scanLimit: 800,
         }),
@@ -242,7 +277,7 @@ export function CreditBillMailImportButton({
       setMails(markedMails);
       writeLastWorkingEmailAccountId(account.id);
       if (nextMails.length === 0) {
-        setInfo(tf("creditBill.noMailForKeyword", { keyword }));
+        setInfo(tf("creditBill.noMailForKeyword", { keyword: mailKeywords.join(" / ") || keyword }));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t("creditBill.readMailFailed"));
@@ -261,18 +296,24 @@ export function CreditBillMailImportButton({
           mails: nextMails.map((mail) => ({
             emailAccountId: mail.emailAccountId,
             uid: mail.uid,
+            hash: mail.hash,
           })),
         }),
       });
       const data = await res.json().catch(() => null);
       if (!data?.ok || !Array.isArray(data.imported)) return nextMails;
       const importedMap = new Map<string, { createdAt?: string }>();
+      const importedHashMap = new Map<string, { createdAt?: string }>();
       for (const item of data.imported) {
-        if (!item?.emailAccountId || !item?.uid) continue;
-        importedMap.set(`${item.emailAccountId}:${item.uid}`, { createdAt: item.createdAt });
+        if (item?.emailAccountId && item?.uid) {
+          importedMap.set(`${item.emailAccountId}:${item.uid}`, { createdAt: item.createdAt });
+        }
+        if (item?.hash) {
+          importedHashMap.set(item.hash, { createdAt: item.createdAt });
+        }
       }
       return nextMails.map((mail) => {
-        const imported = importedMap.get(`${mail.emailAccountId}:${mail.uid}`);
+        const imported = importedMap.get(`${mail.emailAccountId}:${mail.uid}`) || (mail.hash ? importedHashMap.get(mail.hash) : undefined);
         return imported ? { ...mail, imported: true, importedAt: imported.createdAt } : mail;
       });
     } catch {
@@ -346,6 +387,7 @@ export function CreditBillMailImportButton({
           mailSource: {
             emailAccountId: parsed.mail.emailAccountId,
             uid: parsed.mail.uid,
+            hash: parsed.mail.hash,
             subject: parsed.mail.subject,
             from: parsed.mail.from,
             date: parsed.mail.date,
@@ -354,7 +396,24 @@ export function CreditBillMailImportButton({
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
-      setInfo(tf("creditBill.importDone", { created: data.createdCount ?? 0, skipped: data.skippedCount ?? 0 }));
+      if (data.duplicate) {
+        setInfo("这封账单邮件已经导入过，无需重复导入。");
+        setMails((prev) => prev.map((mail) => sameMail(mail, parsed.mail)
+          ? { ...mail, imported: true, importedAt: new Date().toISOString() }
+          : mail));
+        setParsed((prev) => prev ? { ...prev, mail: { ...prev.mail, imported: true } } : prev);
+        return;
+      }
+      const skippedCount = data.skippedCount ?? 0;
+      const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
+      const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
+      const accountText = createdAccounts.length
+        ? ` 已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}。`
+        : "";
+      if (skippedCount > 0) {
+        setError(firstError ? `有 ${skippedCount} 条未导入：${firstError}` : `有 ${skippedCount} 条未导入，请检查账户匹配。`);
+      }
+      setInfo(`${tf("creditBill.importDone", { created: data.createdCount ?? 0, skipped: skippedCount })}${accountText}`);
       if ((data.createdCount ?? 0) > 0) {
         const importedMail = parsed.mail;
         setMails((prev) => prev.map((mail) => sameMail(mail, importedMail)
@@ -362,6 +421,7 @@ export function CreditBillMailImportButton({
           : mail));
       }
       setParsed(null);
+      dispatchFinanceDataChanged({ reason: "credit-bill-mail-import" });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("creditBill.importFailed"));

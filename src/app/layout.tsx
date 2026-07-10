@@ -1,6 +1,17 @@
 import "./globals.css";
 import Script from "next/script";
+import type { Metadata } from "next";
 import { ModalDragController } from "@/components/ModalDragController";
+
+export const metadata: Metadata = {
+  title: "MoneyMoneyHome",
+  description: "Local-first family finance system",
+  icons: {
+    icon: "/branding/mmh-logo-v5-favicon.svg",
+    shortcut: "/branding/mmh-logo-v5-favicon.svg",
+    apple: "/branding/mmh-logo-mark.svg",
+  },
+};
 
 export default function RootLayout({
   children,

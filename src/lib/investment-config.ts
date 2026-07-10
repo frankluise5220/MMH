@@ -11,7 +11,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
 export type FundSubtype = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest" | "buy_failed";
 
 // 产品类型
-export type ProductType = "fund" | "money" | "wealth" | "deposit";
+export type ProductType = "fund" | "money" | "wealth" | "deposit" | "metal";
 
 // 产品类型标签
 export const PRODUCT_LABELS: Record<ProductType, string> = {
@@ -19,7 +19,12 @@ export const PRODUCT_LABELS: Record<ProductType, string> = {
   money: "货币基金",
   wealth: "银行理财",
   deposit: "定期存款",
+  metal: "贵金属",
 };
+
+export function supportsCostBasisMethod(productType: string | null | undefined): boolean {
+  return productType === "fund" || productType === "money";
+}
 
 // 交易类型标签
 export const SUBTYPE_LABELS: Record<FundSubtype, string> = {
@@ -36,6 +41,7 @@ export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   money: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   wealth: [["buy", "redeem"]],
   deposit: [["buy", "redeem"]],
+  metal: [["buy", "redeem"]],
 };
 
 // 存款产品的特殊标签
@@ -76,14 +82,14 @@ export const isDividend = (s: FundSubtype): boolean => s === "dividend_cash" || 
  * 是否显示份额字段
  * 现金红利不涉及份额变动，不显示
  */
-export const showUnitsFor = (s: FundSubtype, pt: ProductType): boolean => (pt === "fund" || pt === "money") && (isBuyLike(s) || isRedeemLike(s));
+export const showUnitsFor = (s: FundSubtype, pt: ProductType): boolean => (pt === "fund" || pt === "money" || pt === "metal") && (isBuyLike(s) || isRedeemLike(s));
 
 /**
  * 是否显示手续费字段
  * 现金红利无手续费，不显示
  */
 export const showFeeFor = (s: FundSubtype, pt: ProductType): boolean =>
-  (pt === "fund" || pt === "money") && (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
+  (pt === "fund" || pt === "money" || pt === "metal") && (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
  * 是否显示净值字段

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import EditBillAmount from "@/components/EditBillAmount";
 import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
 import { formatMoney } from "@/lib/format";
@@ -12,6 +13,7 @@ import {
   setCreditBillHideZeroPreference,
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
 export type CreditBillSummaryRow = {
@@ -23,6 +25,7 @@ export type CreditBillSummaryRow = {
   dueLabel: string;
   expenseAbs: number;
   income: number;
+  paid: number;
   effectiveBill: number;
   isCurrentCycle: boolean;
   hasOverride: boolean;
@@ -32,6 +35,8 @@ type CreditBillSummaryTableProps = {
   accountId: string;
   accountName: string;
   institutionName?: string | null;
+  institutionShortName?: string | null;
+  accountNumberMasked?: string | null;
   rows: CreditBillSummaryRow[];
   initialPage: number;
   pageSize: number;
@@ -61,6 +66,8 @@ export function CreditBillSummaryTable({
   accountId,
   accountName,
   institutionName,
+  institutionShortName,
+  accountNumberMasked,
   rows,
   initialPage,
   pageSize,
@@ -117,11 +124,12 @@ export function CreditBillSummaryTable({
             : row,
         ),
       );
+      setTimeout(() => router.refresh(), 120);
     }
 
     window.addEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
     return () => window.removeEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
-  }, [accountId]);
+  }, [accountId, router]);
 
   useEffect(() => {
     setPage(clampPage(initialPage, Math.max(1, Math.ceil(rows.length / pageSize))));
@@ -173,7 +181,8 @@ export function CreditBillSummaryTable({
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!data?.ok) throw new Error(data?.error ?? t("creditBill.updateCycleFailed"));
       setEditingCycle(null);
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "bill-cycle", accountIds: [accountId], statementMonth: editingCycle.month });
+      setTimeout(() => router.refresh(), 120);
     } catch (error) {
       setCycleError(error instanceof Error ? error.message : t("creditBill.updateCycleFailed"));
     } finally {
@@ -185,7 +194,7 @@ export function CreditBillSummaryTable({
     const q = new URLSearchParams();
     q.set("view", "bill");
     if (accountId) q.set("accountId", accountId);
-    if (selectedBillMonth) q.set("billMonth", selectedBillMonth);
+    q.set("billMonth", selectedBillMonth || "all");
     q.set("billPage", String(safePage));
     if (hideZeroBills) q.set("hideZeroBills", "1");
     if (hideSettledBills) q.set("hideSettledBills", "1");
@@ -202,15 +211,146 @@ export function CreditBillSummaryTable({
     router.replace(href, { scroll: false });
   }
 
+  function selectBillMonth(month: string) {
+    const href = buildHref((q) => {
+      if (selectedBillMonth === month) q.set("billMonth", "all");
+      else q.set("billMonth", month);
+      q.set("billPage", String(safePage));
+    });
+    router.replace(href, { scroll: false });
+  }
+
   const canPrev = safePage > 1;
   const canNext = safePage < totalPages;
+  const billColumns = useMemo<AdvancedDataTableColumn<CreditBillSummaryRow>[]>(() => [
+    {
+      key: "month",
+      label: t("creditBill.bill"),
+      width: 118,
+      minWidth: 104,
+      hideable: false,
+      render: (row) => {
+        const href = buildHref((q) => {
+          if (selectedBillMonth === row.month) q.set("billMonth", "all");
+          else q.set("billMonth", row.month);
+          q.set("billPage", String(safePage));
+        });
+        return (
+          <Link href={href} prefetch={false} scroll={false} className="block">
+            <span className={`whitespace-nowrap text-xs font-semibold ${row.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
+              {row.month}{row.isCurrentCycle ? `（${t("creditBill.currentCycle")}）` : row.month === settledBillMonth ? `（${t("creditBill.currentBill")}）` : ""}
+            </span>
+          </Link>
+        );
+      },
+    },
+    {
+      key: "period",
+      label: t("creditBill.period"),
+      width: 150,
+      minWidth: 128,
+      hideable: true,
+      render: (row) => {
+        const href = buildHref((q) => {
+          if (selectedBillMonth === row.month) q.set("billMonth", "all");
+          else q.set("billMonth", row.month);
+          q.set("billPage", String(safePage));
+        });
+        return (
+          <Link href={href} prefetch={false} scroll={false} className="block">
+            <span
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openCycleEditor(row);
+              }}
+              className="inline-flex cursor-text whitespace-nowrap rounded px-1 text-xs tabular-nums text-slate-700 hover:bg-amber-50 hover:text-amber-700"
+              title={t("creditBill.editCycleHint")}
+            >
+              {row.periodLabel}
+            </span>
+          </Link>
+        );
+      },
+    },
+    {
+      key: "expense",
+      label: t("creditBill.expense"),
+      width: 104,
+      minWidth: 88,
+      align: "right",
+      hideable: true,
+      render: (row) => <span className="text-xs tabular-nums text-red-600">{formatMoney(row.expenseAbs)}</span>,
+    },
+    {
+      key: "income",
+      label: "收入",
+      width: 104,
+      minWidth: 88,
+      align: "right",
+      hideable: true,
+      render: (row) => <span className="text-xs tabular-nums text-emerald-700">{formatMoney(row.income)}</span>,
+    },
+    {
+      key: "billAmount",
+      label: t("creditBill.billAmount"),
+      width: 122,
+      minWidth: 96,
+      align: "right",
+      hideable: true,
+      render: (row) => row.isCurrentCycle ? (
+        <span className="text-xs tabular-nums text-slate-400">-</span>
+      ) : (
+        <span onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+          <EditBillAmount
+            accountId={accountId}
+            statementMonth={row.month}
+            currentAmount={row.effectiveBill}
+            hasOverride={row.hasOverride}
+            displayMultiplier={-1}
+          />
+        </span>
+      ),
+    },
+    {
+      key: "dueDate",
+      label: "还款日",
+      width: 112,
+      minWidth: 96,
+      hideable: true,
+      render: (row) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-700">{row.dueLabel}</span>,
+    },
+    {
+      key: "status",
+      label: "状态",
+      width: 92,
+      minWidth: 76,
+      hideable: true,
+      render: (row) => {
+        const settled = !row.isCurrentCycle && row.effectiveBill > 0 && row.paid >= row.effectiveBill;
+        if (settled) {
+          return <span className="whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">已回款</span>;
+        }
+        if (row.isCurrentCycle) {
+          return <span className="whitespace-nowrap text-xs text-amber-600">{t("creditBill.currentCycle")}</span>;
+        }
+        if (row.effectiveBill < 0) {
+          return <span className="whitespace-nowrap rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">溢缴</span>;
+        }
+        if (row.effectiveBill > 0) {
+          return <span className="whitespace-nowrap text-xs text-slate-500">待还款</span>;
+        }
+        return <span className="text-xs text-slate-300">-</span>;
+      },
+    },
+  ], [accountId, hideSettledBills, hideZeroBills, safePage, selectedBillMonth, settledBillMonth, showRecentBillCycles, t]);
 
   return (
     <div className={["panel-surface overflow-hidden", fillHeight ? "flex h-full min-h-0 flex-col" : "", className ?? ""].filter(Boolean).join(" ")}>
       <div className="panel-header">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
-          <Link href={buildHref()} prefetch={false} scroll={false} className="h-6 px-1.5 rounded border text-xs flex items-center border-blue-300 bg-blue-50 text-blue-700">
+          <Link href={buildHref((q) => q.set("billMonth", "all"))} prefetch={false} scroll={false} className={`h-6 px-1.5 rounded border text-xs flex items-center ${selectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
             {t("creditBill.all")}
           </Link>
           {totalPages > 1 ? (
@@ -232,7 +372,12 @@ export function CreditBillSummaryTable({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <CreditBillMailImportButton accountName={accountName} institutionName={institutionName} />
+          <CreditBillMailImportButton
+            accountName={accountName}
+            institutionName={institutionName}
+            institutionShortName={institutionShortName}
+            accountNumberMasked={accountNumberMasked}
+          />
           <button
             type="button"
             onClick={() => {
@@ -290,77 +435,25 @@ export function CreditBillSummaryTable({
           </button>
         </div>
       </div>
-      <div className={fillHeight ? "min-h-0 flex-1 overflow-auto" : "overflow-auto"}>
-        <table className="w-full table-fixed border-separate border-spacing-0">
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-white">
-              <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.bill")}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.period")}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.expense")}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.refundIncome")}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("creditBill.billAmount")}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("creditBill.repayment")}</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm">
-            {pagedRows.map((row) => {
-              const href = buildHref((q) => {
-                q.set("billMonth", row.month);
-                q.set("billPage", String(safePage));
-              });
-              const active = selectedBillMonth === row.month || activeStatementMonth === row.month;
-              return (
-                <tr key={row.month} className={`hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`}>
-                  <td className="border-b border-slate-100 px-4 py-2">
-                    <Link href={href} prefetch={false} scroll={false} className="block">
-                      <span className={`whitespace-nowrap text-xs font-semibold ${row.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
-                        {row.month}{row.isCurrentCycle ? `（${t("creditBill.currentCycle")}）` : row.month === settledBillMonth ? `（${t("creditBill.currentBill")}）` : ""}
-                      </span>
-                    </Link>
-                  </td>
-                  <td className="border-b border-slate-100 px-3 py-2">
-                    <Link href={href} prefetch={false} scroll={false} className="block">
-                      <span
-                        onDoubleClick={(event) => {
-                          event.preventDefault();
-                          openCycleEditor(row);
-                        }}
-                        className="inline-flex cursor-text whitespace-nowrap rounded px-1 text-xs tabular-nums text-slate-700 hover:bg-amber-50 hover:text-amber-700"
-                        title={t("creditBill.editCycleHint")}
-                      >
-                        {row.periodLabel}
-                      </span>
-                    </Link>
-                  </td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-right tabular-nums">
-                    <Link href={href} prefetch={false} scroll={false} className="block">
-                      <span className="text-xs text-red-600">{formatMoney(row.expenseAbs)}</span>
-                    </Link>
-                  </td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-right tabular-nums">
-                    <Link href={href} prefetch={false} scroll={false} className="block">
-                      <span className="text-xs text-emerald-700">{formatMoney(row.income)}</span>
-                    </Link>
-                  </td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-right tabular-nums">
-                    <EditBillAmount
-                      accountId={accountId}
-                      statementMonth={row.month}
-                      currentAmount={row.effectiveBill}
-                      hasOverride={row.hasOverride}
-                      displayMultiplier={-1}
-                    />
-                  </td>
-                  <td className="border-b border-slate-100 px-3 py-2">
-                    <Link href={href} prefetch={false} scroll={false} className="block">
-                      <span className="text-xs tabular-nums text-slate-700">{row.dueLabel}</span>
-                    </Link>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className={fillHeight ? "min-h-0 flex-1" : "min-h-0"}>
+        <AdvancedDataTable
+          storageKey="mmh_credit_bill_summary_table_v1"
+          columns={billColumns}
+          rows={pagedRows}
+          rowKey={(row) => row.month}
+          compactRows
+          showFilters={false}
+          fillHeight={fillHeight}
+          minTableWidth={760}
+          toolbarMode="custom"
+          toolbarLeftContent={<span>共 {localRows.length} 期</span>}
+          onRowClick={(row) => selectBillMonth(row.month)}
+          rowClassName={(row) => {
+            const active = selectedBillMonth === row.month || activeStatementMonth === row.month;
+            return `cursor-pointer hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`;
+          }}
+          emptyText="暂无账单"
+        />
       </div>
       {editingCycle ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/20 px-4">

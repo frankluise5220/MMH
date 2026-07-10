@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
 import { SlidersHorizontal } from "lucide-react";
@@ -43,6 +44,26 @@ export type AdvancedDataTableSummaryRow = {
   cellClassName?: string;
 };
 
+export type AdvancedDataTableDropPosition = "before" | "after";
+
+type RowItem<T> = {
+  row: T;
+  index: number;
+  key: string;
+};
+
+function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: string, position: AdvancedDataTableDropPosition) {
+  const sourceIndex = items.findIndex((item) => item.key === sourceKey);
+  const targetIndex = items.findIndex((item) => item.key === targetKey);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return items;
+  const next = [...items];
+  const [moving] = next.splice(sourceIndex, 1);
+  const targetIndexAfterRemoval = next.findIndex((item) => item.key === targetKey);
+  if (targetIndexAfterRemoval < 0) return items;
+  next.splice(position === "after" ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval, 0, moving);
+  return next.every((item, index) => item.key === items[index]?.key) ? items : next;
+}
+
 export type AdvancedDataTableProps<T> = {
   storageKey: string;
   columns: AdvancedDataTableColumn<T>[];
@@ -53,7 +74,12 @@ export type AdvancedDataTableProps<T> = {
   rowClassName?: (row: T, index: number) => string;
   onRowClick?: (row: T, index: number) => void;
   onRowDoubleClick?: (row: T, index: number) => void;
+  draggableRows?: boolean;
+  rowDragDisabled?: (row: T, index: number) => boolean;
+  rowDropAllowed?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => boolean;
+  onRowReorder?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => void | Promise<void>;
   selectable?: boolean;
+  selectOnRowClick?: boolean;
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
   batchActions?: AdvancedDataTableBatchAction[];
@@ -102,6 +128,12 @@ function sortFilterValue(a: string, b: string) {
   return a.localeCompare(b, "zh-CN", { numeric: true });
 }
 
+function isInteractiveDragTarget(target: EventTarget | null) {
+  return target instanceof Element
+    ? !!target.closest("button,input,a,select,textarea,[data-no-row-drag]")
+    : false;
+}
+
 export function AdvancedDataTable<T>({
   storageKey,
   columns,
@@ -112,7 +144,12 @@ export function AdvancedDataTable<T>({
   rowClassName,
   onRowClick,
   onRowDoubleClick,
+  draggableRows = false,
+  rowDragDisabled,
+  rowDropAllowed,
+  onRowReorder,
   selectable = false,
+  selectOnRowClick = false,
   selectedKeys,
   onSelectionChange,
   batchActions = [],
@@ -145,6 +182,9 @@ export function AdvancedDataTable<T>({
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
+  const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
+  const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
@@ -240,6 +280,14 @@ export function AdvancedDataTable<T>({
     }));
   }, [columns, filters, rows, showFilters]);
   const allRowKeys = useMemo(() => filteredRows.map((row, index) => rowKey(row, index)), [filteredRows, rowKey]);
+  const rowItems = useMemo(
+    () => filteredRows.map((row, index) => ({ row, index, key: rowKey(row, index) })),
+    [filteredRows, rowKey],
+  );
+  const displayRowItems = useMemo(() => {
+    if (!draggedRowKey || !dragTarget) return rowItems;
+    return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
+  }, [dragTarget, draggedRowKey, rowItems]);
 
   const layout = useMemo(() => {
     const selectWidth = selectable ? 38 : 0;
@@ -359,6 +407,94 @@ export function AdvancedDataTable<T>({
     if (checked) next.add(key);
     else next.delete(key);
     setSelection(next);
+  }
+
+  function handleRowDragStart(event: ReactDragEvent<HTMLTableRowElement>, key: string, dragDisabled: boolean) {
+    if (!draggableRows || dragDisabled || isInteractiveDragTarget(event.target)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", key);
+    setDraggedRowKey(key);
+    suppressNextClickRef.current = true;
+  }
+
+  function getDropPosition(event: ReactDragEvent<HTMLTableRowElement>): AdvancedDataTableDropPosition {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+  }
+
+  function canDropOnRow(targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean, position: AdvancedDataTableDropPosition) {
+    if (!draggableRows || dragDisabled || !draggedRowKey || draggedRowKey === targetKey) return false;
+    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === draggedRowKey);
+    if (sourceIndex < 0) return false;
+    return rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true;
+  }
+
+  function handleRowDragOver(event: ReactDragEvent<HTMLTableRowElement>, row: T, index: number, key: string, dragDisabled: boolean) {
+    const position = getDropPosition(event);
+    if (!canDropOnRow(row, index, key, dragDisabled, position)) {
+      if (key === draggedRowKey && dragTarget) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }
+      if (key !== draggedRowKey) setDragTarget(null);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragTarget({ key, position });
+  }
+
+  function handleRowDragEnd() {
+    setDraggedRowKey(null);
+    setDragTarget(null);
+    window.setTimeout(() => {
+      suppressNextClickRef.current = false;
+    }, 0);
+  }
+
+  function dropOnPreviewTarget(sourceKey: string) {
+    if (!dragTarget) return false;
+    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
+    const targetIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === dragTarget.key);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
+    const targetRow = filteredRows[targetIndex];
+    const targetDragDisabled = rowDragDisabled?.(targetRow, targetIndex) ?? false;
+    if (targetDragDisabled) return false;
+    if (!(rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position) ?? true)) return false;
+    void onRowReorder?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position);
+    return true;
+  }
+
+  function handleRowDrop(event: ReactDragEvent<HTMLTableRowElement>, targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean) {
+    if (!draggableRows || dragDisabled) return;
+    event.preventDefault();
+    const sourceKey = draggedRowKey ?? event.dataTransfer.getData("text/plain");
+    const position = getDropPosition(event);
+    dropOnRowAtPosition(event, sourceKey, targetRow, targetIndex, targetKey, dragDisabled, position);
+  }
+
+  function dropOnRowAtPosition(
+    event: ReactDragEvent<HTMLTableRowElement>,
+    sourceKey: string,
+    targetRow: T,
+    targetIndex: number,
+    targetKey: string,
+    dragDisabled: boolean,
+    position: AdvancedDataTableDropPosition,
+  ) {
+    handleRowDragEnd();
+    if (dragDisabled || !sourceKey) return;
+    if (sourceKey === targetKey) {
+      dropOnPreviewTarget(sourceKey);
+      return;
+    }
+    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
+    if (sourceIndex < 0) return;
+    if (!(rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
+    void onRowReorder?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
   }
 
   const selectedCount = effectiveSelectedKeys.size;
@@ -510,23 +646,53 @@ export function AdvancedDataTable<T>({
             </tr>
           </thead>
           <tbody className="text-sm">
-            {filteredRows.length > 0 ? filteredRows.map((row, index) => {
-              const key = rowKey(row, index);
+            {displayRowItems.length > 0 ? displayRowItems.map(({ row, index, key }, displayIndex) => {
+              const isSelected = effectiveSelectedKeys.has(key);
+              const dragDisabled = rowDragDisabled?.(row, index) ?? false;
+              const isDragging = draggedRowKey != null;
+              const isDraggedRow = draggedRowKey === key;
+              const isAllowedDropTarget = dragTarget
+                ? canDropOnRow(row, index, key, dragDisabled, dragTarget.position)
+                : false;
+              const isBlockedDropTarget = isDragging && !isDraggedRow && !isAllowedDropTarget;
+              const toggleCurrentRow = () => {
+                if (!selectable || !selectOnRowClick) return;
+                toggleRow(key, !isSelected);
+              };
               return (
                 <tr
                   key={key}
-                  onClick={onRowClick ? () => onRowClick(row, index) : undefined}
-                  onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row, index) : undefined}
-                  className={rowClassName?.(row, index) ?? "hover:bg-slate-50"}
+                  onClick={() => {
+                    if (suppressNextClickRef.current) {
+                      suppressNextClickRef.current = false;
+                      return;
+                    }
+                    toggleCurrentRow();
+                    onRowClick?.(row, displayIndex);
+                  }}
+                  onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row, displayIndex) : undefined}
+                  draggable={draggableRows && !dragDisabled}
+                  onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
+                  onDragOver={(event) => handleRowDragOver(event, row, index, key, dragDisabled)}
+                  onDrop={(event) => handleRowDrop(event, row, index, key, dragDisabled)}
+                  onDragEnd={handleRowDragEnd}
+                  className={[
+                    rowClassName?.(row, displayIndex) ?? "hover:bg-slate-50",
+                    selectable && selectOnRowClick ? "cursor-pointer" : "",
+                    draggableRows && !dragDisabled ? "cursor-grab active:cursor-grabbing" : "",
+                    isBlockedDropTarget ? "cursor-not-allowed" : "",
+                    isDraggedRow ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200 shadow-[inset_0_0_0_1px_#bfdbfe]" : "",
+                    isSelected ? "bg-blue-50/90 hover:bg-blue-100/80" : "",
+                  ].filter(Boolean).join(" ")}
                 >
                   {selectable ? (
                     <td className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
-                      <input type="checkbox" checked={effectiveSelectedKeys.has(key)} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
+                      <input type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
                     </td>
                   ) : null}
                   {visibleColumns.map((column) => (
                     <td key={column.key} className={["border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
-                      {column.render(row, index)}
+                      {column.render(row, displayIndex)}
                     </td>
                   ))}
                 </tr>

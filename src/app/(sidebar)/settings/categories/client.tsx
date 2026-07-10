@@ -38,6 +38,7 @@ export default function SettingsCategoriesClient({
   const [inlineEditingName, setInlineEditingName] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
+  const [movingParent, setMovingParent] = useState(false);
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -63,6 +64,40 @@ export default function SettingsCategoriesClient({
     }
   }
   function getChildren(id: string) { return childrenMap.get(id) || []; }
+
+  function getDescendantIds(id: string) {
+    const ids = new Set<string>();
+    function walk(parentId: string) {
+      for (const child of getChildren(parentId)) {
+        ids.add(child.id);
+        walk(child.id);
+      }
+    }
+    walk(id);
+    return ids;
+  }
+
+  function getCategoryPath(category: Category) {
+    const path: Category[] = [];
+    let cur: Category | undefined = category;
+    while (cur) {
+      path.unshift(cur);
+      cur = cur.parentId ? (categories.find(c => c.id === cur!.parentId) ?? undefined) : undefined;
+    }
+    return path;
+  }
+
+  function allCategoryNamesExcept(id?: string) {
+    return categories
+      .filter(c => c.id !== id)
+      .map(c => c.name);
+  }
+
+  function hasDuplicateCategoryName(name: string, exceptId?: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    return allCategoryNamesExcept(exceptId).some(existing => existing.trim() === trimmed);
+  }
 
   function toggleExpand(id: string) {
     setExpanded(prev => {
@@ -143,6 +178,10 @@ export default function SettingsCategoriesClient({
       return false;
     }
     if (nextName === target.name) return true;
+    if (hasDuplicateCategoryName(nextName, id)) {
+      setEditError("分类名称已存在");
+      return false;
+    }
 
     setEditError("");
     try {
@@ -166,6 +205,41 @@ export default function SettingsCategoriesClient({
     } catch {
       setEditError("修改失败");
       return false;
+    }
+  }
+
+  async function moveCategory(id: string, parentId: string | null) {
+    const target = categories.find(c => c.id === id);
+    if (!target) return false;
+    if ((target.parentId ?? null) === parentId) return true;
+
+    setEditError("");
+    setMovingParent(true);
+    try {
+      const res = await fetch("/api/v1/category", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, parentId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setEditError(data.error ?? "移动失败");
+        return false;
+      }
+      setCategories(prev => {
+        const next = prev.map(c => c.id === id ? { ...c, parentId: data.category.parentId ?? null, type: data.category.type } : c);
+        setSettingsCategories(next);
+        return next;
+      });
+      if (parentId) {
+        setExpanded(prev => new Set([...prev, parentId]));
+      }
+      return true;
+    } catch {
+      setEditError("移动失败");
+      return false;
+    } finally {
+      setMovingParent(false);
     }
   }
 
@@ -292,7 +366,7 @@ export default function SettingsCategoriesClient({
               defaultType={cat.type}
               parentCategories={parentCategoryOptions}
               onCreated={handleCategoryCreated}
-              existingNames={categories.filter(c => c.parentId === cat.id).map(c => c.name)}
+              existingNames={allCategoryNamesExcept()}
               hiddenFields={["parentId"]}
             />
           </div>
@@ -304,14 +378,23 @@ export default function SettingsCategoriesClient({
 
   const selectedCategory = selectedId ? categories.find(c => c.id === selectedId) : null;
   const selectedChildren = selectedId ? getChildren(selectedId) : [];
-  const selectedPath: string[] = [];
-  if (selectedCategory) {
-    let cur: Category | undefined = selectedCategory;
-    while (cur) {
-      selectedPath.unshift(cur.name);
-      cur = cur.parentId ? (categories.find(c => c.id === cur!.parentId) ?? undefined) : undefined;
-    }
-  }
+  const selectedPath = selectedCategory ? getCategoryPath(selectedCategory).map(c => c.name) : [];
+  const parentMoveOptions = (() => {
+    if (!selectedCategory) return [];
+    const excluded = getDescendantIds(selectedCategory.id);
+    excluded.add(selectedCategory.id);
+    return categories
+      .filter(c => c.type === selectedCategory.type && !excluded.has(c.id))
+      .map(c => ({
+        id: c.id,
+        label: getCategoryPath(c).map(item => item.name).join(" 〉"),
+      }));
+  })();
+  const selectedParentName = selectedCategory?.parentId
+    ? categories.find(c => c.id === selectedCategory.parentId)?.name ?? "上级分类"
+    : selectedCategory
+      ? typeLabel(selectedCategory.type)
+      : "";
 
   return (
     <div className="flex" style={{ height: "calc(100vh - 8.5rem)" }}>
@@ -354,7 +437,7 @@ export default function SettingsCategoriesClient({
                       extraFields={{ type }}
                       hiddenFields={["type", "parentId"]}
                       onCreated={handleCategoryCreated}
-                      existingNames={categories.filter(c => c.parentId === null && c.type === type).map(c => c.name)}
+                      existingNames={allCategoryNamesExcept()}
                     />
                   </div>
                 )}
@@ -376,30 +459,53 @@ export default function SettingsCategoriesClient({
               </div>
               <div className="p-4">
                 <div className="text-xs text-slate-500 mb-3">路径：{selectedPath.join(" 〉")}</div>
-                <div className="flex items-end gap-3">
-                  <label className="min-w-0 flex-1">
-                    <span className="form-label mb-1 block">分类名称</span>
-                    <input
-                      value={editingName}
-                      onChange={(e) => {
-                        setEditingName(e.target.value);
-                        setEditError("");
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]">
+                  <div className="flex items-end gap-3">
+                    <label className="min-w-0 flex-1">
+                      <span className="form-label mb-1 block">分类名称</span>
+                      <input
+                        value={editingName}
+                        onChange={(e) => {
+                          setEditingName(e.target.value);
+                          setEditError("");
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleRename();
+                        }}
+                        className="form-input"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleRename}
+                      disabled={savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
+                      className="primary-button h-9 gap-1.5 disabled:opacity-50"
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      保存
+                    </button>
+                  </div>
+                  <label className="min-w-0">
+                    <span className="form-label mb-1 block">上级分类</span>
+                    <select
+                      value={selectedCategory.parentId ?? ""}
+                      onChange={(event) => {
+                        const nextParentId = event.target.value || null;
+                        void moveCategory(selectedCategory.id, nextParentId);
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void handleRename();
-                      }}
+                      disabled={movingParent}
                       className="form-input"
-                    />
+                      title={`当前上级：${selectedParentName}`}
+                    >
+                      <option value="">{typeLabel(selectedCategory.type)}（顶层）</option>
+                      {parentMoveOptions.map(option => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </select>
+                    <div className="mt-1 text-[11px] text-slate-400">
+                      移动后，「{selectedCategory.name}」及其子分类会整体移动。
+                    </div>
                   </label>
-                  <button
-                    type="button"
-                    onClick={handleRename}
-                    disabled={savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
-                    className="primary-button h-9 gap-1.5 disabled:opacity-50"
-                  >
-                    <Save className="h-3.5 w-3.5" />
-                    保存
-                  </button>
                 </div>
                 {editError && <div className="mt-2 text-xs text-red-600">{editError}</div>}
                 <div className="flex items-center gap-2 mt-3">
@@ -441,7 +547,7 @@ export default function SettingsCategoriesClient({
                     });
                     setExpanded(prev => new Set([...prev, selectedId!]));
                   }}
-                  existingNames={selectedChildren.map(c => c.name)}
+                  existingNames={allCategoryNamesExcept()}
                 />
               </div>
             </div>

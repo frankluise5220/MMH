@@ -76,6 +76,7 @@ const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
   date: "日期",
   createdAt: "创建时间",
   updatedAt: "更新时间",
+  dayOrder: "同日顺序",
   type: "类型",
   amount: "金额",
   accountId: "账户ID",
@@ -85,7 +86,7 @@ const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
   categoryId: "分类ID",
   categoryName: "分类",
   note: "备注",
-  toNote: "第二备注",
+  toNote: "转账显示备注",
   counterpartyInstitutionId: "收支机构ID",
   counterpartyInstitutionName: "收支机构",
   statementMonth: "账单月份",
@@ -160,6 +161,8 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     importBatches,
     transactions,
     emailAccounts,
+    preciousMetalTypes,
+    preciousMetalUnits,
   ] = await Promise.all([
     prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.accountGroup.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
@@ -172,6 +175,8 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.emailAccount.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.preciousMetalType.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.preciousMetalUnit.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
   ]);
 
   const userIds = users.map((item) => item.id);
@@ -186,6 +191,7 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     fundConfirmDays,
     fundFeeRates,
     fundHoldings,
+    preciousMetalHoldings,
     fundSnapshots,
     attachments,
     entryTags,
@@ -210,6 +216,9 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
       : Promise.resolve([]),
     accountIds.length > 0
       ? prisma.fundHolding.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { fundCode: "asc" }] })
+      : Promise.resolve([]),
+    accountIds.length > 0
+      ? prisma.preciousMetalHolding.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { metalTypeName: "asc" }] })
       : Promise.resolve([]),
     accountIds.length > 0
       ? prisma.fundSnapshot.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ createdAt: "asc" }] })
@@ -258,6 +267,9 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
       fundConfirmDays,
       fundFeeRates,
       fundHoldings,
+      preciousMetalTypes,
+      preciousMetalUnits,
+      preciousMetalHoldings,
       fundQueryApis,
       fundSnapshots,
       regularInvestPlans,
@@ -289,6 +301,9 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["FundConfirmDays", sheetRows(payload.data.fundConfirmDays)],
     ["FundFeeRates", sheetRows(payload.data.fundFeeRates)],
     ["FundHoldings", sheetRows(payload.data.fundHoldings)],
+    ["PreciousMetalTypes", sheetRows(payload.data.preciousMetalTypes)],
+    ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
+    ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
@@ -340,6 +355,9 @@ export function parseBackupPayload(raw: unknown) {
       fundConfirmDays: ensureArray(data.fundConfirmDays ?? [], "data.fundConfirmDays"),
       fundFeeRates: ensureArray(data.fundFeeRates ?? [], "data.fundFeeRates"),
       fundHoldings: ensureArray(data.fundHoldings ?? [], "data.fundHoldings"),
+      preciousMetalTypes: ensureArray(data.preciousMetalTypes ?? [], "data.preciousMetalTypes"),
+      preciousMetalUnits: ensureArray(data.preciousMetalUnits ?? [], "data.preciousMetalUnits"),
+      preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       fundSnapshots: ensureArray(data.fundSnapshots ?? [], "data.fundSnapshots"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
@@ -411,6 +429,7 @@ export async function restoreHouseholdBackup(
       });
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
+      await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundFeeRate.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.billOverride.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -422,6 +441,8 @@ export async function restoreHouseholdBackup(
     await tx.account.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     await tx.fundQueryApi.deleteMany({ where: { householdId } });
+    await tx.preciousMetalType.deleteMany({ where: { householdId } });
+    await tx.preciousMetalUnit.deleteMany({ where: { householdId } });
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });
     await tx.category.deleteMany({ where: { householdId } });
@@ -549,6 +570,43 @@ export async function restoreHouseholdBackup(
       });
     }
 
+    if (data.preciousMetalTypes.length > 0) {
+      await tx.preciousMetalType.createMany({
+        data: data.preciousMetalTypes.map((item) => ({
+          id: String(item.id),
+          code: String(item.code ?? ""),
+          name: String(item.name ?? ""),
+          shortName: item.shortName == null ? null : String(item.shortName),
+          sortOrder: Number(item.sortOrder ?? 0),
+          isActive: item.isActive == null ? true : Boolean(item.isActive),
+          isSystem: Boolean(item.isSystem),
+          householdId,
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    if (data.preciousMetalUnits.length > 0) {
+      await tx.preciousMetalUnit.createMany({
+        data: data.preciousMetalUnits.map((item) => ({
+          id: String(item.id),
+          code: String(item.code ?? ""),
+          name: String(item.name ?? ""),
+          symbol: item.symbol == null ? null : String(item.symbol),
+          decimals: Number(item.decimals ?? 3),
+          sortOrder: Number(item.sortOrder ?? 0),
+          isActive: item.isActive == null ? true : Boolean(item.isActive),
+          isSystem: Boolean(item.isSystem),
+          householdId,
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
+        skipDuplicates: true,
+      });
+    }
+
     if (data.accounts.length > 0) {
       await tx.account.createMany({
         data: data.accounts.map((item) => ({
@@ -578,6 +636,7 @@ export async function restoreHouseholdBackup(
           costBasisMethod: item.costBasisMethod == null ? null : (String(item.costBasisMethod) as never),
           defaultConfirmDays: item.defaultConfirmDays == null ? null : Number(item.defaultConfirmDays),
           defaultArrivalDays: item.defaultArrivalDays == null ? null : Number(item.defaultArrivalDays),
+          tradingCalendar: item.tradingCalendar == null ? null : (String(item.tradingCalendar) as never),
           defaultFundQueryApiId:
             item.defaultFundQueryApiId && importedFundQueryApis.has(String(item.defaultFundQueryApiId))
               ? String(item.defaultFundQueryApiId)
@@ -698,6 +757,30 @@ export async function restoreHouseholdBackup(
       });
     }
 
+    if (data.preciousMetalHoldings.length > 0) {
+      await tx.preciousMetalHolding.createMany({
+        data: data.preciousMetalHoldings
+          .filter((item) => importedAccounts.has(String(item.accountId)))
+          .map((item) => ({
+            id: String(item.id),
+            accountId: String(item.accountId),
+            householdId,
+            metalTypeId: String(item.metalTypeId ?? ""),
+            metalTypeName: String(item.metalTypeName ?? ""),
+            metalUnitId: String(item.metalUnitId ?? ""),
+            metalUnitName: String(item.metalUnitName ?? ""),
+            quantity: item.quantity == null ? "0" : String(item.quantity),
+            avgCost: item.avgCost == null ? "0" : String(item.avgCost),
+            cost: item.cost == null ? "0" : String(item.cost),
+            unitPrice: item.unitPrice == null ? null : String(item.unitPrice),
+            marketValue: item.marketValue == null ? "0" : String(item.marketValue),
+            historicalProfit: item.historicalProfit == null ? "0" : String(item.historicalProfit),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
+        skipDuplicates: true,
+      });
+    }
+
     if (data.fundSnapshots.length > 0) {
       await tx.fundSnapshot.createMany({
         data: data.fundSnapshots
@@ -739,6 +822,7 @@ export async function restoreHouseholdBackup(
           .map((item) => ({
             id: String(item.id),
             date: new Date(String(item.date)),
+            postedAt: item.postedAt == null ? null : new Date(String(item.postedAt)),
             type: String(item.type ?? "expense") as never,
             amount: item.amount == null ? "0" : String(item.amount),
             accountId: String(item.accountId),
@@ -758,6 +842,7 @@ export async function restoreHouseholdBackup(
             householdId,
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+            dayOrder: Number(item.dayOrder ?? 0),
             currency: item.currency == null ? "CNY" : String(item.currency),
             paymentChannelId: item.paymentChannelId == null ? null : String(item.paymentChannelId),
             paymentChannelName: item.paymentChannelName == null ? null : String(item.paymentChannelName),

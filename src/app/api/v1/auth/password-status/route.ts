@@ -7,6 +7,7 @@ import { cookies } from "next/headers";
 import { hasEmailService } from "@/lib/mail/passwordReset";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
+import { getDefaultTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 const STATUS_LOOKUP_TIMEOUT_MS = 900;
@@ -72,6 +73,7 @@ async function ensureInitialHousehold(adminName: string) {
           kind: account.kind as any,
           groupId: defaultOwner.id,
           investProductType: account.investProductType as any,
+          tradingCalendar: getDefaultTradingCalendarForAccount(account.kind, account.investProductType) as any,
           householdId: household.id,
           isActive: true,
           currency: "CNY",
@@ -119,7 +121,7 @@ export async function GET() {
         : undefined,
       orderBy: { name: "asc" },
     }),
-    hasEmailService(),
+    hasEmailService(householdId ?? undefined),
   ]), STATUS_LOOKUP_TIMEOUT_MS);
 
   if (!status) {

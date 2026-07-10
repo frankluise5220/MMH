@@ -201,6 +201,29 @@ export function calcLoanScheduledAmountExact(params: {
   return (principal * periodRate * factor) / (factor - 1);
 }
 
+export function estimateLoanEqualPaymentRemainingRuns(params: {
+  annualRate?: number | null;
+  intervalMonths?: number | null;
+  scheduledAmount: number;
+  remainingPrincipal: number;
+  maxRemainingRuns?: number | null;
+}) {
+  const principal = Math.max(0, params.remainingPrincipal);
+  const scheduledAmount = Math.max(0, params.scheduledAmount);
+  const maxRemainingRuns = Math.min(Math.max(1, params.maxRemainingRuns ?? 600), 600);
+  if (principal <= 0.005) return 0;
+  const periodRate =
+    params.annualRate != null && Number.isFinite(params.annualRate) && params.annualRate > 0
+      ? (params.annualRate / 100 / 12) * Math.max(1, params.intervalMonths || 1)
+      : 0;
+  if (periodRate <= 0) return maxRemainingRuns;
+  const denominator = scheduledAmount - principal * periodRate;
+  if (scheduledAmount <= 0 || denominator <= 0) return maxRemainingRuns;
+  const runs = Math.log(scheduledAmount / denominator) / Math.log(1 + periodRate);
+  if (!Number.isFinite(runs) || runs <= 0) return maxRemainingRuns;
+  return Math.min(maxRemainingRuns, Math.max(1, Math.ceil(runs)));
+}
+
 export function calcLoanRunParts(params: {
   repaymentMethod?: string | null;
   annualRate?: number | null;
@@ -285,6 +308,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
   intervalMonths?: number | null;
   scheduledAmount: number;
   scheduledAmountExact?: number | null;
+  preserveScheduledAmount?: boolean;
   remainingPrincipal: number;
   remainingRuns: number;
   previousRunDate?: string | null;
@@ -306,7 +330,10 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
     adjustments,
     date: params.runDate,
   });
-  const scheduledAmount = hasPrincipalAdjustmentInThisPeriod
+  const shouldPreserveScheduledAmount =
+    hasPrincipalAdjustmentInThisPeriod ||
+    (params.preserveScheduledAmount && !hasRateAdjustmentInThisPeriod);
+  const scheduledAmount = shouldPreserveScheduledAmount
     ? params.scheduledAmount
     : calcLoanScheduledAmount({
         repaymentMethod: params.repaymentMethod,
@@ -315,7 +342,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
         totalRuns: remainingRuns,
         intervalMonths: params.intervalMonths,
       }) ?? params.scheduledAmount;
-  const scheduledAmountExact = hasPrincipalAdjustmentInThisPeriod
+  const scheduledAmountExact = shouldPreserveScheduledAmount
     ? params.scheduledAmountExact ?? params.scheduledAmount
     : calcLoanScheduledAmountExact({
         repaymentMethod: params.repaymentMethod,
@@ -325,10 +352,7 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
         intervalMonths: params.intervalMonths,
       }) ?? params.scheduledAmountExact ?? scheduledAmount;
 
-  if (
-    params.previousRunDate &&
-    (hasRateAdjustmentInThisPeriod || hasPrincipalAdjustmentInThisPeriod)
-  ) {
+  if (params.previousRunDate && hasPrincipalAdjustmentInThisPeriod) {
     const periodStartAnnualRate = getEffectiveLoanAnnualRate({
       baseAnnualRate: params.baseAnnualRate,
       adjustments,

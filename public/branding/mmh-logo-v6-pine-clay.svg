@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH pine clay logo</title>
+  <desc id="desc">A custom M monogram in pine green, warm ivory, and muted clay.</desc>
+  <rect width="128" height="128" rx="32" fill="#1E3A34"/>
+  <path
+    fill="#F5EFE3"
+    d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4V98H86V57.4L67 78.2c-1.6 1.8-4.4 1.8-6 0L42 57.4V98H24Z"
+  />
+  <path
+    d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4"
+    fill="none"
+    stroke="#D58B63"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="8"
+  />
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MMH warm home logo</title>
+  <desc id="desc">A warm home-focused MMH logo for family finance.</desc>
+  <rect width="128" height="128" rx="32" fill="#FAF6EC"/>
+  <path d="M22 65.5 64 28l42 37.5-8.9 9.9L64 45.8 30.9 75.4 22 65.5Z" fill="#B88746"/>
+  <path d="M34 73.5h13.5v-12L64 79.8l16.5-18.3v12H94V47.8L64 81 34 47.8v25.7Z" fill="#263238"/>
+  <path d="M45 88h38v13H45V88Z" fill="#B88746"/>
+  <path d="M54 88h20v13H54V88Z" fill="#FAF6EC"/>
+</svg>
