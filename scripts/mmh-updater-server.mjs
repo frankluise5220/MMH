@@ -406,26 +406,45 @@ async function chooseImageSource() {
   return { appImage: config.appImage, updaterImage: config.updaterImage };
 }
 
-function scheduleUpdaterRecreate(updaterImage) {
+async function scheduleUpdaterRecreate(updaterImage) {
+  const hostWorkdir = await captureDocker([
+    "inspect",
+    "mmh-updater",
+    "--format",
+    "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}",
+  ]);
+  if (!hostWorkdir || !hostWorkdir.startsWith("/")) {
+    throw new Error("无法确定更新目录在宿主机上的路径");
+  }
+  const composeRelativePath = composeFile.startsWith(`${workdir}/`)
+    ? composeFile.slice(workdir.length + 1)
+    : "docker-compose.yml";
+  const hostComposeFile = `${hostWorkdir}/${composeRelativePath}`;
+
   return new Promise((resolve, reject) => {
     if (!updaterImage) {
       reject(new Error("未找到更新执行器镜像地址"));
       return;
     }
     const helperName = `mmh-updater-reloader-${Date.now()}`;
-    const recreateCommand = `sleep 3; ${composeCommand("up -d --no-deps --force-recreate updater")}`;
+    const recreateCommand = [
+      "sleep 3;",
+      `docker compose -p ${composeProject}`,
+      `-f ${JSON.stringify(hostComposeFile)}`,
+      "up -d --no-deps --force-recreate updater",
+    ].join(" ");
     const child = spawn("docker", [
       "run",
       "--rm",
       "-d",
       "--name",
       helperName,
-      "--volumes-from",
-      "mmh-updater",
       "-v",
       "/var/run/docker.sock:/var/run/docker.sock",
+      "-v",
+      `${hostWorkdir}:${hostWorkdir}`,
       "-w",
-      workdir,
+      hostWorkdir,
       "--entrypoint",
       "sh",
       updaterImage,
