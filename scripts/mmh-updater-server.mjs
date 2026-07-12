@@ -259,34 +259,27 @@ async function getLocalAppImageVersion() {
 }
 
 function extractImageVersion(manifestText) {
-  const topLevelDigest = manifestText.match(/^Digest:\s*(sha256:[a-f0-9]{64})\s*$/mi)?.[1] || "";
-  if (topLevelDigest) {
-    return {
-      digest: topLevelDigest,
-      digestShort: shortDigest(topLevelDigest),
-      revision: "",
-      commit: "",
-      created: "",
-      message: "",
-    };
-  }
   try {
     const data = JSON.parse(manifestText);
     const descriptor = Array.isArray(data) ? data[0] : data;
-    const labels = descriptor?.Descriptor?.annotations
+    const labels = descriptor?.image?.config?.Labels
+      ?? descriptor?.Image?.config?.Labels
+      ?? descriptor?.Descriptor?.annotations
       ?? descriptor?.OCIManifest?.annotations
       ?? descriptor?.OCIv1Manifest?.annotations
       ?? descriptor?.SchemaV2Manifest?.config?.Labels
       ?? descriptor?.Config?.Labels
       ?? {};
-    const digest = descriptor?.Descriptor?.digest
+    const digest = descriptor?.manifest?.digest
+      ?? descriptor?.Manifest?.digest
+      ?? descriptor?.Descriptor?.digest
       ?? descriptor?.Descriptor?.Digest
       ?? descriptor?.OCIManifest?.config?.digest
       ?? descriptor?.OCIv1Manifest?.config?.digest
       ?? descriptor?.SchemaV2Manifest?.config?.digest
       ?? descriptor?.Ref;
     const revision = labels["org.opencontainers.image.revision"] || "";
-    const created = labels["org.opencontainers.image.created"] || "";
+    const created = labels["org.opencontainers.image.created"] || descriptor?.image?.created || "";
     const message = labels["org.opencontainers.image.description"] || "";
     return {
       digest: String(digest || ""),
@@ -318,7 +311,14 @@ function testImageManifest(source, image, timeoutMs = 12000) {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn("docker", ["buildx", "imagetools", "inspect", image], { cwd: workdir });
+    const child = spawn("docker", [
+      "buildx",
+      "imagetools",
+      "inspect",
+      image,
+      "--format",
+      "{{json .}}",
+    ], { cwd: workdir });
     const timer = setTimeout(() => {
       if (!settled) child.kill("SIGTERM");
     }, timeoutMs);
