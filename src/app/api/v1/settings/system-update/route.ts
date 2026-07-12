@@ -290,6 +290,8 @@ type ImageVersionSpeedResult = {
   ok?: boolean;
   error?: string;
   version?: {
+    digest?: string;
+    digestShort?: string;
     revision?: string;
     commit?: string;
     created?: string;
@@ -345,22 +347,31 @@ async function getImageVersionFallback(
     const resultBySource = new Map(results.map((result) => [String(result.source || ""), result]));
     const selected = sourceOrder
       .map((source) => resultBySource.get(source))
-      .find((result) => result?.ok && (result.version?.revision || result.version?.commit));
+      .find((result) => result?.ok && (result.version?.revision || result.version?.commit || result.version?.digest));
     if (!selected) return null;
 
     const revision = String(selected.version?.revision || selected.version?.commit || "").trim();
-    const remoteCommit = getComparableShortCommit(revision);
+    const remoteDigest = String(selected.version?.digest || "").trim();
+    const remoteDigestShort = String(
+      selected.version?.digestShort || remoteDigest.replace(/^sha256:/, "").slice(0, 12),
+    ).trim();
+    const localImageVersion = data?.localVersion as ImageVersionSpeedResult["version"] | undefined;
+    const localDigest = String(localImageVersion?.digest || "").trim();
+    const remoteCommit = getComparableShortCommit(revision) || remoteDigestShort;
     const localCommit = getComparableShortCommit(base.localCommitFull || base.localCommit);
-    if (!remoteCommit || !localCommit) return null;
+    if (!remoteCommit || (!localCommit && !localDigest)) return null;
+    const needsUpdate = remoteDigest && localDigest
+      ? remoteDigest !== localDigest
+      : localCommit !== remoteCommit;
 
     return {
       remoteName: `image:${selected.source || configuredSource}`,
       remoteBranch: "latest",
       remoteUrl: selected.image || imageSourceConfig?.appImage || "",
       remoteCommit,
-      remoteCommitMsg: String(selected.version?.message || "镜像版本").split("\n")[0],
+      remoteCommitMsg: String(selected.version?.message || (revision ? "镜像版本" : "镜像摘要")).split("\n")[0],
       remoteCommitDate: String(selected.version?.created || ""),
-      needsUpdate: localCommit !== remoteCommit,
+      needsUpdate,
       canCheckUpdate: true,
       fetchError: undefined,
     };

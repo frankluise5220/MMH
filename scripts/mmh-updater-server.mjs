@@ -201,6 +201,61 @@ function shortDigest(digest) {
   return String(digest || "").replace(/^sha256:/, "").slice(0, 12);
 }
 
+function captureDocker(args, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn("docker", args, { cwd: workdir });
+    const timer = setTimeout(() => {
+      if (!settled) child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("close", (code) => {
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(stderr.trim() || `docker 退出码 ${code}`));
+    });
+    child.on("error", (error) => {
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function getLocalAppImageVersion() {
+  try {
+    const inspectText = await captureDocker([
+      "inspect",
+      "mmh-app",
+      "--format",
+      "{{json .Config.Labels}}|{{.Image}}",
+    ]);
+    const separator = inspectText.lastIndexOf("|");
+    const labels = separator >= 0 ? JSON.parse(inspectText.slice(0, separator) || "{}") : {};
+    const imageId = separator >= 0 ? inspectText.slice(separator + 1).trim() : "";
+    const repoDigestsText = imageId
+      ? await captureDocker(["image", "inspect", imageId, "--format", "{{json .RepoDigests}}"])
+      : "[]";
+    const repoDigests = JSON.parse(repoDigestsText || "[]");
+    const digest = String(repoDigests.find((value) => String(value).includes("@sha256:")) || "").split("@")[1] || "";
+    const revision = String(labels?.["org.opencontainers.image.revision"] || "");
+    return {
+      digest,
+      digestShort: shortDigest(digest),
+      revision,
+      commit: revision.slice(0, 7),
+      created: String(labels?.["org.opencontainers.image.created"] || ""),
+      message: String(labels?.["org.opencontainers.image.description"] || "").split("\n")[0] || "",
+    };
+  } catch {
+    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "" };
+  }
+}
+
 function extractImageVersion(manifestText) {
   try {
     const data = JSON.parse(manifestText);
@@ -291,10 +346,14 @@ async function testImageSourceSpeed(input) {
     ? [requestedSource]
     : [...Object.keys(imageSources), "custom"];
 
-  return Promise.all(sources.map((source) => {
-    const image = getImageForSpeedTest(source, env, customAppImage);
-    return testImageManifest(source, image, timeoutMs);
-  }));
+  const [results, localVersion] = await Promise.all([
+    Promise.all(sources.map((source) => {
+      const image = getImageForSpeedTest(source, env, customAppImage);
+      return testImageManifest(source, image, timeoutMs);
+    })),
+    getLocalAppImageVersion(),
+  ]);
+  return { results, localVersion };
 }
 
 async function chooseImageSource() {
@@ -441,7 +500,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       testImageSourceSpeed(input)
-        .then((results) => sendJson(res, 200, { ok: true, results }))
+        .then(({ results, localVersion }) => sendJson(res, 200, { ok: true, results, localVersion }))
         .catch((error) => sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }));
     });
     return;
