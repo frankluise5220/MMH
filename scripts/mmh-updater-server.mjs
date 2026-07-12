@@ -257,6 +257,17 @@ async function getLocalAppImageVersion() {
 }
 
 function extractImageVersion(manifestText) {
+  const topLevelDigest = manifestText.match(/^Digest:\s*(sha256:[a-f0-9]{64})\s*$/mi)?.[1] || "";
+  if (topLevelDigest) {
+    return {
+      digest: topLevelDigest,
+      digestShort: shortDigest(topLevelDigest),
+      revision: "",
+      commit: "",
+      created: "",
+      message: "",
+    };
+  }
   try {
     const data = JSON.parse(manifestText);
     const descriptor = Array.isArray(data) ? data[0] : data;
@@ -305,7 +316,7 @@ function testImageManifest(source, image, timeoutMs = 12000) {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn("docker", ["manifest", "inspect", "--verbose", image], { cwd: workdir });
+    const child = spawn("docker", ["buildx", "imagetools", "inspect", image], { cwd: workdir });
     const timer = setTimeout(() => {
       if (!settled) child.kill("SIGTERM");
     }, timeoutMs);
