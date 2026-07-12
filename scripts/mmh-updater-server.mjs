@@ -176,11 +176,13 @@ async function saveImageSourceConfig(input) {
   const values = { MMH_IMAGE_SOURCE: source };
 
   if (source === "custom") {
-    if (!customAppImage) throw new Error("自定义镜像源需要填写应用镜像地址");
+    if (!customAppImage || !customUpdaterImage) {
+      throw new Error("自定义镜像源需要同时填写应用镜像和更新器镜像地址");
+    }
     values.CUSTOM_MMH_APP_IMAGE = customAppImage;
     values.CUSTOM_MMH_UPDATER_IMAGE = customUpdaterImage;
     values.MMH_APP_IMAGE = customAppImage;
-    values.MMH_UPDATER_IMAGE = customUpdaterImage || imageSources.ghcr.updater;
+    values.MMH_UPDATER_IMAGE = customUpdaterImage;
   } else if (source !== "auto") {
     const selected = imageSources[source];
     if (!selected) throw new Error(`未知镜像源: ${source}`);
@@ -371,8 +373,10 @@ async function chooseImageSource() {
   const config = await getImageSourceConfig();
 
   if (config.source === "custom") {
-    if (!config.customAppImage) throw new Error("自定义镜像源需要填写应用镜像地址");
-    const updaterImage = config.customUpdaterImage || imageSources.ghcr.updater;
+    if (!config.customAppImage || !config.customUpdaterImage) {
+      throw new Error("自定义镜像源需要同时填写应用镜像和更新器镜像地址");
+    }
+    const updaterImage = config.customUpdaterImage;
     pushLog("使用自定义镜像源");
     await updateEnvImageSource(config.customAppImage, updaterImage);
     return { appImage: config.customAppImage, updaterImage };

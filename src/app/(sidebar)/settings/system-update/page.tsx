@@ -131,6 +131,8 @@ export default function SystemUpdatePage() {
   });
   const [savingImageSource, setSavingImageSource] = useState(false);
   const [imageSourceMessage, setImageSourceMessage] = useState("");
+  const customImageSourceIncomplete = imageSourceDraft.source === "custom"
+    && (!imageSourceDraft.customAppImage.trim() || !imageSourceDraft.customUpdaterImage.trim());
   const [testingImageSource, setTestingImageSource] = useState(false);
   const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
@@ -539,7 +541,7 @@ export default function SystemUpdatePage() {
                     </button>
                     <button
                       onClick={saveImageSource}
-                      disabled={savingImageSource || updating}
+                      disabled={savingImageSource || updating || customImageSourceIncomplete}
                       className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
                     >
                       {savingImageSource ? "保存中" : "保存"}
@@ -605,6 +607,7 @@ export default function SystemUpdatePage() {
                     <div className="text-xs text-slate-500">应用镜像</div>
                     <input
                       value={imageSourceDraft.customAppImage}
+                      required
                       onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customAppImage: event.target.value }))}
                       disabled={savingImageSource || updating}
                       className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
@@ -613,6 +616,7 @@ export default function SystemUpdatePage() {
                     <div className="text-xs text-slate-500">更新器镜像</div>
                     <input
                       value={imageSourceDraft.customUpdaterImage}
+                      required
                       onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customUpdaterImage: event.target.value }))}
                       disabled={savingImageSource || updating}
                       className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
