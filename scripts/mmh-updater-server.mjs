@@ -94,7 +94,12 @@ function syncDeployFilesCommand() {
     `if [ -d ${quotedWorkdir}/.git ]; then`,
     `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true;`,
     `git -C ${quotedWorkdir} pull --ff-only;`,
-    `else echo "未发现 .git，跳过代码仓库更新"; fi`,
+    `elif [ -f /updater/deploy/docker-compose.yml ]; then`,
+    `cp /updater/deploy/docker-compose.yml ${quotedWorkdir}/docker-compose.yml;`,
+    `cp /updater/deploy/postgres-entrypoint.sh ${quotedWorkdir}/postgres-entrypoint.sh;`,
+    `chmod +x ${quotedWorkdir}/postgres-entrypoint.sh;`,
+    `echo "已从更新器镜像同步部署文件";`,
+    `else echo "未发现 Git 仓库或内置部署文件，跳过部署文件同步"; fi`,
   ].join(" ");
 }
 

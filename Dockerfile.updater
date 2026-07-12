@@ -14,6 +14,8 @@ RUN apk add --no-cache git nodejs
 
 WORKDIR /updater
 COPY scripts/mmh-updater-server.mjs /updater/mmh-updater-server.mjs
+COPY deploy/nas/docker-compose.yml /updater/deploy/docker-compose.yml
+COPY deploy/nas/postgres-entrypoint.sh /updater/deploy/postgres-entrypoint.sh
 
 EXPOSE 7788
 

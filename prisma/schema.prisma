@@ -31,6 +31,7 @@ model Account {
   billingDay                                                 Int?
   repaymentDay                                               Int?
   numberMasked                                               String?
+  routeKey                                                   String?                     @unique
   householdId                                                String
   institutionId                                              String?
   counterpartyId                                             String?
