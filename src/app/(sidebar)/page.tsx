@@ -6504,7 +6504,7 @@ export default async function Home({
                         toolbarTitle={creditBillDetailTitle}
                         toolbarRightContent={
                           !showAllCreditBillDetails && creditCardBill ? (
-                            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
+                            <div key="credit-bill-toolbar-period" className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
                               <span className="hidden whitespace-nowrap md:inline">
                                 周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
                               </span>
@@ -6514,7 +6514,7 @@ export default async function Home({
                               </Link>
                             </div>
                           ) : (
-                            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
+                            <div key="credit-bill-toolbar-all" className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
                               <span className="whitespace-nowrap text-slate-600">共 {creditBillDetailEntries.length} 条</span>
                               <Link href="/batch-import" className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="导入信用卡账单记录">
                                 <Upload className="h-3 w-3" />导入
