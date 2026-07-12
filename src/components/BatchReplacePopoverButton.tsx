@@ -4,14 +4,26 @@ import { Pencil } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
-import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
 
 export type BatchReplaceInputKind = "date" | "text" | "number" | "select" | "smartSelect";
 
 export type BatchReplaceOption = {
   value: string;
   label: string;
+  subLabel?: string;
+  color?: string | null;
+  isHeader?: boolean;
+  isGroup?: boolean;
+  parentId?: string;
+  kind?: string | null;
+  investProductType?: string | null;
+  debtDirection?: string | null;
+  institutionId?: string | null;
+  currency?: string | null;
 };
+
+type BatchReplaceSmartSelectBehavior = Extract<SmartSelectProps, { mode: "single" }>["behavior"];
 
 export type BatchReplaceFieldConfig<Field extends string> = {
   value: Field;
@@ -20,6 +32,7 @@ export type BatchReplaceFieldConfig<Field extends string> = {
   options?: BatchReplaceOption[];
   placeholder?: string;
   allowEmpty?: boolean;
+  smartSelectBehavior?: BatchReplaceSmartSelectBehavior;
 };
 
 type Props<Field extends string> = {
@@ -60,6 +73,13 @@ export function BatchReplacePopoverButton<Field extends string>({
   const fieldConfig = useMemo(() => fields.find((item) => item.value === field) ?? fields[0], [field, fields]);
   const disabled = targetCount === 0 || fields.length === 0;
   const canApply = Boolean(fieldConfig) && !submitting && targetCount > 0 && (fieldConfig.allowEmpty || value.trim().length > 0);
+  const preferredPanelWidth = useMemo(() => {
+    if (fieldConfig?.kind !== "smartSelect") return 360;
+    const behavior = fieldConfig.smartSelectBehavior;
+    const dropdownWidth = behavior?.minDropdownWidth ?? 360;
+    const hasExpandedGrid = Number(behavior?.expandedGroupColumns ?? 0) >= 2;
+    return Math.max(360, dropdownWidth + (hasExpandedGrid ? 56 : 0));
+  }, [fieldConfig]);
 
   useEffect(() => {
     if (!open) {
@@ -90,7 +110,7 @@ export function BatchReplacePopoverButton<Field extends string>({
         (boundaryRect?.right ?? window.innerWidth - viewportPadding) - boundaryPadding,
       );
       const availableWidth = Math.max(240, horizontalMax - horizontalMin);
-      const nextWidth = Math.min(360, availableWidth);
+      const nextWidth = Math.min(preferredPanelWidth, availableWidth);
       const panelHeight = panel.offsetHeight || 220;
       const leftBase = panelAlign === "right" ? triggerRect.right - nextWidth : triggerRect.left;
       const left = Math.min(Math.max(leftBase, horizontalMin), horizontalMax - nextWidth);
@@ -116,6 +136,7 @@ export function BatchReplacePopoverButton<Field extends string>({
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-smart-select-dropdown]")) return;
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -134,7 +155,7 @@ export function BatchReplacePopoverButton<Field extends string>({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [open, panelAlign]);
+  }, [open, panelAlign, preferredPanelWidth]);
 
   async function applyReplace() {
     if (!fieldConfig || !canApply) return;
@@ -197,9 +218,23 @@ export function BatchReplacePopoverButton<Field extends string>({
                     mode="single"
                     value={value}
                     onChange={setValue}
-                    options={(fieldConfig.options ?? []).map((option) => ({ id: option.value, label: option.label } satisfies SmartSelectOption))}
+                    options={(fieldConfig.options ?? []).map((option) => ({
+                      id: option.value,
+                      label: option.label,
+                      subLabel: option.subLabel,
+                      color: option.color,
+                      isHeader: option.isHeader,
+                      isGroup: option.isGroup,
+                      parentId: option.parentId,
+                      kind: option.kind,
+                      investProductType: option.investProductType,
+                      debtDirection: option.debtDirection,
+                      institutionId: option.institutionId,
+                      currency: option.currency,
+                    } satisfies SmartSelectOption))}
                     placeholder={fieldConfig.placeholder ?? "请选择"}
                     searchable
+                    behavior={fieldConfig.smartSelectBehavior ?? { search: true }}
                   />
                 ) : fieldConfig?.kind === "number" ? (
                   <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? "输入数值"} precision={2} />

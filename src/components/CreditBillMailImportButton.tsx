@@ -70,6 +70,14 @@ type ParseState = {
 };
 
 const LAST_WORKING_EMAIL_ACCOUNT_KEY = "mmh_credit_bill_last_working_email_account";
+const BILL_MAIL_KEYWORDS = [
+  "账单",
+  "对账单",
+  "月结单",
+  "statement",
+  "e-statement",
+  "credit card statement",
+];
 
 function readLastWorkingEmailAccountId() {
   if (typeof window === "undefined") return "";
@@ -89,11 +97,16 @@ function writeLastWorkingEmailAccountId(accountId: string) {
   }
 }
 
+function normalizeDateOnlyText(value?: string | null) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日)?/);
+  if (!match) return raw.slice(0, 10);
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
 function formatDate(value: string) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toISOString().slice(0, 10);
+  return normalizeDateOnlyText(value) || value;
 }
 
 function buildStatementParseContent(mail: MailDetail) {
@@ -112,20 +125,27 @@ function sameMail(a: Pick<MailItem, "emailAccountId" | "uid">, b: Pick<MailItem,
 
 function normalizeParsedItem(item: ParsedItem, accountName: string): ParsedItem {
   const amount = Math.abs(Number(item.amount ?? 0));
+  const parsedAccountName = item.account?.trim() || accountName;
+  const date = item.date?.trim() || undefined;
+  const postedDate = normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(date) || undefined;
   if (item.type === "transfer") {
     return {
       ...item,
+      date,
       amount,
-      account: accountName,
-      toAccount: item.toAccount?.trim() || accountName,
+      account: parsedAccountName,
+      toAccount: item.toAccount?.trim() || parsedAccountName,
       fromAccount: item.fromAccount?.trim() || undefined,
+      postedDate,
       remark: item.remark?.trim() || item.rawText,
     };
   }
   return {
     ...item,
+    date,
     amount,
-    account: accountName,
+    account: parsedAccountName,
+    postedDate,
     remark: item.remark?.trim() || item.rawText,
   };
 }
@@ -139,14 +159,8 @@ function canImportItem(item: ParsedItem) {
 
 export function CreditBillMailImportButton({
   accountName,
-  institutionName,
-  institutionShortName,
-  accountNumberMasked,
 }: {
   accountName: string;
-  institutionName?: string | null;
-  institutionShortName?: string | null;
-  accountNumberMasked?: string | null;
 }) {
   const router = useRouter();
   const { t } = useI18n();
@@ -157,29 +171,6 @@ export function CreditBillMailImportButton({
     }
     return text;
   };
-  const mailKeywords = useMemo(() => {
-    const bankAliases: Record<string, string[]> = {
-      工商银行: ["工商银行", "工行", "工银", "ICBC"],
-      农业银行: ["农业银行", "农行", "ABC"],
-      中国银行: ["中国银行", "中行", "BOC"],
-      建设银行: ["建设银行", "建行", "CCB"],
-      交通银行: ["交通银行", "交行", "BOCOM"],
-      招商银行: ["招商银行", "招行", "CMB"],
-    };
-    const seeds = [
-      institutionName,
-      institutionShortName,
-      accountName,
-      accountNumberMasked,
-      ...(institutionName ? bankAliases[institutionName] ?? [] : []),
-    ];
-    return Array.from(new Set(
-      seeds
-        .map((item) => String(item ?? "").trim())
-        .filter((item) => item.length >= 2),
-    ));
-  }, [accountName, accountNumberMasked, institutionName, institutionShortName]);
-  const keyword = mailKeywords[0] || accountName.trim();
   const [open, setOpen] = useState(false);
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedEmailAccountId, setSelectedEmailAccountId] = useState("");
@@ -190,19 +181,37 @@ export function CreditBillMailImportButton({
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [parsed, setParsed] = useState<ParseState | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewSelectedKeys, setPreviewSelectedKeys] = useState<Set<number>>(new Set());
 
   const importableItems = useMemo(
     () => parsed?.items.filter(canImportItem) ?? [],
     [parsed],
   );
+  const previewRows = useMemo(
+    () => parsed?.items.map((item, key) => ({ key, item, ready: canImportItem(item) })) ?? [],
+    [parsed],
+  );
+  const selectedPreviewItems = useMemo(
+    () => previewRows
+      .filter((row) => row.ready && previewSelectedKeys.has(row.key))
+      .map((row) => row.item),
+    [previewRows, previewSelectedKeys],
+  );
+  const allImportablePreviewSelected =
+    importableItems.length > 0 &&
+    previewRows.filter((row) => row.ready).every((row) => previewSelectedKeys.has(row.key));
 
   async function openAndLoad() {
     setOpen(true);
+    setPreviewOpen(false);
+    setPreviewSelectedKeys(new Set());
     setError("");
     setInfo("");
     setParsed(null);
     setMails([]);
-    setInfo("请选择“读取邮箱列表”，再选择邮箱读取账单邮件。");
+    setEmailAccounts([]);
+    await loadEmailAccounts();
   }
 
   async function loadEmailAccounts() {
@@ -257,9 +266,8 @@ export function CreditBillMailImportButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: account.id,
-          keyword,
-          keywords: mailKeywords,
-          limit: 12,
+          keywords: BILL_MAIL_KEYWORDS,
+          limit: 30,
           scanLimit: 800,
         }),
       });
@@ -277,7 +285,7 @@ export function CreditBillMailImportButton({
       setMails(markedMails);
       writeLastWorkingEmailAccountId(account.id);
       if (nextMails.length === 0) {
-        setInfo(tf("creditBill.noMailForKeyword", { keyword: mailKeywords.join(" / ") || keyword }));
+        setInfo(t("creditBill.noMatchedMail"));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t("creditBill.readMailFailed"));
@@ -333,8 +341,10 @@ export function CreditBillMailImportButton({
 
   async function fetchAndParse(mail: MailItem) {
     setFetchingUid(mail.uid);
+    setPreviewOpen(false);
+    setPreviewSelectedKeys(new Set());
     setError("");
-    setInfo(mail.imported ? "这封账单邮件已经导入过，可以查看解析结果，但通常不需要重复导入。" : "");
+    setInfo(mail.imported ? "这封账单邮件已经导入过，本次仍可重新预览并再次导入。" : "");
     setParsed(null);
     try {
       const fetchRes = await fetch("/api/v1/email/imap/fetch", {
@@ -367,12 +377,53 @@ export function CreditBillMailImportButton({
     }
   }
 
-  async function importParsed() {
+  function openImportPreview() {
     if (!parsed || importableItems.length === 0 || importing) return;
-    if (parsed.mail.imported) {
-      setInfo("这封账单邮件已经导入过，无需重复导入。");
+    setError("");
+    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => row.key)));
+    setPreviewOpen(true);
+  }
+
+  function togglePreviewRow(key: number) {
+    const row = previewRows.find((item) => item.key === key);
+    if (!row?.ready) return;
+    setPreviewSelectedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleAllPreviewRows() {
+    if (allImportablePreviewSelected) {
+      setPreviewSelectedKeys(new Set());
       return;
     }
+    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => row.key)));
+  }
+
+  function updatePreviewItem(key: number, patch: Partial<ParsedItem>) {
+    setParsed((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item, index) => {
+          if (index !== key) return item;
+          return {
+            ...item,
+            ...patch,
+            postedDate: "postedDate" in patch
+              ? (normalizeDateOnlyText(patch.postedDate) || undefined)
+              : item.postedDate,
+          };
+        }),
+      };
+    });
+  }
+
+  async function importParsed() {
+    if (!parsed || selectedPreviewItems.length === 0 || importing) return;
     setImporting(true);
     setError("");
     setInfo("");
@@ -381,7 +432,7 @@ export function CreditBillMailImportButton({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: importableItems,
+          items: selectedPreviewItems,
           defaultAccountName: accountName,
           autoCreateAccounts: false,
           mailSource: {
@@ -396,14 +447,6 @@ export function CreditBillMailImportButton({
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
-      if (data.duplicate) {
-        setInfo("这封账单邮件已经导入过，无需重复导入。");
-        setMails((prev) => prev.map((mail) => sameMail(mail, parsed.mail)
-          ? { ...mail, imported: true, importedAt: new Date().toISOString() }
-          : mail));
-        setParsed((prev) => prev ? { ...prev, mail: { ...prev.mail, imported: true } } : prev);
-        return;
-      }
       const skippedCount = data.skippedCount ?? 0;
       const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
       const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
@@ -421,6 +464,8 @@ export function CreditBillMailImportButton({
           : mail));
       }
       setParsed(null);
+      setPreviewOpen(false);
+      setPreviewSelectedKeys(new Set());
       dispatchFinanceDataChanged({ reason: "credit-bill-mail-import" });
       router.refresh();
     } catch (err) {
@@ -436,7 +481,7 @@ export function CreditBillMailImportButton({
         type="button"
         onClick={openAndLoad}
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 inline-flex items-center gap-1.5"
-        title={tf("creditBill.fetchTitle", { keyword: keyword ? `“${keyword}”` : "" })}
+        title={t("creditBill.fetchMailTitle")}
       >
         <MailSearch className="h-3.5 w-3.5" />
         {t("creditBill.fetch")}
@@ -449,7 +494,7 @@ export function CreditBillMailImportButton({
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-800">{t("creditBill.fetchMailTitle")}</div>
                 <div className="mt-0.5 truncate text-xs text-slate-500">
-                  {tf("creditBill.findingMail", { keyword: keyword || accountName, account: accountName })}
+                  {t("creditBill.findingAllBills")}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -475,7 +520,7 @@ export function CreditBillMailImportButton({
 
             <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(280px,0.9fr)] gap-0">
               <div className="min-h-0 overflow-auto border-r border-slate-100">
-                {emailAccounts.length > 0 ? (
+                {emailAccounts.length > 1 ? (
                   <div className="border-b border-slate-100 bg-slate-50/70 px-3 py-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <div className="text-xs font-semibold text-slate-700">选择邮箱</div>
@@ -540,7 +585,7 @@ export function CreditBillMailImportButton({
                             <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5">{mail.emailAccountLabel}</span>
                             <span className="truncate">{mail.from || t("creditBill.unknownSender")}</span>
                           </div>
-                          {mail.imported ? <div className="mt-1 text-[11px] text-emerald-700">本地已有导入记录，无需重复导入</div> : null}
+                          {mail.imported ? <div className="mt-1 text-[11px] text-emerald-700">本地已有导入记录，可再次导入</div> : null}
                           {fetchingUid === mail.uid ? <div className="mt-1 text-[11px] text-blue-600">{t("creditBill.readingAndParsing")}</div> : null}
                         </button>
                       );
@@ -596,13 +641,126 @@ export function CreditBillMailImportButton({
                   </button>
                   <button
                     type="button"
-                    onClick={importParsed}
-                    disabled={!parsed || parsed.mail.imported || importableItems.length === 0 || importing}
+                    onClick={openImportPreview}
+                    disabled={!parsed || importableItems.length === 0 || importing}
                     className="primary-button h-8 px-3 text-xs disabled:opacity-50"
                   >
-                    {parsed?.mail.imported ? "已导入" : importing ? t("creditBill.importing") : tf("creditBill.confirmImport", { count: importableItems.length })}
+                    {tf("creditBill.openImportPreview", { count: importableItems.length })}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
+
+      {previewOpen && parsed && typeof document !== "undefined" ? createPortal(
+        <div className="fixed inset-0 z-[100] flex items-start justify-center bg-slate-900/35 px-4 py-[6vh]">
+          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-800">{t("creditBill.importPreviewTitle")}</div>
+                <div className="mt-0.5 truncate text-xs text-slate-500">{t("creditBill.importPreviewDesc")}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                title={t("creditBill.close")}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto">
+              <table className="min-w-full border-separate border-spacing-0 text-xs">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="w-10 border-b border-r border-slate-200 px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={allImportablePreviewSelected}
+                        onChange={toggleAllPreviewRows}
+                        aria-label="全选可导入记录"
+                      />
+                    </th>
+                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">日期</th>
+                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">入账日期</th>
+                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">类型</th>
+                    <th className="min-w-40 border-b border-r border-slate-200 px-3 py-2 text-left">账户</th>
+                    <th className="min-w-36 border-b border-r border-slate-200 px-3 py-2 text-left">分类/对手方</th>
+                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-right">金额</th>
+                    <th className="min-w-56 border-b border-r border-slate-200 px-3 py-2 text-left">备注</th>
+                    <th className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left">状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.map((row) => {
+                    const checked = previewSelectedKeys.has(row.key);
+                    const item = row.item;
+                    return (
+                      <tr key={row.key} className={row.ready ? "bg-white hover:bg-blue-50/40" : "bg-amber-50/60 text-amber-800"}>
+                        <td className="border-b border-r border-slate-100 px-2 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!row.ready}
+                            onChange={() => togglePreviewRow(row.key)}
+                            aria-label={`选择第 ${row.key + 1} 条记录`}
+                          />
+                        </td>
+                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">{item.date || "-"}</td>
+                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">
+                          <input
+                            type="date"
+                            value={normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(item.date)}
+                            onChange={(event) => updatePreviewItem(row.key, { postedDate: event.target.value || undefined })}
+                            className="h-7 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400"
+                          />
+                        </td>
+                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">
+                          {item.type === "income" ? t("creditBill.income") : item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}
+                        </td>
+                        <td className="border-b border-r border-slate-100 px-3 py-2">{item.account || accountName}</td>
+                        <td className="border-b border-r border-slate-100 px-3 py-2">{item.category || item.counterparty || item.institution || "-"}</td>
+                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2 text-right tabular-nums">{item.amount.toFixed(2)}</td>
+                        <td className="max-w-72 border-b border-r border-slate-100 px-3 py-2">
+                          <div className="truncate" title={item.remark || item.rawText}>{item.remark || item.rawText || "-"}</div>
+                        </td>
+                        <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">
+                          {row.ready ? <span className="text-emerald-700">可导入</span> : <span className="text-amber-700">缺少必要字段</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {(error || info) ? (
+              <div className="border-t border-slate-100 px-4 py-2 text-xs">
+                {error ? <div className="text-red-600">{error}</div> : null}
+                {info ? <div className="text-slate-500">{info}</div> : null}
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
+              <div className="text-xs text-slate-500">
+                {tf("creditBill.importPreviewSelected", { selected: selectedPreviewItems.length, total: previewRows.length })}
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setPreviewOpen(false)} className="secondary-button h-8 px-3 text-xs">
+                  {t("creditBill.close")}
+                </button>
+                <button
+                  type="button"
+                  onClick={importParsed}
+                  disabled={selectedPreviewItems.length === 0 || importing}
+                  className="primary-button h-8 px-3 text-xs disabled:opacity-50"
+                >
+                  {importing ? t("creditBill.importing") : tf("creditBill.confirmImport", { count: selectedPreviewItems.length })}
+                </button>
               </div>
             </div>
           </div>

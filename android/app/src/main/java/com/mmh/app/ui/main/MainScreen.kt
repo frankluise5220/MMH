@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.FloatingActionButton
@@ -310,7 +309,6 @@ private data class TabItem(val label: String, val icon: ImageVector, val route: 
 private val TAB_ITEMS = listOf(
     TabItem("总览", Icons.Default.Home, NavRoutes.OVERVIEW),
     TabItem("账户", Icons.Default.AccountBalanceWallet, NavRoutes.ACCOUNTS),
-    TabItem("统计", Icons.Default.BarChart, NavRoutes.STATISTICS),
     TabItem("投资", Icons.AutoMirrored.Filled.TrendingUp, NavRoutes.INVEST),
     TabItem("我的", Icons.Default.Person, NavRoutes.SETTINGS),
 )

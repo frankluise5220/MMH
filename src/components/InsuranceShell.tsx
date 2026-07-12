@@ -9,11 +9,19 @@ import {
   getInsuranceProductName,
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   AdvancedDataTable,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
+import {
+  BasicDetailBatchDeleteButton,
+  BasicDetailBatchDeleteMessage,
+  BasicDetailBatchReplaceButton,
+  BasicDetailSelectionProvider,
+  useBasicDetailSelection,
+} from "./BasicDetailSelection";
 import { EntryRowActions } from "./EntryRowActions";
 import {
   InsurancePolicyEditModal,
@@ -53,6 +61,13 @@ type InsuranceEntry = {
     insuranceProductName?: string;
     source?: string | null;
   };
+};
+
+type InsuranceCashAccountOption = {
+  id: string;
+  label: string;
+  icon?: string;
+  subLabel?: string;
 };
 
 type InsuranceHolding = {
@@ -333,6 +348,49 @@ function buildInsuranceHoldings(
   });
 }
 
+function InsuranceEntryRecordsTable({
+  columns,
+  rows,
+  hasSelectedHolding,
+  cashAccounts,
+}: {
+  columns: AdvancedDataTableColumn<InsuranceEntry>[];
+  rows: InsuranceEntry[];
+  hasSelectedHolding: boolean;
+  cashAccounts: InsuranceCashAccountOption[];
+}) {
+  const { selectedIds, setSelection } = useBasicDetailSelection();
+  const accountOptions = useMemo(
+    () => cashAccounts.map((account) => ({ id: account.id, label: account.label })),
+    [cashAccounts],
+  );
+
+  return (
+    <AdvancedDataTable
+      storageKey="mmh_insurance_entries_table_v2"
+      columns={columns}
+      rows={rows}
+      rowKey={(entry) => entry.id}
+      minTableWidth={980}
+      emptyText={hasSelectedHolding ? "这份保单暂时没有关联记录" : "请先选择上方保单"}
+      selectable
+      fillHeight
+      selectedKeys={selectedIds}
+      onSelectionChange={setSelection}
+      batchActionSlot={
+        <>
+          <BasicDetailBatchReplaceButton
+            accountOptions={accountOptions}
+            fields={["date", "account", "remark"]}
+            targetLabel="投保记录"
+          />
+          <BasicDetailBatchDeleteButton recordLabel="投保记录" />
+        </>
+      }
+    />
+  );
+}
+
 export function InsuranceShell({
   accountId,
   holdings,
@@ -347,13 +405,12 @@ export function InsuranceShell({
   holdings: InsuranceHolding[];
   entries: InsuranceEntry[];
   familyMemberOptions?: SmartSelectOption[];
-  cashAccounts?: Array<{ id: string; label: string; icon?: string; subLabel?: string }>;
+  cashAccounts?: InsuranceCashAccountOption[];
   cashAccountSSOptions?: SmartSelectOption[];
 }) {
   const [refreshedEntries, setRefreshedEntries] = useState<InsuranceEntry[] | null>(null);
   const [refreshedHoldings, setRefreshedHoldings] = useState<InsuranceHolding[] | null>(null);
   const [selectedHoldingId, setSelectedHoldingId] = useState<string | null>(null);
-  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [showActiveOnly, setShowActiveOnly] = useState(false);
   const [familyMemberOptionsState, setFamilyMemberOptionsState] =
     useState<SmartSelectOption[]>(familyMemberOptions);
@@ -468,7 +525,6 @@ export function InsuranceShell({
     setRefreshedEntries(null);
     setRefreshedHoldings(null);
     setSelectedHoldingId(null);
-    setSelectedEntryIds(new Set());
   }, [accountId]);
 
   useEffect(() => {
@@ -636,23 +692,6 @@ export function InsuranceShell({
     [holdingSummary],
   );
 
-  async function batchDeleteEntries() {
-    if (selectedEntryIds.size === 0) return;
-    if (!window.confirm(`确认删除选中的 ${selectedEntryIds.size} 条投保记录吗？`)) return;
-    const response = await fetch("/api/v1/entries/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entryIds: Array.from(selectedEntryIds) }),
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.ok) {
-      window.alert(data?.error || "批量删除失败");
-      return;
-    }
-    setSelectedEntryIds(new Set());
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
-  }
-
   async function savePolicyEdit(next: InsurancePolicyEditValue) {
     const holding = currentHoldings.find((item) => item.id === next.id);
     if (!holding) {
@@ -693,7 +732,7 @@ export function InsuranceShell({
       }
       setPolicyEditValue(null);
       setPolicyEditMeta(null);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "insurance-policy-save", accountIds: [accountId] });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存保单失败");
     } finally {
@@ -723,7 +762,7 @@ export function InsuranceShell({
       setPolicyEditValue(null);
       setPolicyEditMeta(null);
       setSelectedHoldingId(null);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "insurance-policy-delete", accountIds: [accountId] });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "删除保单失败");
     } finally {
@@ -755,7 +794,7 @@ export function InsuranceShell({
         throw new Error(data?.error || "保存保险产品失败");
       }
       setProductEditValue(null);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "insurance-product-save", accountIds: [accountId] });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存保险产品失败");
     } finally {
@@ -1120,27 +1159,19 @@ export function InsuranceShell({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1">
-            <AdvancedDataTable
-              storageKey="mmh_insurance_entries_table_v2"
-              columns={entryColumns}
-              rows={visibleEntries}
-              rowKey={(entry) => entry.id}
-              minTableWidth={980}
-              emptyText={selectedHolding ? "这份保单暂时没有关联记录" : "请先选择上方保单"}
-              selectable
-              fillHeight
-              selectedKeys={selectedEntryIds}
-              onSelectionChange={setSelectedEntryIds}
-              batchActions={[
-                { label: "批量删除", onClick: batchDeleteEntries },
-                {
-                  label: "批量修改",
-                  onClick: () => window.alert("批量修改入口下一步接入统一批量编辑弹窗。"),
-                },
-              ]}
-            />
-          </div>
+          <BasicDetailSelectionProvider
+            resetKey={`${accountId}:${selectedHolding?.id ?? "none"}:insurance-entries`}
+          >
+            <BasicDetailBatchDeleteMessage />
+            <div className="min-h-0 flex-1">
+              <InsuranceEntryRecordsTable
+                columns={entryColumns}
+                rows={visibleEntries}
+                hasSelectedHolding={!!selectedHolding}
+                cashAccounts={cashAccounts}
+              />
+            </div>
+          </BasicDetailSelectionProvider>
         </section>
       </div>
 
@@ -1196,7 +1227,7 @@ export function InsuranceShell({
         onClose={() => setEntryEditValue(null)}
         onSaved={async (next) => {
           setEntryEditValue(next);
-          window.dispatchEvent(new Event("mmh:fund:refresh"));
+          dispatchFinanceDataChanged({ reason: "insurance-entry-save", accountIds: [accountId] });
         }}
       />
     </div>

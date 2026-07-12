@@ -2,7 +2,8 @@
 
 import { Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 
 type SelectionContextValue = {
@@ -16,12 +17,14 @@ type SelectionContextValue = {
 };
 
 type AccountOption = { id: string; label: string };
+export type BasicDetailBatchCategoryOption = BatchReplaceOption;
 
 const fieldLabels: Record<BatchReplaceField, string> = {
   date: "日期",
   type: "类型",
   account: "来源账户",
   toAccount: "去向账户",
+  categoryId: "分类",
   remark: "备注",
 };
 
@@ -32,6 +35,7 @@ const typeOptions = [
   { value: "transfer", label: "转账" },
   { value: "investment", label: "投资" },
 ];
+const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "type", "account", "toAccount", "categoryId", "remark"];
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
 
@@ -122,46 +126,89 @@ export function BasicDetailRowCheckbox({ id }: { id: string }) {
   );
 }
 
-export function BasicDetailBatchReplaceButton({ accountOptions }: { accountOptions: AccountOption[] }) {
+export function BasicDetailBatchReplaceButton({
+  accountOptions,
+  categoryOptions = [],
+  fields = defaultBatchReplaceFields,
+  targetLabel = "已选",
+}: {
+  accountOptions: AccountOption[];
+  categoryOptions?: BasicDetailBatchCategoryOption[];
+  fields?: BatchReplaceField[];
+  targetLabel?: string;
+}) {
   const { selectedIds, clear } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
-  const fields = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => [
-    { value: "date", label: fieldLabels.date, kind: "date" },
-    { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
-    {
-      value: "account",
-      label: fieldLabels.account,
-      kind: "smartSelect",
-      options: [{ value: "", label: "选择账户" }, ...accountOptions.map((account) => ({ value: account.id, label: account.label }))],
-    },
-    {
-      value: "toAccount",
-      label: fieldLabels.toAccount,
-      kind: "smartSelect",
-      options: [{ value: "", label: "选择账户" }, ...accountOptions.map((account) => ({ value: account.id, label: account.label }))],
-    },
-    { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
-  ], [accountOptions]);
+  const fieldConfigs = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => {
+    const accountSelectOptions = [
+      { value: "", label: "选择账户" },
+      ...accountOptions.map((account) => ({ value: account.id, label: account.label })),
+    ];
+    const categorySelectOptions = [
+      { value: "", label: "清除分类" },
+      ...categoryOptions,
+    ];
+    const configByField: Record<BatchReplaceField, BatchReplaceFieldConfig<BatchReplaceField>> = {
+      date: { value: "date", label: fieldLabels.date, kind: "date" },
+      type: { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
+      account: {
+        value: "account",
+        label: fieldLabels.account,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+      },
+      toAccount: {
+        value: "toAccount",
+        label: fieldLabels.toAccount,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+      },
+      categoryId: {
+        value: "categoryId",
+        label: fieldLabels.categoryId,
+        kind: "smartSelect",
+        options: categorySelectOptions,
+        placeholder: "选择分类",
+        allowEmpty: true,
+        smartSelectBehavior: {
+          hierarchy: true,
+          search: true,
+          initialCollapsedAll: true,
+          accordionGroups: true,
+          selectableGroups: true,
+          groupSelectOnDoubleClick: false,
+          minDropdownWidth: 560,
+          dropdownMaxHeight: 420,
+          density: "compact",
+          expandedGroupColumns: 4,
+        },
+      },
+      remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
+    };
+    return fields.map((field) => configByField[field]).filter(Boolean);
+  }, [accountOptions, categoryOptions, fields]);
 
   async function applyReplace(field: BatchReplaceField, value: string) {
-    const result = await batchReplaceEntries({ ids: Array.from(selectedIds), field, value });
+    const entryIds = Array.from(selectedIds);
+    const result = await batchReplaceEntries({ ids: entryIds, field, value });
     if (!result.ok) throw new Error(result.error ?? "批量替换失败");
     clear();
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
+    dispatchFinanceDataChanged({ reason: "entry-batch-replace", entryIds });
     return `已替换 ${result.updatedCount ?? 0} 条记录`;
   }
 
   return (
     <BatchReplacePopoverButton
-      fields={fields}
+      fields={fieldConfigs}
       targetCount={selectedCount}
-      targetLabel="已选"
+      targetLabel={targetLabel}
+      buttonClassName="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-3.5 [&_svg]:w-3.5"
       onApply={applyReplace}
     />
   );
 }
 
-export function BasicDetailBatchDeleteButton() {
+export function BasicDetailBatchDeleteButton({ recordLabel = "资金明细" }: { recordLabel?: string }) {
   const { selectedIds, clear, setDeleteMessage } = useBasicDetailSelection();
   const [submitting, setSubmitting] = useState(false);
   const selectedCount = selectedIds.size;
@@ -170,7 +217,7 @@ export function BasicDetailBatchDeleteButton() {
   async function applyDelete() {
     if (disabled) return;
     const entryIds = Array.from(selectedIds);
-    if (!window.confirm(`确认删除已选 ${entryIds.length} 条资金明细？删除后会进入回收站。`)) return;
+    if (!window.confirm(`确认删除已选 ${entryIds.length} 条${recordLabel}？删除后会进入回收站。`)) return;
 
     setSubmitting(true);
     setDeleteMessage("");
@@ -187,7 +234,7 @@ export function BasicDetailBatchDeleteButton() {
       }
       setDeleteMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
       clear();
-      window.dispatchEvent(new CustomEvent("mmh:fund:refresh", { detail: { deletedEntryIds: entryIds } }));
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: entryIds, entryIds });
     } catch {
       setDeleteMessage("批量删除失败");
     } finally {
@@ -200,11 +247,11 @@ export function BasicDetailBatchDeleteButton() {
       type="button"
       onClick={applyDelete}
       disabled={disabled}
-      className="h-8 w-8 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-      title={selectedCount === 0 ? "请先勾选记录" : `批量删除已选 ${selectedCount} 条记录`}
-      aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : `批量删除已选 ${selectedCount} 条记录`}
+      className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+      title={selectedCount === 0 ? "请先勾选记录" : `批量删除已选 ${selectedCount} 条${recordLabel}`}
+      aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : `批量删除已选 ${selectedCount} 条${recordLabel}`}
     >
-      <Trash2 className="w-4 h-4" />
+      <Trash2 className="h-3.5 w-3.5" />
     </button>
   );
 }

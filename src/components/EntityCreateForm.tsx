@@ -689,19 +689,23 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     value={form.parentId ?? ""}
                     onChange={(id) => setForm(prev => ({ ...prev, parentId: id }))}
                     options={parentCategories.map(pc => {
-                      // depth 0 = root category -> group header (non-selectable)
-                      // depth 1+ with isGroup -> collapsible group (selectable + has sub-items)
-                      // depth 1+ without isGroup -> regular selectable item
+                      // Every real category can be selected as a parent. Categories
+                      // with children are still collapsible groups in the dropdown.
                       const indent = pc.depth && pc.depth > 0 ? "  ".repeat(pc.depth) : "";
                       return {
                         id: pc.id,
                         label: `${indent}${pc.name}`,
-                        isHeader: pc.depth === 0,
                         isGroup: pc.isGroup,
-                        parentId: pc.parentId,
+                        parentId: pc.parentId || undefined,
                       };
                     })}
                     placeholder="请选择上级分类"
+                    behavior={{
+                      hierarchy: true,
+                      search: true,
+                      selectableGroups: true,
+                      groupSelectOnDoubleClick: false,
+                    }}
                   />
                 </div>
               )}

@@ -23,9 +23,15 @@ export function MmhLogo({
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <rect width="128" height="128" rx="32" fill="#141414" />
-      <path d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4V98H86V57.4L67 78.2c-1.6 1.8-4.4 1.8-6 0L42 57.4V98H24Z" fill="#F7F3E7" />
-      <path d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4" fill="none" stroke="#D2B36A" strokeLinecap="round" strokeLinejoin="round" strokeWidth="8" />
+      <rect width="128" height="128" rx="30" fill="#193B3A" />
+      <path
+        d="M27 96V59C27 40 42.5 27 64 27C85.5 27 101 40 101 59V96"
+        fill="none"
+        stroke="#FFF9F0"
+        strokeLinecap="round"
+        strokeWidth="13"
+      />
+      <path d="M64 54V96" fill="none" stroke="#E56F4D" strokeLinecap="round" strokeWidth="11" />
     </svg>
   );
 
@@ -41,8 +47,8 @@ export function MmhLogo({
     <span className={`inline-flex min-w-0 items-center gap-2 ${className ?? ""}`} style={style}>
       {mark}
       <span className="min-w-0 leading-tight">
-        <span className="block truncate text-sm font-semibold tracking-tight text-slate-900">MoneyMoneyHome</span>
-        <span className="block truncate text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">Family Finance</span>
+        <span className="block truncate text-sm font-semibold tracking-normal text-slate-900">MoneyMoneyHome</span>
+        <span className="block truncate text-[10px] font-medium uppercase tracking-normal text-slate-400">Family Finance</span>
       </span>
     </span>
   );

@@ -33,6 +33,18 @@ export type AccountDisplayOption = {
   fullLabel: string;
 };
 
+function joinAccountSubLabel(parts: Array<string | null | undefined>) {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const text = part?.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result.join(" · ");
+}
+
 export function formatAccountDisplayName(accountName: string, institutionName?: string | null) {
   const account = accountName.trim();
   const institution = institutionName?.trim() ?? "";
@@ -207,7 +219,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: account.subLabel,
+      subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
       parentId: `group:${account.groupId}`,
     }));
 
@@ -216,7 +228,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: account.subLabel,
+      subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
     }));
 
   return [...headers, ...groupedItems, ...ungroupedItems];
@@ -225,6 +237,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
 export function buildFlatAccountOptions(
   accounts: Array<Pick<AccountDisplayOption, "id" | "label" | "subLabel"> & {
     selectorLabel?: string;
+    institutionName?: string | null;
     kind?: string | null;
     investProductType?: string | null;
     debtDirection?: string | null;
@@ -235,7 +248,7 @@ export function buildFlatAccountOptions(
   return accounts.map((account) => ({
     id: account.id,
     label: account.selectorLabel ?? account.label,
-    subLabel: account.subLabel,
+    subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
     debtDirection: account.debtDirection ?? null,

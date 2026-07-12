@@ -5,7 +5,9 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { expandImportBankName, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
 
 export const runtime = "nodejs";
 
@@ -115,21 +117,6 @@ function buildStatementFingerprint(items: ParsedItem[], defaultAccountName?: str
   return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
 }
 
-async function findExistingMailImport(householdId: string, mailSource: MailSource, statementFingerprint: string) {
-  const mailHash = normalizeHash(mailSource.hash);
-  const or: any[] = [{ note: buildMailImportNote(mailSource) }];
-  if (mailHash) or.push({ rawText: { contains: `"mailHash":"${mailHash}"` } });
-  if (statementFingerprint) or.push({ rawText: { contains: `"statementFingerprint":"${statementFingerprint}"` } });
-  return prisma.importBatch.findFirst({
-    where: {
-      householdId,
-      source: "credit_bill_mail",
-      OR: or,
-    },
-    select: { id: true, createdAt: true },
-  });
-}
-
 function parseDate(date?: string) {
   const raw = String(date ?? "").trim();
   if (!raw) return new Date();
@@ -147,6 +134,14 @@ function parseDate(date?: string) {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return new Date();
   return d;
+}
+
+function normalizeDateOnlyText(value?: string | null) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日)?/);
+  if (!match) return raw.slice(0, 10);
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
 
 function addMonthsUtc(date: Date, months: number) {
@@ -181,7 +176,8 @@ async function accountCurrencyMeta(tx: Db, accountId: string | null) {
 }
 
 function postedDateForStatement(item: ParsedItem, fallbackDate: Date) {
-  const postedDate = item.postedDate ? parseDate(item.postedDate) : null;
+  const postedDateText = normalizeDateOnlyText(item.postedDate);
+  const postedDate = postedDateText ? parseDate(postedDateText) : null;
   return postedDate && !Number.isNaN(postedDate.getTime()) ? postedDate : fallbackDate;
 }
 
@@ -241,6 +237,10 @@ function inferCardLast4(accountName: string, meta?: ParsedItemMeta) {
   return match?.[1] ?? "";
 }
 
+function isCreditAccountText(value?: string | null) {
+  return /信用卡|贷记卡/i.test(String(value ?? ""));
+}
+
 async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
   const existing = await tx.accountGroup.findFirst({ where: { householdId, name: "未指定" } });
   if (existing?.id) return existing.id;
@@ -267,21 +267,48 @@ async function ensureDefaultAccountGroupId(tx: Db, householdId: string) {
 }
 
 function normalizeInstitutionKey(value: string) {
-  return value.replace(/\s+/g, "").toLowerCase();
+  return normalizeImportAccountMatchKey(value);
 }
 
 async function findInstitution(tx: Db, householdId: string, institutionName?: string) {
   const name = String(institutionName ?? "").trim();
   if (!name) return null;
+  const targetKeys = expandImportBankName(name).map(normalizeInstitutionKey).filter(Boolean);
   const key = normalizeInstitutionKey(name);
+  if (!targetKeys.includes(key)) targetKeys.push(key);
   const institutions = await tx.institution.findMany({
     where: { householdId },
     select: { id: true, name: true, shortName: true },
   });
-  return institutions.find((item) =>
-    normalizeInstitutionKey(item.name) === key ||
-    normalizeInstitutionKey(item.shortName ?? "") === key
-  ) ?? null;
+  return institutions.find((item) => {
+    const itemKeys = [
+      item.name,
+      item.shortName ?? "",
+      ...expandImportBankName(item.name),
+      ...expandImportBankName(item.shortName ?? ""),
+    ].map(normalizeInstitutionKey).filter(Boolean);
+    return targetKeys.some((targetKey) =>
+      itemKeys.some((itemKey) => itemKey === targetKey || itemKey.includes(targetKey) || targetKey.includes(itemKey)),
+    );
+  }) ?? null;
+}
+
+async function findExistingImportAccount(tx: Db, householdId: string, accountName: string) {
+  const accounts = await tx.account.findMany({
+    where: {
+      householdId,
+      isPlaceholder: { not: true },
+    },
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      numberMasked: true,
+      Institution: { select: { name: true, shortName: true } },
+      AccountAlias: { select: { alias: true } },
+    },
+  });
+  return resolveImportAccountFromList(accountName, accounts);
 }
 
 async function ensureBankInstitutionId(tx: Db, householdId: string, institutionName?: string) {
@@ -314,6 +341,33 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
   const last4 = inferCardLast4(accountName, meta);
   const bank = await findInstitution(tx, householdId, meta?.institutionName);
   const exactName = normalizeAccountCell(accountName);
+  const sharedCandidates = await tx.account.findMany({
+    where: {
+      householdId,
+      kind: AccountKind.bank_credit,
+      isPlaceholder: { not: true },
+    },
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      institutionId: true,
+      userId: true,
+      numberMasked: true,
+      creditLimit: true,
+      billingDay: true,
+      repaymentDay: true,
+      updatedAt: true,
+      Institution: { select: { name: true, shortName: true } },
+      AccountAlias: { select: { alias: true } },
+    },
+  });
+  const sharedMatch = resolveImportAccountFromList(
+    creditAccountNameCandidates(accountName, meta)[0] ?? accountName,
+    sharedCandidates,
+  );
+  if (sharedMatch) return sharedMatch;
+
   if (exactName && (!last4 || exactName !== last4)) {
     const exact = await tx.account.findFirst({
       where: {
@@ -479,11 +533,17 @@ async function ensureAccountId(tx: Db, householdId: string, accountName?: string
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
   const inferredLast4 = inferCardLast4(name, _meta);
-  const isCreditCard = !!(_meta?.institutionName || _meta?.cardNumberMasked || inferredLast4);
+  const isCreditCard = !!(_meta?.cardNumberMasked || isCreditAccountText(name));
   const existingCredit = isCreditCard ? await findCreditAccount(tx, householdId, name, _meta) : null;
   if (existingCredit?.id) {
     await updateCreditAccountMeta(tx, householdId, existingCredit.id, _meta);
     return existingCredit.id;
+  }
+
+  const matchedAccount = await findExistingImportAccount(tx, householdId, name);
+  if (matchedAccount?.id) {
+    if (isCreditCard) await updateCreditAccountMeta(tx, householdId, matchedAccount.id, _meta);
+    return matchedAccount.id;
   }
 
   const existingId = await resolveAccountId(tx, householdId, name);
@@ -526,12 +586,6 @@ async function ensureAccountId(tx: Db, householdId: string, accountName?: string
   }
 }
 
-async function resolveCategoryId(tx: Db, householdId: string, categoryName?: string) {
-  if (!categoryName) return null;
-  const found = await tx.category.findFirst({ where: { householdId, name: categoryName } });
-  return found?.id ?? null;
-}
-
 async function resolveInstitution(tx: Db, householdId: string, institutionName?: string) {
   const name = String(institutionName ?? "").trim();
   if (!name) return { id: null as string | null, name: null as string | null };
@@ -541,8 +595,10 @@ async function resolveInstitution(tx: Db, householdId: string, institutionName?:
 
 function buildNote(item: ParsedItem) {
   const base = (item.remark ?? item.rawText ?? "").trim();
-  if (item.postedDate && !base.includes("入账日") && !base.includes("记账日")) {
-    return `${base}（入账日 ${item.postedDate}）`;
+  const postedDate = normalizeDateOnlyText(item.postedDate);
+  const tradeDate = normalizeDateOnlyText(item.date);
+  if (postedDate && postedDate !== tradeDate && !base.includes("入账日") && !base.includes("入账日期") && !base.includes("记账日")) {
+    return `${base}（入账日期 ${postedDate}）`;
   }
   return base;
 }
@@ -556,7 +612,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
 
   if (item.type === "transfer") {
     const from = normalizeAccountCell(item.fromAccount);
-    const to = normalizeAccountCell(item.toAccount);
+    const to = pickAccountName(item.toAccount, pickAccountName(item.account, defaultAccountName));
     if (!from || !to) {
       throw new Error("转账缺少转出/转入账户");
     }
@@ -570,7 +626,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
 
   if (shouldUseDoubleEntry) {
     const fromAccountName = normalizeAccountCell(item.fromAccount);
-    const toAccountName = normalizeAccountCell(item.toAccount);
+    const toAccountName = pickAccountName(item.toAccount, pickAccountName(item.account, defaultAccountName));
 
     const [fromAccountId, toAccountId] = await Promise.all([
       ensureAccountId(tx, householdId, fromAccountName, undefined, options),
@@ -638,9 +694,12 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
   }
 
   const accountName = pickAccountName(item.account, defaultAccountName);
-  const [accountId, categoryId] = await Promise.all([
+  const [accountId, category] = await Promise.all([
     ensureAccountId(tx, householdId, accountName, meta, options),
-    resolveCategoryId(tx, householdId, item.category),
+    resolveCategorySnapshot(tx, householdId, {
+      categoryName: item.category,
+      type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
+    }),
   ]);
   const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate);
   const currencyMeta = await accountCurrencyMeta(tx, accountId);
@@ -672,9 +731,9 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       date,
       amount,
       accountId: accountId ?? "",
-      accountName: accountName || "未识别账户",
-      categoryId,
-      categoryName: item.category ?? null,
+      accountName: currencyMeta?.name || accountName || "未识别账户",
+      categoryId: category?.id ?? null,
+      categoryName: category?.name ?? item.category ?? null,
       toAccountId: isInvestAccount ? accountId : null,
       toAccountName: isInvestAccount ? investAccountName : null,
       householdId,
@@ -737,6 +796,7 @@ export async function POST(req: Request) {
   const defaultAccountName = parse.data.defaultAccountName;
   const options: ImportOptions = { autoCreateAccounts: parse.data.autoCreateAccounts, createdAccounts: [] };
   const { householdId } = await getHouseholdScope();
+  await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
 
   const created: { id: string }[] = [];
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
@@ -746,20 +806,6 @@ export async function POST(req: Request) {
 
   if (mailSource) {
     const mailHash = normalizeHash(mailSource.hash);
-    const existingImport = await findExistingMailImport(householdId, mailSource, statementFingerprint);
-    if (existingImport) {
-      return NextResponse.json({
-        ok: true,
-        duplicate: true,
-        createdCount: 0,
-        skippedCount: items.length,
-        ids: [],
-        importBatchId: existingImport.id,
-        createdAccounts: [],
-        errors: [{ index: 0, rawText: items[0]?.rawText ?? "", error: "这封账单邮件已经导入过，无需重复导入。" }],
-      }, { headers: corsHeaders() });
-    }
-
     const importBatch = await prisma.importBatch.create({
       data: {
         source: "credit_bill_mail",

@@ -7,8 +7,8 @@ export const metadata: Metadata = {
   title: "MoneyMoneyHome",
   description: "Local-first family finance system",
   icons: {
-    icon: "/branding/mmh-logo-v5-favicon.svg",
-    shortcut: "/branding/mmh-logo-v5-favicon.svg",
+    icon: "/branding/mmh-logo-mark.svg",
+    shortcut: "/branding/mmh-logo-mark.svg",
     apple: "/branding/mmh-logo-mark.svg",
   },
 };

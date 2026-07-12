@@ -124,6 +124,9 @@ function isNoiseLine(line: string): boolean {
   const l = line.trim();
   if (!l) return true;
   if (isStatementSummaryText(l)) return true;
+  if (/^<\/?(?:td|tr|table|tbody|thead|img|a|span|div)\b/i.test(l)) return true;
+  if (/^https?:\/\//i.test(l) || /\b(?:href|src)=["']?https?:\/\//i.test(l)) return true;
+  if (/^(?:alt|target|style|class|width|height|border)=/i.test(l)) return true;
   if (/^(账户信息|账单信息|交易明细|消费明细|还款明细|积分明细|银行名称|卡号后四位)/i.test(l)) return true;
   if (/^(本期账单日|账单日|还款日|信用额度|取现额度|账单周期)/i.test(l)) return true;
   if (/^(主卡|副卡|Main Card)/i.test(l)) return true;
@@ -133,6 +136,7 @@ function isNoiseLine(line: string): boolean {
   if (/^¥?\s*[\d,]+\.?\d*\s*(¥|元|$|美元)?$/i.test(l) && l.length < 25) return true;
   if (/^[—\-=:|]{3,}$/.test(l)) return true;
   if (/^(交易日期|记账日期|交易说明|金额|类型|备注)/i.test(l)) return true;
+  if (/^\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日)?$/.test(l)) return true;
   if (/^(\d{4})[-\/.]?\s*(\d{1,2})[-\/.]?\s*(\d{1,2})[\s-]*\d{4}$/.test(l)) return true;
   if (/^USD|RMB|外币|美元|港币/i.test(l) && !/\d/.test(l.slice(4))) return true;
   return false;
@@ -180,6 +184,7 @@ function isLikelyTransfer(text: string): boolean {
 function decodeHtmlEntities(value: string) {
   return value
     .replace(/&nbsp;/gi, " ")
+    .replace(/&yen;/gi, "¥")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
@@ -193,6 +198,21 @@ function stripHtml(value: string) {
     .trim();
 }
 
+function htmlToLooseText(value: string) {
+  return decodeHtmlEntities(value)
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "\n")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "\n")
+    .replace(/<a\b[\s\S]*?<\/a>/gi, "\n")
+    .replace(/<img\b[^>]*>/gi, "\n")
+    .replace(/<\/(?:td|th|tr|p|div|li)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 function extractTableCells(rowHtml: string) {
   return [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
     .map((match) => stripHtml(match[1]));
@@ -201,7 +221,7 @@ function extractTableCells(rowHtml: string) {
 function parseMoney(value: string) {
   const normalized = value
     .replace(/,/g, "")
-    .replace(/[￥¥]/g, "")
+    .replace(/&yen;|[￥¥]/gi, "")
     .replace(/\/?\s*\b(?:RMB|CNY|USD|HKD)\b/gi, "")
     .replace(/[（(]\s*(?:支出|存入|收入|转入|转出)\s*[）)]/g, "")
     .replace(/人民币|美元|港币|元/g, "")
@@ -290,13 +310,60 @@ function detectBankName(text: string) {
   return found ?? "";
 }
 
+function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?: string) {
+  const normalized = rowText.replace(/\s+/g, " ").trim();
+  if (!/(?:主卡|副卡|Main Card|Supplementary Card|合计)/i.test(normalized)) return null;
+
+  const match = normalized.match(/([\u4e00-\u9fa5A-Za-z0-9·\s]{2,48}?卡)\s*[（(](\d{4})[）)]/);
+  if (!match) return null;
+
+  const cardTitle = match[1].replace(/\s+/g, "").trim();
+  const cardNumberMasked = match[2];
+  const institutionName = detectBankName(cardTitle) || String(fallbackInstitutionName ?? "").trim();
+  return {
+    accountName: `${cardTitle}（${cardNumberMasked}）`,
+    institutionName: institutionName || undefined,
+    cardNumberMasked,
+  };
+}
+
+function isDebitOrRepaymentAccountContext(value: string) {
+  return /扣款账号|扣款账户|还款账号|还款账户|自动还款|代扣|借记卡|储蓄卡|Debit\s*Account|Debit\s*Card|Payment\s*Account/i.test(value);
+}
+
+function extractCreditCardLast4(text: string, fallbackInstitutionName?: string) {
+  const sourceText = /<[^>]+>/.test(text) ? htmlToLooseText(text) : stripHtml(text);
+  const lines = sourceText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const header = extractStatementAccountHeader(line, fallbackInstitutionName);
+    if (header?.cardNumberMasked) return header.cardNumberMasked;
+  }
+
+  for (const line of lines) {
+    if (isDebitOrRepaymentAccountContext(line)) continue;
+    if (!/信用卡|贷记卡|主卡|副卡|Credit\s*Card|Card\s*No/i.test(line)) continue;
+    const match = line.match(/(?:\*{2,}|x{2,}|X{2,}|[（(])?\s*(\d{4})\s*[）)]?/);
+    if (match) return match[1];
+  }
+
+  for (const line of lines) {
+    if (isDebitOrRepaymentAccountContext(line)) continue;
+    const match = line.match(/(?:卡号末四位|卡号后四位|末四位|卡号)[^\d]{0,12}(?:\*{2,}|x{2,}|X{2,})?(\d{4})/);
+    if (match) return match[1];
+  }
+
+  return "";
+}
+
 function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const institutionName = detectBankName(plain);
   const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?\s*您好/)?.[1]?.trim();
-  const cardNumberMasked =
-    plain.match(/(?:卡号末四位|卡号后四位|尾号|末四位|卡号)[^\d]{0,12}(?:\*{2,}|x{2,}|X{2,})?(\d{4})/)?.[1] ??
-    "";
+  const cardNumberMasked = extractCreditCardLast4(text, institutionName);
   const creditLimit = parseLooseNumber(plain.match(/固定额度(?:\([^)]*\)|（[^）]*）)?\s*[:：]?\s*([\d,]+(?:\.\d+)?)/)?.[1]);
   const periodMatch = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})/);
   const periodEnd = parseDateParts(periodMatch?.[2] ?? "");
@@ -318,11 +385,6 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
   };
 }
 
-function extractImportLikeLast4(value: string) {
-  const matches = Array.from(value.matchAll(/\d{4}(?!\d)/g));
-  return matches.length > 0 ? matches[matches.length - 1][0] : "";
-}
-
 function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
   if (!/<tr[\s>]/i.test(text) || !/(交易日期|交易日|记账日期|记账日|入账日期|Trans Date|Post Date|交易摘要|交易说明|交易描述|摘要|Trans Description|人民币金额|交易金额|入账金额|Amount)/i.test(text)) {
     return [];
@@ -341,6 +403,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
   const items: ParsedItem[] = [];
   const seen = new Set<string>();
   let inTransactionRows = false;
+  let activeAccount = account;
+  let activeItemMeta = itemMeta;
+  let hasActiveAccountHeader = false;
 
   for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
     const rowText = stripHtml(row);
@@ -352,6 +417,18 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
     if (/(分期说明|账单说明|温馨提示|最新活动信息|版权所有)/i.test(rowText)) break;
     if (isStatementSummaryText(rowText)) continue;
 
+    const accountHeader = extractStatementAccountHeader(rowText, meta.institutionName);
+    if (accountHeader) {
+      activeAccount = accountHeader.accountName;
+      activeItemMeta = {
+        ...itemMeta,
+        institutionName: accountHeader.institutionName || itemMeta.institutionName,
+        cardNumberMasked: accountHeader.cardNumberMasked,
+      };
+      hasActiveAccountHeader = true;
+      continue;
+    }
+
     const cells = extractTableCells(row).filter(Boolean);
     if (cells.length < 3) continue;
 
@@ -361,7 +438,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
     const amountCell = findAmountCell(cells);
     const date = dateIndexes[0]?.date;
     const postDate = dateIndexes[1]?.date;
-    const rowCardNumberMasked = cells.find((cell) => /^\d{4}$/.test(cell.trim()))?.trim();
+    const rowCardNumberMasked = !hasActiveAccountHeader && !isDebitOrRepaymentAccountContext(rowText)
+      ? cells.find((cell) => /^\d{4}$/.test(cell.trim()))?.trim()
+      : "";
     const usedIndexes = new Set<number>(dateIndexes.map((item) => item.index));
     if (amountCell) usedIndexes.add(amountCell.index);
     cells.forEach((cell, index) => {
@@ -376,7 +455,7 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
 
     const absAmount = Math.abs(amount);
     const { counterparty, category, institution } = aliasMatch(description);
-    const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免/.test(`${description} ${amountCell.raw}`);
+    const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免|还款|Payment|Credit/i.test(`${description} ${amountCell.raw}`);
     const type = isCreditIn ? "income" : isLikelyTransfer(description) ? "transfer" : amount < 0 ? "income" : "expense";
     const key = `${date}|${postDate ?? ""}|${description}|${amount}`;
     if (seen.has(key)) continue;
@@ -387,15 +466,19 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: absAmount,
-      account: rowCardNumberMasked && meta.institutionName ? `${meta.institutionName}信用卡(${rowCardNumberMasked})` : account,
+      account: hasActiveAccountHeader
+        ? activeAccount
+        : rowCardNumberMasked && meta.institutionName
+          ? `${meta.institutionName}信用卡(${rowCardNumberMasked})`
+          : account,
       counterparty: counterparty || undefined,
       institution: institution || undefined,
       category: category || undefined,
       remark: postDate && postDate !== date ? `${description}（入账日 ${postDate}）` : description,
       postedDate: postDate,
-      _meta: Object.values(itemMeta).some((value) => value !== undefined) || rowCardNumberMasked ? {
-        ...itemMeta,
-        cardNumberMasked: rowCardNumberMasked || itemMeta.cardNumberMasked,
+      _meta: Object.values(activeItemMeta).some((value) => value !== undefined) || rowCardNumberMasked ? {
+        ...activeItemMeta,
+        cardNumberMasked: rowCardNumberMasked || activeItemMeta.cardNumberMasked,
       } : undefined,
     });
   }
@@ -407,7 +490,8 @@ function parseStructuredStatement(text: string): ParsedItem[] {
   const htmlItems = parseCreditCardHtmlStatement(text);
   if (htmlItems.length > 0) return htmlItems;
 
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const sourceText = /<[^>]+>/.test(text) ? htmlToLooseText(text) : text;
+  const lines = sourceText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const items: ParsedItem[] = [];
 
   for (const line of lines) {

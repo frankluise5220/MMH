@@ -61,7 +61,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Insurance cash value belongs to the same family as balance/value displays.
 - Coverage amount must be shown separately from cash value/balance, not merged into one ambiguous metric.
 - Credit card amounts are liabilities and should follow the unified liability color/sign semantics.
-- Transfers from debit/cash asset accounts into credit card accounts remain transfer records in storage, but all detail/display semantics should recognize them as credit card repayments ("还款") rather than ordinary transfers.
+- Transfers from debit/cash asset accounts into credit card accounts remain transfer records in storage, but activity-type display and filters should recognize them as "信用卡还款" rather than ordinary transfers or a vague "还款".
+- Batch import must preserve "信用卡还款" as an explicit preview business type while saving it as `type=transfer`. Its payment source is limited to debit-card and e-wallet accounts, and its target is limited to credit-card accounts.
+- Bill import has two explicit modes. Regular-bill mode resolves the source and counter account for every row. Credit-card-statement mode uses one shared credit-card account for the whole file; spending/refunds belong to that card, while repayment rows separately select a debit-card or e-wallet source flowing into the shared card.
 - Credit card unbilled/current-cycle rows may show cycle expense and refund/income activity, but should not show a bill amount or expose manual bill-amount editing before the statement is generated.
 - Credit card billed-cycle rows that have been fully paid should show a clear settled marker in the repayment column, instead of requiring the user to infer settled status from amounts.
 - Credit card bill amount is a rolling statement amount: previous bill amount plus current-cycle expense minus current-cycle income/refunds. It may cross below zero when income/refunds exceed the rolling bill; the UI should show that as an overpaid/credit-balance state instead of clamping it to zero. Repayments affect settled status and remaining balance, but must not reduce the displayed bill amount formula.
@@ -69,11 +71,16 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card billing day is the first day of the next statement cycle. For example, billing day 10 means the cycle runs from the 10th through the 9th of the next month, and transactions on the 10th belong to the next statement month.
 - Credit card sidebar account numbers should show the current bill balance after repayments and overpayment are applied (`cumulativeRemain - cumulativeOverpaid`), not the current statement bill amount (`effectiveBill`).
 - Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
-- Credit card email bill import must block duplicates at the server import layer. Use mailbox UID for old records, envelope hash for mail-list marking, and a stable parsed statement fingerprint for forwarded or re-synced messages whose sender, subject, or UID changed. The stable statement fingerprint should use institution, card last four digits, and statement month/cycle, not parser-sensitive fields such as category, note, or raw detail text.
+- Credit cards may also be the source side of an ordinary transfer. When the credit card is the source account, the row belongs to that credit card's statement month and counts as an outflow; only debit/e-wallet/cash transfers into a credit card should be labeled as credit-card repayment.
+- Credit card email bill import should mark mail that has local import history as "已导入", but must still allow the user to preview and import it again. Use mailbox UID, envelope hash, and stable parsed statement fingerprint only for marking and user warning, not as a hard duplicate block.
+- Credit card views should expose an import entry in the visible detail/table workflow, not only inside the bill-summary mail-reading control.
+- A credit-card statement's card heading is the account identity for every transaction listed under that heading. Parse the institution, card display name, and last four digits from headings such as "平安银行美国运通耀红卡（2222） 主卡", use them to match the existing credit-card account, and do not silently replace that account with whichever account page opened the mail-import window. If a statement contains multiple primary or supplementary-card headings, apply each heading only to its following transaction block.
+- Credit-card statement parsing must not treat debit/repayment account tails as credit-card tails. Four-digit values near "扣款账号", "还款账号", "自动还款", "借记卡", "储蓄卡", or "Debit Account" are repayment-source account hints, not credit-card identity.
+- Credit card statement import uses the label "入账日期" for posting date. The value should be date-only (`YYYY-MM-DD`), default to the transaction date when missing, and remain editable in the import preview.
 - Ordinary transfer records are same-currency only. If two accounts use different currencies, the app should require a dedicated foreign-exchange/cross-currency flow that records both-side amounts and exchange rate instead of silently saving one amount.
 - Insurance cash value should be treated like balance/value; coverage amount should remain a separate non-cash metric.
 - Expense entries may use a negative input amount to represent a refund or reduction within the same expense category. Store it as `type=expense` with a positive cash-flow amount, not as income, so category statistics can offset the original expense.
-- Expense entries may have a separate posting time (`postedAt`) when spending is recorded later than it happened. `TxRecord.date` remains the business/occurred date for category statistics and existing detail ordering unless a specific view explicitly switches to posting-time sorting.
+- Expense entries may have a separate posting date (`postedAt`) when spending is recorded later than it happened. User-facing labels should say "入账日期", values should be date-only (`YYYY-MM-DD`), and the UI must not expose a `00:00` time. `TxRecord.date` remains the business/occurred date for category statistics and existing detail ordering unless a specific view explicitly switches to posting-date sorting.
 
 ### SS Dropdowns
 
@@ -91,12 +98,18 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
   - context-aware filtering
 - The account SS experience used in the preferred transaction entry flow is the reference behavior that other account selectors should converge toward.
 - Do not add extra always-visible owner header rows above the dropdown body when the cycling control already expresses owner switching.
+- Hierarchical SS dropdowns must distinguish display-only headers from selectable groups. Category selectors and category parent selectors should allow real category nodes at any level, including second-level categories and categories with children, to be selected when the caller enables selectable groups.
+- SS dropdown panels should not be squeezed to the parent input width when that hides important option context. Account SS options must keep institution information visible in the dropdown, either in the main label or in the sublabel, even inside compact dialogs.
+- When `SmartSelect` is used inside popovers, modals, or batch-edit panels, its portal dropdown must remain scrollable and clickable. Parent outside-click handlers should treat the SmartSelect dropdown portal as part of the active interaction, not as an outside click.
 
 ### Categories
 
 - 收支分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付类型，也不区分上级分类。
 - 分类树可以表达层级和归属，但不能靠不同父级来区分同名分类。
 - 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
+- 投资、还款、贷款等系统业务类别必须出现在收支类别列表中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
+- 基金、理财、存款卖出/赎回/支取收益不应额外生成一条现金收入流水。现金账户只体现真实到账金额；基金已实现收益保存在投资交易 `realizedProfit` 中，理财和存款收益按 `depositInterest - fundFee` 计算，手续费必须扣入净收益。投资买入本身属于资产转换，不应作为收支支出统计；收支报表/统计应只映射收益、亏损、分红、利息等结果项。
+- 统计项应优先挂接到收支分类树的分类 ID。普通交易使用保存的 `categoryId`，旧数据可按 `categoryName` 回挂；基金收益/亏损、理财收益/亏损、存款利息/手续费等派生统计项也必须解析到系统内置分类节点。分类名称只是显示兜底，不应成为长期统计主键。
 
 ### Table Column Filters
 
@@ -107,6 +120,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Table columns should support user-adjustable widths with remembered preferences when the table is dense enough to benefit from it.
 - The same table surface should expose a unified header settings button instead of multiple unrelated per-page controls.
 - Sorting behavior should be shared where possible, so a sort change in one table follows the same interaction model in other tables.
+- Draggable table rows should use a dedicated drag handle. Dragging must not be bound to the whole row, and row-click selection must not consume an active text selection, so users can still select and copy text in cells.
 
 ### Shared Settings
 
@@ -121,9 +135,13 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - In cash/debit account entry, the counter/target account determines the business operation: normal cash targets save as transfers; fund/investment targets open investment entry; deposit targets open deposit-in/out entry; debt/settlement targets open borrow/lend/repay entry. Do not save these special targets as ordinary transfers.
 - Account uniqueness matters. Avoid allowing indistinguishable duplicate accounts when institution and name are the same and there is no differentiator such as last four digits.
 - Dropdown display names are not constrained by sidebar display settings. They should favor clarity.
+- Statement and batch-import account matching should use the shared import account resolver. Match by institution aliases, account kind, account aliases, and card/account last four digits; do not let a page-specific matcher block accounts such as "招商银行储蓄卡（2758）" or "中国邮政储蓄银行信用卡" when the account table has a corresponding account.
 - Sidebar display formatting rules and dropdown display formatting rules are separate concerns.
 - Account display formatting must stay user-centered and configurable.
-- Credit-card-like naming often needs institution name, card/product name, and last four digits, but fallback rules must avoid empty or duplicated fragments.
+- Credit-card-like naming in import preview and account selection must show institution short name, card/product name, and last four digits when those fields are available; fallback rules must avoid empty or duplicated fragments.
+- Statement and batch import account matching may use generic labels such as "中国建设银行信用卡". If the label contains an institution plus account kind but no last-four digits, automatically match only when there is exactly one active account of that institution and kind; otherwise leave it for user confirmation.
+- Ledger/batch import should not expose a separate credit-card statement template entry. Credit-card statement rows use the generic bill-record template, keep legacy `cardAccount/type/merchant` header compatibility, and still validate credit-card repayment as a transfer into the credit-card account.
+- In ledger/batch import, the presence of a `对向账户`-style column means accounts are row-level transfer accounts and must not trigger the credit-card statement unified-account mode. If `付款账户`/`还款账户` and `信用卡账户` appear together, the payment account is the source and the credit-card account is the counter/target account.
 - When an account is created or edited, all fields that were previously entered must reliably round-trip back into the edit form.
 
 ### Insurance
@@ -214,10 +232,16 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Debt
 
+- Interest-free vehicle and other standalone loans use the explicit repayment method `免息分期还本`. They remain debt/borrowing records, not credit-card consumption installments. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
+
 - Debt/claim displays should match the user mental model for personal/family finance, not corporate finance wording.
 - Names such as borrower/lender, borrowed/lent, or institution/person context matter and should be chosen carefully.
 - Debt views should lean toward personal/family wording such as borrowed/lent or person/institution context, rather than formal enterprise wording.
 - Debt details should behave more like position/detail views, with a clear summary by counterparty and linked detail records below.
+- Borrow/lend creation should allow selecting or adding a counterparty object through SS. Repayment, prepayment, and collection should choose existing debt items instead of silently creating new ones.
+- Any transfer whose source or target account is a debt/settlement account must be recognized as a debt action: borrowed-in, lent-out, repayment-out, or collection-in depending on the debt account side and payable/receivable direction. Editing those rows must reopen the debt dialog, not the generic transfer dialog.
+- Debt interest should be entered as structured debt interest on the debt operation. It must not be mixed into principal; principal balance changes should continue to use the principal amount.
+- Borrow-in with free repayment should not ask for or save an agreed rate or fixed repayment schedule fields. Actual interest is entered later on the repayment or collection operation.
 
 ### Overview
 
@@ -227,9 +251,38 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Overview modules should avoid duplicate summaries between top blocks and detailed blocks.
 - Comparative modules should align visually where the business concept is parallel, but should not force the same widget style when that hurts clarity.
 
+### Reports
+
+- The reports page header should directly show the current report name, such as "收支统计表", instead of a generic "报表" title plus a duplicate report sub-navigation.
+- Income/expense report hierarchy has exactly two modes: year and month. Year mode allows a start/end range using year selectors; month mode allows a start/end range using year-month inputs. Neither mode uses day-level dates.
+- Income/expense reports should prioritize dense statistical rows and must not spend vertical space on duplicate total-income, total-expense, net, or column-count cards above the table.
+- Report filters such as hierarchy, start/end year-month, and account should use one compact toolbar row without a separate summary row or tall filter card.
+- The income/expense statistics table scrolls inside its own bounded panel with a frozen header. When drill-down details are open, a horizontal splitter must let the user resize the statistics panel height, and the chosen height should persist locally. The upper statistics panel must never collapse below half of the currently available split area.
+- The reports workspace must not show a page-level vertical scrollbar. The statistics panel and drill-down detail panel each scroll internally within the remaining viewport height.
+- Clicking a report amount should show the filtered records through the shared conventional transaction detail table used by account views, including the same column sizing, header filters, compact rows, selection, batch actions, and edit/delete controls. Do not maintain a separate simplified report-detail table.
+- The shared conventional transaction table is named "MMH明细表" in the UI. It should provide checkboxes, batch edit/delete, header sorting and filtering, field/column settings, persisted column widths, and pagination with page-size and show-all controls.
+- All report and MMH detail-table amounts must follow the configured red-up/green-down or green-up/red-down rule. Income uses its signed amount, expense uses its economic direction (normal expense is down; an expense refund is up), and net income uses its signed result.
+- Report grouping controls such as monthly/yearly granularity should stay compact and sit directly under the income/expense report heading.
+- Clicking a report amount should show the exactly filtered transaction records below the report, including parent-category descendants and signed expense offsets.
+- Report drill-down rows must allow editing through the shared transaction editor and deleting with confirmation. After save or deletion, refresh the report totals, drill-down rows, affected account balances, and sidebar summaries through the shared finance refresh path.
+
 ### High-Frequency UX Themes
 
+- Credit-card expense entry may create an installment plan for all or only part of the purchase. The original purchase remains unchanged; the financed principal is offset in its original statement, then installment principal plus fee/interest is added to each statement exactly once.
+- Credit-card installments store structured plan and row fields. Do not infer installment number, principal, fee, or plan identity from notes.
+- Installment rate input must distinguish annual interest from a per-period fee rate because these are not equivalent financial meanings.
+- Deleting or restoring the source purchase must delete or restore the linked offset and all installment rows together.
+
 - The product should reduce user operations wherever defaults can be inferred from institution, owner, account type, prior records, or current page context.
+- Bill import has one user-facing upload entry. During parsing, the system automatically chooses regular-bill mode or credit-card-statement mode from the file structure and account content.
+- XLSX bill import should merge worksheets that share the same header structure instead of reading only the first sheet, and the preview diagnostics should report sheet, candidate-row, recognized-row, and filtered-row counts.
+- In development, bill import diagnostics should persist structured, privacy-safe events under one visible trace ID so parsing, validation, batch replacement, API ingestion, and failures can be correlated without logging raw statement text or account names.
+- Import account selectors must show account type and owner alongside the account label. When multiple accounts match the same imported name, automatic matching must stop for manual confirmation, and the confirmed selection must retain a stable account ID through preview, batch replacement, and ingestion.
+- Import preview may use internal `account-id:` markers to keep a selected account stable, but those markers must never be displayed as account names or written into transaction account-name fields.
+- Credit-card repayment always means a one-way transfer from a debit-card or e-wallet account into a credit-card account. Preview, account selectors, validation, and ingestion must enforce the same direction.
+- Import validation summaries count distinct affected records, not the number of validation messages. Multiple reasons on one row are grouped under that row.
+- Import preview confirmation should validate and import only the current target selection. Rows outside the current filtered/selected import target must not disable the confirm button or change the confirm count.
+- Import preview should avoid repeating the same recognized-record count across title, hint, button, status, and diagnostics. Keep one compact count in the table status area; show detailed diagnostics only for failures or explicit debugging.
 - The user strongly prefers direct inline workflows over hidden corner controls or disconnected secondary panels.
 - Repeatedly broken create/edit round-trips are considered a major product quality problem and should be treated as first-class regressions.
 - When the user repeatedly corrects wording or layout, that preference should be promoted here instead of being left only in chat history.

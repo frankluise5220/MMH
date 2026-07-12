@@ -1,16 +1,29 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
 import { useRouter } from "next/navigation";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
+import { formatAccountSelectorLabel } from "@/lib/account-display";
+import { IMPORT_ACCOUNT_ID_PREFIX, createImportAccountMatcher, encodeImportAccountId, normalizeImportAccountMatchKey } from "@/lib/account-import-match";
+import { kindLabel } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
+import {
+  CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
+  isCreditCardRepaymentBusinessType,
+  isCreditCardRepaymentImportSourceAccountKind,
+  isCreditCardRepaymentTargetAccountKind,
+  type CreditCardRepaymentBusinessType,
+} from "@/lib/transaction-semantics";
 
 type ParsedItem = {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
+  businessType?: CreditCardRepaymentBusinessType | null;
+  importMode?: BillImportMode;
+  statementAccount?: string;
   date?: string;
   postedAt?: string;
   amount: number;
@@ -72,7 +85,7 @@ type FundRuleEditorRow = {
 };
 
 type ImportTemplate = {
-  key: "normal" | "fund" | "credit";
+  key: "normal" | "credit" | "fund";
   title: string;
   description: string;
   status: string;
@@ -89,20 +102,51 @@ type AccountOption = {
   id: string;
   name: string;
   kind: "cash" | "bank_debit" | "bank_credit" | string;
+  numberMasked?: string | null;
   isActive?: boolean;
-  Institution?: { id?: string; name?: string; shortName?: string | null } | null;
+  Institution?: { id?: string; name: string | null; shortName?: string | null } | null;
+  AccountGroup?: { id: string; name: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
 };
 
+type AccountPickerRole = "any" | "credit" | "repayment_source";
+type PreviewType = ParsedItem["type"] | CreditCardRepaymentBusinessType;
+type BillImportMode = "normal" | "credit_card";
 type FilterColumn = "date" | "type" | "account" | "counterAccount" | "remark";
 type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
 type FundImportKind = "normal" | "fund" | null;
+type ImportFileParseResult = {
+  rows: string[][];
+  sourceDataRowCount: number;
+  workbook?: {
+    sheetCount: number;
+    includedSheetCount: number;
+  };
+};
+type ImportDebugDetails = Record<string, string | number | boolean | null>;
 
 const filterColumns: FilterColumn[] = ["date", "type", "account", "counterAccount", "remark"];
 const INITIAL_PREVIEW_COUNT = 200;
 const PREVIEW_COUNT_STEP = 200;
+
+function createImportTraceId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `import-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function postImportDebugLog(traceId: string, event: string, details: ImportDebugDetails = {}) {
+  if (process.env.NODE_ENV !== "development") return;
+  void fetch("/api/v1/debug/import-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ traceId, event, details }),
+    keepalive: true,
+  }).catch((error) => {
+    console.warn("[batch-import] 调试日志上报失败", error);
+  });
+}
 const FUND_CANONICAL_HEADERS = [
   "date",
   "fundSubtype",
@@ -191,16 +235,18 @@ function buildTemplates(t: (key: string) => string): ImportTemplate[] {
     filename: "账单记录导入模板.csv",
     downloadFormat: "csv",
     sheetName: t("batchImport.sheet.template"),
-    headers: ["日期", "入账时间", "收支大类", "金额", "账户", "对向账户", "分类", "收支机构", "标签", "备注"],
+    headers: ["日期", "入账日期", "收支大类", "金额", "账户", "对向账户", "分类", "收支机构", "标签", "备注"],
     rows: [
-      ["2026-06-08", "2026-06-09 09:30", "支出", "32.50", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐"],
+      ["2026-06-08", "2026-06-09", "支出", "32.50", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐"],
       ["2026-06-08", "", "收入", "1.28", "招商银行2758", "", "利息收入", "招商银行", "利息", "活期利息"],
       ["2026-06-08", "2026-06-08 23:30", "支出", "2.00", "招商银行2758", "", "利息支出", "招商银行", "手续费", "账户管理费"],
       ["2026-06-08", "", "转账", "1000.00", "招商银行2758", "现金", "", "", "现金", "取现"],
+      ["2026-06-20", "2026-06-20", "信用卡还款", "108.00", "招商银行2758", "招商信用卡", "", "", "", "信用卡还款"],
+      ["2026-06-05", "2026-06-06", "收入", "20.00", "招商信用卡", "", "餐饮", "示例餐厅", "", "信用卡退款"],
     ],
     fields: [
       { name: "日期", required: true, note: t("batchImport.template.normal.field.date") },
-      { name: "入账时间", required: false, note: t("batchImport.template.normal.field.postedAt") },
+      { name: "入账日期", required: false, note: t("batchImport.template.normal.field.postedAt") },
       { name: "收支大类", required: true, note: t("batchImport.template.normal.field.majorType") },
       { name: "金额", required: true, note: t("batchImport.template.normal.field.amount") },
       { name: "账户", required: true, note: t("batchImport.template.normal.field.account") },
@@ -209,6 +255,47 @@ function buildTemplates(t: (key: string) => string): ImportTemplate[] {
       { name: "收支机构", required: false, note: t("batchImport.template.normal.field.institution") },
       { name: "标签", required: false, note: t("batchImport.template.normal.field.tags") },
       { name: "备注", required: false, note: t("batchImport.template.normal.field.remark") },
+    ],
+  },
+  {
+    key: "credit",
+    title: t("batchImport.template.credit.title"),
+    description: t("batchImport.template.credit.description"),
+    status: t("batchImport.template.normal.status"),
+    filename: "信用卡账单导入模板.xlsx",
+    downloadFormat: "xlsx",
+    sheetName: t("batchImport.sheet.template"),
+    headers: ["statementMonth", "date", "type", "cardAccount", "repaymentAccount", "amount", "category", "merchant", "remark", "installmentNo", "installmentTotal"],
+    exportHeaders: [
+      t("batchImport.template.credit.label.statementMonth"),
+      t("batchImport.template.credit.label.date"),
+      t("batchImport.template.credit.label.type"),
+      t("batchImport.template.credit.label.cardAccount"),
+      t("batchImport.field.counterAccount"),
+      t("batchImport.template.credit.label.amount"),
+      t("batchImport.template.credit.label.category"),
+      t("batchImport.template.credit.label.merchant"),
+      t("batchImport.template.credit.label.remark"),
+      t("batchImport.template.credit.label.installmentNo"),
+      t("batchImport.template.credit.label.installmentTotal"),
+    ],
+    rows: [
+      ["2026-06", "2026-06-03", "expense", "招商信用卡", "", "128.00", "餐饮", "示例餐厅", "晚餐", "", ""],
+      ["2026-06", "2026-06-05", "refund", "招商信用卡", "", "20.00", "餐饮", "示例餐厅", "退款", "", ""],
+      ["2026-06", "2026-06-20", "repayment", "招商信用卡", "招商银行2758", "108.00", "", "", "信用卡还款", "", ""],
+    ],
+    fields: [
+      { name: "statementMonth", label: t("batchImport.template.credit.label.statementMonth"), required: true, note: t("batchImport.template.credit.field.statementMonth") },
+      { name: "date", label: t("batchImport.template.credit.label.date"), required: true, note: t("batchImport.template.credit.field.date") },
+      { name: "type", label: t("batchImport.template.credit.label.type"), required: true, note: t("batchImport.template.credit.field.type") },
+      { name: "cardAccount", label: t("batchImport.template.credit.label.cardAccount"), required: true, note: t("batchImport.template.credit.field.cardAccount") },
+      { name: "repaymentAccount", label: t("batchImport.field.counterAccount"), required: false, note: t("batchImport.template.credit.field.repaymentAccount") },
+      { name: "amount", label: t("batchImport.template.credit.label.amount"), required: true, note: t("batchImport.template.credit.field.amount") },
+      { name: "category", label: t("batchImport.template.credit.label.category"), required: false, note: t("batchImport.template.credit.field.category") },
+      { name: "merchant", label: t("batchImport.template.credit.label.merchant"), required: false, note: t("batchImport.template.credit.field.merchant") },
+      { name: "remark", label: t("batchImport.template.credit.label.remark"), required: false, note: t("batchImport.template.credit.field.remark") },
+      { name: "installmentNo", label: t("batchImport.template.credit.label.installmentNo"), required: false, note: t("batchImport.template.credit.field.installmentNo") },
+      { name: "installmentTotal", label: t("batchImport.template.credit.label.installmentTotal"), required: false, note: t("batchImport.template.credit.field.installmentTotal") },
     ],
   },
   {
@@ -256,45 +343,6 @@ function buildTemplates(t: (key: string) => string): ImportTemplate[] {
       { name: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), required: false, note: t("batchImport.template.fund.field.confirmDate") },
       { name: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), required: false, note: t("batchImport.template.fund.field.arrivalDate") },
       { name: "remark", label: t("batchImport.template.fund.label.remark"), required: false, note: t("batchImport.template.fund.field.remark") },
-    ],
-  },
-  {
-    key: "credit",
-    title: t("batchImport.template.credit.title"),
-    description: t("batchImport.template.credit.description"),
-    status: t("batchImport.template.pending"),
-    filename: "信用卡账单导入模板.xlsx",
-    downloadFormat: "xlsx",
-    sheetName: t("batchImport.sheet.template"),
-    headers: ["statementMonth", "date", "type", "cardAccount", "amount", "category", "merchant", "remark", "installmentNo", "installmentTotal"],
-    exportHeaders: [
-      t("batchImport.template.credit.label.statementMonth"),
-      t("batchImport.template.credit.label.date"),
-      t("batchImport.template.credit.label.type"),
-      t("batchImport.template.credit.label.cardAccount"),
-      t("batchImport.template.credit.label.amount"),
-      t("batchImport.template.credit.label.category"),
-      t("batchImport.template.credit.label.merchant"),
-      t("batchImport.template.credit.label.remark"),
-      t("batchImport.template.credit.label.installmentNo"),
-      t("batchImport.template.credit.label.installmentTotal"),
-    ],
-    rows: [
-      ["2026-06", "2026-06-03", "expense", "招商信用卡", "128.00", "餐饮", "示例餐厅", "晚餐", "", ""],
-      ["2026-06", "2026-06-05", "refund", "招商信用卡", "20.00", "餐饮", "示例餐厅", "退款", "", ""],
-      ["2026-06", "2026-06-20", "repayment", "招商信用卡", "108.00", "", "", "还款", "", ""],
-    ],
-    fields: [
-      { name: "statementMonth", label: t("batchImport.template.credit.label.statementMonth"), required: true, note: t("batchImport.template.credit.field.statementMonth") },
-      { name: "date", label: t("batchImport.template.credit.label.date"), required: true, note: t("batchImport.template.credit.field.date") },
-      { name: "type", label: t("batchImport.template.credit.label.type"), required: true, note: t("batchImport.template.credit.field.type") },
-      { name: "cardAccount", label: t("batchImport.template.credit.label.cardAccount"), required: true, note: t("batchImport.template.credit.field.cardAccount") },
-      { name: "amount", label: t("batchImport.template.credit.label.amount"), required: true, note: t("batchImport.template.credit.field.amount") },
-      { name: "category", label: t("batchImport.template.credit.label.category"), required: false, note: t("batchImport.template.credit.field.category") },
-      { name: "merchant", label: t("batchImport.template.credit.label.merchant"), required: false, note: t("batchImport.template.credit.field.merchant") },
-      { name: "remark", label: t("batchImport.template.credit.label.remark"), required: false, note: t("batchImport.template.credit.field.remark") },
-      { name: "installmentNo", label: t("batchImport.template.credit.label.installmentNo"), required: false, note: t("batchImport.template.credit.field.installmentNo") },
-      { name: "installmentTotal", label: t("batchImport.template.credit.label.installmentTotal"), required: false, note: t("batchImport.template.credit.field.installmentTotal") },
     ],
   },
   ];
@@ -407,13 +455,6 @@ function normalizeFundHeaderText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "");
 }
 
-function normalizeAccountMatchKey(value?: string) {
-  return String(value ?? "")
-    .trim()
-    .replace(/[·•\-—\s]/g, "")
-    .toLowerCase();
-}
-
 function pad2(value: number) {
   return String(value).padStart(2, "0");
 }
@@ -454,8 +495,9 @@ function normalizeDateCell(value: string) {
 }
 
 function inferBillType(source: string, inflow: number, outflow: number, counterAccount: string): ParsedItem["type"] {
-  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款/.test(source)) return "transfer";
-  if (/结息|利息|派息|收入|工资|报销|退款|退货|返现|返利/.test(source)) return "income";
+  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|repayment|payment/i.test(source)) return "transfer";
+  if (/结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|refund|credit/i.test(source)) return "income";
+  if (/installment/i.test(source)) return "expense";
   if (counterAccount) return "transfer";
   if (inflow > 0 && outflow <= 0) return "income";
   return "expense";
@@ -464,11 +506,36 @@ function inferBillType(source: string, inflow: number, outflow: number, counterA
 function parseMajorType(value: string): ParsedItem["type"] | null {
   const raw = value.trim();
   if (!raw) return null;
-  if (/^(支出|expense|outflow)$/.test(raw)) return "expense";
-  if (/^(收入|income|inflow)$/.test(raw)) return "income";
-  if (/^(转账|transfer)$/.test(raw)) return "transfer";
+  if (/^(支出|expense|outflow|installment)$/.test(raw)) return "expense";
+  if (/^(收入|income|inflow|refund|credit)$/.test(raw)) return "income";
+  if (/^(转账|transfer|信用卡还款|还款|repayment|payment)$/.test(raw)) return "transfer";
   if (/^(投资|investment)$/.test(raw)) return "investment";
   return null;
+}
+
+function parseImportBusinessType(params: {
+  majorTypeText: string;
+  explicitType: string;
+  account: string;
+  counterAccount: string;
+}): CreditCardRepaymentBusinessType | null {
+  const explicit = `${params.majorTypeText} ${params.explicitType}`.trim();
+  if (/信用卡还款|credit\s*card\s*(?:repayment|payment)/i.test(explicit)) {
+    return CREDIT_CARD_REPAYMENT_BUSINESS_TYPE;
+  }
+  if (
+    /^(还款|repayment|payment)$/i.test(explicit) &&
+    /信用卡|贷记卡|credit\s*card/i.test(`${params.account} ${params.counterAccount}`)
+  ) {
+    return CREDIT_CARD_REPAYMENT_BUSINESS_TYPE;
+  }
+  return null;
+}
+
+function getPreviewType(item: Pick<ParsedItem, "type" | "businessType">): PreviewType {
+  return isCreditCardRepaymentBusinessType(item.businessType)
+    ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+    : item.type;
 }
 
 function inferTransferDirection(source: string, inflow: number, outflow: number): "in" | "out" {
@@ -505,9 +572,7 @@ function normalizeFlowFields(
   return { amount, inflow, outflow };
 }
 
-function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook): string[][] {
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return [];
+function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook, sheetName: string): string[][] {
   const sheet = workbook.Sheets[sheetName];
   if (!sheet) return [];
   return XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(sheet, {
@@ -517,14 +582,60 @@ function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook): string[
   }).map((row) => row.map((cell) => String(cell ?? "").trim()));
 }
 
-async function parseImportFile(file: File): Promise<string[][]> {
+function importHeaderSignature(row: string[]) {
+  return row.map(normalizeImportAccountMatchKey).join("|");
+}
+
+function mergeWorkbookRows(XLSX: typeof import("xlsx"), workbook: WorkBook): ImportFileParseResult {
+  const sheetRows = workbook.SheetNames
+    .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
+    .filter((item) => item.rows.length > 0);
+  if (sheetRows.length === 0) {
+    return { rows: [], sourceDataRowCount: 0, workbook: { sheetCount: workbook.SheetNames.length, includedSheetCount: 0 } };
+  }
+
+  const groups = new Map<string, typeof sheetRows>();
+  for (const item of sheetRows) {
+    const signature = importHeaderSignature(item.rows[0] ?? []);
+    groups.set(signature, [...(groups.get(signature) ?? []), item]);
+  }
+  const selectedSheets = Array.from(groups.values()).sort((a, b) => {
+    const aRows = a.reduce((sum, item) => sum + Math.max(0, item.rows.length - 1), 0);
+    const bRows = b.reduce((sum, item) => sum + Math.max(0, item.rows.length - 1), 0);
+    return bRows - aRows;
+  })[0] ?? [];
+  const primaryRows = selectedSheets[0]?.rows ?? [];
+  const primarySecondSignature = importHeaderSignature(primaryRows[1] ?? []);
+  const primaryHasSecondHeader = looksLikeFundLabelRow(primaryRows[1] ?? []);
+  const mergedRows = [...primaryRows];
+
+  for (const item of selectedSheets.slice(1)) {
+    const hasSameSecondHeader = primaryHasSecondHeader && importHeaderSignature(item.rows[1] ?? []) === primarySecondSignature;
+    mergedRows.push(...item.rows.slice(hasSameSecondHeader ? 2 : 1));
+  }
+
+  return {
+    rows: mergedRows,
+    sourceDataRowCount: selectedSheets.reduce((sum, item) => {
+      const hasSameSecondHeader = primaryHasSecondHeader && importHeaderSignature(item.rows[1] ?? []) === primarySecondSignature;
+      return sum + Math.max(0, item.rows.length - (hasSameSecondHeader ? 2 : 1));
+    }, 0),
+    workbook: {
+      sheetCount: workbook.SheetNames.length,
+      includedSheetCount: selectedSheets.length,
+    },
+  };
+}
+
+async function parseImportFile(file: File): Promise<ImportFileParseResult> {
   const ext = file.name.split(".").pop()?.toLowerCase();
   if (ext === "xlsx" || ext === "xls") {
     const XLSX = await import("xlsx");
     const data = await file.arrayBuffer();
-    return worksheetRows(XLSX, XLSX.read(data, { type: "array", cellDates: true }));
+    return mergeWorkbookRows(XLSX, XLSX.read(data, { type: "array", cellDates: true }));
   }
-  return parseCsv(await file.text());
+  const rows = parseCsv(await file.text());
+  return { rows, sourceDataRowCount: Math.max(0, rows.length - 1) };
 }
 
 function buildFundHeaderIndex(headers: string[]) {
@@ -667,15 +778,23 @@ function serializeFundRuleOverrides(rows: FundRuleEditorRow[]) {
   return { overrides, invalidLabels };
 }
 
-function normalRowsToItems(rows: string[][]): ParsedItem[] {
+function normalRowsToItems(rows: string[][], importMode: BillImportMode): ParsedItem[] {
   const [headers = [], ...dataRows] = rows;
   const headerIndex = new Map(headers.map((header, idx) => [header.trim(), idx]));
   const read = (row: string[], key: string) => row[headerIndex.get(key) ?? -1]?.trim() ?? "";
   const readAny = (row: string[], keys: string[]) => keys.map((key) => read(row, key)).find(Boolean) ?? "";
+  const sourceAccountKeys = ["账户", "本方账户", "交易账户", "账号", "account", "fromAccount"];
+  const paymentAccountKeys = ["还款账户", "付款账户", "repaymentAccount"];
+  const creditAccountKeys = ["信用卡账户", "卡账户", "cardAccount"];
+  const transferCounterAccountKeys = ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount"];
+  const statementAccountKeys = [...sourceAccountKeys, ...creditAccountKeys];
+  const unifiedStatementAccount = importMode === "credit_card"
+    ? dataRows.map((row) => readAny(row, statementAccountKeys)).find(Boolean) ?? ""
+    : "";
 
   return dataRows.map((row) => {
     const date = normalizeDateCell(readAny(row, ["日期", "交易日期", "记账日期", "入账日期", "账单日期", "date"]));
-    const postedAt = readAny(row, ["入账时间", "入账日期时间", "实际入账时间", "postedAt", "postingTime"]);
+    const postedAt = readAny(row, ["入账日期", "入账时间", "入账日期时间", "实际入账时间", "postedAt", "postingTime"]);
     const rawOutflowText = readAny(row, ["流出", "支出", "转出", "借方金额", "支出金额", "outflow"]);
     const rawInflowText = readAny(row, ["流入", "收入", "转入", "贷方金额", "收入金额", "inflow"]);
     const rawAmountText = readAny(row, ["金额", "交易金额", "发生额", "本币金额", "人民币金额", "amount"]);
@@ -683,18 +802,33 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
     const rawInflow = parseMoney(rawInflowText);
     const rawAmountSigned = parseLooseNumber(rawAmountText) ?? 0;
     const rawAmount = Math.abs(rawAmountSigned);
-    const account = readAny(row, ["账户", "本方账户", "交易账户", "账号", "account", "fromAccount"]);
-    const counterAccount = readAny(row, ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount", "fromAccount"]);
+    const sourceAccount = readAny(row, sourceAccountKeys);
+    const paymentAccount = readAny(row, paymentAccountKeys);
+    const creditAccount = readAny(row, creditAccountKeys);
+    const explicitCounterAccount = readAny(row, transferCounterAccountKeys);
+    const rowAccount = importMode === "credit_card"
+      ? readAny(row, statementAccountKeys)
+      : sourceAccount || paymentAccount || creditAccount;
+    const account = importMode === "credit_card" ? unifiedStatementAccount || rowAccount : rowAccount;
+    const counterAccount = importMode === "credit_card"
+      ? paymentAccount || explicitCounterAccount
+      : explicitCounterAccount || ((sourceAccount || paymentAccount) && creditAccount ? creditAccount : "");
     const remark = readAny(row, ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途"]);
     const category = readAny(row, ["分类", "category"]);
     const institution = readAny(row, ["收支机构", "机构", "商户", "merchant", "institution"]);
     const tags = readAny(row, ["标签", "tags"]);
-    const majorType = parseMajorType(readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]));
+    const majorTypeText = readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]);
+    const majorType = parseMajorType(majorTypeText);
     const explicitType = readAny(row, ["类型", "原始类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type"]);
+    const businessType = parseImportBusinessType({
+      majorTypeText,
+      explicitType,
+      account,
+      counterAccount,
+    });
     const secondRemark = readAny(row, ["第二备注", "对方备注", "转入备注", "toNote", "secondRemark"]);
-    const source = `${majorType ?? ""} ${explicitType} ${category} ${remark}`;
+    const source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${remark}`;
     const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
-    const amountLooksExpense = /支出|消费|扣款|付款|转出|借方|借记|取现/.test(source);
     const hasExplicitFlow = rawInflow > 0 || rawOutflow > 0 || !!rawInflowText || !!rawOutflowText;
     const inferredType = majorType ?? inferBillType(
       source,
@@ -708,7 +842,13 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
       : null;
     const inflow = onlyAmountFlow?.inflow ?? rawInflow;
     const outflow = onlyAmountFlow?.outflow ?? rawOutflow;
-    const transferDirection = type === "transfer" ? (onlyAmountFlow ? "out" : inferTransferDirection(source, inflow, outflow)) : undefined;
+    const transferDirection = type === "transfer"
+      ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+        ? "out"
+        : onlyAmountFlow
+          ? "out"
+          : inferTransferDirection(source, inflow, outflow)
+      : undefined;
     const flow = normalizeFlowFields(
       type,
       onlyAmountFlow?.amount ?? (inflow > 0 ? inflow : outflow || rawAmount),
@@ -720,22 +860,89 @@ function normalRowsToItems(rows: string[][]): ParsedItem[] {
     return {
       rawText: row.join(" "),
       type,
+      businessType,
+      importMode,
+      statementAccount: importMode === "credit_card" ? account : undefined,
       date,
       postedAt: type === "expense" ? postedAt : "",
       amount: flow.amount,
       outflow: flow.outflow,
       inflow: flow.inflow,
-      account: type === "transfer" ? "" : account,
-      fromAccount: type === "transfer" ? (majorType === "transfer" ? account : (transferDirection === "in" ? counterAccount : account)) : "",
-      toAccount: type === "transfer" ? (majorType === "transfer" ? counterAccount : (transferDirection === "in" ? account : counterAccount)) : "",
+      account: type === "transfer" ? (importMode === "credit_card" ? account : "") : account,
+      fromAccount: type === "transfer"
+        ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
+          ? counterAccount
+          : majorType === "transfer"
+            ? account
+            : transferDirection === "in"
+              ? counterAccount
+              : account
+        : "",
+      toAccount: type === "transfer"
+        ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
+          ? account
+          : majorType === "transfer"
+            ? counterAccount
+            : transferDirection === "in"
+              ? account
+              : counterAccount
+        : "",
       category,
       institution,
       tags,
       remark,
       secondRemark: type === "transfer" ? (secondRemark || remark) : "",
-      transferDirection: type === "transfer" && majorType === "transfer" ? "out" : transferDirection,
+      transferDirection:
+        businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ||
+        (type === "transfer" && majorType === "transfer")
+          ? "out"
+          : transferDirection,
     };
   }).filter((item) => item.date && item.amount > 0);
+}
+
+function detectBillImportMode(rows: string[][], isCreditAccount?: (value: string) => boolean): BillImportMode {
+  const [headers = [], ...dataRows] = rows;
+  const normalizedHeaders = headers.map(normalizeImportAccountMatchKey);
+  const hasHeader = (aliases: string[]) => aliases
+    .map(normalizeImportAccountMatchKey)
+    .some((alias) => normalizedHeaders.includes(alias));
+  const sourceAccountAliases = ["账户", "本方账户", "交易账户", "账号", "account", "fromAccount"];
+  const paymentAccountAliases = ["还款账户", "付款账户", "repaymentAccount"];
+  const creditAccountAliases = ["信用卡账户", "卡账户", "cardAccount"];
+  const explicitCounterAliases = ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount"];
+  const hasSourceAccountHeader = hasHeader(sourceAccountAliases);
+  const hasPaymentAccountHeader = hasHeader(paymentAccountAliases);
+  const hasCreditAccountHeader = hasHeader(creditAccountAliases);
+  const hasExplicitCounterHeader = hasHeader(explicitCounterAliases);
+  if (hasExplicitCounterHeader || ((hasSourceAccountHeader || hasPaymentAccountHeader) && hasCreditAccountHeader)) return "normal";
+
+  const legacyCreditSpecificHeaders = new Set([
+    "statementmonth",
+    "cardaccount",
+    "installmentno",
+    "installmenttotal",
+    "账单月份",
+    "分期期数",
+  ]);
+  if (normalizedHeaders.some((header) => legacyCreditSpecificHeaders.has(header))) return "credit_card";
+
+  const accountHeaderIndex = [...sourceAccountAliases, ...creditAccountAliases]
+    .map((alias) => normalizedHeaders.indexOf(normalizeImportAccountMatchKey(alias)))
+    .find((idx) => idx >= 0) ?? -1;
+  if (accountHeaderIndex < 0) return "normal";
+
+  const accountValues = dataRows
+    .slice(0, 200)
+    .map((row) => String(row[accountHeaderIndex] ?? "").trim())
+    .filter(Boolean);
+  const uniqueAccounts = new Set(accountValues.map(normalizeImportAccountMatchKey));
+  const unifiedAccount = accountValues[0] ?? "";
+  return accountValues.length > 0 && uniqueAccounts.size === 1 && (
+    /信用卡|贷记卡|credit\s*card/i.test(unifiedAccount) || isCreditAccount?.(unifiedAccount)
+  )
+    ? "credit_card"
+    : "normal";
 }
 
 function normalizeForStorage(item: ParsedItem): ParsedItem {
@@ -752,6 +959,7 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
   if (item.type !== "transfer") {
     return {
       ...item,
+      businessType: null,
       amount,
       outflow,
       inflow,
@@ -763,11 +971,32 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
     };
   }
 
+  if (isCreditCardRepaymentBusinessType(item.businessType)) {
+    const fromAccount = item.fromAccount?.trim() ?? "";
+    const toAccount = (item.statementAccount || item.toAccount || item.account || "").trim();
+    return {
+      ...item,
+      type: "transfer",
+      amount,
+      account: fromAccount,
+      fromAccount,
+      toAccount,
+      secondRemark: item.secondRemark || item.remark || "",
+      transferDirection: "out",
+    };
+  }
+
   const billAccount = (item.account || (item.transferDirection === "in" ? item.toAccount : item.fromAccount) || "").trim();
   const counterAccount = (item.transferDirection === "in" ? item.fromAccount : item.toAccount)?.trim() ?? "";
   const isBillInflow = inflow > 0 && outflow <= 0;
   const isBillOutflow = outflow > 0 && inflow <= 0;
-  const direction = isBillInflow ? "in" : isBillOutflow ? "out" : item.transferDirection;
+  const direction = isCreditCardRepaymentBusinessType(item.businessType)
+    ? "out"
+    : isBillInflow
+      ? "in"
+      : isBillOutflow
+        ? "out"
+        : item.transferDirection;
   const fromAccount = direction === "in" ? counterAccount : billAccount;
   const toAccount = direction === "in" ? billAccount : counterAccount;
 
@@ -785,6 +1014,7 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
 
 export default function BatchImportPage() {
   const router = useRouter();
+  const importTraceIdRef = useRef(createImportTraceId());
   const { t } = useI18n();
   const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
     let text = t(key) as string;
@@ -807,22 +1037,27 @@ export default function BatchImportPage() {
     remark: t(replaceFieldLabelKeys.remark),
   }), [t]);
   const templates = useMemo(() => buildTemplates(t), [t]);
+  const creditTemplate = useMemo(() => templates.find((template) => template.key === "credit"), [templates]);
+  const visibleTemplates = useMemo(() => templates.filter((template) => template.key !== "credit"), [templates]);
   const typeOptions = useMemo(
     () => [
       { value: "", label: t("batchImport.selectType") },
       { value: "expense", label: t("transaction.type.expense") },
       { value: "income", label: t("transaction.type.income") },
       { value: "transfer", label: t("transaction.type.transfer") },
+      { value: CREDIT_CARD_REPAYMENT_BUSINESS_TYPE, label: t("transaction.type.creditCardRepayment") },
     ],
     [t],
   );
   const getTypeLabel = useCallback(
-    (type: ParsedItem["type"]) =>
-      type === "income"
+    (item: Pick<ParsedItem, "type" | "businessType">) =>
+      isCreditCardRepaymentBusinessType(item.businessType)
+        ? t("transaction.type.creditCardRepayment")
+        : item.type === "income"
         ? t("transaction.type.income")
-        : type === "transfer"
+        : item.type === "transfer"
           ? t("transaction.type.transfer")
-          : type === "investment"
+          : item.type === "investment"
             ? t("transaction.type.investment")
             : t("transaction.type.expense"),
     [t],
@@ -836,6 +1071,7 @@ export default function BatchImportPage() {
   const [fundSelected, setFundSelected] = useState<Set<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<number, Partial<ParsedItem>>>({});
   const [activeImportKind, setActiveImportKind] = useState<FundImportKind>(null);
+  const [activeBillMode, setActiveBillMode] = useState<BillImportMode>("normal");
   const [importing, setImporting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [importedCount, setImportedCount] = useState(0);
@@ -854,6 +1090,7 @@ export default function BatchImportPage() {
       const storedItems = data ? JSON.parse(data) as ParsedItem[] : [];
       if (Array.isArray(storedItems) && storedItems.length > 0) {
         setActiveImportKind("normal");
+        setActiveBillMode(storedItems[0]?.importMode === "credit_card" ? "credit_card" : "normal");
         setItems(storedItems);
         setSelected(new Set(storedItems.map((_, idx) => idx)));
       }
@@ -864,14 +1101,24 @@ export default function BatchImportPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const startedAt = performance.now();
+    postImportDebugLog(importTraceIdRef.current, "accounts_request_started");
     fetch("/api/v1/accounts/internal?balances=false")
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok || !Array.isArray(data.accounts)) return;
         setAccountOptions(data.accounts);
+        postImportDebugLog(importTraceIdRef.current, "accounts_request_succeeded", {
+          accountCount: data.accounts.length,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
       })
       .catch((error) => {
         if (!cancelled) {
+          postImportDebugLog(importTraceIdRef.current, "accounts_request_failed", {
+            errorType: error instanceof Error ? error.name : "unknown",
+            durationMs: Math.round(performance.now() - startedAt),
+          });
           setUploadDebug(formatText("batchImport.accountLoadFailed", { reason: error instanceof Error ? error.message : String(error) }));
         }
       });
@@ -879,89 +1126,187 @@ export default function BatchImportPage() {
   }, [formatText]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim();
-    return institutionName ? `${institutionName}·${account.name}` : account.name;
+    return formatAccountSelectorLabel({
+      accountName: account.name,
+      institution: account.Institution
+        ? {
+            name: account.Institution.name ?? null,
+            shortName: account.Institution.shortName ?? null,
+          }
+        : null,
+      numberMasked: account.numberMasked,
+    });
   }, []);
 
-  const accountMatchKeys = useCallback((account: AccountOption): string[] => {
-    const keys = new Set<string>();
-    keys.add(normalizeAccountMatchKey(account.name));
-    keys.add(normalizeAccountMatchKey(accountDisplayLabel(account)));
-    // Full institution name variant
-    const fullInst = account.Institution?.name?.trim();
-    if (fullInst) {
-      keys.add(normalizeAccountMatchKey(`${fullInst}·${account.name}`));
-      keys.add(normalizeAccountMatchKey(`${fullInst}${account.name}`));
-    }
-    // Short institution name variant
-    const shortInst = account.Institution?.shortName?.trim();
-    if (shortInst) {
-      keys.add(normalizeAccountMatchKey(`${shortInst}·${account.name}`));
-      keys.add(normalizeAccountMatchKey(`${shortInst}${account.name}`));
-    }
-    // Aliases
-    if (account.AccountAlias) {
-      for (const al of account.AccountAlias) {
-        keys.add(normalizeAccountMatchKey(al.alias));
-      }
-    }
-    return Array.from(keys).filter(Boolean);
-  }, [accountDisplayLabel]);
-
-  const findMatchedAccountId = useCallback((value: string): string | null => {
-    const targetKey = normalizeAccountMatchKey(value);
-    if (!targetKey) return null;
-    // Exact match first
-    for (const account of accountOptions) {
-      for (const key of accountMatchKeys(account)) {
-        if (key === targetKey) return account.id;
-      }
-    }
-    // Partial match: target contains account key or vice versa
-    for (const account of accountOptions) {
-      for (const key of accountMatchKeys(account)) {
-        if (key && (targetKey.includes(key) || key.includes(targetKey))) {
-          // Avoid false positive on very short keys (e.g. "9447" matching "9447" is fine, but "卡" is too short)
-          if (key.length >= 3 || targetKey.length >= 3) return account.id;
-        }
-      }
-    }
-    return null;
-  }, [accountOptions, accountMatchKeys]);
+  const activeAccountOptions = useMemo(
+    () => accountOptions.filter((account) => account.isActive !== false),
+    [accountOptions],
+  );
+  const getAccountMatch = useMemo(() => {
+    const matchImportAccount = createImportAccountMatcher(activeAccountOptions);
+    const cache = new Map<string, ReturnType<typeof matchImportAccount>>();
+    return (value: string): ReturnType<typeof matchImportAccount> => {
+      const key = value.trim();
+      if (cache.has(key)) return cache.get(key)!;
+      const match = matchImportAccount(key);
+      cache.set(key, match);
+      return match;
+    };
+  }, [activeAccountOptions]);
+  const findMatchedAccountId = useCallback((value: string): string | null => (
+    getAccountMatch(value).account?.id ?? null
+  ), [getAccountMatch]);
 
   const accountSmartSelectOptions = useMemo<SmartSelectOption[]>(
     () =>
-      accountOptions.map((account) => ({
+      activeAccountOptions.map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
-        subLabel: [account.kind, account.Institution?.name].filter(Boolean).join(" · "),
+        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
       })),
-    [accountOptions, accountDisplayLabel],
+    [activeAccountOptions, accountDisplayLabel, t],
   );
   const accountById = useMemo(() => new Map(accountOptions.map((account) => [account.id, account])), [accountOptions]);
 
-  const accountSelectValue = useCallback((currentValue: string) => {
-    const current = currentValue.trim();
-    return current ? (findMatchedAccountId(current) ?? `unmatched:${current}`) : "";
-  }, [findMatchedAccountId]);
+  const accountMatchesPickerRole = useCallback((account: AccountOption | undefined, role: AccountPickerRole) => {
+    if (!account) return false;
+    if (role === "credit") return isCreditCardRepaymentTargetAccountKind(account.kind);
+    if (role === "repayment_source") return isCreditCardRepaymentImportSourceAccountKind(account.kind);
+    return true;
+  }, []);
 
-  const accountSmartSelectOptionsFor = useCallback((currentValue: string) => {
+  const accountSmartSelectOptionsByRole = useCallback((role: AccountPickerRole) =>
+    activeAccountOptions
+      .filter((account) => accountMatchesPickerRole(account, role))
+      .map((account) => ({
+        id: account.id,
+        label: accountDisplayLabel(account),
+        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
+      } satisfies SmartSelectOption)),
+  [activeAccountOptions, accountDisplayLabel, accountMatchesPickerRole, t]);
+
+  const matchedAccountForText = useCallback((value: string) => {
+    const matchedId = findMatchedAccountId(value);
+    return matchedId ? accountById.get(matchedId) : undefined;
+  }, [accountById, findMatchedAccountId]);
+
+  const isCreditAccountText = useCallback((value: string) => {
+    const current = value.trim();
+    if (!current) return false;
+    if (/信用卡|贷记卡/.test(current)) return true;
+    return isCreditCardRepaymentTargetAccountKind(matchedAccountForText(current)?.kind);
+  }, [matchedAccountForText]);
+
+  const isCreditCardRepaymentItem = useCallback((item: ParsedItem) => {
+    if (item.type !== "transfer") return false;
+    if (item.businessType !== undefined) {
+      return isCreditCardRepaymentBusinessType(item.businessType);
+    }
+    const text = [item.rawText, item.category, item.remark, item.secondRemark].filter(Boolean).join(" ");
+    if (/信用卡还款|信用卡.*还款|还款.*信用卡/.test(text)) return true;
+    return /还款/.test(text) && (
+      isCreditAccountText(item.account ?? "") ||
+      isCreditAccountText(item.fromAccount ?? "") ||
+      isCreditAccountText(item.toAccount ?? "")
+    );
+  }, [isCreditAccountText]);
+
+  const accountPickerRoleForCell = useCallback((item: ParsedItem, cell: "account" | "counterAccount"): AccountPickerRole => {
+    if (item.importMode === "credit_card") {
+      if (cell === "account") return "credit";
+      return isCreditCardRepaymentItem(item) ? "repayment_source" : "any";
+    }
+    if (!isCreditCardRepaymentItem(item)) return "any";
+    return cell === "counterAccount" ? "credit" : "repayment_source";
+  }, [isCreditCardRepaymentItem]);
+
+  const previewAccountValuesForItem = useCallback((item: ParsedItem) => {
+    if (item.importMode === "credit_card") {
+      const account = (item.statementAccount || item.account || item.toAccount || "").trim();
+      const counterAccount = isCreditCardRepaymentItem(item)
+        ? (item.fromAccount ?? "").trim()
+        : "";
+      return { account, counterAccount };
+    }
+    const direction = item.transferDirection;
+    return {
+      account: item.type === "transfer"
+        ? (direction === "in" ? item.toAccount : item.fromAccount) || ""
+        : item.account || "",
+      counterAccount: item.type === "transfer"
+        ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
+        : "",
+    };
+  }, [isCreditCardRepaymentItem]);
+
+  const accountSelectValue = useCallback((currentValue: string, role: AccountPickerRole = "any") => {
+    const current = currentValue.trim();
+    if (!current) return "";
+    const matchedId = findMatchedAccountId(current);
+    const matched = matchedId ? accountById.get(matchedId) : undefined;
+    if (matchedId && accountMatchesPickerRole(matched, role)) return matchedId;
+    return role === "any" ? `unmatched:${current}` : "";
+  }, [accountById, accountMatchesPickerRole, findMatchedAccountId]);
+
+  const accountSmartSelectOptionsFor = useCallback((currentValue: string, role: AccountPickerRole = "any") => {
     const current = currentValue.trim();
     const matchedId = findMatchedAccountId(current);
-    if (!current || matchedId) return accountSmartSelectOptions;
+    const matched = matchedId ? accountById.get(matchedId) : undefined;
+    const roleOptions = role === "any" ? accountSmartSelectOptions : accountSmartSelectOptionsByRole(role);
+    if (!current || (matchedId && accountMatchesPickerRole(matched, role))) return roleOptions;
+    if (role !== "any") return roleOptions;
     return [{
       id: `unmatched:${current}`,
       label: formatText("batchImport.unmatchedAccount", { value: current }),
       subLabel: t("batchImport.originalImportedValue"),
-    }, ...accountSmartSelectOptions];
-  }, [accountSmartSelectOptions, findMatchedAccountId, formatText, t]);
+    }, ...roleOptions];
+  }, [accountById, accountMatchesPickerRole, accountSmartSelectOptions, accountSmartSelectOptionsByRole, findMatchedAccountId, formatText, t]);
 
   const accountSelectTextById = useCallback((selectedId: string) => {
     if (!selectedId) return "";
+    if (selectedId.startsWith(IMPORT_ACCOUNT_ID_PREFIX)) return selectedId;
     if (selectedId.startsWith("unmatched:")) return selectedId.slice("unmatched:".length);
     const account = accountById.get(selectedId);
-    return account ? accountDisplayLabel(account) : "";
-  }, [accountById, accountDisplayLabel]);
+    return account ? encodeImportAccountId(account.id) : "";
+  }, [accountById]);
+
+  const accountDisplayText = useCallback((value: string, role: AccountPickerRole = "any") => {
+    const current = value.trim();
+    if (!current) return "";
+    const matchedId = findMatchedAccountId(current);
+    const account = matchedId ? accountById.get(matchedId) : undefined;
+    return account && accountMatchesPickerRole(account, role) ? accountDisplayLabel(account) : current;
+  }, [accountById, accountDisplayLabel, accountMatchesPickerRole, findMatchedAccountId]);
+
+  const accountIssueMessage = useCallback((
+    value: string,
+    keys: { unmatched: string; ambiguous: string },
+  ) => {
+    const current = value.trim();
+    const match = getAccountMatch(current);
+    if (match.ambiguousAccounts.length > 0) {
+      return formatText(keys.ambiguous, {
+        account: current,
+        count: match.ambiguousAccounts.length,
+      });
+    }
+    return formatText(keys.unmatched, { account: current });
+  }, [formatText, getAccountMatch]);
+
+  const accountStorageText = useCallback((value?: string) => {
+    const current = String(value ?? "").trim();
+    if (!current) return "";
+    const account = getAccountMatch(current).account;
+    return account ? accountDisplayLabel(account) : current;
+  }, [accountDisplayLabel, getAccountMatch]);
+
+  const normalizeAccountFieldsForImport = useCallback((item: ParsedItem): ParsedItem => ({
+    ...item,
+    account: accountStorageText(item.account),
+    fromAccount: accountStorageText(item.fromAccount),
+    toAccount: accountStorageText(item.toAccount),
+    statementAccount: accountStorageText(item.statementAccount),
+  }), [accountStorageText]);
 
   const downloadTemplate = useCallback(async (template: ImportTemplate) => {
     if (template.downloadFormat === "xlsx") {
@@ -1030,13 +1375,22 @@ export default function BatchImportPage() {
   }, [formatText, t]);
 
   const handleNormalCsvFile = useCallback(async (file: File) => {
+    const traceId = createImportTraceId();
+    importTraceIdRef.current = traceId;
+    const startedAt = performance.now();
+    postImportDebugLog(traceId, "file_selected", {
+      importKind: "bill",
+      extension: file.name.split(".").pop()?.toLowerCase() ?? "",
+      sizeBytes: file.size,
+    });
+    const traceLabel = formatText("batchImport.debugTraceId", { traceId });
     const fileInfo = formatText("batchImport.fileInfo", {
       name: file.name,
       type: file.type || t("batchImport.fileTypeUnknown"),
       sizeKb: Math.round(file.size / 1024),
     });
     setActiveImportKind("normal");
-    setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
+    setUploadDebug(`${formatText("batchImport.fileSelectedStart", { fileInfo })}\n${traceLabel}`);
     setMessage(formatText("batchImport.readingFileName", { name: file.name }));
     setImportedCount(0);
     setUploading(true);
@@ -1054,9 +1408,39 @@ export default function BatchImportPage() {
     setPreviewCount(INITIAL_PREVIEW_COUNT);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
-      const rows = await parseImportFile(file);
-      setUploadDebug(formatText("batchImport.rowsRead", { count: rows.length, fileInfo }));
-      const parsed = normalRowsToItems(rows);
+      const parseResult = await parseImportFile(file);
+      const rows = parseResult.rows;
+      const importMode = detectBillImportMode(rows, isCreditAccountText);
+      setActiveBillMode(importMode);
+      const workbookDetail = parseResult.workbook
+        ? formatText("batchImport.workbookReadDetail", {
+            sheetCount: parseResult.workbook.sheetCount,
+            includedSheetCount: parseResult.workbook.includedSheetCount,
+          })
+        : "";
+      setUploadDebug([
+        formatText("batchImport.rowsRead", { count: rows.length, fileInfo }),
+        workbookDetail,
+        traceLabel,
+      ].filter(Boolean).join("\n"));
+      const parsed = normalRowsToItems(rows, importMode);
+      const skippedCount = Math.max(0, parseResult.sourceDataRowCount - parsed.length);
+      const recognitionDetail = formatText("batchImport.recognitionDetail", {
+        sourceCount: parseResult.sourceDataRowCount,
+        recognizedCount: parsed.length,
+        skippedCount,
+      });
+      postImportDebugLog(traceId, "parse_completed", {
+        importKind: "bill",
+        billMode: importMode,
+        sheetCount: parseResult.workbook?.sheetCount ?? 1,
+        includedSheetCount: parseResult.workbook?.includedSheetCount ?? 1,
+        mergedRowCount: rows.length,
+        sourceDataRowCount: parseResult.sourceDataRowCount,
+        recognizedCount: parsed.length,
+        skippedCount,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       if (parsed.length === 0) {
         const headers = rows[0]?.join("、") || t("batchImport.headersNotRead");
         setItems([]);
@@ -1067,7 +1451,7 @@ export default function BatchImportPage() {
         setFundRuleRows([]);
         setFundSelected(new Set());
         setShowImportErrorsOnly(false);
-        setUploadDebug(formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo }));
+        setUploadDebug(`${formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo })}\n${workbookDetail}\n${recognitionDetail}\n${traceLabel}`.trim());
         setMessage(formatText("batchImport.noRecordsRecognizedMessage", { name: file.name, headers }));
         return;
       }
@@ -1082,8 +1466,8 @@ export default function BatchImportPage() {
       setFundSelected(new Set());
       setEditingCell(null);
       setShowImportErrorsOnly(false);
-      setUploadDebug(formatText("batchImport.previewRecognized", { count: parsed.length, fileInfo }));
-      setMessage(formatText("batchImport.previewRecognizedMessage", { count: parsed.length }));
+      setUploadDebug(null);
+      setMessage(null);
     } catch (error) {
       setItems([]);
       setFundUploadItems([]);
@@ -1094,14 +1478,27 @@ export default function BatchImportPage() {
       setSelected(new Set());
       setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
-      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo }));
+      postImportDebugLog(traceId, "parse_failed", {
+        importKind: "bill",
+        errorType: error instanceof Error ? error.name : "unknown",
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      setUploadDebug(`${formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo })}\n${traceLabel}`);
       setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
     } finally {
       setUploading(false);
     }
-  }, [formatText, t]);
+  }, [formatText, isCreditAccountText, t]);
 
   const handleFundFile = useCallback(async (file: File) => {
+    const traceId = createImportTraceId();
+    importTraceIdRef.current = traceId;
+    const startedAt = performance.now();
+    postImportDebugLog(traceId, "file_selected", {
+      importKind: "fund",
+      extension: file.name.split(".").pop()?.toLowerCase() ?? "",
+      sizeBytes: file.size,
+    });
     const fileInfo = formatText("batchImport.fileInfo", {
       name: file.name,
       type: file.type || t("batchImport.fileTypeUnknown"),
@@ -1130,8 +1527,18 @@ export default function BatchImportPage() {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     let previewRequested = false;
     try {
-      const rows = await parseImportFile(file);
+      const parseResult = await parseImportFile(file);
+      const rows = parseResult.rows;
       const parsed = fundRowsToItems(rows);
+      postImportDebugLog(traceId, "parse_completed", {
+        importKind: "fund",
+        sheetCount: parseResult.workbook?.sheetCount ?? 1,
+        includedSheetCount: parseResult.workbook?.includedSheetCount ?? 1,
+        mergedRowCount: rows.length,
+        sourceDataRowCount: parseResult.sourceDataRowCount,
+        recognizedCount: parsed.length,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       if (parsed.length === 0) {
         setUploadDebug(formatText("batchImport.noRecordsRecognizedDebug", {
           headers: rows[0]?.join("、") || t("batchImport.headersNotRead"),
@@ -1154,6 +1561,11 @@ export default function BatchImportPage() {
       setFundRulesDirty(false);
       setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
+      postImportDebugLog(traceId, "parse_failed", {
+        importKind: "fund",
+        errorType: error instanceof Error ? error.name : "unknown",
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo }));
       setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
     } finally {
@@ -1212,7 +1624,10 @@ export default function BatchImportPage() {
     const item = items[idx];
     const draft = drafts[idx] ?? {};
     const type = draft.type ?? item.type ?? "expense";
-    const transferDirection = draft.transferDirection ?? item.transferDirection;
+    const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+    const transferDirection = isCreditCardRepaymentBusinessType(businessType)
+      ? "out"
+      : draft.transferDirection ?? item.transferDirection;
     const flow = normalizeFlowFields(
       type,
       Number(draft.amount ?? item.amount ?? 0),
@@ -1224,6 +1639,7 @@ export default function BatchImportPage() {
       ...item,
       ...draft,
       type,
+      businessType: type === "transfer" ? businessType : null,
       date: draft.date ?? item.date ?? "",
       account: draft.account ?? item.account ?? "",
       fromAccount: draft.fromAccount ?? item.fromAccount ?? "",
@@ -1241,21 +1657,47 @@ export default function BatchImportPage() {
     };
   }, [items, drafts]);
 
+  const creditStatementAccount = useMemo(() => {
+    if (activeBillMode !== "credit_card") return "";
+    for (let idx = 0; idx < items.length; idx += 1) {
+      const item = getItem(idx);
+      const account = (item.statementAccount || item.account || item.toAccount || "").trim();
+      if (account) return account;
+    }
+    return "";
+  }, [activeBillMode, getItem, items.length]);
+
+  const updateCreditStatementAccount = useCallback((value: string) => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      items.forEach((item, idx) => {
+        const current = { ...item, ...(prev[idx] ?? {}) } as ParsedItem;
+        if (current.importMode !== "credit_card") return;
+        const repayment = isCreditCardRepaymentItem(current);
+        next[idx] = {
+          ...(prev[idx] ?? {}),
+          account: value,
+          statementAccount: value,
+          ...(repayment ? { toAccount: value, transferDirection: "out" as const } : {}),
+        };
+      });
+      return next;
+    });
+  }, [isCreditCardRepaymentItem, items]);
+
   const getFilterColumnValue = useCallback((idx: number, column: FilterColumn) => {
     const item = getItem(idx);
-    const direction = item.transferDirection;
-    const account = item.type === "transfer"
-      ? (direction === "in" ? item.toAccount : item.fromAccount) || ""
-      : item.account || "";
-    const counterAccount = item.type === "transfer"
-      ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
-      : "";
+    const { account, counterAccount } = previewAccountValuesForItem(item);
     if (column === "date") return item.date || t("batchImport.emptyValue");
-    if (column === "type") return getTypeLabel(item.type);
-    if (column === "account") return account.trim() || t("batchImport.emptyValue");
-    if (column === "counterAccount") return counterAccount.trim() || t("batchImport.emptyValue");
+    if (column === "type") return getTypeLabel(item);
+    if (column === "account") {
+      return accountDisplayText(account, accountPickerRoleForCell(item, "account")) || t("batchImport.emptyValue");
+    }
+    if (column === "counterAccount") {
+      return accountDisplayText(counterAccount, accountPickerRoleForCell(item, "counterAccount")) || t("batchImport.emptyValue");
+    }
     return (item.remark || item.counterparty || "").trim() || t("batchImport.emptyValue");
-  }, [getItem, getTypeLabel, t]);
+  }, [accountDisplayText, accountPickerRoleForCell, getItem, getTypeLabel, previewAccountValuesForItem, t]);
 
   const columnFilterOptions = useMemo(() => {
     if (!activeFilterColumn) return [];
@@ -1272,7 +1714,10 @@ export default function BatchImportPage() {
       }));
   }, [items, columnFilters, getFilterColumnValue]);
 
-  const visibleIndexes = useMemo(() => filteredIndexes.slice(0, previewCount), [filteredIndexes, previewCount]);
+  const hasActiveColumnFilters = useMemo(
+    () => filterColumns.some((column) => (columnFilters[column]?.length ?? 0) > 0),
+    [columnFilters],
+  );
 
   const toggleAllFiltered = useCallback(() => {
     setSelected((prev) => {
@@ -1286,21 +1731,17 @@ export default function BatchImportPage() {
     });
   }, [filteredIndexes]);
 
-  const batchTargetIndexes = useMemo(() => Array.from(selected).filter((idx) => filteredIndexes.includes(idx)), [selected, filteredIndexes]);
-
-  const accountNameSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const account of accountOptions) {
-      for (const key of accountMatchKeys(account)) {
-        set.add(key);
-      }
-    }
-    return set;
-  }, [accountOptions, accountMatchKeys]);
+  const selectedFilteredIndexes = useMemo(
+    () => Array.from(selected).filter((idx) => filteredIndexes.includes(idx)).sort((a, b) => a - b),
+    [selected, filteredIndexes],
+  );
+  const batchTargetIndexes = selectedFilteredIndexes;
+  const importTargetIndexes = selectedFilteredIndexes;
+  const importTargetCount = importTargetIndexes.length;
 
   const importIssues = useMemo(() => {
     const issues: ImportIssue[] = [];
-    for (const idx of selected) {
+    for (const idx of importTargetIndexes) {
       const item = normalizeForStorage(getItem(idx));
       const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
       const account = item.type === "transfer"
@@ -1311,21 +1752,55 @@ export default function BatchImportPage() {
         : "";
       if (!account.trim()) issues.push({ idx, level: "error", message: t("batchImport.issue.accountMissing") });
       else {
-        const matchedId = findMatchedAccountId(account);
-        if (!matchedId) issues.push({ idx, level: "error", message: formatText("batchImport.issue.accountUnmatched", { account: account.trim() }) });
+        const match = getAccountMatch(account);
+        if (!match.account) {
+          issues.push({
+            idx,
+            level: "error",
+            message: accountIssueMessage(account, {
+              unmatched: "batchImport.issue.accountUnmatched",
+              ambiguous: "batchImport.issue.accountAmbiguous",
+            }),
+          });
+        }
       }
       if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: t("batchImport.issue.amountInvalid") });
+      if (item.importMode === "credit_card") {
+        const statementAccount = matchedAccountForText(
+          item.statementAccount || item.toAccount || item.account || "",
+        );
+        if (!isCreditCardRepaymentTargetAccountKind(statementAccount?.kind)) {
+          issues.push({ idx, level: "error", message: t("batchImport.issue.creditStatementAccount") });
+        }
+      }
       if (item.type === "transfer" && counterAccount.trim()) {
-        const counterMatchedId = findMatchedAccountId(counterAccount);
-        if (!counterMatchedId) {
-          issues.push({ idx, level: "warning", message: formatText("batchImport.issue.counterAccountUnmatched", { account: counterAccount.trim() }) });
+        const counterMatch = getAccountMatch(counterAccount);
+        if (!counterMatch.account) {
+          issues.push({
+            idx,
+            level: "warning",
+            message: accountIssueMessage(counterAccount, {
+              unmatched: "batchImport.issue.counterAccountUnmatched",
+              ambiguous: "batchImport.issue.counterAccountAmbiguous",
+            }),
+          });
         }
       } else if (item.type === "transfer" && !counterAccount.trim()) {
         issues.push({ idx, level: "warning", message: t("batchImport.issue.counterAccountMissing") });
       }
+      if (isCreditCardRepaymentItem(item)) {
+        const fromAccount = matchedAccountForText(item.fromAccount ?? "");
+        const toAccount = matchedAccountForText(item.toAccount ?? "");
+        if (!isCreditCardRepaymentImportSourceAccountKind(fromAccount?.kind)) {
+          issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentSource") });
+        }
+        if (!isCreditCardRepaymentTargetAccountKind(toAccount?.kind)) {
+          issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentTarget") });
+        }
+      }
     }
     return issues;
-  }, [selected, getItem, accountNameSet, findMatchedAccountId, formatText, t]);
+  }, [accountIssueMessage, getAccountMatch, importTargetIndexes, getItem, isCreditCardRepaymentItem, matchedAccountForText, t]);
 
   const importErrorIssues = useMemo(() => importIssues.filter((issue) => issue.level === "error"), [importIssues]);
   const importWarningIssues = useMemo(() => importIssues.filter((issue) => issue.level === "warning"), [importIssues]);
@@ -1339,6 +1814,20 @@ export default function BatchImportPage() {
     for (const issue of importErrorIssues) set.add(issue.idx);
     return set;
   }, [importErrorIssues]);
+  const importWarningRowCount = useMemo(
+    () => new Set(importWarningIssues.map((issue) => issue.idx)).size,
+    [importWarningIssues],
+  );
+  const importErrorRows = useMemo(() => (
+    Array.from(importErrorRowIndexes)
+      .sort((a, b) => a - b)
+      .map((idx) => ({
+        idx,
+        messages: (importIssuesByRow.get(idx) ?? [])
+          .filter((issue) => issue.level === "error")
+          .map((issue) => issue.message),
+      }))
+  ), [importErrorRowIndexes, importIssuesByRow]);
   const displayedFilteredIndexes = useMemo(() => {
     const source = showImportErrorsOnly
       ? filteredIndexes.filter((idx) => importErrorRowIndexes.has(idx))
@@ -1355,11 +1844,11 @@ export default function BatchImportPage() {
     [displayedFilteredIndexes, previewCount],
   );
   const importErrorPreviewText = useMemo(() => (
-    importErrorIssues
+    importErrorRows
       .slice(0, 6)
-      .map((issue) => `第 ${issue.idx + 1} 行：${issue.message}`)
+      .map((row) => `第 ${row.idx + 1} 行：${row.messages.join("；")}`)
       .join("；")
-  ), [importErrorIssues]);
+  ), [importErrorRows]);
 
   const fundImportIssues = useMemo(() => (
     Array.from(fundSelected)
@@ -1410,7 +1899,10 @@ export default function BatchImportPage() {
   const applyReplaceToTargets = useCallback((replaceField: ReplaceField, replaceValue: string) => {
     if (batchTargetIndexes.length === 0) throw new Error(t("batchImport.batchReplaceNoTarget"));
     const value = replaceValue.trim();
-    if (!value && replaceField !== "counterAccount") throw new Error(t("batchImport.batchReplaceEmptyValue"));
+    const accountValue = replaceField === "account" || replaceField === "counterAccount"
+      ? accountSelectTextById(value)
+      : value;
+    if (!accountValue && replaceField !== "counterAccount") throw new Error(t("batchImport.batchReplaceEmptyValue"));
 
     const nextDrafts = { ...drafts };
     let changed = 0;
@@ -1423,9 +1915,17 @@ export default function BatchImportPage() {
       const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
       if (replaceField === "date") patch.date = value;
       else if (replaceField === "type") {
-        const nextType = value as ParsedItem["type"];
+        const nextPreviewType = value as PreviewType;
+        const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+          ? "transfer"
+          : nextPreviewType;
         patch.type = nextType;
-        if (nextType === "transfer") patch.transferDirection = direction;
+        patch.businessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+          ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+          : null;
+        if (nextType === "transfer") {
+          patch.transferDirection = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? "out" : direction;
+        }
         const flow = normalizeFlowFields(nextType, item.amount ?? 0, item.inflow ?? 0, item.outflow ?? 0, patch.transferDirection ?? direction);
         patch.amount = flow.amount;
         patch.inflow = flow.inflow;
@@ -1439,8 +1939,13 @@ export default function BatchImportPage() {
         }
         patch[replaceField] = nextNumber;
         if (type === "transfer" && nextNumber > 0) patch.transferDirection = replaceField === "inflow" ? "in" : "out";
-        else if (replaceField === "inflow" && nextNumber > 0) patch.type = "income";
-        else if (replaceField === "outflow" && nextNumber > 0) patch.type = "expense";
+        else if (replaceField === "inflow" && nextNumber > 0) {
+          patch.type = "income";
+          patch.businessType = null;
+        } else if (replaceField === "outflow" && nextNumber > 0) {
+          patch.type = "expense";
+          patch.businessType = null;
+        }
         const flow = normalizeFlowFields(
           patch.type ?? type,
           nextNumber || 0,
@@ -1452,21 +1957,29 @@ export default function BatchImportPage() {
         patch.inflow = flow.inflow;
         patch.outflow = flow.outflow;
       } else if (replaceField === "account") {
-        patch.account = value;
-        if (type === "transfer") {
-          if (direction === "in") patch.toAccount = value;
-          else patch.fromAccount = value;
+        patch.account = accountValue;
+        if (item.importMode === "credit_card") {
+          patch.statementAccount = accountValue;
+          if (isCreditCardRepaymentItem(item)) {
+            patch.toAccount = accountValue;
+            patch.transferDirection = "out";
+          }
+        } else if (type === "transfer") {
+          if (direction === "in") patch.toAccount = accountValue;
+          else patch.fromAccount = accountValue;
         }
       } else if (replaceField === "counterAccount") {
-        if (type === "transfer") {
-          patch.transferDirection = direction;
-          if (direction === "in") patch.fromAccount = value;
-          else patch.toAccount = value;
-        } else {
-          patch.type = "transfer";
+        if (item.importMode === "credit_card" && isCreditCardRepaymentItem(item)) {
+          patch.fromAccount = accountValue;
+          patch.toAccount = item.statementAccount || item.account || item.toAccount || "";
           patch.transferDirection = "out";
-          patch.fromAccount = item.account || value;
-          patch.toAccount = value;
+        } else if (type === "transfer") {
+          patch.transferDirection = direction;
+          if (direction === "in") patch.fromAccount = accountValue;
+          else patch.toAccount = accountValue;
+        } else {
+          invalid++;
+          continue;
         }
       } else if (replaceField === "institution") patch.institution = value;
       else if (replaceField === "remark") patch.remark = value;
@@ -1483,23 +1996,39 @@ export default function BatchImportPage() {
     });
     setMessage(resultMessage);
     setEditingCell(null);
+    postImportDebugLog(importTraceIdRef.current, "batch_replace", {
+      importKind: "bill",
+      billMode: activeBillMode,
+      field: replaceField,
+      targetCount: batchTargetIndexes.length,
+      changedCount: changed,
+      invalidCount: invalid,
+    });
     return resultMessage;
-  }, [batchTargetIndexes, drafts, formatText, getItem, replaceFieldLabels, t]);
+  }, [accountSelectTextById, activeBillMode, batchTargetIndexes, drafts, formatText, getItem, isCreditCardRepaymentItem, replaceFieldLabels, t]);
 
   const handleImport = useCallback(async () => {
     if (importing) return;
-    const selectedIndexes = Array.from(selected);
-    const selectedItems = selectedIndexes.map((idx) => normalizeForStorage(getItem(idx)));
+    const selectedIndexes = importTargetIndexes;
+    const selectedItems = selectedIndexes.map((idx) => normalizeAccountFieldsForImport(normalizeForStorage(getItem(idx))));
     const missingCounterAccountCount = selectedItems.filter((item) => item.type === "transfer" && (!item.fromAccount?.trim() || !item.toAccount?.trim())).length;
     if (importErrorIssues.length > 0) {
-      const preview = importErrorIssues
+      postImportDebugLog(importTraceIdRef.current, "validation_blocked", {
+        importKind: "bill",
+        billMode: activeBillMode,
+        selectedCount: selectedItems.length,
+        errorRowCount: importErrorRows.length,
+        errorIssueCount: importErrorIssues.length,
+        warningIssueCount: importIssues.length - importErrorIssues.length,
+      });
+      const preview = importErrorRows
         .slice(0, 5)
-        .map((issue) => formatText("batchImport.issueLine", { index: issue.idx + 1, level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"), message: issue.message }))
+        .map((row) => formatText("batchImport.issueLine", { index: row.idx + 1, level: t("batchImport.levelError"), message: row.messages.join("；") }))
         .join("；");
       setMessage(formatText("batchImport.importValidationFailed", {
-        count: importErrorIssues.length,
+        count: importErrorRows.length,
         preview,
-        more: importErrorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
+        more: importErrorRows.length > 5 ? t("batchImport.importValidationMore") : "",
       }));
       setUploadDebug(
         importIssues
@@ -1512,15 +2041,32 @@ export default function BatchImportPage() {
     setImportedCount(0);
     setMessage(formatText("batchImport.importingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
+    const importStartedAt = performance.now();
+    postImportDebugLog(importTraceIdRef.current, "import_started", {
+      importKind: "bill",
+      billMode: activeBillMode,
+      selectedCount: selectedItems.length,
+      missingCounterAccountCount,
+    });
 
     try {
       const res = await fetch("/api/v1/record/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Import": "batch-import" },
-        body: JSON.stringify({ items: selectedItems }),
+        body: JSON.stringify({ items: selectedItems, traceId: importTraceIdRef.current }),
       });
-      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; trace?: string[] } | null;
+      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; trace?: string[]; failedRow?: { rowIndex?: number; error?: string } } | null;
       if (!res.ok || !data || data.error) {
+        postImportDebugLog(importTraceIdRef.current, "import_failed", {
+          importKind: "bill",
+          billMode: activeBillMode,
+          selectedCount: selectedItems.length,
+          httpStatus: res.status,
+          hasServerError: Boolean(data?.error),
+          failedRow: typeof data?.failedRow?.rowIndex === "number" ? data.failedRow.rowIndex + 1 : null,
+          serverError: data?.error ? data.error.slice(0, 160) : null,
+          durationMs: Math.round(performance.now() - importStartedAt),
+        });
         setImportedCount(0);
         setImporting(false);
         setMessage(formatText("batchImport.importFailedRollback", { reason: data?.error || res.statusText || `HTTP ${res.status}` }));
@@ -1528,6 +2074,13 @@ export default function BatchImportPage() {
         return;
       }
       const success = data.createdCount ?? selectedItems.length;
+      postImportDebugLog(importTraceIdRef.current, "import_succeeded", {
+        importKind: "bill",
+        billMode: activeBillMode,
+        selectedCount: selectedItems.length,
+        createdCount: success,
+        durationMs: Math.round(performance.now() - importStartedAt),
+      });
       setImportedCount(success);
       setImporting(false);
       setMessage(formatText("batchImport.importSuccess", {
@@ -1538,6 +2091,13 @@ export default function BatchImportPage() {
         redirectNote: t("batchImport.openingDetailList"),
       }));
     } catch (error) {
+      postImportDebugLog(importTraceIdRef.current, "import_failed", {
+        importKind: "bill",
+        billMode: activeBillMode,
+        selectedCount: selectedItems.length,
+        errorType: error instanceof Error ? error.name : "unknown",
+        durationMs: Math.round(performance.now() - importStartedAt),
+      });
       setImportedCount(0);
       setImporting(false);
       setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
@@ -1549,7 +2109,7 @@ export default function BatchImportPage() {
         router.push("/?view=detail");
       }, 1500);
     }
-  }, [importing, selected, getItem, router, importErrorIssues, importIssues]);
+  }, [activeBillMode, formatText, getItem, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, normalizeAccountFieldsForImport, router, t]);
 
   const handleFundImport = useCallback(async () => {
     if (importing) return;
@@ -1667,11 +2227,15 @@ export default function BatchImportPage() {
 
   const accountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
     { value: "", label: t("batchImport.unselected") },
-    ...accountOptions.map((account) => {
+    ...activeAccountOptions.map((account) => {
       const label = accountDisplayLabel(account);
-      return { value: label, label };
+      return {
+        value: account.id,
+        label,
+        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
+      };
     }),
-  ], [accountOptions, accountDisplayLabel, t]);
+  ], [activeAccountOptions, accountDisplayLabel, t]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
     { value: "date", label: replaceFieldLabels.date, kind: "date" },
@@ -1696,9 +2260,9 @@ export default function BatchImportPage() {
           <h1 className="text-lg font-semibold text-slate-800">{t("batchImport.pageTitle")}</h1>
           {items.length > 0 && (
             <span className="text-sm text-slate-500">
-              {formatText("batchImport.selectedSummary", { selected: selected.size, total: items.length })}
-              {importErrorIssues.length > 0 && <span className="ml-2 font-medium text-red-600">{formatText("batchImport.errorCount", { count: importErrorIssues.length })}</span>}
-              {importWarningIssues.length > 0 && <span className="ml-2 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: importWarningIssues.length })}</span>}
+              {formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}
+              {importErrorRows.length > 0 && <span className="ml-2 font-medium text-red-600">{formatText("batchImport.errorCount", { count: importErrorRows.length })}</span>}
+              {importWarningRowCount > 0 && <span className="ml-2 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: importWarningRowCount })}</span>}
             </span>
           )}
         </div>
@@ -1714,10 +2278,10 @@ export default function BatchImportPage() {
           {items.length > 0 && (
             <button
               onClick={handleImport}
-              disabled={importing || selected.size === 0 || importErrorIssues.length > 0}
+              disabled={importing || importTargetCount === 0 || importErrorIssues.length > 0}
               className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: selected.size })}
+              {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
             </button>
           )}
         </div>
@@ -1749,8 +2313,8 @@ export default function BatchImportPage() {
       )}
 
       <div className="p-4 space-y-4">
-        <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          {templates.map((template) => (
+        <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {visibleTemplates.map((template) => (
             <div key={template.key} className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col gap-3">
               <div>
                 <div className="flex items-start justify-between gap-3">
@@ -1766,6 +2330,14 @@ export default function BatchImportPage() {
                 >
                   {template.downloadFormat === "xlsx" ? t("batchImport.downloadXlsxTemplate") : t("batchImport.downloadCsvTemplate")}
                 </button>
+                {template.key === "normal" && creditTemplate && (
+                  <button
+                    onClick={() => downloadTemplate(creditTemplate)}
+                    className="px-3 py-1.5 text-sm rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    {creditTemplate.title}（XLSX）
+                  </button>
+                )}
                 {template.key === "normal" && (
                   <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
                     {t("batchImport.uploadBillFile")}
@@ -1846,7 +2418,7 @@ export default function BatchImportPage() {
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
-                <div className="text-xs text-slate-500 mt-1">{uploading ? t("batchImport.previewParsing") : t("batchImport.previewHint").replace("{count}", String(items.length))}</div>
+                <div className="text-xs text-slate-500 mt-1">{uploading ? t("batchImport.previewParsing") : t("batchImport.previewHint")}</div>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1857,10 +2429,10 @@ export default function BatchImportPage() {
                 </button>
                 <button
                   onClick={handleImport}
-                  disabled={uploading || importing || selected.size === 0 || importErrorIssues.length > 0}
+                  disabled={uploading || importing || importTargetCount === 0 || importErrorIssues.length > 0}
                   className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {importing ? t("batchImport.importing") : t("batchImport.confirmImport").replace("{count}", String(selected.size))}
+                  {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
                 </button>
               </div>
             </div>
@@ -1875,16 +2447,38 @@ export default function BatchImportPage() {
               </div>
             )}
             <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3 space-y-3">
+              {activeBillMode === "credit_card" ? (
+                <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2">
+                  <span className="text-xs font-medium text-slate-700">{t("batchImport.creditMode.statementAccount")}</span>
+                  <div className="w-80 max-w-full">
+                    <SmartSelect
+                      mode="single"
+                      value={accountSelectValue(creditStatementAccount, "credit")}
+                      onChange={(selectedId) => updateCreditStatementAccount(accountSelectTextById(selectedId))}
+                      options={accountSmartSelectOptionsFor(creditStatementAccount, "credit")}
+                      placeholder={t("batchImport.unselected")}
+                      behavior={{ hierarchy: false, search: true, clearable: false }}
+                    />
+                  </div>
+                  <span className="text-xs text-slate-500">{t("batchImport.creditMode.statementAccountHint")}</span>
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                <span className="font-medium text-slate-700">{t("batchImport.filterResult")}</span>
-                <span>{formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })}</span>
-                {importErrorIssues.length > 0 && (
+                <span className="font-medium text-slate-700">
+                  {hasActiveColumnFilters || showImportErrorsOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
+                </span>
+                <span>
+                  {hasActiveColumnFilters || showImportErrorsOnly
+                    ? formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })
+                    : formatText("batchImport.totalCount", { total: items.length })}
+                </span>
+                {importErrorRows.length > 0 && (
                   <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-700">
-                    阻断错误 {importErrorIssues.length} 条，已置顶
+                    阻断错误记录 {importErrorRows.length} 条，已置顶
                   </span>
                 )}
                 <span className="text-slate-400">{t("batchImport.filterHint")}</span>
-                {importErrorIssues.length > 0 && (
+                {importErrorRows.length > 0 && (
                   <button
                     type="button"
                     onClick={() => {
@@ -1908,12 +2502,12 @@ export default function BatchImportPage() {
                   {t("batchImport.clearAllFilters")}
                 </button>
               </div>
-              {importErrorIssues.length > 0 && (
+              {importErrorRows.length > 0 && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                   <div className="font-semibold">确认导入按钮灰掉，是因为选中记录里还有阻断错误。</div>
                   <div className="mt-1 leading-5">
                     {importErrorPreviewText}
-                    {importErrorIssues.length > 6 ? `；还有 ${importErrorIssues.length - 6} 条` : ""}
+                    {importErrorRows.length > 6 ? `；还有 ${importErrorRows.length - 6} 条记录` : ""}
                   </div>
                 </div>
               )}
@@ -1972,7 +2566,10 @@ export default function BatchImportPage() {
                   const draft = drafts[idx] ?? {};
                   const date = draft.date ?? item.date ?? "";
                   const type = draft.type ?? item.type ?? "expense";
-                  const direction = draft.transferDirection ?? item.transferDirection;
+                  const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+                  const direction = isCreditCardRepaymentBusinessType(businessType)
+                    ? "out"
+                    : draft.transferDirection ?? item.transferDirection;
                   const flow = normalizeFlowFields(
                     type,
                     Number(draft.amount ?? item.amount ?? 0),
@@ -1980,22 +2577,18 @@ export default function BatchImportPage() {
                     Number(draft.outflow ?? item.outflow ?? 0),
                     direction,
                   );
-                  const amount = flow.amount;
                   const outflow = flow.outflow;
                   const inflow = flow.inflow;
-                  const account = type === "transfer"
-                    ? (direction === "in" ? (draft.toAccount ?? item.toAccount ?? "") : (draft.fromAccount ?? item.fromAccount ?? ""))
-                    : (draft.account ?? item.account ?? "");
-                  const counterAccount = type === "transfer"
-                    ? (direction === "in" ? (draft.fromAccount ?? item.fromAccount ?? "") : (draft.toAccount ?? item.toAccount ?? ""))
-                    : "";
+                  const currentRowItem = getItem(idx);
+                  const { account, counterAccount } = previewAccountValuesForItem(currentRowItem);
+                  const accountPickerRole = accountPickerRoleForCell(currentRowItem, "account");
+                  const counterAccountPickerRole = accountPickerRoleForCell(currentRowItem, "counterAccount");
                   const category = draft.category ?? item.category ?? "";
-                  const institution = draft.institution ?? item.institution ?? "";
                   const tags = draft.tags ?? item.tags ?? "";
                   const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
                   const isSelected = selected.has(idx);
                   const editingField = editingCell?.idx === idx ? editingCell.field : null;
-                  const typeLabel = getTypeLabel(type);
+                  const typeLabel = getTypeLabel(currentRowItem);
                   const rowIssues = importIssuesByRow.get(idx) ?? [];
                   const rowHasError = rowIssues.some((issue) => issue.level === "error");
                   const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
@@ -2038,20 +2631,41 @@ export default function BatchImportPage() {
                       <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "type")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "type" ? (
                           <select
-                            value={type}
+                            value={getPreviewType(currentRowItem)}
                             autoFocus
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
                             onChange={(e) => {
-                              const nextType = e.target.value as ParsedItem["type"];
+                              const nextPreviewType = e.target.value as PreviewType;
+                              const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                ? "transfer"
+                                : nextPreviewType;
                               updateDraft(idx, "type", nextType);
-                              if (nextType === "transfer") updateDraft(idx, "transferDirection", inflow > 0 && outflow <= 0 ? "in" : "out");
+                              updateDraft(
+                                idx,
+                                "businessType",
+                                nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                  ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                  : null,
+                              );
+                              if (nextType === "transfer") {
+                                updateDraft(
+                                  idx,
+                                  "transferDirection",
+                                  nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                    ? "out"
+                                    : inflow > 0 && outflow <= 0
+                                      ? "in"
+                                      : "out",
+                                );
+                              }
                             }}
                             className="h-6 w-20 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           >
                             <option value="expense">{t("transaction.type.expense")}</option>
                             <option value="income">{t("transaction.type.income")}</option>
                             <option value="transfer">{t("transaction.type.transfer")}</option>
+                            <option value={CREDIT_CARD_REPAYMENT_BUSINESS_TYPE}>{t("transaction.type.creditCardRepayment")}</option>
                           </select>
                         ) : typeLabel}
                       </td>
@@ -2100,9 +2714,14 @@ export default function BatchImportPage() {
                           <div className="w-80">
                             <SmartSelect
                               mode="single"
-                              value={accountSelectValue(account)}
+                              value={accountSelectValue(account, accountPickerRole)}
                               onChange={(selectedId) => {
                                 const value = accountSelectTextById(selectedId);
+                                if (currentRowItem.importMode === "credit_card") {
+                                  updateCreditStatementAccount(value);
+                                  closeCellEdit();
+                                  return;
+                                }
                                 updateDraft(idx, "account", value);
                                 if (type === "transfer") {
                                   if (direction === "in") updateDraft(idx, "toAccount", value);
@@ -2110,32 +2729,37 @@ export default function BatchImportPage() {
                                 }
                                 closeCellEdit();
                               }}
-                              options={accountSmartSelectOptionsFor(account)}
+                              options={accountSmartSelectOptionsFor(account, accountPickerRole)}
                               placeholder={t("batchImport.unselected")}
                               behavior={{ hierarchy: false, search: true, clearable: true }}
                             />
                           </div>
-                        ) : (account || <span className="text-red-500">{t("batchImport.unrecognized")}</span>)}
+                        ) : (account ? accountDisplayText(account, accountPickerRole) : <span className="text-red-500">{t("batchImport.unrecognized")}</span>)}
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "counterAccount" ? (
                           <div className="w-80">
                             <SmartSelect
                               mode="single"
-                              value={accountSelectValue(counterAccount)}
+                              value={accountSelectValue(counterAccount, counterAccountPickerRole)}
                               onChange={(selectedId) => {
                                 const value = accountSelectTextById(selectedId);
-                                if (direction === "in") updateDraft(idx, "fromAccount", value);
+                                if (
+                                  currentRowItem.importMode === "credit_card" &&
+                                  isCreditCardRepaymentItem(currentRowItem)
+                                ) {
+                                  updateDraft(idx, "fromAccount", value);
+                                } else if (direction === "in") updateDraft(idx, "fromAccount", value);
                                 else updateDraft(idx, "toAccount", value);
                                 if (value.trim()) updateDraft(idx, "type", "transfer");
                                 closeCellEdit();
                               }}
-                              options={accountSmartSelectOptionsFor(counterAccount)}
+                              options={accountSmartSelectOptionsFor(counterAccount, counterAccountPickerRole)}
                               placeholder={t("batchImport.unselected")}
                               behavior={{ hierarchy: false, search: true, clearable: true }}
                             />
                           </div>
-                        ) : (counterAccount || <span className="text-slate-400">-</span>)}
+                        ) : (counterAccount ? accountDisplayText(counterAccount, counterAccountPickerRole) : <span className="text-slate-400">-</span>)}
                       </td>
                       <td className="max-w-[180px] truncate px-2 py-1 text-xs text-slate-700" title={category || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
                         {editingField === "category" ? (

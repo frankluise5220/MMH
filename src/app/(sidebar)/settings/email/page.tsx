@@ -6,6 +6,7 @@ import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/B
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
+import { createImportAccountResolver } from "@/lib/account-import-match";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
 type BatchReplacePopoverButtonComponent = typeof import("@/components/BatchReplacePopoverButton").BatchReplacePopoverButton;
@@ -65,6 +66,7 @@ type BookAccount = {
   repaymentDay?: number | null;
   Institution?: { id?: string; name?: string | null; shortName?: string | null; type?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
+  AccountAlias?: Array<{ alias: string }> | null;
 };
 type BookInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 type BookUser = { id: string; name: string };
@@ -119,7 +121,7 @@ type ImportPreviewState = {
 const IMPORT_PREVIEW_FILTER_COLUMNS: ImportPreviewColumn[] = ["date", "postedDate", "type", "account", "counterAccount", "category", "institution", "amount", "remark", "status"];
 const IMPORT_PREVIEW_FIELD_LABELS: Record<ImportPreviewEditableCell, string> = {
   date: "交易日",
-  postedDate: "入账日",
+  postedDate: "入账日期",
   type: "类型",
   account: "账户",
   counterAccount: "对手账户",
@@ -135,6 +137,24 @@ const PREVIEW_TYPE_OPTIONS: Array<{ value: ParsedItem["type"]; label: string }> 
   { value: "investment", label: "投资" },
 ];
 
+function buildBookAccountDisplayOption(account: BookAccount) {
+  return buildAccountDisplayOption({
+    ...account,
+    Institution: account.Institution
+      ? {
+          name: account.Institution.name ?? null,
+          shortName: account.Institution.shortName ?? null,
+        }
+      : null,
+    AccountGroup: account.AccountGroup
+      ? {
+          id: account.AccountGroup.id,
+          name: account.AccountGroup.name ?? null,
+        }
+      : null,
+  });
+}
+
 function isPlaceholderText(value?: string | null) {
   const text = String(value ?? "").trim();
   return !text || /^[-—–]+$/.test(text) || text === "?";
@@ -145,9 +165,17 @@ function cleanOptionalText(value?: string | null) {
   return isPlaceholderText(text) ? undefined : text;
 }
 
+function normalizeDateOnlyText(value?: string | null) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return undefined;
+  const match = raw.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日)?/);
+  if (!match) return raw.slice(0, 10);
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
 function stripPostingDateNote(value: string) {
   return value
-    .replace(/[（(]\s*入账日\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}\s*[)）]/g, "")
+    .replace(/[（(]\s*入账日(?:期)?\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}\s*[)）]/g, "")
     .trim();
 }
 
@@ -236,7 +264,7 @@ export default function EmailSettingsPage() {
   const [accountTested, setAccountTested] = useState(false);
   const [previewColumnFilters, setPreviewColumnFilters] = useState<Partial<Record<ImportPreviewColumn, string[]>>>({});
   const [activePreviewFilterColumn, setActivePreviewFilterColumn] = useState<ImportPreviewColumn | null>(null);
-  const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "type" | "category" } | null>(null);
+  const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "postedDate" | "type" | "category" } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -676,10 +704,12 @@ export default function EmailSettingsPage() {
     const merchant = inferKnownMerchant(item);
     const remark = cleanOptionalText(item.remark);
     const treatAsTransfer = item.type === "transfer" || shouldTreatAsTransfer(item);
+    const date = item.date?.trim() || undefined;
+    const postedDate = normalizeDateOnlyText(item.postedDate) ?? normalizeDateOnlyText(date);
     return {
       rawText: item.rawText,
       type: treatAsTransfer ? "transfer" : item.type,
-      date: item.date?.trim() || undefined,
+      date,
       amount: Math.abs(item.amount ?? 0) || 0,
       account: cleanOptionalText(item.account),
       fromAccount: treatAsTransfer ? guessDebitTransferAccountName(item) : cleanOptionalText(item.fromAccount),
@@ -688,7 +718,7 @@ export default function EmailSettingsPage() {
       remark,
       counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
       institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
-      postedDate: item.postedDate?.trim() || undefined,
+      postedDate,
       _meta: item._meta ? {
         institutionName: cleanOptionalText(item._meta.institutionName),
         ownerName: cleanOptionalText(item._meta.ownerName),
@@ -701,7 +731,11 @@ export default function EmailSettingsPage() {
   }
 
   function openImportPreview(items: ParsedItem[]) {
-    const baseRows = items.map((item, index) => ({
+    const normalizedItems = items.map((item) => ({
+      ...item,
+      postedDate: normalizeDateOnlyText(item.postedDate) ?? normalizeDateOnlyText(item.date),
+    }));
+    const baseRows = normalizedItems.map((item, index) => ({
       key: `mail-${index}-${item.date ?? ""}-${item.amount ?? 0}`,
       item,
       ready: isRowReadyForImport(item),
@@ -767,32 +801,29 @@ export default function EmailSettingsPage() {
     return Boolean(item._meta?.institutionName || item._meta?.cardNumberMasked || /信用卡/.test(accountLabel(item)));
   }
 
-  function bankMatches(account: BookAccount, bank?: string) {
-    const target = normalizedKey(bank);
-    if (!target) return true;
-    const names = [account.Institution?.name, account.Institution?.shortName].map(normalizedKey).filter(Boolean);
-    return names.some((name) => name.includes(target) || target.includes(name));
-  }
-
   function resolvePreviewAccount(item: ParsedItem) {
     const accountsForMatch = bookLookupsRef.current.accounts;
     const label = accountLabel(item);
-    const labelKey = normalizedKey(label);
     const credit = isCreditStatement(item);
     const last4 = String(item._meta?.cardNumberMasked ?? "").trim();
     const bank = item._meta?.institutionName;
-    const exact = accountsForMatch.find((account) =>
-      normalizedKey(account.name) === labelKey ||
-      normalizedKey(stripOwnerPrefix(account.name)) === normalizedKey(stripOwnerPrefix(label))
-    );
-    const byCard = credit && last4
-      ? accountsForMatch.find((account) =>
-          account.kind === "bank_credit" &&
-          String(account.numberMasked ?? "").trim() === last4 &&
-          bankMatches(account, bank)
-        )
-      : undefined;
-    const found = byCard ?? exact;
+    const resolver = createImportAccountResolver(accountsForMatch);
+    const candidates = Array.from(new Set([
+      label,
+      item.account,
+      stripOwnerPrefix(label),
+      bank && `${bank}信用卡`,
+      bank && last4 ? `${bank}信用卡(${last4})` : "",
+      bank && last4 ? `${bank}信用卡${last4}` : "",
+    ].filter((value): value is string => Boolean(value?.trim()))));
+    let found: BookAccount | null = null;
+    for (const candidate of candidates) {
+      const matched = resolver(candidate);
+      if (!matched) continue;
+      if (credit && matched.kind !== "bank_credit") continue;
+      found = matched;
+      break;
+    }
     return { matchedAccountId: found?.id, selectedAccountId: found?.id };
   }
 
@@ -803,10 +834,7 @@ export default function EmailSettingsPage() {
 
   function previewAccountOptions(item: ParsedItem) {
     const credit = isCreditStatement(item);
-    return bookAccounts
-      .filter((account) => !credit || account.kind === "bank_credit")
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    return previewAccountDisplayOptions.filter((account) => !credit || account.kind === "bank_credit");
   }
 
   function recomputePreviewState(items: ImportPreviewItem[]): ImportPreviewState {
@@ -824,22 +852,41 @@ export default function EmailSettingsPage() {
     const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
     return bookAccounts.find((account) => account.id === accountId)?.name ?? null;
   }, [bookAccounts, importPreview?.statementAccountId]);
+  const previewAccountDisplayOptions = useMemo(
+    () => bookAccounts
+      .map((account) => buildBookAccountDisplayOption(account))
+      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
+    [bookAccounts],
+  );
+  const previewAccountDisplayById = useMemo(
+    () => new Map(previewAccountDisplayOptions.map((account) => [account.id, account])),
+    [previewAccountDisplayOptions],
+  );
+  const previewAccountDisplayLabelById = useCallback((accountId?: string | null) => {
+    if (!accountId) return null;
+    const account = previewAccountDisplayById.get(accountId);
+    return account?.selectorLabel ?? account?.label ?? null;
+  }, [previewAccountDisplayById]);
+  const selectedPreviewAccountDisplayLabel = useCallback((row: ImportPreviewItem) => {
+    const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
+    return previewAccountDisplayLabelById(accountId);
+  }, [importPreview?.statementAccountId, previewAccountDisplayLabelById]);
 
   const hasImportPreview = importPreview !== null;
   const previewFilterRows = useMemo(() => importPreview?.items ?? [], [importPreview]);
   const getPreviewColumnValue = useCallback((row: ImportPreviewItem, column: ImportPreviewColumn) => {
     const item = row.item;
     if (column === "date") return item.date?.trim() || "(空)";
-    if (column === "postedDate") return item.postedDate?.trim() || "(空)";
+    if (column === "postedDate") return normalizeDateOnlyText(item.postedDate) || "(空)";
     if (column === "type") return typeLabel(item.type);
-    if (column === "account") return selectedPreviewAccountName(row) || accountLabel(item) || "(空)";
+    if (column === "account") return selectedPreviewAccountDisplayLabel(row) || accountLabel(item) || "(空)";
     if (column === "counterAccount") return cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "(空)";
     if (column === "category") return item.category?.trim() || "(空)";
     if (column === "institution") return item.institution?.trim() || "(空)";
     if (column === "amount") return Number.isFinite(item.amount) ? item.amount.toFixed(2) : "(空)";
     if (column === "remark") return (item.remark || item.rawText || "").trim() || "(空)";
     return row.ready ? "可导入" : row.missingFields.includes("账户") ? "缺账户" : `缺${row.missingFields.join("、") || "字段"}`;
-  }, [selectedPreviewAccountName]);
+  }, [selectedPreviewAccountDisplayLabel]);
   const previewColumnFilterOptions = useMemo(() => {
     if (!activePreviewFilterColumn) return [];
     return Array.from(new Set(previewFilterRows.map((row) => getPreviewColumnValue(row, activePreviewFilterColumn))))
@@ -860,46 +907,25 @@ export default function EmailSettingsPage() {
     if (!hasImportPreview) return [{ value: "", label: "未选择" }];
     return [
       { value: "", label: "未选择" },
-      ...bookAccounts
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
-        .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
+      ...previewAccountDisplayOptions
+        .map((account) => ({ value: account.id, label: account.selectorLabel })),
     ];
-  }, [bookAccounts, hasImportPreview]);
+  }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
     if (!hasImportPreview) return [{ value: "", label: "未选择" }];
     return [
       { value: "", label: "未选择" },
-      ...bookAccounts
+      ...previewAccountDisplayOptions
         .filter((account) => account.kind === "bank_debit")
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
-        .map((account) => ({ value: account.name, label: `${account.name} · ${accountKindLabel(account.kind)}` })),
+        .map((account) => ({ value: account.id, label: account.selectorLabel })),
     ];
-  }, [bookAccounts, hasImportPreview]);
+  }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountDisplayOptions = useMemo(
     () => {
       if (!hasImportPreview) return [];
-      return bookAccounts
-        .filter((account) => account.kind === "bank_debit")
-        .map((account) => buildAccountDisplayOption({
-          ...account,
-          Institution: account.Institution
-            ? {
-                name: account.Institution.name ?? null,
-                shortName: account.Institution.shortName ?? null,
-              }
-            : null,
-          AccountGroup: account.AccountGroup
-            ? {
-                id: account.AccountGroup.id,
-                name: account.AccountGroup.name ?? null,
-              }
-            : null,
-        }))
-        .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN"));
+      return previewAccountDisplayOptions.filter((account) => account.kind === "bank_debit");
     },
-    [bookAccounts, hasImportPreview],
+    [hasImportPreview, previewAccountDisplayOptions],
   );
   const previewDebitAccountOptions = useMemo<SmartSelectOption[]>(
     () => {
@@ -936,11 +962,58 @@ export default function EmailSettingsPage() {
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
   }, [bookCategories, hasImportPreview]);
+  const previewCategoryById = useMemo(
+    () => new Map(bookCategories.map((category) => [category.id, category])),
+    [bookCategories],
+  );
+  const previewCategoryReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
+    if (!hasImportPreview) return [];
+    const typeLabels: Record<string, string> = { expense: "支出分类", income: "收入分类" };
+    const options: BatchReplaceOption[] = [{ value: "", label: "清除分类" }];
+    const indent = "　";
+
+    for (const type of ["expense", "income"]) {
+      const typedCategories = bookCategories.filter((category) => category.type === type);
+      if (typedCategories.length === 0) continue;
+      const childrenByParentId = new Map<string | null, typeof typedCategories>();
+      for (const category of typedCategories) {
+        const key = category.parentId ?? null;
+        const list = childrenByParentId.get(key) ?? [];
+        list.push(category);
+        childrenByParentId.set(key, list);
+      }
+      for (const list of childrenByParentId.values()) {
+        list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      }
+
+      const headerId = `preview-category-type:${type}`;
+      options.push({ value: headerId, label: typeLabels[type] ?? type, isHeader: true });
+
+      function walk(parentId: string | null, level: number, parentOptionId: string) {
+        const children = childrenByParentId.get(parentId) ?? [];
+        for (const child of children) {
+          const hasChildren = (childrenByParentId.get(child.id) ?? []).length > 0;
+          options.push({
+            value: child.id,
+            label: `${indent.repeat(level)}${child.name}`,
+            subLabel: typeLabels[type] ?? type,
+            parentId: parentOptionId,
+            isGroup: hasChildren,
+          });
+          if (hasChildren) walk(child.id, level + 1, child.id);
+        }
+      }
+
+      walk(null, 0, headerId);
+    }
+
+    return options;
+  }, [bookCategories, hasImportPreview]);
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<ImportPreviewEditableCell>[]>(() => {
     if (!hasImportPreview) return [];
     return [
       { value: "date", label: IMPORT_PREVIEW_FIELD_LABELS.date, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
-      { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
+      { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "date", placeholder: "YYYY-MM-DD" },
       {
         value: "type",
         label: IMPORT_PREVIEW_FIELD_LABELS.type,
@@ -955,23 +1028,31 @@ export default function EmailSettingsPage() {
       },
       { value: "account", label: IMPORT_PREVIEW_FIELD_LABELS.account, kind: "smartSelect", options: previewAccountReplaceOptions },
       { value: "counterAccount", label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount, kind: "smartSelect", options: previewDebitAccountReplaceOptions },
-      { value: "category", label: IMPORT_PREVIEW_FIELD_LABELS.category, kind: "text", placeholder: "输入分类" },
+      {
+        value: "category",
+        label: IMPORT_PREVIEW_FIELD_LABELS.category,
+        kind: "smartSelect",
+        options: previewCategoryReplaceOptions,
+        placeholder: "选择分类",
+        allowEmpty: true,
+        smartSelectBehavior: {
+          hierarchy: true,
+          search: true,
+          initialCollapsedAll: true,
+          accordionGroups: true,
+          selectableGroups: true,
+          groupSelectOnDoubleClick: false,
+          minDropdownWidth: 560,
+          dropdownMaxHeight: 420,
+          density: "compact",
+          expandedGroupColumns: 4,
+        },
+      },
       { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "输入收支机构" },
       { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额" },
       { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
     ];
-  }, [hasImportPreview, previewAccountReplaceOptions, previewDebitAccountReplaceOptions]);
-
-  function previewAccountIdFromName(accountName: string, item?: ParsedItem) {
-    const nameKey = normalizedKey(accountName);
-    if (!nameKey) return undefined;
-    const credit = item ? isCreditStatement(item) : false;
-    const found = bookAccounts.find((account) =>
-      (!credit || account.kind === "bank_credit") &&
-      normalizedKey(account.name) === nameKey
-    );
-    return found?.id;
-  }
+  }, [hasImportPreview, previewAccountReplaceOptions, previewCategoryReplaceOptions, previewDebitAccountReplaceOptions]);
 
   function previewDebitAccountIdFromName(accountName: string) {
     const nameKey = normalizedKey(accountName);
@@ -985,6 +1066,17 @@ export default function EmailSettingsPage() {
 
   function recomputePreviewRow(row: ImportPreviewItem, itemPatch: Partial<ParsedItem>, accountId?: string | null): ImportPreviewItem {
     let item = { ...row.item, ...itemPatch };
+    if ("postedDate" in itemPatch) {
+      item.postedDate = normalizeDateOnlyText(itemPatch.postedDate);
+    }
+    if ("date" in itemPatch && !("postedDate" in itemPatch)) {
+      const previousDate = normalizeDateOnlyText(row.item.date);
+      const previousPostedDate = normalizeDateOnlyText(row.item.postedDate);
+      const nextDate = normalizeDateOnlyText(itemPatch.date);
+      if (!previousPostedDate || previousPostedDate === previousDate) {
+        item.postedDate = nextDate;
+      }
+    }
     if (itemPatch.type === "transfer") {
       item = {
         ...item,
@@ -1021,8 +1113,18 @@ export default function EmailSettingsPage() {
       if (!selectedFilteredPreviewKeys.includes(row.key)) return row;
       if (field === "amount") return recomputePreviewRow(row, { amount: Math.abs(Number(value) || 0) });
       if (field === "type") return recomputePreviewRow(row, { type: value as ParsedItem["type"] });
-      if (field === "account") return recomputePreviewRow(row, { account: value || undefined }, previewAccountIdFromName(value, row.item) ?? null);
-      if (field === "counterAccount") return recomputePreviewRow(row, { fromAccount: value || undefined, toAccount: undefined });
+      if (field === "account") {
+        const nextName = accountNameFromId(value) ?? undefined;
+        return recomputePreviewRow(row, { account: nextName }, value || null);
+      }
+      if (field === "counterAccount") {
+        const nextName = accountNameFromId(value) ?? undefined;
+        return recomputePreviewRow(row, { fromAccount: nextName, toAccount: undefined });
+      }
+      if (field === "category") {
+        const nextName = value ? previewCategoryById.get(value)?.name ?? value : undefined;
+        return recomputePreviewRow(row, { category: nextName });
+      }
       return recomputePreviewRow(row, { [field]: value || undefined } as Partial<ParsedItem>);
     });
     setImportPreview(recomputePreviewState(nextItems));
@@ -1182,9 +1284,8 @@ export default function EmailSettingsPage() {
     return "支出";
   }
 
-  function signedAmountText(item: ParsedItem) {
-    const sign = item.type === "income" ? "+" : item.type === "expense" ? "-" : "";
-    return `${sign}${Math.abs(item.amount ?? 0).toFixed(2)}`;
+  function previewAmountText(item: ParsedItem) {
+    return Math.abs(item.amount ?? 0).toFixed(2);
   }
 
   function amountTextClass(type: ParsedItem["type"]) {
@@ -1199,15 +1300,6 @@ export default function EmailSettingsPage() {
     const last4 = item._meta?.cardNumberMasked;
     if (bank) return `${bank}信用卡${last4 ? `(${last4})` : ""}`;
     return "未识别账户";
-  }
-
-  function accountKindLabel(kind: string) {
-    if (kind === "bank_credit") return "信用卡";
-    if (kind === "bank_debit") return "储蓄卡";
-    if (kind === "cash") return "现金";
-    if (kind === "ewallet") return "电子钱包";
-    if (kind === "investment") return "投资";
-    return "其他";
   }
 
   function formatAttachmentSize(size: number) {
@@ -1369,7 +1461,7 @@ export default function EmailSettingsPage() {
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 {importPreview.statementAccountId && (
                   <span>
-                    账户：{bookAccounts.find((account) => account.id === importPreview.statementAccountId)?.name ?? "已匹配账户"}
+                    账户：{previewAccountDisplayLabelById(importPreview.statementAccountId) ?? "已匹配账户"}
                   </span>
                 )}
                 <span>筛选 {filteredPreviewRows.length} / {importPreview.items.length} 条</span>
@@ -1383,7 +1475,7 @@ export default function EmailSettingsPage() {
                   <tr>
                     <th className="w-10 px-3 py-2"></th>
                     <th className="px-3 py-2">{renderPreviewColumnFilter("date", "交易日")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("postedDate", "入账日")}</th>
+                    <th className="px-3 py-2">{renderPreviewColumnFilter("postedDate", "入账日期")}</th>
                     <th className="px-3 py-2">{renderPreviewColumnFilter("type", "类型")}</th>
                     <th className="px-3 py-2">{renderPreviewColumnFilter("account", "账户")}</th>
                     <th className="px-3 py-2">{renderPreviewColumnFilter("counterAccount", "对手账户")}</th>
@@ -1404,7 +1496,23 @@ export default function EmailSettingsPage() {
                           <input type="checkbox" checked={checked} onChange={() => togglePreviewItem(row.key)} />
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-700">{item.date || "-"}</td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-500">{item.postedDate || "-"}</td>
+                        <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-500" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "postedDate" })}>
+                          {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "postedDate" ? (
+                            <input
+                              autoFocus
+                              type="date"
+                              className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
+                              value={normalizeDateOnlyText(item.postedDate) ?? ""}
+                              onBlur={() => setEditingPreviewCell(null)}
+                              onChange={(e) => {
+                                updatePreviewRow(row.key, { postedDate: e.target.value || undefined });
+                                setEditingPreviewCell(null);
+                              }}
+                            />
+                          ) : (
+                            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改入账日期">{normalizeDateOnlyText(item.postedDate) || "-"}</span>
+                          )}
+                        </td>
                         <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "type" })}>
                           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "type" ? (
                             <select
@@ -1427,7 +1535,10 @@ export default function EmailSettingsPage() {
                         </td>
                         <td className="px-3 py-2 align-top text-slate-700">
                           {row.ready || item.type === "transfer" ? (
-                            <span className="whitespace-nowrap text-slate-700">{selectedPreviewAccountName(row) ?? accountLabel(item)}</span>
+                            <div className="space-y-1">
+                              <span className="whitespace-nowrap text-slate-700">{selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}</span>
+                              {item.type === "transfer" ? <div className="text-[11px] text-slate-400">到账账户</div> : null}
+                            </div>
                           ) : (
                             <div className="min-w-[220px] space-y-1.5">
                               <div className="truncate text-[11px] text-slate-400" title={accountLabel(item)}>账单识别：{accountLabel(item)}</div>
@@ -1439,7 +1550,7 @@ export default function EmailSettingsPage() {
                                 <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
                                 {previewAccountOptions(item).map((account) => (
                                   <option key={account.id} value={account.id}>
-                                    {account.name} · {accountKindLabel(account.kind)}
+                                    {account.selectorLabel}
                                   </option>
                                 ))}
                               </select>
@@ -1454,7 +1565,7 @@ export default function EmailSettingsPage() {
                         </td>
                         <td className="min-w-[180px] px-3 py-2 align-top text-slate-700">
                           {item.type === "transfer" ? (
-                            <div className="min-w-[260px]">
+                            <div className="min-w-[260px] space-y-1">
                               <SmartSelect
                                 mode="single"
                                 value={previewDebitAccountIdFromName(item.fromAccount ?? item.toAccount ?? "") ?? ""}
@@ -1467,7 +1578,7 @@ export default function EmailSettingsPage() {
                                   setParsedItems(nextItems.map((previewRow) => previewRow.item));
                                 }}
                                 options={displayPreviewDebitAccountOptions}
-                                placeholder="选择借记卡"
+                                placeholder="选择还款借记卡"
                                 onCreateClick={() => openDebitAccountDraft(row.key)}
                                 createLabel="新增账户"
                                 onCycleOwnerFilter={cyclePreviewDebitOwnerFilter}
@@ -1480,6 +1591,7 @@ export default function EmailSettingsPage() {
                                   minDropdownWidth: 460,
                                 }}
                               />
+                              <div className="text-[11px] text-slate-400">资金流出账户</div>
                             </div>
                           ) : (
                             <span className="text-slate-400">-</span>
@@ -1509,7 +1621,7 @@ export default function EmailSettingsPage() {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700">{item.institution || "-"}</td>
-                        <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${amountTextClass(item.type)}`}>{signedAmountText(item)}</td>
+                        <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${amountTextClass(item.type)}`}>{previewAmountText(item)}</td>
                         <td className="px-3 py-2 align-top text-slate-600">{item.remark || item.rawText}</td>
                         <td className="whitespace-nowrap px-3 py-2 align-top">
                           {row.ready ? (

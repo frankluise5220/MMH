@@ -15,8 +15,14 @@ import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import {
+  buildCreditCardInstallmentSchedule,
+  summarizeCreditCardInstallments,
+  type CreditCardInstallmentRateType,
+} from "@/lib/credit/installment";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
+type DebtTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
 type AccountOption = {
   id: string;
@@ -67,19 +73,43 @@ function normalizeYmd(value: string | undefined) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function toDateTimeLocalValue(value: string | undefined) {
+function toDateInputValue(value: string | null | undefined) {
   const raw = (value ?? "").trim();
   if (!raw) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00`;
-  const normalized = raw.replace(" ", "T");
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) return normalized.slice(0, 16);
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})(?:[\sT]+\d{1,2}[:：]\d{2})?/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  const normalized = raw
+    .replace(/[/.]/g, "-")
+    .replace("年", "-")
+    .replace("月", "-")
+    .replace("日", "")
+    .replace(" ", "T");
+  const ymd = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymd) {
+    return `${ymd[1]}-${String(Number(ymd[2])).padStart(2, "0")}-${String(Number(ymd[3])).padStart(2, "0")}`;
+  }
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return "";
   return [
     d.getFullYear(),
     String(d.getMonth() + 1).padStart(2, "0"),
     String(d.getDate()).padStart(2, "0"),
-  ].join("-") + `T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  ].join("-");
+}
+
+function inferDebtTransferMode(
+  sourceAccount: AccountOption | SmartSelectOption | undefined,
+  targetAccount: AccountOption | SmartSelectOption | undefined,
+): DebtTransferMode | null {
+  const source = sourceAccount as AccountOption | undefined;
+  const target = targetAccount as AccountOption | undefined;
+  if (source?.kind === "loan") {
+    return source.debtDirection === "receivable" ? "collect_in" : "borrow_in";
+  }
+  if (target?.kind === "loan") {
+    return target.debtDirection === "receivable" ? "lend_out" : "repay_out";
+  }
+  return null;
 }
 
 function findAccountIdByLabel(input: string | undefined, options: AccountOption[]) {
@@ -267,10 +297,10 @@ export function TransactionFormModal({
     txType === "investment" ? "investment" : "expense",
   [txType]);
 
-  /** Build parent category options with hierarchical (indented) display.
-   *  In the expense/income context from TransactionFormModal, users can only
-   *  add sub-categories under an existing category — never create a new
-   *  root-level category directly. The "无（根分类）" option is excluded.
+  /** Build parent category options with hierarchical display.
+   * In transaction entry, new categories are created under an existing category,
+   * so every existing category, including top-level categories, can be selected
+   * as the parent.
    */
   const categoryParentOptions = useMemo(() => {
     // Build a parent-id → children map for all categories of current type
@@ -281,19 +311,24 @@ export function TransactionFormModal({
       byParentId.set(c.parentId, list);
     }
 
-    const options: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string }> = [];
+    const options: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string; isGroup?: boolean }> = [];
 
     // Recursively walk the tree, building indented options
-    // currentHeaderId tracks the nearest root ancestor (depth 0) for parentId linkage
-    function walk(parentId: string | null, depth: number, pathPrefix: string, currentHeaderId?: string) {
+    function walk(parentId: string | null, depth: number, pathPrefix: string) {
       const children = byParentId.get(parentId) ?? [];
       for (const child of children) {
         const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
         const fullLabel = pathPrefix ? `${pathPrefix}.${shortName}` : shortName;
-        // depth 0 items are root headers; depth > 0 items link to their nearest header ancestor
-        const headerId = depth === 0 ? child.id : currentHeaderId;
-        options.push({ id: child.id, name: shortName, label: fullLabel, type: currentCategoryType, depth, parentId: depth > 0 ? headerId : undefined });
-        walk(child.id, depth + 1, fullLabel, headerId);
+        options.push({
+          id: child.id,
+          name: shortName,
+          label: fullLabel,
+          type: currentCategoryType,
+          depth,
+          parentId: child.parentId ?? undefined,
+          isGroup: (byParentId.get(child.id) ?? []).length > 0,
+        });
+        walk(child.id, depth + 1, fullLabel);
       }
     }
 
@@ -304,12 +339,9 @@ export function TransactionFormModal({
   }, [categoryList, currentCategoryType]);
 
   /** Build hierarchical SmartSelect options for category dropdown.
-   *  Root categories (level 0) appear as group headers (isHeader=true, non-selectable).
-   *  Level-1 categories with children appear as collapsible groups (isGroup=true, selectable).
-   *  Level-1 categories without children are regular selectable items.
-   *  Level-2+ categories are regular selectable items with parentId linking to their
-   *  nearest group ancestor (isHeader or isGroup).
-   *  Indentation: Level 1 = one indent (　), Level 2 = two (　　), etc. */
+   * All real categories are selectable. Categories with children are collapsible
+   * groups, and their caret toggles expansion without taking away selection.
+   */
   const categorySSOptions = useMemo(() => {
     const byParentId = new Map<string | null, CategoryOption[]>();
     for (const c of categoryList) {
@@ -329,12 +361,8 @@ export function TransactionFormModal({
         const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
         const grandChildren = byParentId.get(child.id) ?? [];
 
-        if (level === 0) {
-          // Root → group header (non-selectable)
-          opts.push({ id: child.id, label: shortName, isHeader: true });
-          walk(child.id, level + 1, child.id);
-        } else if (grandChildren.length > 0) {
-          // Level 1+ with children → collapsible group (selectable + has sub-items)
+        if (grandChildren.length > 0) {
+          // Category with children -> collapsible group and selectable category.
           opts.push({
             id: child.id,
             label: `${INDENT.repeat(level)}${shortName}`,
@@ -367,9 +395,15 @@ export function TransactionFormModal({
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const [date, setDate] = useState(today);
-  const [postedAt, setPostedAt] = useState(() => toDateTimeLocalValue(today));
+  const [postedAt, setPostedAt] = useState(() => toDateInputValue(today));
   const [postedAtEdited, setPostedAtEdited] = useState(false);
   const [amount, setAmount] = useState("");
+  const [createInstallment, setCreateInstallment] = useState(false);
+  const [installmentAmount, setInstallmentAmount] = useState("");
+  const [installmentAmountEdited, setInstallmentAmountEdited] = useState(false);
+  const [installmentTotal, setInstallmentTotal] = useState("12");
+  const [installmentRateType, setInstallmentRateType] = useState<CreditCardInstallmentRateType>("period_fee");
+  const [installmentRate, setInstallmentRate] = useState("0");
   const [accountId, setAccountId] = useState(defaultAccountId ?? "");
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
@@ -411,8 +445,7 @@ export function TransactionFormModal({
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
   const compactAccountSelectBehavior = useMemo(() => ({
     density: "compact" as const,
-    minDropdownWidth: 0,
-    dropdownMaxHeight: 280,
+    dropdownMaxHeight: 320,
   }), []);
 
   const accountMetaById = useMemo(() => {
@@ -430,19 +463,42 @@ export function TransactionFormModal({
     (localAccountSSOpts ?? []).forEach(add);
     return map;
   }, [accountList, localAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
+  const selectedAccountIsCreditCard = accountMetaById.get(accountId)?.kind === "bank_credit"
+    || (isCreditCardAccount && accountId === (defaultAccountId ?? accountId));
+  const installmentPreview = useMemo(() => {
+    if (!createInstallment) return null;
+    try {
+      const rows = buildCreditCardInstallmentSchedule({
+        principal: Number(installmentAmount),
+        totalRuns: Number(installmentTotal),
+        rateType: installmentRateType,
+        rate: Number(installmentRate),
+        firstStatementMonth: "2026-01",
+        firstDate: new Date("2026-01-01T00:00:00.000Z"),
+      });
+      return summarizeCreditCardInstallments(rows);
+    } catch {
+      return null;
+    }
+  }, [createInstallment, installmentAmount, installmentRate, installmentRateType, installmentTotal]);
 
   function openSpecialTransferTargetIfNeeded() {
     if (txType !== "transfer") return false;
+    const sourceAccount = accountMetaById.get(fromAccountId);
     const targetAccount = accountMetaById.get(toAccountId);
-    const operation = getCashTargetOperation(targetAccount);
+    const debtMode = inferDebtTransferMode(sourceAccount, targetAccount);
+    const operation = debtMode ? "debt" : getCashTargetOperation(targetAccount);
     if (operation === "transfer") return false;
 
     if (editEntryId) {
       window.alert("这类目标账户需要用对应的专用记账窗口编辑，不能保存为普通转账。");
       return true;
     }
-    if (!fromAccountId) {
-      window.alert("请选择资金来源账户");
+    const isDebtSourceFlow = debtMode === "borrow_in" || debtMode === "collect_in";
+    const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
+    const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
+    if (!cashAccountId) {
+      window.alert(isDebtSourceFlow ? "请选择资金到账账户" : "请选择资金来源账户");
       return true;
     }
     const amountNumber = Number(amount);
@@ -454,7 +510,7 @@ export function TransactionFormModal({
     const nextRequestId = requestId ?? makeRequestId(operation);
     const baseDetail = {
       requestId: nextRequestId,
-      defaultCashAccountId: fromAccountId,
+      defaultCashAccountId: cashAccountId,
       defaultDate: date,
       defaultAmount: amountNumber,
     };
@@ -491,9 +547,9 @@ export function TransactionFormModal({
       window.dispatchEvent(new CustomEvent("mmh:debt:create", {
         detail: {
           requestId: nextRequestId,
-          mode: targetAccount?.debtDirection === "receivable" ? "lend_out" : "repay_out",
-          defaultDebtAccountId: toAccountId,
-          defaultCashAccountId: fromAccountId,
+          mode: debtMode ?? (targetAccount?.debtDirection === "receivable" ? "lend_out" : "repay_out"),
+          defaultDebtAccountId: debtAccountId,
+          defaultCashAccountId: cashAccountId,
           defaultDate: date,
           defaultPrincipal: amountNumber,
         },
@@ -518,9 +574,15 @@ export function TransactionFormModal({
   function resetDraft() {
     setTxType("expense");
     setDate(today);
-    setPostedAt(toDateTimeLocalValue(today));
+    setPostedAt(toDateInputValue(today));
     setPostedAtEdited(false);
     setAmount("");
+    setCreateInstallment(false);
+    setInstallmentAmount("");
+    setInstallmentAmountEdited(false);
+    setInstallmentTotal("12");
+    setInstallmentRateType("period_fee");
+    setInstallmentRate("0");
     setAccountId(defaultAccountId ?? "");
     if (isCreditCardAccount) {
       setFromAccountId(lastRepayFromAccountId ?? defaultAccountId ?? "");
@@ -546,6 +608,9 @@ export function TransactionFormModal({
 
   function repeatDraft() {
     setAmount("");
+    setCreateInstallment(false);
+    setInstallmentAmount("");
+    setInstallmentAmountEdited(false);
     setRequestId(null);
     setEditEntryId(null);
     setEditEntryOriginalType(null);
@@ -584,7 +649,7 @@ export function TransactionFormModal({
 
       const dateStr = normalizeYmd(item.date) || today;
       setDate(dateStr);
-      setPostedAt(toDateTimeLocalValue(dateStr));
+      setPostedAt(toDateInputValue(dateStr));
       setPostedAtEdited(false);
 
       const num = typeof item.amount === "number" && Number.isFinite(item.amount) ? item.amount : 0;
@@ -649,10 +714,11 @@ export function TransactionFormModal({
       setEditEntryId(detail.entryId);
       setEditEntryOriginalType(detail.type);
       setEditEntryHasFundDetail(detail.hasFundDetail ?? false);
+      setCreateInstallment(false);
       setOpen(true);
       setTxType(detail.type);
       setDate(detail.date || today);
-      setPostedAt(toDateTimeLocalValue(detail.postedAt || detail.date || today));
+      setPostedAt(toDateInputValue(detail.postedAt || detail.date || today));
       setPostedAtEdited(Boolean(detail.postedAt));
       const numericAmount = Number(detail.amount);
       setAmount(
@@ -712,19 +778,20 @@ export function TransactionFormModal({
 
   useEffect(() => {
     if (!open || txType !== "expense" || postedAtEdited) return;
-    setPostedAt(toDateTimeLocalValue(date || today));
+    setPostedAt(toDateInputValue(date || today));
   }, [date, open, postedAtEdited, today, txType]);
 
   useEffect(() => {
     if (!open || !isCreditCardAccount || txType !== "transfer") return;
     if (fromAccountIdEdited || !toAccountId) return;
+    if (accountMetaById.get(toAccountId)?.kind !== "bank_credit") return;
     fetch(`/api/v1/fund/last-repay-account?accountId=${encodeURIComponent(toAccountId)}`)
       .then(r => r.json())
       .then(d => {
         if (d.ok && d.repayAccountId) setFromAccountId(d.repayAccountId);
       })
       .catch(() => {});
-  }, [open, isCreditCardAccount, txType, toAccountId, fromAccountIdEdited]);
+  }, [accountMetaById, open, isCreditCardAccount, txType, toAccountId, fromAccountIdEdited]);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -801,6 +868,13 @@ export function TransactionFormModal({
           formData.set("categoryId", categoryId);
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
+      if (txType === "expense" && createInstallment && !editEntryId) {
+        formData.set("createInstallment", "true");
+        formData.set("installmentAmount", installmentAmount);
+        formData.set("installmentTotal", installmentTotal);
+        formData.set("installmentRateType", installmentRateType);
+        formData.set("installmentRate", installmentRate);
+      }
     }
     setSubmitting(true);
     try {
@@ -889,11 +963,20 @@ export function TransactionFormModal({
                     <button
                       type="button"
                       onClick={() => {
+                        if (txType === "transfer") return;
+                        const creditAccountId = accountId || defaultAccountId || "";
+                        const defaultAsCreditOutflow = !!editEntryId && editEntryOriginalType !== "income";
                         setTxType("transfer");
                         if (isCreditCardAccount) {
-                          setFromAccountIdEdited(false);
-                          setFromAccountId(lastRepayFromAccountId ?? defaultAccountId ?? "");
-                          setToAccountId(defaultAccountId ?? "");
+                          if (defaultAsCreditOutflow) {
+                            setFromAccountId(creditAccountId);
+                            setToAccountId("");
+                            setFromAccountIdEdited(true);
+                          } else {
+                            setFromAccountIdEdited(false);
+                            setFromAccountId(lastRepayFromAccountId ?? "");
+                            setToAccountId(creditAccountId);
+                          }
                         }
                       }}
                       className={`segment-button h-9 flex-1 ${
@@ -902,7 +985,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      还款
+                      转账
                     </button>
                   </>
                 ) : (
@@ -1065,7 +1148,8 @@ export function TransactionFormModal({
                           search: true,
                           initialCollapsedAll: true,
                           accordionGroups: true,
-                          groupSelectOnDoubleClick: true,
+                          selectableGroups: true,
+                          groupSelectOnDoubleClick: false,
                           minDropdownWidth: 560,
                           dropdownMaxHeight: 420,
                           density: "compact",
@@ -1096,20 +1180,26 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* 第三行：金额 | 入账时间 */}
+                  {/* 第三行：金额 | 入账日期 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">金额</div>
-                      <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
+                      <CalcInput value={amount} onChange={(value) => {
+                        setAmount(value);
+                        if (createInstallment && !installmentAmountEdited) {
+                          const numeric = Math.abs(Number(value));
+                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
+                        }
+                      }} placeholder="例如：88.50" label="金额" precision={2} />
                     </div>
                     {txType === "expense" ? (
                       <div className="space-y-1">
-                        <div className="form-label">入账时间</div>
+                        <div className="form-label">入账日期</div>
                         <input
-                          type="datetime-local"
+                          type="date"
                           value={postedAt}
                           onChange={(event) => {
-                            setPostedAt(event.target.value);
+                            setPostedAt(toDateInputValue(event.target.value));
                             setPostedAtEdited(true);
                           }}
                           className="form-input"
@@ -1133,6 +1223,81 @@ export function TransactionFormModal({
                       </div>
                     )}
                   </div>
+
+                  {txType === "expense" && selectedAccountIsCreditCard && !editEntryId ? (
+                    <div className="border-y border-slate-200 py-3 space-y-3">
+                      <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={createInstallment}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setCreateInstallment(checked);
+                            if (checked && !installmentAmountEdited) {
+                              const numeric = Math.abs(Number(amount));
+                              setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
+                            }
+                          }}
+                          className="h-4 w-4 accent-slate-800"
+                        />
+                        分期
+                      </label>
+                      {createInstallment ? (
+                        <>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <div className="form-label">分期金额</div>
+                              <CalcInput value={installmentAmount} onChange={(value) => {
+                                setInstallmentAmount(value);
+                                setInstallmentAmountEdited(true);
+                              }} placeholder="默认全部金额" label="分期金额" precision={2} />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="form-label">期数</div>
+                              <input
+                                type="number"
+                                min={2}
+                                max={120}
+                                step={1}
+                                value={installmentTotal}
+                                onChange={(event) => setInstallmentTotal(event.target.value)}
+                                className="form-input"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="form-label">{installmentRateType === "annual_interest" ? "年利率 (%)" : "每期费率 (%)"}</div>
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                step="0.0001"
+                                value={installmentRate}
+                                onChange={(event) => setInstallmentRate(event.target.value)}
+                                className="form-input"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="inline-flex h-8 overflow-hidden rounded border border-slate-200 bg-white">
+                              <button type="button" onClick={() => setInstallmentRateType("period_fee")}
+                                className={`px-3 text-xs ${installmentRateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                                每期手续费
+                              </button>
+                              <button type="button" onClick={() => setInstallmentRateType("annual_interest")}
+                                className={`border-l border-slate-200 px-3 text-xs ${installmentRateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                                年利率
+                              </button>
+                            </div>
+                            {installmentPreview ? (
+                              <div className="text-xs tabular-nums text-slate-500">
+                                首期 {installmentPreview.firstPayment.toFixed(2)} · 费用 {installmentPreview.totalInterest.toFixed(2)} · 合计 {installmentPreview.totalPayment.toFixed(2)}
+                              </div>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   {/* 第四行：收支机构 */}
                   {txType === "expense" ? (

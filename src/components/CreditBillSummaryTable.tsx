@@ -34,9 +34,6 @@ export type CreditBillSummaryRow = {
 type CreditBillSummaryTableProps = {
   accountId: string;
   accountName: string;
-  institutionName?: string | null;
-  institutionShortName?: string | null;
-  accountNumberMasked?: string | null;
   rows: CreditBillSummaryRow[];
   initialPage: number;
   pageSize: number;
@@ -65,9 +62,6 @@ function pageButtonClass(enabled: boolean, tone: "muted" | "normal" = "normal") 
 export function CreditBillSummaryTable({
   accountId,
   accountName,
-  institutionName,
-  institutionShortName,
-  accountNumberMasked,
   rows,
   initialPage,
   pageSize,
@@ -374,9 +368,6 @@ export function CreditBillSummaryTable({
         <div className="flex items-center gap-2">
           <CreditBillMailImportButton
             accountName={accountName}
-            institutionName={institutionName}
-            institutionShortName={institutionShortName}
-            accountNumberMasked={accountNumberMasked}
           />
           <button
             type="button"

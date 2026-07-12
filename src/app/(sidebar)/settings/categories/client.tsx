@@ -173,6 +173,10 @@ export default function SettingsCategoriesClient({
     const nextName = name.trim();
     const target = categories.find(c => c.id === id);
     if (!target) return false;
+    if (target.isSystem) {
+      setEditError("系统内置类别不能修改名称");
+      return false;
+    }
     if (!nextName) {
       setEditError("请填写分类名称");
       return false;
@@ -211,6 +215,10 @@ export default function SettingsCategoriesClient({
   async function moveCategory(id: string, parentId: string | null) {
     const target = categories.find(c => c.id === id);
     if (!target) return false;
+    if (target.isSystem) {
+      setEditError("系统内置类别不能移动");
+      return false;
+    }
     if ((target.parentId ?? null) === parentId) return true;
 
     setEditError("");
@@ -254,6 +262,7 @@ export default function SettingsCategoriesClient({
   }
 
   function startInlineEdit(category: Category) {
+    if (category.isSystem) return;
     setInlineEditingId(category.id);
     setInlineEditingName(category.name);
     setEditError("");
@@ -280,13 +289,20 @@ export default function SettingsCategoriesClient({
       list.push(c);
       byParentId.set(c.parentId, list);
     }
-    const opts: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string }> = [];
-    function walk(pid: string | null, depth: number, currentHeaderId?: string) {
+    const opts: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string; isGroup?: boolean }> = [];
+    function walk(pid: string | null, depth: number) {
       const children = byParentId.get(pid) ?? [];
       for (const child of children) {
-        const headerId = depth === 0 ? child.id : currentHeaderId;
-        opts.push({ id: child.id, name: child.name, label: `${typeLabel(child.type)} — ${child.name}`, type: child.type, depth, parentId: depth > 0 ? headerId : undefined });
-        walk(child.id, depth + 1, headerId);
+        opts.push({
+          id: child.id,
+          name: child.name,
+          label: `${typeLabel(child.type)} — ${child.name}`,
+          type: child.type,
+          depth,
+          parentId: child.parentId ?? undefined,
+          isGroup: (byParentId.get(child.id) ?? []).length > 0,
+        });
+        walk(child.id, depth + 1);
       }
     }
     walk(null, 0);
@@ -341,11 +357,13 @@ export default function SettingsCategoriesClient({
                 <X className="w-3 h-3" />
               </button>
             </>
-          ) : (
+          ) : !cat.isSystem ? (
             <button onClick={(e) => { e.stopPropagation(); startInlineEdit(cat); }}
               className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title="修改名称">
               <Pencil className="w-3 h-3" />
             </button>
+          ) : (
+            <span className="h-5 w-5 shrink-0" />
           )}
           <button onClick={(e) => { e.stopPropagation(); openAdd(cat.id); }}
             className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-blue-100 text-slate-400 hover:text-blue-600 shrink-0" title="添加子分类">
@@ -465,6 +483,7 @@ export default function SettingsCategoriesClient({
                       <span className="form-label mb-1 block">分类名称</span>
                       <input
                         value={editingName}
+                        disabled={selectedCategory.isSystem}
                         onChange={(e) => {
                           setEditingName(e.target.value);
                           setEditError("");
@@ -472,13 +491,13 @@ export default function SettingsCategoriesClient({
                         onKeyDown={(e) => {
                           if (e.key === "Enter") void handleRename();
                         }}
-                        className="form-input"
+                        className="form-input disabled:bg-slate-50 disabled:text-slate-400"
                       />
                     </label>
                     <button
                       type="button"
                       onClick={handleRename}
-                      disabled={savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
+                      disabled={selectedCategory.isSystem || savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
                       className="primary-button h-9 gap-1.5 disabled:opacity-50"
                     >
                       <Save className="h-3.5 w-3.5" />
@@ -493,7 +512,7 @@ export default function SettingsCategoriesClient({
                         const nextParentId = event.target.value || null;
                         void moveCategory(selectedCategory.id, nextParentId);
                       }}
-                      disabled={movingParent}
+                      disabled={selectedCategory.isSystem || movingParent}
                       className="form-input"
                       title={`当前上级：${selectedParentName}`}
                     >
@@ -503,7 +522,9 @@ export default function SettingsCategoriesClient({
                       ))}
                     </select>
                     <div className="mt-1 text-[11px] text-slate-400">
-                      移动后，「{selectedCategory.name}」及其子分类会整体移动。
+                      {selectedCategory.isSystem
+                        ? "系统内置类别固定显示，不能改名或移动。"
+                        : `移动后，「${selectedCategory.name}」及其子分类会整体移动。`}
                     </div>
                   </label>
                 </div>
@@ -602,12 +623,14 @@ export default function SettingsCategoriesClient({
                                 <X className="w-3 h-3" />
                               </button>
                             </>
-                          ) : (
+                          ) : !child.isSystem ? (
                             <button onClick={(e) => { e.stopPropagation(); startInlineEdit(child); }}
                               className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
                               title="修改名称">
                               <Pencil className="w-3 h-3" />
                             </button>
+                          ) : (
+                            <span className="h-6 w-6" />
                           )}
                           {!child.isSystem && (
                             <button onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }}

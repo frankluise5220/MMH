@@ -40,6 +40,23 @@ export async function POST(req: Request) {
         where: { id: { in: transactionIds } },
         data: { deletedAt: null },
       });
+      const restoredInstallmentPlans = await prisma.creditCardInstallmentPlan.findMany({
+        where: { sourceEntryId: { in: transactionIds }, householdId },
+        select: { id: true },
+      });
+      if (restoredInstallmentPlans.length > 0) {
+        const planIds = restoredInstallmentPlans.map((plan) => plan.id);
+        await prisma.$transaction([
+          prisma.creditCardInstallmentPlan.updateMany({
+            where: { id: { in: planIds }, householdId },
+            data: { status: "active" },
+          }),
+          prisma.txRecord.updateMany({
+            where: { creditCardInstallmentPlanId: { in: planIds }, householdId },
+            data: { deletedAt: null },
+          }),
+        ]);
+      }
       // 收集恢复记录涉及的账户，重算余额
       const restoredRecords = await prisma.txRecord.findMany({
         where: { id: { in: transactionIds } },
@@ -103,6 +120,28 @@ export async function POST(req: Request) {
       if (!txRecord) continue;
       if (txRecord.deletedAt) continue;
       if (!isAdmin(user) && txRecord.householdId && txRecord.householdId !== householdId) continue;
+
+      const installmentPlan = await prisma.creditCardInstallmentPlan.findFirst({
+        where: { sourceEntryId: txRecord.id, householdId },
+        select: { id: true, accountId: true },
+      });
+      if (installmentPlan) {
+        const deletedAt = new Date();
+        const related = await prisma.txRecord.updateMany({
+          where: {
+            householdId,
+            creditCardInstallmentPlanId: installmentPlan.id,
+            deletedAt: null,
+          },
+          data: { deletedAt },
+        });
+        await prisma.creditCardInstallmentPlan.update({
+          where: { id: installmentPlan.id },
+          data: { status: "cancelled" },
+        });
+        accountsToRecalcBalance.add(installmentPlan.accountId);
+        deletedCount += related.count;
+      }
 
       // 软删除 TxRecord
       await prisma.txRecord.update({

@@ -172,13 +172,35 @@ export async function PATCH(req: Request) {
           { statementMonth: null, date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) }, deletedAt: null },
         ],
       };
-      const [expenseAgg, incomeAgg, paidAgg] = await Promise.all([
+      const [expenseAgg, incomeAgg, transferOutAgg, cycleTransferInAgg, paidAgg] = await Promise.all([
         prisma.txRecord.aggregate({
           where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.expense }] },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
           where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.income }] },
+          _sum: { amount: true },
+        }),
+        prisma.txRecord.aggregate({
+          where: {
+            AND: [
+              cycleWindow,
+              { accountId },
+              { type: TransactionType.transfer },
+              { amount: { lt: 0 } },
+            ],
+          },
+          _sum: { amount: true },
+        }),
+        prisma.txRecord.aggregate({
+          where: {
+            AND: [
+              cycleWindow,
+              { toAccountId: accountId },
+              { type: TransactionType.transfer },
+              { amount: { lt: 0 } },
+            ],
+          },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
@@ -195,9 +217,10 @@ export async function PATCH(req: Request) {
         }),
       ]);
 
-      const expenseAbs = Math.max(0, -toNumber(expenseAgg._sum.amount ?? 0));
-      const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0));
-      const netCycle = toNumber(expenseAgg._sum.amount ?? 0) + toNumber(incomeAgg._sum.amount ?? 0);
+      const outflow = toNumber(expenseAgg._sum.amount ?? 0) + toNumber(transferOutAgg._sum.amount ?? 0);
+      const expenseAbs = Math.max(0, -outflow);
+      const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0)) + Math.max(0, -toNumber(cycleTransferInAgg._sum.amount ?? 0));
+      const netCycle = outflow + toNumber(incomeAgg._sum.amount ?? 0);
       const rawBill = Math.max(0, -netCycle);
       const paid = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
 

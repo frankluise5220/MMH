@@ -38,8 +38,9 @@ const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; label: string }> = [
   { value: "insurance_premium", label: "保费缴费" },
 ];
 
-const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", "自由还款", "先还利息一次性还本"];
-const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", "先还利息一次性还本"]);
+const INTEREST_FREE_LOAN_REPAYMENT_METHOD = "免息分期还本";
+const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "自由还款", "先还利息一次性还本"];
+const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "先还利息一次性还本"]);
 
 type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string }>;
@@ -530,10 +531,11 @@ export function RegularInvestForm({
       return;
     }
     const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod);
+    const isInterestFreeLoanRepayment = formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD;
     const loanAnnualRate = formData.annualRate.trim() ? parseFloat(formData.annualRate) : null;
     const loanRepaymentIntervalMonths = parseInt(formData.repaymentIntervalMonths || "1", 10);
     if (isFixedLoanRepayment) {
-      if (loanAnnualRate == null || !Number.isFinite(loanAnnualRate) || loanAnnualRate <= 0) {
+      if (!isInterestFreeLoanRepayment && (loanAnnualRate == null || !Number.isFinite(loanAnnualRate) || loanAnnualRate <= 0)) {
         window.alert("固定还款方式需要填写年利率");
         return;
       }
@@ -1208,7 +1210,11 @@ export function RegularInvestForm({
                     <div className="text-xs font-medium text-slate-600">还款方式</div>
                     <select
                       value={formData.repaymentMethod}
-                      onChange={(e) => setFormData(d => ({ ...d, repaymentMethod: e.target.value }))}
+                      onChange={(e) => setFormData(d => ({
+                        ...d,
+                        repaymentMethod: e.target.value,
+                        annualRate: e.target.value === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : d.annualRate,
+                      }))}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     >
                       {LOAN_REPAYMENT_METHOD_OPTIONS.map((method) => (
@@ -1223,7 +1229,8 @@ export function RegularInvestForm({
                       step="0.001"
                       value={formData.annualRate}
                       onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
-                      placeholder={FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? "必填" : "可选"}
+                      disabled={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD}
+                      placeholder={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? "必填" : "可选"}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>

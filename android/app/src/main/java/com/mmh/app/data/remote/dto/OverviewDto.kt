@@ -156,6 +156,48 @@ data class AccountListRowDto(
     val institutionName: String? = null
 )
 
+/** 信用卡账户展示行 */
+@Serializable
+data class CreditAccountRowDto(
+    val id: String = "",
+    val name: String = "",
+    val kind: String = "bank_credit",
+    val balance: Double = 0.0,
+    val groupName: String? = null,
+    val institutionName: String? = null,
+    val creditLimit: Double = 0.0,
+    val availableLimit: Double = 0.0,
+    val billingDay: Int? = null,
+    val repaymentDay: Int? = null,
+    val currentBill: Double = 0.0,
+    val paid: Double = 0.0,
+    val remain: Double = 0.0,
+    val dueDate: String? = null
+)
+
+/** 首页分类汇总。字段名与 /api/v1/overview/summary 保持一致。 */
+@Serializable
+data class AccountTypeTotalsDto(
+    val cash: Double = 0.0,
+    val bankDebit: Double = 0.0,
+    val ewallet: Double = 0.0,
+    val deposit: Double = 0.0,
+    val investmentMarketValue: Double = 0.0,
+    val investmentCost: Double = 0.0,
+    val investmentFloatingPnL: Double = 0.0,
+    val creditUsed: Double = 0.0,
+    val creditLimit: Double = 0.0,
+    val creditAvailable: Double = 0.0,
+    val creditCurrentBill: Double = 0.0,
+    val loan: Double = 0.0,
+    val loanReceivable: Double = 0.0,
+    val other: Double = 0.0,
+    val liquidAssets: Double = 0.0,
+    val liabilities: Double = 0.0,
+    val dailyNetWorth: Double = 0.0,
+    val totalNetWorth: Double = 0.0
+)
+
 /** 投资持仓摘要行（Top N，按市值降序） */
 @Serializable
 data class TopPositionRowDto(
@@ -177,7 +219,22 @@ data class OverviewSummaryDto(
     val monthExpense: Double = 0.0,
     val assetDistribution: List<AssetDistributionItemDto> = emptyList(),
     val accountList: List<AccountListRowDto> = emptyList(),
-    val topPositions: List<TopPositionRowDto> = emptyList()
+    val topPositions: List<TopPositionRowDto> = emptyList(),
+    val investmentAccountList: List<TopPositionRowDto> = emptyList(),
+    val dailyNetWorth: Double = 0.0,
+    val dailyAssetDistribution: List<AssetDistributionItemDto> = emptyList(),
+    val dailyAccountList: List<AccountListRowDto> = emptyList(),
+    val creditAccountList: List<CreditAccountRowDto> = emptyList(),
+    val debtAccountList: List<AccountListRowDto> = emptyList(),
+    val accountTypeTotals: AccountTypeTotalsDto = AccountTypeTotalsDto(),
+    val creditUsedTotal: Double = 0.0,
+    val creditLimitTotal: Double = 0.0,
+    val creditAvailableTotal: Double = 0.0,
+    val creditCurrentBillTotal: Double = 0.0,
+    val investmentMarketValue: Double = 0.0,
+    val investmentCost: Double = 0.0,
+    val investmentFloatingPnL: Double = 0.0,
+    val investmentFloatingPnLRate: Double = 0.0
 )
 
 /** GET /api/v1/overview/summary 响应 */

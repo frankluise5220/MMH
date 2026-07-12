@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind, TransactionType } from "@prisma/client";
+import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 
 export type MonthlySummaryRow = {
   month: string;
@@ -46,11 +47,17 @@ export async function getMonthlySummary(
       ...accountFilter,
     },
     select: {
+      id: true,
       date: true,
       type: true,
       amount: true,
       fundSubtype: true,
+      fundProductType: true,
       realizedProfit: true,
+      depositInterest: true,
+      fundFee: true,
+      fundCode: true,
+      fundName: true,
       accountId: true,
       toAccountId: true,
     },
@@ -71,15 +78,16 @@ export async function getMonthlySummary(
     const isFromSelf = e.accountId && scopeAccountIds.includes(e.accountId);
 
     if (e.type === TransactionType.income) {
-      row.income += isToSelf ? Math.abs(amount) : amount;
+      row.income += getIncomeExpenseStatisticAmount(e.type, amount);
     } else if (e.type === TransactionType.expense) {
-      row.expense += Math.abs(isFromSelf ? Math.abs(amount) : amount);
+      row.expense += getIncomeExpenseStatisticAmount(e.type, amount);
     } else if (e.type === TransactionType.transfer) {
       if (isToSelf && !isFromSelf) row.income += Math.abs(amount);
       else if (isFromSelf && !isToSelf) row.expense += Math.abs(amount);
     } else if (e.type === TransactionType.investment) {
-      if (e.fundSubtype === "dividend_cash") row.investPnL += Math.abs(amount);
-      if (e.realizedProfit != null) row.investPnL += toNumber(e.realizedProfit);
+      for (const item of getInvestmentStatisticItems(e)) {
+        row.investPnL += item.type === "income" ? item.amount : -item.amount;
+      }
       if (e.fundSubtype === "buy" && amount < 0) row.expense += Math.abs(amount);
     }
   }

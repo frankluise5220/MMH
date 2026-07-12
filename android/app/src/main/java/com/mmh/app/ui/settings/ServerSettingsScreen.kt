@@ -246,7 +246,7 @@ fun ServerSettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     singleLine = true,
                                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
-                                    placeholder = { Text("192.168.2.199") }
+                                    placeholder = { Text("192.168.1.100") }
                                 )
                                 Text(
                                     text = ":",

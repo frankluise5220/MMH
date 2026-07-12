@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Download, Upload } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
@@ -21,6 +22,7 @@ type BasicDetailPanelProps = {
   normalExportHref: string;
   normalExportFilename: string;
   accountOptions: Array<{ id: string; label: string }>;
+  categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   showBalanceReconcile?: boolean;
@@ -46,6 +48,7 @@ export function BasicDetailPanel({
   normalExportHref,
   normalExportFilename,
   accountOptions,
+  categoryOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
   showBalanceReconcile = false,
@@ -147,6 +150,7 @@ export function BasicDetailPanel({
           isInvestAccount={isInvestAccount}
           initialEntries={pageEntries}
           accountOptions={accountOptions}
+          categoryOptions={categoryOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           toolbarMode="custom"

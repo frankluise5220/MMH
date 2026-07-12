@@ -66,6 +66,12 @@ export async function GET(req: Request) {
     toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
     categoryName: e.categoryName,
     note: e.note,
+    creditCardInstallmentPlanId: e.creditCardInstallmentPlanId,
+    installmentNo: e.installmentNo,
+    installmentTotal: e.installmentTotal,
+    installmentPrincipal: e.installmentPrincipal,
+    installmentInterest: e.installmentInterest,
+    installmentRole: e.installmentRole,
     counterparty: null,
     sourceText: null,
   }));

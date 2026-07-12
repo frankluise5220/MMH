@@ -2,8 +2,10 @@ package com.mmh.app.ui.overview
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mmh.app.data.remote.dto.AccountTypeTotalsDto
 import com.mmh.app.data.remote.dto.AccountListRowDto
 import com.mmh.app.data.remote.dto.AssetDistributionItemDto
+import com.mmh.app.data.remote.dto.CreditAccountRowDto
 import com.mmh.app.data.remote.dto.TopPositionRowDto
 import com.mmh.app.data.repository.OverviewRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -27,6 +29,20 @@ data class OverviewUiState(
     val assetDistribution: List<AssetDistributionItemDto> = emptyList(),
     val accountList: List<AccountListRowDto> = emptyList(),
     val topPositions: List<TopPositionRowDto> = emptyList(),
+    val investmentAccountList: List<TopPositionRowDto> = emptyList(),
+    val dailyNetWorth: Double = 0.0,
+    val dailyAccountList: List<AccountListRowDto> = emptyList(),
+    val creditAccountList: List<CreditAccountRowDto> = emptyList(),
+    val debtAccountList: List<AccountListRowDto> = emptyList(),
+    val accountTypeTotals: AccountTypeTotalsDto = AccountTypeTotalsDto(),
+    val creditUsedTotal: Double = 0.0,
+    val creditLimitTotal: Double = 0.0,
+    val creditAvailableTotal: Double = 0.0,
+    val creditCurrentBillTotal: Double = 0.0,
+    val investmentMarketValue: Double = 0.0,
+    val investmentCost: Double = 0.0,
+    val investmentFloatingPnL: Double = 0.0,
+    val investmentFloatingPnLRate: Double = 0.0,
     val error: String? = null
 )
 
@@ -53,7 +69,21 @@ class OverviewViewModel @Inject constructor(
                         monthExpense = d.monthExpense,
                         assetDistribution = d.assetDistribution,
                         accountList = d.accountList,
-                        topPositions = d.topPositions
+                        topPositions = d.topPositions,
+                        investmentAccountList = d.investmentAccountList,
+                        dailyNetWorth = d.dailyNetWorth,
+                        dailyAccountList = d.dailyAccountList,
+                        creditAccountList = d.creditAccountList,
+                        debtAccountList = d.debtAccountList,
+                        accountTypeTotals = d.accountTypeTotals,
+                        creditUsedTotal = d.creditUsedTotal,
+                        creditLimitTotal = d.creditLimitTotal,
+                        creditAvailableTotal = d.creditAvailableTotal,
+                        creditCurrentBillTotal = d.creditCurrentBillTotal,
+                        investmentMarketValue = d.investmentMarketValue,
+                        investmentCost = d.investmentCost,
+                        investmentFloatingPnL = d.investmentFloatingPnL,
+                        investmentFloatingPnLRate = d.investmentFloatingPnLRate
                     )
                 }
                 is com.mmh.app.domain.model.Resource.Error -> {

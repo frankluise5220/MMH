@@ -1,4 +1,4 @@
-export type BatchReplaceField = "date" | "type" | "account" | "toAccount" | "remark";
+export type BatchReplaceField = "date" | "type" | "account" | "toAccount" | "categoryId" | "remark";
 
 export type BatchReplaceRequest = {
   ids: string[];
@@ -19,7 +19,7 @@ export async function batchReplaceEntries(request: BatchReplaceRequest): Promise
   if (ids.length === 0) return { ok: false, error: "请先勾选记录" };
 
   const value = request.value.trim();
-  if (request.field !== "remark" && !value) return { ok: false, error: "请输入替换值" };
+  if (request.field !== "remark" && request.field !== "categoryId" && !value) return { ok: false, error: "请输入替换值" };
 
   const updates = ids.map((id) => ({ id, [request.field]: value }));
   const res = await fetch("/api/v1/entries/batch-update", {

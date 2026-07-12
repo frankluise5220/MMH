@@ -6,6 +6,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan } from "@/lib/format";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import StatisticsCharts from "@/components/StatisticsCharts";
@@ -101,20 +102,25 @@ const investProductTypeLabel = (type: string | null) => {
       const fee = toNumber(e.fundFee);
       const subtype = e.fundSubtype;
 
-      if (subtype === "dividend_cash") {
-        row.investPnL += Math.abs(amt);
-        incomeByCat.set("投资分红", (incomeByCat.get("投资分红") ?? 0) + Math.abs(amt));
-        profitItems.push({ id: e.id, date: d.toISOString().slice(0,10), fundCode: e.fundCode??"", fundName: e.fundName??"", subtype: "dividend_cash", amount: Math.abs(amt), profit: Math.abs(amt), profitRate: 0 });
-      }
-      if (e.realizedProfit != null) {
-        const rp = toNumber(e.realizedProfit);
-        row.investPnL += rp;
+      for (const item of getInvestmentStatisticItems(e)) {
+        const signedProfit = item.type === "income" ? item.amount : -item.amount;
+        row.investPnL += signedProfit;
+        if (item.type === "income") {
+          incomeByCat.set(item.categoryName, (incomeByCat.get(item.categoryName) ?? 0) + item.amount);
+        } else {
+          expenseByCat.set(item.categoryName, (expenseByCat.get(item.categoryName) ?? 0) + item.amount);
+        }
         const costBase = Math.abs(amt);
-        profitItems.push({ id: e.id, date: d.toISOString().slice(0,10), fundCode: e.fundCode??"", fundName: e.fundName??"", subtype: subtype??"", amount: costBase + (rp>0?rp:0), profit: rp, profitRate: costBase > 0 ? rp / costBase : 0 });
-      }
-      if (subtype === "buy" && amt < 0) {
-        row.expense += Math.abs(amt) - fee;
-        expenseByCat.set("投资买入", (expenseByCat.get("投资买入") ?? 0) + Math.abs(amt) - fee);
+        profitItems.push({
+          id: e.id,
+          date: d.toISOString().slice(0, 10),
+          fundCode: e.fundCode ?? "",
+          fundName: e.fundName ?? "",
+          subtype: item.label,
+          amount: item.amount,
+          profit: signedProfit,
+          profitRate: costBase > 0 ? signedProfit / costBase : 0,
+        });
       }
     }
 

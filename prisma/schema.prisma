@@ -18,16 +18,16 @@ model AccessKey {
 }
 
 model Account {
-  id                                                         String              @id @default(cuid())
+  id                                                         String                      @id @default(cuid())
   name                                                       String
-  balance                                                    Decimal             @default(0) @db.Decimal(18, 2)
-  kind                                                       AccountKind         @default(other)
+  balance                                                    Decimal                     @default(0) @db.Decimal(18, 2)
+  kind                                                       AccountKind                 @default(other)
   debtDirection                                              DebtDirection?
-  currency                                                   String              @default("CNY")
-  isActive                                                   Boolean             @default(true)
-  isPlaceholder                                              Boolean             @default(false)
+  currency                                                   String                      @default("CNY")
+  isActive                                                   Boolean                     @default(true)
+  isPlaceholder                                              Boolean                     @default(false)
   investProductType                                          FundProductType?
-  creditLimit                                                Decimal?            @db.Decimal(18, 2)
+  creditLimit                                                Decimal?                    @db.Decimal(18, 2)
   billingDay                                                 Int?
   repaymentDay                                               Int?
   numberMasked                                               String?
@@ -36,35 +36,36 @@ model Account {
   counterpartyId                                             String?
   userId                                                     String?
   groupId                                                    String
-  createdAt                                                  DateTime            @default(now())
-  updatedAt                                                  DateTime            @default(now()) @updatedAt
+  createdAt                                                  DateTime                    @default(now())
+  updatedAt                                                  DateTime                    @default(now()) @updatedAt
   costBasisMethod                                            CostBasisMethod?
   defaultConfirmDays                                         Int?
   defaultArrivalDays                                         Int?
   tradingCalendar                                            TradingCalendar?
   defaultFundQueryApiId                                      String?
-  fundUnitsDecimals                                          Int                 @default(3)
-  FundQueryApi                                               FundQueryApi?       @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
-  AccountGroup                                               AccountGroup        @relation(fields: [groupId], references: [id])
-  Household                                                  Household           @relation(fields: [householdId], references: [id])
-  Institution                                                Institution?        @relation(fields: [institutionId], references: [id])
-  Counterparty                                               Counterparty?       @relation(fields: [counterpartyId], references: [id])
-  User                                                       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  fundUnitsDecimals                                          Int                         @default(3)
+  FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
+  AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
+  Household                                                  Household                   @relation(fields: [householdId], references: [id])
+  Institution                                                Institution?                @relation(fields: [institutionId], references: [id])
+  Counterparty                                               Counterparty?               @relation(fields: [counterpartyId], references: [id])
+  User                                                       User?                       @relation(fields: [userId], references: [id], onDelete: SetNull)
   AccountAlias                                               AccountAlias[]
   BillOverride                                               BillOverride[]
   CreditCardCycle                                            CreditCardCycle[]
+  CreditCardInstallmentPlan                                  CreditCardInstallmentPlan[]
   FundConfirmDays                                            FundConfirmDays[]
   FundFeeRate                                                FundFeeRate[]
   FundHolding                                                FundHolding[]
   FundSnapshot                                               FundSnapshot[]
-  FundTransaction                                             FundTransaction[]
+  FundTransaction                                            FundTransaction[]
   InsuranceProduct                                           InsuranceProduct[]
   LoanRateAdjustment                                         LoanRateAdjustment[]
   PreciousMetalHolding                                       PreciousMetalHolding[]
-  RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[] @relation("RegularInvestPlan_accountIdToAccount")
-  RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[] @relation("RegularInvestPlan_cashAccountIdToAccount")
-  transactions_accountIdToAccount                            TxRecord[]          @relation("transactions_accountIdToAccount")
-  transactions_toAccountIdToAccount                          TxRecord[]          @relation("transactions_toAccountIdToAccount")
+  RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[]         @relation("RegularInvestPlan_accountIdToAccount")
+  RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[]         @relation("RegularInvestPlan_cashAccountIdToAccount")
+  transactions_accountIdToAccount                            TxRecord[]                  @relation("transactions_accountIdToAccount")
+  transactions_toAccountIdToAccount                          TxRecord[]                  @relation("transactions_toAccountIdToAccount")
 
   @@index([householdId, kind])
   @@index([householdId, name])
@@ -85,15 +86,15 @@ model AccountAlias {
 }
 
 model AccountGroup {
-  id          String    @id @default(cuid())
-  name        String
-  sortOrder   Int       @default(0)
-  householdId String
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @default(now()) @updatedAt
-  Account     Account[]
+  id               String             @id @default(cuid())
+  name             String
+  sortOrder        Int                @default(0)
+  householdId      String
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @default(now()) @updatedAt
+  Account          Account[]
   InsuranceProduct InsuranceProduct[]
-  Household   Household @relation(fields: [householdId], references: [id])
+  Household        Household          @relation(fields: [householdId], references: [id])
 }
 
 model AiChannel {
@@ -191,6 +192,29 @@ model CreditCardCycle {
   @@index([accountId])
   @@index([isCurrentCycle])
   @@index([statementMonth])
+}
+
+model CreditCardInstallmentPlan {
+  id                   String                        @id @default(cuid())
+  householdId          String
+  accountId            String
+  sourceEntryId        String                        @unique
+  originalAmount       Decimal                       @db.Decimal(18, 2)
+  installmentPrincipal Decimal                       @db.Decimal(18, 2)
+  totalRuns            Int
+  rateType             CreditCardInstallmentRateType
+  rate                 Decimal                       @default(0) @db.Decimal(10, 6)
+  firstStatementMonth  String                        @db.VarChar(7)
+  status               CreditCardInstallmentStatus   @default(active)
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @default(now()) @updatedAt
+  Account              Account                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household            Household                     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  SourceEntry          TxRecord                      @relation("CreditCardInstallmentSource", fields: [sourceEntryId], references: [id], onDelete: Cascade)
+  Entries              TxRecord[]                    @relation("CreditCardInstallmentEntries")
+
+  @@index([householdId, accountId, status])
+  @@index([firstStatementMonth])
 }
 
 model DistillLog {
@@ -386,30 +410,31 @@ model FundTransactionCashFlow {
 }
 
 model Household {
-  id                String              @id @default(cuid())
-  name              String
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @default(now()) @updatedAt
-  Account           Account[]
-  AccountGroup      AccountGroup[]
-  Category          Category[]
-  Counterparty      Counterparty[]
-  EmailAccount      EmailAccount[]
-  FundQueryApi      FundQueryApi[]
-  FundTransaction   FundTransaction[]
-  ImportBatch       ImportBatch[]
-  InsuranceProductMaster InsuranceProductMaster[]
-  InsuranceProduct  InsuranceProduct[]
-  Institution       Institution[]
-  LoanRateAdjustment LoanRateAdjustment[]
-  PreciousMetalType PreciousMetalType[]
-  PreciousMetalUnit PreciousMetalUnit[]
-  PreciousMetalHolding PreciousMetalHolding[]
-  RegularInvestPlan RegularInvestPlan[]
-  Tag               Tag[]
-  User              User[]
-  WealthProduct     WealthProduct[]
-  transactions      TxRecord[]
+  id                        String                      @id @default(cuid())
+  name                      String
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime                    @default(now()) @updatedAt
+  Account                   Account[]
+  AccountGroup              AccountGroup[]
+  Category                  Category[]
+  Counterparty              Counterparty[]
+  EmailAccount              EmailAccount[]
+  FundQueryApi              FundQueryApi[]
+  FundTransaction           FundTransaction[]
+  ImportBatch               ImportBatch[]
+  InsuranceProductMaster    InsuranceProductMaster[]
+  InsuranceProduct          InsuranceProduct[]
+  Institution               Institution[]
+  LoanRateAdjustment        LoanRateAdjustment[]
+  PreciousMetalType         PreciousMetalType[]
+  PreciousMetalUnit         PreciousMetalUnit[]
+  PreciousMetalHolding      PreciousMetalHolding[]
+  RegularInvestPlan         RegularInvestPlan[]
+  CreditCardInstallmentPlan CreditCardInstallmentPlan[]
+  Tag                       Tag[]
+  User                      User[]
+  WealthProduct             WealthProduct[]
+  transactions              TxRecord[]
 }
 
 model Counterparty {
@@ -417,7 +442,7 @@ model Counterparty {
   name                String
   shortName           String?
   type                String       @default("organization")
-  householdId          String
+  householdId         String
   sourceInstitutionId String?
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @default(now()) @updatedAt
@@ -441,37 +466,37 @@ model ImportBatch {
 }
 
 model Institution {
-  id          String     @id @default(cuid())
-  name        String
-  shortName   String?
-  type        String?
-  householdId String?
-  Account     Account[]
-  InsuranceProductMaster InsuranceProductMaster[]
-  InsuranceProductAsInsurer InsuranceProduct[] @relation("InsuranceProductInsurer")
-  InsuranceProductAsPolicyholder InsuranceProduct[] @relation("InsuranceProductPolicyholder")
-  InsuranceProductAsInsured InsuranceProduct[] @relation("InsuranceProductInsured")
-  CounterpartyAsSource Counterparty[]
-  WealthProduct WealthProduct[]
-  Household   Household? @relation(fields: [householdId], references: [id])
+  id                             String                   @id @default(cuid())
+  name                           String
+  shortName                      String?
+  type                           String?
+  householdId                    String?
+  Account                        Account[]
+  InsuranceProductMaster         InsuranceProductMaster[]
+  InsuranceProductAsInsurer      InsuranceProduct[]       @relation("InsuranceProductInsurer")
+  InsuranceProductAsPolicyholder InsuranceProduct[]       @relation("InsuranceProductPolicyholder")
+  InsuranceProductAsInsured      InsuranceProduct[]       @relation("InsuranceProductInsured")
+  CounterpartyAsSource           Counterparty[]
+  WealthProduct                  WealthProduct[]
+  Household                      Household?               @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
 }
 
 model InsuranceProductMaster {
-  id             String                 @id @default(cuid())
-  name           String
-  shortName      String?
-  productType    InsuranceProductType   @default(other)
-  accountingType InsuranceAccountingType @default(asset)
-  currency       String                 @default("CNY")
-  householdId    String
-  institutionId  String
-  note           String?
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @default(now()) @updatedAt
-  Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  Institution    Institution            @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  id               String                  @id @default(cuid())
+  name             String
+  shortName        String?
+  productType      InsuranceProductType    @default(other)
+  accountingType   InsuranceAccountingType @default(asset)
+  currency         String                  @default("CNY")
+  householdId      String
+  institutionId    String
+  note             String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @default(now()) @updatedAt
+  Household        Household               @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution      Institution             @relation(fields: [institutionId], references: [id], onDelete: Cascade)
   InsuranceProduct InsuranceProduct[]
 
   @@unique([householdId, institutionId, name, productType])
@@ -480,19 +505,19 @@ model InsuranceProductMaster {
 }
 
 model WealthProduct {
-  id            String      @id @default(cuid())
+  id            String       @id @default(cuid())
   name          String
   shortName     String?
-  currency      String      @default("CNY")
-  annualRate    Decimal?    @db.Decimal(10, 6)
+  currency      String       @default("CNY")
+  annualRate    Decimal?     @db.Decimal(10, 6)
   termDays      Int?
   note          String?
-  isActive      Boolean     @default(true)
+  isActive      Boolean      @default(true)
   householdId   String
   institutionId String?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @default(now()) @updatedAt
-  Household     Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+  Household     Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
   Institution   Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
   TxRecord      TxRecord[]
 
@@ -502,18 +527,18 @@ model WealthProduct {
 }
 
 model PreciousMetalType {
-  id          String     @id @default(cuid())
-  code        String
-  name        String
-  shortName   String?
-  sortOrder   Int        @default(0)
-  isActive    Boolean    @default(true)
-  isSystem    Boolean    @default(false)
-  householdId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @default(now()) @updatedAt
-  Household   Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  TxRecord    TxRecord[]
+  id                   String                 @id @default(cuid())
+  code                 String
+  name                 String
+  shortName            String?
+  sortOrder            Int                    @default(0)
+  isActive             Boolean                @default(true)
+  isSystem             Boolean                @default(false)
+  householdId          String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @default(now()) @updatedAt
+  Household            Household?             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  TxRecord             TxRecord[]
   PreciousMetalHolding PreciousMetalHolding[]
 
   @@unique([householdId, code])
@@ -522,19 +547,19 @@ model PreciousMetalType {
 }
 
 model PreciousMetalUnit {
-  id          String     @id @default(cuid())
-  code        String
-  name        String
-  symbol      String?
-  decimals    Int        @default(3)
-  sortOrder   Int        @default(0)
-  isActive    Boolean    @default(true)
-  isSystem    Boolean    @default(false)
-  householdId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @default(now()) @updatedAt
-  Household   Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  TxRecord    TxRecord[]
+  id                   String                 @id @default(cuid())
+  code                 String
+  name                 String
+  symbol               String?
+  decimals             Int                    @default(3)
+  sortOrder            Int                    @default(0)
+  isActive             Boolean                @default(true)
+  isSystem             Boolean                @default(false)
+  householdId          String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @default(now()) @updatedAt
+  Household            Household?             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  TxRecord             TxRecord[]
   PreciousMetalHolding PreciousMetalHolding[]
 
   @@unique([householdId, code])
@@ -543,22 +568,22 @@ model PreciousMetalUnit {
 }
 
 model PreciousMetalHolding {
-  id               String   @id @default(cuid())
-  accountId        String
-  metalTypeId      String
-  metalTypeName    String
-  metalUnitId      String
-  metalUnitName    String
-  quantity         Decimal  @default(0) @db.Decimal(20, 6)
-  avgCost          Decimal  @default(0) @db.Decimal(20, 6)
-  cost             Decimal  @default(0) @db.Decimal(18, 2)
-  unitPrice        Decimal? @db.Decimal(20, 6)
-  marketValue      Decimal  @default(0) @db.Decimal(18, 2)
-  historicalProfit Decimal  @default(0) @db.Decimal(18, 2)
-  householdId      String
-  updatedAt        DateTime @default(now()) @updatedAt
-  Account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  Household        Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  id                String            @id @default(cuid())
+  accountId         String
+  metalTypeId       String
+  metalTypeName     String
+  metalUnitId       String
+  metalUnitName     String
+  quantity          Decimal           @default(0) @db.Decimal(20, 6)
+  avgCost           Decimal           @default(0) @db.Decimal(20, 6)
+  cost              Decimal           @default(0) @db.Decimal(18, 2)
+  unitPrice         Decimal?          @db.Decimal(20, 6)
+  marketValue       Decimal           @default(0) @db.Decimal(18, 2)
+  historicalProfit  Decimal           @default(0) @db.Decimal(18, 2)
+  householdId       String
+  updatedAt         DateTime          @default(now()) @updatedAt
+  Account           Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household         Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
   PreciousMetalType PreciousMetalType @relation(fields: [metalTypeId], references: [id], onDelete: Cascade)
   PreciousMetalUnit PreciousMetalUnit @relation(fields: [metalUnitId], references: [id], onDelete: Cascade)
 
@@ -570,39 +595,39 @@ model PreciousMetalHolding {
 }
 
 model RegularInvestPlan {
-  id                                               String              @id @default(cuid())
+  id                                               String               @id @default(cuid())
   accountId                                        String
   cashAccountId                                    String?
   fundCode                                         String
   fundName                                         String?
-  amount                                           Decimal             @db.Decimal(18, 2)
-  intervalUnit                                     IntervalUnit        @default(month)
-  intervalValue                                    Int                 @default(1)
+  amount                                           Decimal              @db.Decimal(18, 2)
+  intervalUnit                                     IntervalUnit         @default(month)
+  intervalValue                                    Int                  @default(1)
   nextRunDate                                      DateTime
   lastRunDate                                      DateTime?
-  feeRate                                          Decimal?            @db.Decimal(10, 6)
+  feeRate                                          Decimal?             @db.Decimal(10, 6)
   confirmDays                                      Int?
-  arrivalDays                                      Int?                @default(2)
-  createdAt                                        DateTime            @default(now())
-  updatedAt                                        DateTime            @default(now()) @updatedAt
+  arrivalDays                                      Int?                 @default(2)
+  createdAt                                        DateTime             @default(now())
+  updatedAt                                        DateTime             @default(now()) @updatedAt
   accountName                                      String
   cashAccountName                                  String?
   endDate                                          DateTime?
-  executedRuns                                     Int                 @default(0)
+  executedRuns                                     Int                  @default(0)
   fundProductType                                  FundProductType?
   taskType                                         String?
   targetName                                       String?
   insuranceProductName                             String?
   memo                                             String?
   startDate                                        DateTime
-  status                                           RegularInvestStatus @default(active)
+  status                                           RegularInvestStatus  @default(active)
   totalRuns                                        Int?
   executionDay                                     Int?
-  skipPendingPreceding                             Boolean             @default(true)
+  skipPendingPreceding                             Boolean              @default(true)
   householdId                                      String?
-  Account_RegularInvestPlan_accountIdToAccount     Account             @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
-  Account_RegularInvestPlan_cashAccountIdToAccount Account?            @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
-  Household                                        Household?          @relation(fields: [householdId], references: [id])
+  Account_RegularInvestPlan_accountIdToAccount     Account              @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
+  Account_RegularInvestPlan_cashAccountIdToAccount Account?             @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
+  Household                                        Household?           @relation(fields: [householdId], references: [id])
   LoanRateAdjustment                               LoanRateAdjustment[]
 
   @@index([accountId])
@@ -614,16 +639,16 @@ model RegularInvestPlan {
 
 model LoanRateAdjustment {
   id                  String             @id @default(cuid())
-  householdId          String
-  accountId            String
-  regularInvestPlanId  String?
-  effectiveDate        DateTime
-  annualRate           Decimal            @db.Decimal(10, 6)
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @default(now()) @updatedAt
-  Account              Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  Household            Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  RegularInvestPlan    RegularInvestPlan? @relation(fields: [regularInvestPlanId], references: [id], onDelete: Cascade)
+  householdId         String
+  accountId           String
+  regularInvestPlanId String?
+  effectiveDate       DateTime
+  annualRate          Decimal            @db.Decimal(10, 6)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @default(now()) @updatedAt
+  Account             Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household           Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  RegularInvestPlan   RegularInvestPlan? @relation(fields: [regularInvestPlanId], references: [id], onDelete: Cascade)
 
   @@unique([householdId, accountId, effectiveDate])
   @@index([householdId, accountId])
@@ -637,24 +662,24 @@ model SystemSetting {
 }
 
 model EmailAccount {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   householdId  String
   label        String
   username     String
   imapHost     String
-  imapPort     Int      @default(993)
-  imapSecure   Boolean  @default(true)
-  outboundType String   @default("smtp") // "smtp" | "resend"
+  imapPort     Int       @default(993)
+  imapSecure   Boolean   @default(true)
+  outboundType String    @default("smtp") // "smtp" | "resend"
   smtpHost     String?
-  smtpPort     Int?     @default(465)
-  smtpSecure   Boolean? @default(true)
+  smtpPort     Int?      @default(465)
+  smtpSecure   Boolean?  @default(true)
   smtpFrom     String?
   resendApiKey String?
   resendFrom   String?
   password     String
-  mailbox      String   @default("INBOX")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @default(now()) @updatedAt
+  mailbox      String    @default("INBOX")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
   household    Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@index([householdId])
@@ -691,31 +716,31 @@ model User {
 }
 
 model UserSettings {
-  id            String   @id @default(cuid())
-  userId        String   @unique
+  id                   String   @id @default(cuid())
+  userId               String   @unique
   // IMAP 收件
-  emailHost     String?
-  emailPort     Int?
-  emailSecure   Boolean  @default(true)
-  emailUser     String?
-  emailPassword String?
-  emailMailbox  String   @default("INBOX")
+  emailHost            String?
+  emailPort            Int?
+  emailSecure          Boolean  @default(true)
+  emailUser            String?
+  emailPassword        String?
+  emailMailbox         String   @default("INBOX")
   // SMTP 发件
-  smtpHost      String?
-  smtpPort      Int?
-  smtpSecure    Boolean  @default(true)
-  smtpUser      String?
-  smtpPass      String?
-  smtpFrom      String?
+  smtpHost             String?
+  smtpPort             Int?
+  smtpSecure           Boolean  @default(true)
+  smtpUser             String?
+  smtpPass             String?
+  smtpFrom             String?
   // Resend 发件
-  resendApiKey  String?
-  resendFrom    String?
+  resendApiKey         String?
+  resendFrom           String?
   // 功能开关
-  passwordResetEnabled Boolean @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @default(now()) @updatedAt
-  colorScheme   String   @default("red_up_green_down")
-  User          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  passwordResetEnabled Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now()) @updatedAt
+  colorScheme          String   @default("red_up_green_down")
+  User                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model PasswordResetToken {
@@ -735,46 +760,47 @@ model PasswordResetToken {
 }
 
 model InsuranceProduct {
-  id             String                 @id @default(cuid())
-  name           String
-  shortName      String?
-  productMasterId String?
-  productType    InsuranceProductType   @default(other)
-  accountingType InsuranceAccountingType @default(asset)
-  policyNo       String?
-  status         InsuranceStatus        @default(active)
-  currency       String                 @default("CNY")
-  householdId    String
-  accountId      String
-  institutionId  String?
-  ownerGroupId   String?
-  policyholderPersonId String?
-  insuredUserId  String?
-  insuredPersonId String?
-  beneficiaryName String?
-  startDate      DateTime?
-  effectiveDate  DateTime?
-  maturityDate   DateTime?
-  premiumMode    String?
+  id                     String                  @id @default(cuid())
+  name                   String
+  shortName              String?
+  productMasterId        String?
+  productType            InsuranceProductType    @default(other)
+  accountingType         InsuranceAccountingType @default(asset)
+  policyNo               String?
+  status                 InsuranceStatus         @default(active)
+  currency               String                  @default("CNY")
+  householdId            String
+  accountId              String
+  institutionId          String?
+  ownerGroupId           String?
+  policyholderPersonId   String?
+  insuredUserId          String?
+  insuredPersonId        String?
+  beneficiaryName        String?
+  startDate              DateTime?
+  effectiveDate          DateTime?
+  maturityDate           DateTime?
+  premiumMode            String?
   premiumFrequencyMonths Int?
-  premiumAmount  Decimal?               @db.Decimal(18, 2)
-  paymentTermYears Decimal?             @db.Decimal(10, 2)
-  coverageTermYears Decimal?            @db.Decimal(10, 2)
-  coverageAmount Decimal?               @db.Decimal(18, 2)
-  cashValueEnabled Boolean              @default(true)
-  note           String?
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @default(now()) @updatedAt
-  ProductMaster  InsuranceProductMaster? @relation(fields: [productMasterId], references: [id], onDelete: SetNull)
-  Account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  Household      Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  Institution    Institution?           @relation("InsuranceProductInsurer", fields: [institutionId], references: [id], onDelete: SetNull)
-  OwnerGroup     AccountGroup?          @relation(fields: [ownerGroupId], references: [id], onDelete: SetNull)
-  PolicyholderPerson Institution?       @relation("InsuranceProductPolicyholder", fields: [policyholderPersonId], references: [id], onDelete: SetNull)
-  InsuredUser    User?                  @relation("InsuranceProduct_insuredUserIdToUser", fields: [insuredUserId], references: [id], onDelete: SetNull)
-  InsuredPerson  Institution?           @relation("InsuranceProductInsured", fields: [insuredPersonId], references: [id], onDelete: SetNull)
-  TxRecord       TxRecord[]
+  premiumAmount          Decimal?                @db.Decimal(18, 2)
+  paymentTermYears       Decimal?                @db.Decimal(10, 2)
+  coverageTermYears      Decimal?                @db.Decimal(10, 2)
+  coverageAmount         Decimal?                @db.Decimal(18, 2)
+  cashValueEnabled       Boolean                 @default(true)
+  note                   String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @default(now()) @updatedAt
+  ProductMaster          InsuranceProductMaster? @relation(fields: [productMasterId], references: [id], onDelete: SetNull)
+  Account                Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household              Household               @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution            Institution?            @relation("InsuranceProductInsurer", fields: [institutionId], references: [id], onDelete: SetNull)
+  OwnerGroup             AccountGroup?           @relation(fields: [ownerGroupId], references: [id], onDelete: SetNull)
+  PolicyholderPerson     Institution?            @relation("InsuranceProductPolicyholder", fields: [policyholderPersonId], references: [id], onDelete: SetNull)
+  InsuredUser            User?                   @relation("InsuranceProduct_insuredUserIdToUser", fields: [insuredUserId], references: [id], onDelete: SetNull)
+  InsuredPerson          Institution?            @relation("InsuranceProductInsured", fields: [insuredPersonId], references: [id], onDelete: SetNull)
+  TxRecord               TxRecord[]
 
+  @@unique([householdId, accountId, name, policyNo])
   @@index([productMasterId])
   @@index([householdId, productType])
   @@index([householdId, accountingType])
@@ -784,79 +810,86 @@ model InsuranceProduct {
   @@index([policyholderPersonId])
   @@index([insuredUserId])
   @@index([insuredPersonId])
-  @@unique([householdId, accountId, name, policyNo])
 }
 
 model TxRecord {
-  id                  String            @id @default(cuid())
-  date                DateTime
-  postedAt            DateTime?
-  type                TransactionType
-  amount              Decimal           @db.Decimal(18, 2)
-  accountId           String
-  accountName         String
-  toAccountId         String?
-  toAccountName       String?
-  categoryId          String?
-  categoryName        String?
-  fundCode            String?
-  fundProductType     FundProductType?
-  metalTypeId         String?
-  metalTypeName       String?
-  metalUnitId         String?
-  metalUnitName       String?
-  metalQuantity       Decimal?          @db.Decimal(20, 6)
-  metalUnitPrice      Decimal?          @db.Decimal(20, 6)
-  metalFee            Decimal?          @db.Decimal(18, 2)
-  confirmDate         DateTime?
-  statementMonth      String?           @db.VarChar(7)
-  note                String?
-  toNote              String?
-  deletedAt           DateTime?
-  importBatchId       String?
-  householdId         String?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @default(now()) @updatedAt
-  dayOrder            Int               @default(0)
-  currency            String            @default("CNY")
-  paymentChannelId    String?
-  paymentChannelName  String?
+  id                          String                      @id @default(cuid())
+  date                        DateTime
+  postedAt                    DateTime?
+  type                        TransactionType
+  amount                      Decimal                     @db.Decimal(18, 2)
+  accountId                   String
+  accountName                 String
+  toAccountId                 String?
+  toAccountName               String?
+  categoryId                  String?
+  categoryName                String?
+  fundCode                    String?
+  fundProductType             FundProductType?
+  metalTypeId                 String?
+  metalTypeName               String?
+  metalUnitId                 String?
+  metalUnitName               String?
+  metalQuantity               Decimal?                    @db.Decimal(20, 6)
+  metalUnitPrice              Decimal?                    @db.Decimal(20, 6)
+  metalFee                    Decimal?                    @db.Decimal(18, 2)
+  confirmDate                 DateTime?
+  statementMonth              String?                     @db.VarChar(7)
+  note                        String?
+  toNote                      String?
+  deletedAt                   DateTime?
+  importBatchId               String?
+  householdId                 String?
+  createdAt                   DateTime                    @default(now())
+  updatedAt                   DateTime                    @default(now()) @updatedAt
+  dayOrder                    Int                         @default(0)
+  currency                    String                      @default("CNY")
+  paymentChannelId            String?
+  paymentChannelName          String?
   counterpartyInstitutionId   String?
   counterpartyInstitutionName String?
-  status              TransactionStatus @default(posted)
-  fundArrivalAmount   Decimal?          @db.Decimal(18, 2)
-  fundArrivalDate     DateTime?
-  depositAnnualRate   Decimal?          @db.Decimal(10, 6)
-  depositInterest     Decimal?          @db.Decimal(18, 2)
-  depositSourceEntryId String?
-  fundSourceEntryId   String?
-  debtPrincipalAmount Decimal?          @db.Decimal(18, 2)
-  debtInterestAmount  Decimal?          @db.Decimal(18, 2)
-  debtFeeAmount       Decimal?          @db.Decimal(18, 2)
-  fundConfirmDate     DateTime?
-  fundFee             Decimal?          @db.Decimal(18, 2)
-  fundNav             Decimal?          @db.Decimal(18, 6)
-  fundSubtype         FundSubtype?
-  fundUnits           Decimal?          @db.Decimal(20, 6)
-  realizedProfit      Decimal?          @db.Decimal(18, 2)
-  regularInvestPlanId String?
-  fundName            String?
-  wealthProductId     String?
-  insuranceProductId  String?
-  insuranceAction     String?
-  insuranceProductName String?
-  source              String?           @default("manual")
-  Attachment          Attachment[]
-  EntryTag            EntryTag[]
-  account             Account           @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])
-  Category            Category?         @relation(fields: [categoryId], references: [id])
-  Household           Household?        @relation(fields: [householdId], references: [id])
-  ImportBatch         ImportBatch?      @relation(fields: [importBatchId], references: [id])
-  InsuranceProduct    InsuranceProduct? @relation(fields: [insuranceProductId], references: [id], onDelete: SetNull)
-  WealthProduct       WealthProduct?    @relation(fields: [wealthProductId], references: [id], onDelete: SetNull)
-  PreciousMetalType   PreciousMetalType? @relation(fields: [metalTypeId], references: [id], onDelete: SetNull)
-  PreciousMetalUnit   PreciousMetalUnit? @relation(fields: [metalUnitId], references: [id], onDelete: SetNull)
-  toAccount           Account?          @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
+  status                      TransactionStatus           @default(posted)
+  fundArrivalAmount           Decimal?                    @db.Decimal(18, 2)
+  fundArrivalDate             DateTime?
+  depositAnnualRate           Decimal?                    @db.Decimal(10, 6)
+  depositInterest             Decimal?                    @db.Decimal(18, 2)
+  depositSourceEntryId        String?
+  fundSourceEntryId           String?
+  debtPrincipalAmount         Decimal?                    @db.Decimal(18, 2)
+  debtInterestAmount          Decimal?                    @db.Decimal(18, 2)
+  debtFeeAmount               Decimal?                    @db.Decimal(18, 2)
+  fundConfirmDate             DateTime?
+  fundFee                     Decimal?                    @db.Decimal(18, 2)
+  fundNav                     Decimal?                    @db.Decimal(18, 6)
+  fundSubtype                 FundSubtype?
+  fundUnits                   Decimal?                    @db.Decimal(20, 6)
+  realizedProfit              Decimal?                    @db.Decimal(18, 2)
+  regularInvestPlanId         String?
+  creditCardInstallmentPlanId String?
+  installmentNo               Int?
+  installmentTotal            Int?
+  installmentPrincipal        Decimal?                    @db.Decimal(18, 2)
+  installmentInterest         Decimal?                    @db.Decimal(18, 2)
+  installmentRole             String?
+  fundName                    String?
+  wealthProductId             String?
+  insuranceProductId          String?
+  insuranceAction             String?
+  insuranceProductName        String?
+  source                      String?                     @default("manual")
+  Attachment                  Attachment[]
+  EntryTag                    EntryTag[]
+  account                     Account                     @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])
+  Category                    Category?                   @relation(fields: [categoryId], references: [id])
+  Household                   Household?                  @relation(fields: [householdId], references: [id])
+  ImportBatch                 ImportBatch?                @relation(fields: [importBatchId], references: [id])
+  InsuranceProduct            InsuranceProduct?           @relation(fields: [insuranceProductId], references: [id], onDelete: SetNull)
+  WealthProduct               WealthProduct?              @relation(fields: [wealthProductId], references: [id], onDelete: SetNull)
+  PreciousMetalType           PreciousMetalType?          @relation(fields: [metalTypeId], references: [id], onDelete: SetNull)
+  PreciousMetalUnit           PreciousMetalUnit?          @relation(fields: [metalUnitId], references: [id], onDelete: SetNull)
+  toAccount                   Account?                    @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
+  CreditCardInstallmentPlan   CreditCardInstallmentPlan?  @relation("CreditCardInstallmentEntries", fields: [creditCardInstallmentPlanId], references: [id], onDelete: Cascade)
+  CreditCardInstallmentSource CreditCardInstallmentPlan[] @relation("CreditCardInstallmentSource")
 
   @@index([accountId, date])
   @@index([accountId, date, dayOrder])
@@ -871,6 +904,7 @@ model TxRecord {
   @@index([metalTypeId])
   @@index([metalUnitId])
   @@index([regularInvestPlanId])
+  @@index([creditCardInstallmentPlanId, installmentNo])
   @@index([toAccountId, fundProductType])
   @@index([type])
   @@map("transactions")
@@ -1021,4 +1055,15 @@ enum TransactionType {
   income
   transfer
   investment
+}
+
+enum CreditCardInstallmentRateType {
+  annual_interest
+  period_fee
+}
+
+enum CreditCardInstallmentStatus {
+  active
+  completed
+  cancelled
 }

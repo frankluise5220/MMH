@@ -10,6 +10,7 @@ import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTable
 import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchReplaceButton,
+  type BasicDetailBatchCategoryOption,
   useBasicDetailSelection,
 } from "./BasicDetailSelection";
 import { useI18n } from "@/lib/i18n";
@@ -35,12 +36,14 @@ export type DetailEntry = {
   accountId: string | null;
   accountName: string | null;
   accountKind?: string | null;
+  accountDebtDirection?: string | null;
   accountInstitutionName?: string | null;
   counterpartyInstitutionId?: string | null;
   counterpartyInstitutionName?: string | null;
   toAccountId: string | null;
   toAccountName: string | null;
   toAccountKind?: string | null;
+  toAccountDebtDirection?: string | null;
   toAccountInstitutionName?: string | null;
   note: string | null;
   toNote?: string | null;
@@ -81,6 +84,9 @@ export type DetailEntry = {
     Tag: { name: string; color: string } | null;
   }>;
 };
+
+type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+type DetailAccountOption = { id: string; label: string; kind?: string | null; debtDirection?: string | null };
 
 /* Helpers */
 
@@ -140,6 +146,10 @@ function debtActivityLabel(entry: {
   type: string;
   source: string | null;
   note: string | null;
+  accountKind?: string | null;
+  accountDebtDirection?: string | null;
+  toAccountKind?: string | null;
+  toAccountDebtDirection?: string | null;
   debtPrincipalAmount?: number | null;
   debtInterestAmount?: number | null;
   debtFeeAmount?: number | null;
@@ -149,11 +159,15 @@ function debtActivityLabel(entry: {
     entry.debtInterestAmount != null ||
     entry.debtFeeAmount != null;
   const source = String(entry.source ?? "");
+  const inferredMode = inferDebtMode(entry);
+  if (source === "debt_borrow_in" || inferredMode === "borrow_in") return "借入";
+  if (source === "debt_lend_out" || inferredMode === "lend_out") return "借出";
   if (source === "debt_prepay_out") return "提前还款";
-  if (source === "debt_collect_in") return "收回";
+  if (source === "debt_collect_in" || inferredMode === "collect_in") return "收回";
   if (
     hasDebtSplit ||
     source === "debt_repay_out" ||
+    inferredMode === "repay_out" ||
     (source === "scheduled_task" && String(entry.note ?? "").includes("还贷款"))
   ) {
     return "贷款还款";
@@ -161,19 +175,58 @@ function debtActivityLabel(entry: {
   return null;
 }
 
-function isDebtRepaymentEntry(entry: {
+function debtModeFromSource(source: string, note?: string | null): DebtMode | null {
+  if (source === "debt_borrow_in") return "borrow_in";
+  if (source === "debt_lend_out") return "lend_out";
+  if (source === "debt_repay_out") return "repay_out";
+  if (source === "debt_prepay_out") return "prepay_out";
+  if (source === "debt_collect_in") return "collect_in";
+  if (source === "scheduled_task" && String(note ?? "").includes("还贷款")) return "repay_out";
+  return null;
+}
+
+function inferDebtMode(
+  entry: {
+    type: string;
+    source: string | null;
+    note?: string | null;
+    accountKind?: string | null;
+    accountDebtDirection?: string | null;
+    toAccountKind?: string | null;
+    toAccountDebtDirection?: string | null;
+  },
+  accountById?: Map<string, DetailAccountOption>,
+): DebtMode | null {
+  if (entry.type !== "transfer") return null;
+  const sourceMode = debtModeFromSource(String(entry.source ?? ""), entry.note);
+  if (sourceMode) return sourceMode;
+  const sourceAccount = accountById?.get((entry as { accountId?: string | null }).accountId ?? "");
+  const targetAccount = accountById?.get((entry as { toAccountId?: string | null }).toAccountId ?? "");
+  const sourceKind = entry.accountKind ?? sourceAccount?.kind ?? null;
+  const targetKind = entry.toAccountKind ?? targetAccount?.kind ?? null;
+  const sourceDirection = entry.accountDebtDirection ?? sourceAccount?.debtDirection ?? null;
+  const targetDirection = entry.toAccountDebtDirection ?? targetAccount?.debtDirection ?? null;
+  if (sourceKind === "loan") return sourceDirection === "receivable" ? "collect_in" : "borrow_in";
+  if (targetKind === "loan") return targetDirection === "receivable" ? "lend_out" : "repay_out";
+  return null;
+}
+
+function isDebtActivityEntry(entry: {
   type: string;
   source: string | null;
   note: string | null;
+  accountKind?: string | null;
+  accountDebtDirection?: string | null;
+  toAccountKind?: string | null;
+  toAccountDebtDirection?: string | null;
   debtPrincipalAmount?: number | null;
   debtInterestAmount?: number | null;
   debtFeeAmount?: number | null;
-}) {
+}, accountById?: Map<string, DetailAccountOption>) {
   if (entry.type !== "transfer") return false;
-  const source = String(entry.source ?? "");
-  if (source === "debt_repay_out" || source === "debt_prepay_out" || source === "debt_collect_in") return true;
+  if (inferDebtMode(entry, accountById)) return true;
   if (entry.debtPrincipalAmount != null || entry.debtInterestAmount != null || entry.debtFeeAmount != null) return true;
-  return source === "scheduled_task" && String(entry.note ?? "").includes("还贷款");
+  return false;
 }
 
 function displaySecondRemark(entry: { toNote?: string | null }) {
@@ -300,6 +353,7 @@ export function DetailViewClient({
   accountId,
   initialEntries,
   accountOptions,
+  categoryOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
   storageKey = "mmh_basic_detail_table_v1",
@@ -309,11 +363,16 @@ export function DetailViewClient({
   toolbarRightContent,
   resetKey,
   emptyText = "暂无记录",
+  draggableRows = true,
+  allowInvestmentEdit = true,
+  showAccountColumn = false,
+  showRunningBalance = true,
 }: {
   accountId: string;
   isInvestAccount: boolean;
   initialEntries: DetailEntry[];
-  accountOptions: Array<{ id: string; label: string }>;
+  accountOptions: DetailAccountOption[];
+  categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   storageKey?: string;
@@ -323,8 +382,16 @@ export function DetailViewClient({
   toolbarRightContent?: ReactNode;
   resetKey?: string;
   emptyText?: string;
+  draggableRows?: boolean;
+  allowInvestmentEdit?: boolean;
+  showAccountColumn?: boolean;
+  showRunningBalance?: boolean;
 }) {
   const { t } = useI18n();
+  const accountOptionById = useMemo(
+    () => new Map(accountOptions.map((option) => [option.id, option])),
+    [accountOptions],
+  );
   const tf = (key: string, values: Record<string, string | number>) => {
     let text: string = t(key);
     for (const [name, value] of Object.entries(values)) {
@@ -423,7 +490,7 @@ export function DetailViewClient({
     lastResetKeyRef.current = resetKey;
     setRefreshedEntries(null);
     setSelection(new Set());
-  }, [resetKey]);
+  }, [resetKey, setSelection]);
 
   // Listen for financial data changes → re-fetch from detail API
   useEffect(() => {
@@ -484,7 +551,7 @@ export function DetailViewClient({
       filterText: (e) => (e.postedAt ?? "").slice(0, 10),
       render: (e) => (
         <span className="tabular-nums text-slate-500">
-          {e.postedAt ? e.postedAt.replace("T", " ") : ""}
+          {e.postedAt ? e.postedAt.slice(0, 10) : ""}
         </span>
       ),
     },
@@ -494,6 +561,10 @@ export function DetailViewClient({
       width: 96,
       minWidth: 76,
       align: "right",
+      sortValue: (e) => {
+        const amount = effectiveAmountForAccount(e, accountId);
+        return amount > 0 ? amount : null;
+      },
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
@@ -506,6 +577,10 @@ export function DetailViewClient({
       width: 96,
       minWidth: 76,
       align: "right",
+      sortValue: (e) => {
+        const amount = effectiveAmountForAccount(e, accountId);
+        return amount < 0 ? -amount : null;
+      },
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
@@ -526,7 +601,7 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const debtLabel = debtActivityLabel(e);
         if (debtLabel) return debtLabel;
-        if (isCreditCardRepaymentTransfer(e)) return t("creditBill.repayment");
+        if (isCreditCardRepaymentTransfer(e)) return t("transaction.type.creditCardRepayment");
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
@@ -539,7 +614,7 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
         const debtLabel = debtActivityLabel(e);
-        const repaymentLabel = isCreditCardRepaymentTransfer(e) ? t("creditBill.repayment") : null;
+        const repaymentLabel = isCreditCardRepaymentTransfer(e) ? t("transaction.type.creditCardRepayment") : null;
         const actLabel = repaymentLabel ?? activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
@@ -593,6 +668,17 @@ export function DetailViewClient({
         return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     },
+    ...(showAccountColumn ? [{
+      key: "account",
+      label: "账户",
+      width: 160,
+      minWidth: 110,
+      filterText: (e: DetailEntry) => accountOptions.find((option) => option.id === e.accountId)?.label ?? e.accountName ?? "",
+      render: (e: DetailEntry) => {
+        const text = accountOptions.find((option) => option.id === e.accountId)?.label ?? e.accountName ?? "";
+        return <span className="block truncate text-slate-600" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
+      },
+    } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
     {
       key: "counterpartyInstitution",
       label: t("detail.column.counterparty"),
@@ -622,7 +708,15 @@ export function DetailViewClient({
         return <span className="block truncate text-slate-500" title={relatedAccountLabel ?? ""}>{relatedAccountLabel ?? <span className="text-slate-300">-</span>}</span>;
       },
     },
-    { key: "balance", label: t("detail.column.balance"), width: 110, minWidth: 82, align: "right", render: (e) => <span className="text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatMoney(toNumber(e.runningBalance)) : ""}</span> },
+    ...(showRunningBalance ? [{
+      key: "balance",
+      label: t("detail.column.balance"),
+      width: 110,
+      minWidth: 82,
+      align: "right" as const,
+      sortValue: (e: DetailEntry) => e.runningBalance,
+      render: (e: DetailEntry) => <span className="text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatMoney(toNumber(e.runningBalance)) : ""}</span>,
+    } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
     {
       key: "tags",
       label: t("detail.column.tags"),
@@ -683,7 +777,7 @@ export function DetailViewClient({
             ? e.fundSourceEntryId
             : e.id;
         const editPayload =
-          e.type !== "investment"
+          e.type !== "investment" || !allowInvestmentEdit
             ? undefined
             : {
                 targetEntryId: targetInvestmentEditEntryId,
@@ -760,21 +854,21 @@ export function DetailViewClient({
             source: e.source,
           },
         };
-        const isDebtRepayment = isDebtRepaymentEntry(e);
+        const debtMode = inferDebtMode(e, accountOptionById);
+        const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
         const debtPrincipalAmount = Math.abs(toNumber(e.debtPrincipalAmount ?? e.amount));
         const debtInterestAmount = Math.abs(toNumber(e.debtInterestAmount ?? 0));
         const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
-        const debtSource = String(e.source ?? "");
-        const isDebtCollectIn = debtSource === "debt_collect_in";
-        const debtAccountIdForEdit = isDebtCollectIn ? (e.accountId ?? "") : (e.toAccountId ?? "");
-        const cashAccountIdForEdit = isDebtCollectIn ? (e.toAccountId ?? "") : (e.accountId ?? "");
+        const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
+        const debtAccountIdForEdit = isDebtAccountFromSide ? (e.accountId ?? "") : (e.toAccountId ?? "");
+        const cashAccountIdForEdit = isDebtAccountFromSide ? (e.toAccountId ?? "") : (e.accountId ?? "");
         const debtEditEvent =
-          !balanceReconcileEditEvent && isDebtRepayment
+          !balanceReconcileEditEvent && isDebtActivity && debtMode
             ? {
                 name: "mmh:debt:create",
                 detail: {
                   editEntryId: e.id,
-                  mode: isDebtCollectIn ? ("collect_in" as const) : e.source === "debt_prepay_out" ? ("prepay_out" as const) : ("repay_out" as const),
+                  mode: debtMode,
                   defaultDebtAccountId: debtAccountIdForEdit,
                   defaultCashAccountId: cashAccountIdForEdit,
                   defaultDate: dateStr,
@@ -799,13 +893,13 @@ export function DetailViewClient({
         );
       },
     },
-  ], [accountId, accountOptions, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, t]);
+  ], [accountId, accountOptionById, accountOptions, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
       {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
       {selectedCount > 0 ? <span className="text-xs text-slate-500">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
     </div>
   ) : undefined;
@@ -822,13 +916,13 @@ export function DetailViewClient({
       selectOnRowClick
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
-      draggableRows
+      draggableRows={draggableRows}
       rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
       rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}
       onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton accountOptions={accountOptions} />
+          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

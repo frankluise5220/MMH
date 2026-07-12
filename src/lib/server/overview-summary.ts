@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
 
 export const KIND_LABEL: Record<string, string> = {
   cash: "现金",
@@ -199,17 +200,17 @@ export async function computeOverviewSummary(
     });
 
     for (const entry of monthEntries) {
-      const amount = Math.abs(toNumber(entry.amount));
+      const amount = toNumber(entry.amount);
       const isToDaily = dailyAccountIds.includes(entry.toAccountId ?? "");
       const isFromDaily = dailyAccountIds.includes(entry.accountId);
 
       if (entry.type === TransactionType.income && isToDaily) {
-        monthIncome += amount;
+        monthIncome += getIncomeExpenseStatisticAmount(entry.type, amount);
       } else if (entry.type === TransactionType.expense && isFromDaily) {
-        monthExpense += amount;
+        monthExpense += getIncomeExpenseStatisticAmount(entry.type, amount);
       } else if (entry.type === TransactionType.transfer) {
-        if (isToDaily && !isFromDaily) monthIncome += amount;
-        if (isFromDaily && !isToDaily) monthExpense += amount;
+        if (isToDaily && !isFromDaily) monthIncome += Math.abs(amount);
+        if (isFromDaily && !isToDaily) monthExpense += Math.abs(amount);
       }
     }
   }

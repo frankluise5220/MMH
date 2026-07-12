@@ -45,6 +45,8 @@ import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import { statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
 
 export const runtime = "nodejs";
 
@@ -79,13 +81,8 @@ function toDateOrNull(val: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function toDateTimeLocal(value: Date | null | undefined): string | null {
-  if (!value) return null;
-  return [
-    value.getFullYear(),
-    String(value.getMonth() + 1).padStart(2, "0"),
-    String(value.getDate()).padStart(2, "0"),
-  ].join("-") + `T${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+function toDateOnlyLocal(value: Date | null | undefined): string | null {
+  return value ? formatDateLocal(value) : null;
 }
 
 function dateFromYmd(value: string | null | undefined): Date | null {
@@ -406,7 +403,7 @@ export async function GET(req: Request) {
       const entry = {
         id: record.id,
         date: formatDateLocal(record.date),
-        postedAt: toDateTimeLocal(record.postedAt),
+        postedAt: toDateOnlyLocal(record.postedAt),
         dayOrder: record.dayOrder,
         amount: toNumber(record.amount),
         type: record.type,
@@ -415,12 +412,14 @@ export async function GET(req: Request) {
         accountId: record.accountId,
         accountName: record.accountName,
         accountKind: record.account?.kind ?? null,
+        accountDebtDirection: record.account?.debtDirection ?? null,
         accountInstitutionName: record.account?.Institution?.name ?? "",
         counterpartyInstitutionId: record.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
         toAccountId: record.toAccountId,
         toAccountName: record.toAccountName,
         toAccountKind: record.toAccount?.kind ?? null,
+        toAccountDebtDirection: record.toAccount?.debtDirection ?? null,
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
         toNote: record.toNote,
@@ -452,6 +451,12 @@ export async function GET(req: Request) {
         fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
         fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
         fundArrivalAmount: record.fundArrivalAmount ? toNumber(record.fundArrivalAmount) : null,
+        creditCardInstallmentPlanId: record.creditCardInstallmentPlanId,
+        installmentNo: record.installmentNo,
+        installmentTotal: record.installmentTotal,
+        installmentPrincipal: record.installmentPrincipal ? toNumber(record.installmentPrincipal) : null,
+        installmentInterest: record.installmentInterest ? toNumber(record.installmentInterest) : null,
+        installmentRole: record.installmentRole,
         source: record.source,
         entryTags: mapEntryTags(record),
         linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
@@ -504,7 +509,7 @@ export async function GET(req: Request) {
     const entries = pagedEntries.map((e) => ({
       id: e.id,
       date: formatDateLocal(getDetailEntryDisplayDate(e, accountId)),
-      postedAt: toDateTimeLocal(e.postedAt),
+      postedAt: toDateOnlyLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
       dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
@@ -515,12 +520,14 @@ export async function GET(req: Request) {
       accountId: e.accountId,
       accountName: e.accountName,
       accountKind: e.account?.kind ?? null,
+      accountDebtDirection: e.account?.debtDirection ?? null,
       accountInstitutionName: e.account?.Institution?.name ?? "",
       counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
       counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
       toAccountId: e.toAccountId,
       toAccountName: e.toAccountName,
       toAccountKind: e.toAccount?.kind ?? null,
+      toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
       toNote: e.toNote,
@@ -552,6 +559,12 @@ export async function GET(req: Request) {
       fundConfirmDate: e.fundConfirmDate ? formatDateLocal(e.fundConfirmDate) : null,
       fundArrivalDate: e.fundArrivalDate ? formatDateLocal(e.fundArrivalDate) : null,
       fundArrivalAmount: e.fundArrivalAmount ? toNumber(e.fundArrivalAmount) : null,
+      creditCardInstallmentPlanId: e.creditCardInstallmentPlanId,
+      installmentNo: e.installmentNo,
+      installmentTotal: e.installmentTotal,
+      installmentPrincipal: e.installmentPrincipal ? toNumber(e.installmentPrincipal) : null,
+      installmentInterest: e.installmentInterest ? toNumber(e.installmentInterest) : null,
+      installmentRole: e.installmentRole,
       source: e.source,
       entryTags: mapEntryTags(e),
     }));
@@ -582,7 +595,7 @@ export async function GET(req: Request) {
  * Body (JSON):
  *   type: "expense" | "income" | "transfer" | "investment"
  *   date: string (YYYY-MM-DD)
- *   postedAt?: string (YYYY-MM-DDTHH:mm; expense only, defaults to date)
+ *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
  *   amount: number
  *   accountId: string
  *   categoryId?: string
@@ -661,10 +674,7 @@ export async function POST(req: Request) {
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
-        const toStatementMonthValue =
-          (toAcc.kind === AccountKind.bank_credit || toAcc.kind === AccountKind.loan) && toAcc.billingDay
-            ? toStatementMonth(date, toAcc.billingDay)
-            : null;
+        const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
 
         const created = await tx.txRecord.create({
           data: {
@@ -678,7 +688,7 @@ export async function POST(req: Request) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            statementMonth: toStatementMonthValue,
+            statementMonth: transferStatementMonth,
             householdId,
           },
         });
@@ -699,7 +709,7 @@ export async function POST(req: Request) {
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
-          categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+          resolveCategorySnapshot(tx, householdId, { categoryId, type: "expense" }),
         ]);
         if (!acc) throw new Error("账户不存在");
         if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
@@ -742,7 +752,7 @@ export async function POST(req: Request) {
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
           accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
-          categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+          resolveCategorySnapshot(tx, householdId, { categoryId, type: "income" }),
         ]);
 
         const statementMonth =
@@ -1336,7 +1346,7 @@ export async function POST(req: Request) {
           data: {
             id: created.id,
             date: formatDateLocal(created.date),
-            postedAt: toDateTimeLocal(created.postedAt),
+            postedAt: toDateOnlyLocal(created.postedAt),
             dayOrder: created.dayOrder,
             amount: toNumber(created.amount),
             type: created.type,
@@ -1345,10 +1355,12 @@ export async function POST(req: Request) {
             accountId: created.accountId,
             accountName: created.accountName,
             accountKind: created.account?.kind ?? null,
+            accountDebtDirection: created.account?.debtDirection ?? null,
             accountInstitutionName: created.account?.Institution?.name ?? "",
             toAccountId: created.toAccountId,
             toAccountName: created.toAccountName,
             toAccountKind: created.toAccount?.kind ?? null,
+            toAccountDebtDirection: created.toAccount?.debtDirection ?? null,
             toAccountInstitutionName: created.toAccount?.Institution?.name ?? "",
             note: created.note,
             fundSubtype: created.fundSubtype,
@@ -1390,7 +1402,7 @@ export async function POST(req: Request) {
  * Body (JSON):
  *   id: string (必填)
  *   date?: string (YYYY-MM-DD)
- *   postedAt?: string (YYYY-MM-DDTHH:mm; expense only, defaults to date)
+ *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
  *   amount?: number
  *   type?: "expense" | "income" | "transfer" | "investment"
  *   accountId?: string
@@ -1484,10 +1496,7 @@ export async function PUT(req: Request) {
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
-        const toStatementMonthValue =
-          (toAcc.kind === AccountKind.bank_credit || toAcc.kind === AccountKind.loan) && toAcc.billingDay
-            ? toStatementMonth(date, toAcc.billingDay)
-            : null;
+        const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
 
         await tx.txRecord.update({
           where: { id: entryId },
@@ -1499,7 +1508,7 @@ export async function PUT(req: Request) {
             toAccountName: toAcc.name,
             categoryId: null,
             categoryName: null,
-            statementMonth: toStatementMonthValue,
+            statementMonth: transferStatementMonth,
             date,
             postedAt: null,
             type: TransactionType.transfer,
@@ -1796,7 +1805,10 @@ return;
 
       const [acc, cat] = await Promise.all([
         accountId ? tx.account.findUnique({ where: { id: accountId } }) : Promise.resolve(null),
-        categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+        resolveCategorySnapshot(tx, householdId, {
+          categoryId,
+          type: type === "income" ? "income" : "expense",
+        }),
       ]);
       if (!acc) throw new Error("请选择账户");
       if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
@@ -1918,7 +1930,7 @@ return;
       data: {
         id: updated.id,
         date: formatDateLocal(updated.date),
-        postedAt: toDateTimeLocal(updated.postedAt),
+        postedAt: toDateOnlyLocal(updated.postedAt),
         dayOrder: updated.dayOrder,
         amount: toNumber(updated.amount),
         type: updated.type,
@@ -1927,12 +1939,14 @@ return;
         accountId: updated.accountId,
         accountName: updated.accountName,
         accountKind: updated.account?.kind ?? null,
+        accountDebtDirection: updated.account?.debtDirection ?? null,
         accountInstitutionName: updated.account?.Institution?.name ?? "",
         counterpartyInstitutionId: updated.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: updated.counterpartyInstitutionName ?? null,
         toAccountId: updated.toAccountId,
         toAccountName: updated.toAccountName,
         toAccountKind: updated.toAccount?.kind ?? null,
+        toAccountDebtDirection: updated.toAccount?.debtDirection ?? null,
         toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",
         note: updated.note,
         fundSubtype: updated.fundSubtype,

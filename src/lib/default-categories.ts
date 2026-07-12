@@ -7,16 +7,108 @@ type CategoryMainType = DefaultCategoryType | "investment";
 export type DefaultCategoryTemplate = {
   type: DefaultCategoryType;
   name: string;
+  isSystem?: boolean;
   children?: Array<string | DefaultCategoryTemplateChild>;
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-02-advance-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-12-system-finance-categories-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
+  isSystem?: boolean;
   children?: string[];
 };
+
+export type CategorySnapshot = {
+  id: string;
+  name: string;
+  type: string;
+};
+
+export type ResolveCategorySnapshotInput = {
+  categoryId?: string | null;
+  categoryName?: string | null;
+  type?: DefaultCategoryType | null;
+};
+
+export const SYSTEM_FUND_PROFIT_CATEGORY = "基金收益";
+export const SYSTEM_FUND_LOSS_CATEGORY = "基金亏损";
+export const SYSTEM_WEALTH_PROFIT_CATEGORY = "理财收益";
+export const SYSTEM_WEALTH_LOSS_CATEGORY = "理财亏损";
+export const SYSTEM_DEPOSIT_INTEREST_CATEGORY = "存款利息";
+export const SYSTEM_DEPOSIT_FEE_CATEGORY = "存款手续费";
+export const SYSTEM_INVESTMENT_DIVIDEND_CATEGORY = "投资分红";
+export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
+export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
+
+const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
+  income: new Set([
+    "投资收入",
+    "投资收益",
+    SYSTEM_FUND_PROFIT_CATEGORY,
+    "股票收益",
+    SYSTEM_WEALTH_PROFIT_CATEGORY,
+    SYSTEM_DEPOSIT_INTEREST_CATEGORY,
+    "股息分红",
+    SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
+  ]),
+  expense: new Set([
+    "还款",
+    "信用卡还款",
+    "贷款还款",
+    "贷款",
+    "贷款本金",
+    "贷款利息",
+    "贷款手续费",
+    SYSTEM_INVESTMENT_LOSS_CATEGORY,
+    SYSTEM_FUND_LOSS_CATEGORY,
+    SYSTEM_WEALTH_LOSS_CATEGORY,
+    SYSTEM_DEPOSIT_FEE_CATEGORY,
+    "股票亏损",
+  ]),
+  advance: new Set(),
+};
+
+function isSystemCategoryTemplate(type: DefaultCategoryType, name: string) {
+  return systemCategoryTemplateNames[type]?.has(name) ?? false;
+}
+
+export async function resolveCategorySnapshot(
+  writer: CategoryWriter,
+  householdId: string,
+  input: ResolveCategorySnapshotInput,
+): Promise<CategorySnapshot | null> {
+  const categoryId = String(input.categoryId ?? "").trim();
+  const categoryName = String(input.categoryName ?? "").trim();
+  const type = input.type ?? null;
+
+  if (categoryId) {
+    const category = await writer.category.findFirst({
+      where: {
+        id: categoryId,
+        OR: [{ householdId }, { householdId: null }],
+        ...(type ? { type } : {}),
+      },
+      select: { id: true, name: true, type: true },
+    });
+    if (category) return category;
+  }
+
+  if (!categoryName) return null;
+
+  const category = await writer.category.findFirst({
+    where: {
+      name: categoryName,
+      OR: [{ householdId }, { householdId: null }],
+      ...(type ? { type } : {}),
+    },
+    orderBy: [{ householdId: "desc" }, { id: "asc" }],
+    select: { id: true, name: true, type: true },
+  });
+
+  return category ?? null;
+}
 
 const rootCategoryRenames = [
   { type: "expense", from: "餐饮饮食", to: "餐饮费" },
@@ -112,7 +204,22 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "金融保险",
-    children: ["保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "贷款还款", "信用卡费用", "投资亏损"],
+    children: ["保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
+  },
+  {
+    type: "expense",
+    name: "还款",
+    children: ["信用卡还款", "贷款还款"],
+  },
+  {
+    type: "expense",
+    name: "贷款",
+    children: ["贷款本金", "贷款利息", "贷款手续费"],
+  },
+  {
+    type: "expense",
+    name: SYSTEM_INVESTMENT_LOSS_CATEGORY,
+    children: [SYSTEM_FUND_LOSS_CATEGORY, SYSTEM_WEALTH_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY, "股票亏损"],
   },
   {
     type: "expense",
@@ -142,7 +249,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "income",
     name: "投资收入",
-    children: ["投资收益", "利息", "股息分红", "基金收益", "股票收益", "理财收益", "租金收入"],
+    children: ["投资收益", "利息", "股息分红", SYSTEM_FUND_PROFIT_CATEGORY, "股票收益", SYSTEM_WEALTH_PROFIT_CATEGORY, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "租金收入"],
   },
   {
     type: "income",
@@ -179,6 +286,7 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
         name: category.name,
         parentId: null,
         householdId,
+        isSystem: category.isSystem ?? isSystemCategoryTemplate(category.type, category.name),
       },
       select: { id: true },
     });
@@ -191,6 +299,9 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
           name: childName,
           parentId: parent.id,
           householdId,
+          isSystem: typeof child === "string"
+            ? isSystemCategoryTemplate(category.type, childName)
+            : child.isSystem ?? isSystemCategoryTemplate(category.type, childName),
         },
         select: { id: true },
       });
@@ -203,6 +314,7 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
               name: grandChildName,
               parentId: createdChild.id,
               householdId,
+              isSystem: isSystemCategoryTemplate(category.type, grandChildName),
             },
           });
         }
@@ -393,45 +505,82 @@ async function renameRootCategory(
 
 async function ensureDefaultCategoryTemplatesForHousehold(writer: CategoryWriter, householdId: string) {
   for (const category of defaultCategoryTemplates) {
-    let root = await writer.category.findFirst({
-      where: { householdId, type: category.type, parentId: null, name: category.name },
-      select: { id: true },
-    });
-    if (!root) {
-      root = await writer.category.create({
-        data: { type: category.type, name: category.name, parentId: null, householdId },
-        select: { id: true },
-      });
-    }
+    const root = await ensureDefaultCategory(
+      writer,
+      householdId,
+      category.type,
+      category.name,
+      null,
+      category.isSystem ?? isSystemCategoryTemplate(category.type, category.name),
+    );
 
     for (const child of category.children ?? []) {
       const childName = typeof child === "string" ? child : child.name;
-      let childRecord = await writer.category.findFirst({
-        where: { householdId, type: category.type, parentId: root.id, name: childName },
-        select: { id: true },
-      });
-      if (!childRecord) {
-        childRecord = await writer.category.create({
-          data: { type: category.type, name: childName, parentId: root.id, householdId },
-          select: { id: true },
-        });
-      }
+      const childRecord = await ensureDefaultCategory(
+        writer,
+        householdId,
+        category.type,
+        childName,
+        root.id,
+        typeof child === "string"
+          ? isSystemCategoryTemplate(category.type, childName)
+          : child.isSystem ?? isSystemCategoryTemplate(category.type, childName),
+      );
 
       if (typeof child !== "string") {
         for (const grandChildName of child.children ?? []) {
-          const exists = await writer.category.findFirst({
-            where: { householdId, type: category.type, parentId: childRecord.id, name: grandChildName },
-            select: { id: true },
-          });
-          if (!exists) {
-            await writer.category.create({
-              data: { type: category.type, name: grandChildName, parentId: childRecord.id, householdId },
-            });
-          }
+          await ensureDefaultCategory(
+            writer,
+            householdId,
+            category.type,
+            grandChildName,
+            childRecord.id,
+            isSystemCategoryTemplate(category.type, grandChildName),
+          );
         }
       }
     }
   }
+}
+
+async function ensureDefaultCategory(
+  writer: CategoryWriter,
+  householdId: string,
+  type: DefaultCategoryType,
+  name: string,
+  parentId: string | null,
+  isSystem: boolean,
+) {
+  let category = await writer.category.findFirst({
+    where: { householdId, type, parentId, name },
+    select: { id: true, parentId: true, isSystem: true },
+  });
+
+  if (!category && isSystem) {
+    category = await writer.category.findFirst({
+      where: { householdId, type, name },
+      select: { id: true, parentId: true, isSystem: true },
+    });
+  }
+
+  if (!category) {
+    return writer.category.create({
+      data: { type, name, parentId, householdId, isSystem },
+      select: { id: true },
+    });
+  }
+
+  if (category.parentId !== parentId || (isSystem && !category.isSystem)) {
+    await writer.category.update({
+      where: { id: category.id },
+      data: {
+        ...(category.parentId !== parentId ? { parentId } : {}),
+        ...(isSystem && !category.isSystem ? { isSystem: true } : {}),
+      },
+    });
+  }
+
+  return { id: category.id };
 }
 
 async function normalizeSameNameChild(

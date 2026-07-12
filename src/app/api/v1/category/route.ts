@@ -13,7 +13,7 @@ export const runtime = "nodejs";
  * Query params:
  *   type? - 可选过滤: "expense" | "income" | "advance"
  *
- * 返回: { ok: true, categories: [{ id, name, type, parentId, sortOrder }] }
+ * 返回: { ok: true, categories: [{ id, name, type, parentId, isSystem }] }
  */
 export async function GET(req: Request) {
   try {
@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     const categories = await prisma.category.findMany({
       where,
       orderBy: [{ name: "asc" }],
-      select: { id: true, name: true, type: true, parentId: true },
+      select: { id: true, name: true, type: true, parentId: true, isSystem: true },
     });
 
     return NextResponse.json({ ok: true, categories });
@@ -83,7 +83,7 @@ async function findDuplicateCategoryName(
  * - parentId 存在时，分类类型继承上级分类。
  * - 分类名称在同一账簿内必须全局唯一，不区分收支类型或上级分类。
  * - "支出"、"收入"、"代付"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
- * - 投资不使用分类树，投资交易通过产品类型、基金代码、交易子类型等结构化字段区分。
+ * - 系统内置的投资收益、投资亏损、还款、贷款等业务分类会显示在同一棵分类树中，供统计项挂接；这些系统分类不可改名、移动或删除。
  *
  * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
  */
@@ -144,6 +144,7 @@ export async function POST(req: NextRequest) {
  * - parentId 为空/null 表示移动到当前类型根目录下。
  * - 不允许跨分类类型移动，不允许移动到自身或自己的后代下。
  * - 分类名称在同一账簿内必须全局唯一，不区分收支类型或上级分类。
+ * - 系统内置分类不允许改名或移动，但允许在其下新增用户子分类。
  * - 修改名称时同步更新已记账记录中的 categoryName，避免旧流水继续显示旧名称。
  *
  * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
@@ -173,13 +174,19 @@ export async function PUT(req: NextRequest) {
 
     const current = await prisma.category.findFirst({
       where: { id, householdId },
-      select: { id: true, name: true, type: true, parentId: true },
+      select: { id: true, name: true, type: true, parentId: true, isSystem: true },
     });
     if (!current) {
       return NextResponse.json({ ok: false, error: "分类不存在" }, { status: 404 });
     }
     const name = hasName ? requestedName : current.name;
     const parentId = hasParentId ? requestedParentId : current.parentId;
+    const nameChanged = hasName && name !== current.name;
+    const parentChanged = hasParentId && parentId !== current.parentId;
+
+    if (current.isSystem && (nameChanged || parentChanged)) {
+      return NextResponse.json({ ok: false, error: "系统内置类别，无法修改" }, { status: 409 });
+    }
 
     if (parentId === id) {
       return NextResponse.json({ ok: false, error: "不能移动到自身下面" }, { status: 400 });

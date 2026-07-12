@@ -1543,13 +1543,20 @@ export function InvestmentFormModal({
     }
     if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert("确认日期不能早于申请日期"); return; }
 
+    const userClearedUnits =
+      mode === "edit" &&
+      unitsEditedRef.current &&
+      !units.trim();
     const shouldUseConfirmedBuyUnits =
       subtype === "buy" &&
       buyResultStatus === "refund" &&
-      p(arrivalAmount) > 0;
+      p(arrivalAmount) > 0 &&
+      !userClearedUnits;
     const rawFinalUnits = shouldUseConfirmedBuyUnits
       ? (computedUnits ? p(computedUnits) : 0)
-      : (p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0));
+      : userClearedUnits
+        ? 0
+        : (p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0));
     const finalUnits = rawFinalUnits > 0 ? roundFundUnits(rawFinalUnits, fundUnitsDecimals) : 0;
     const finalFee = p(fee);
     const finalFeeRate = p(feeRate);

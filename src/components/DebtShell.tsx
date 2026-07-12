@@ -56,12 +56,15 @@ type DebtEntry = {
   balance: number;
   debtEdit?: {
     editEntryId: string;
-    mode: "repay_out" | "prepay_out";
+    mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
     defaultDebtAccountId: string;
     defaultCashAccountId: string;
     defaultDate: string;
     defaultPrincipal: number;
     defaultInterest: number;
+    defaultPenalty?: number;
+    defaultRecalculateStartDate?: string | null;
+    defaultPrepayStrategy?: string;
   };
   edit?: {
     type: "expense" | "income" | "transfer" | "investment";

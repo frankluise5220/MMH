@@ -65,7 +65,8 @@ const PREPAY_STRATEGY_LABELS: Record<PrepayStrategy, string> = {
   settle: "全部结清",
 };
 
-const FIXED_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", "先还利息一次性还本"]);
+const INTEREST_FREE_REPAYMENT_METHOD = "免息分期还本";
+const FIXED_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_REPAYMENT_METHOD, "先还利息一次性还本"]);
 
 function formatDateInput(date: Date) {
   const year = date.getFullYear();
@@ -137,6 +138,14 @@ function debtObjectOptionId(id: string, type?: string | null) {
   return `${COUNTERPARTY_TYPES.has(type ?? "") ? "counterparty" : "institution"}:${id}`;
 }
 
+function isDebtObjectRef(value: string) {
+  return /^(?:counterparty|institution):/.test(value);
+}
+
+function canCreateDebtItemForMode(mode: DebtMode) {
+  return mode === "borrow_in" || mode === "lend_out";
+}
+
 function rawDebtObjectId(value: string) {
   const match = /^(?:counterparty|institution):(.+)$/.exec(value);
   return match?.[1] ?? value;
@@ -144,7 +153,7 @@ function rawDebtObjectId(value: string) {
 
 function normalizeDebtObjectValue(value: string | undefined, data?: NestedFieldData) {
   const id = String(value ?? "").trim();
-  if (!id || /^(?:counterparty|institution):/.test(id)) return id;
+  if (!id || isDebtObjectRef(id)) return id;
   if ((data?.counterpartyId ?? []).some((entry) => entry.id === id)) return `counterparty:${id}`;
   const item = (data?.institutionId ?? []).find((entry) => entry.id === id);
   return item ? debtObjectOptionId(item.id, item.type) : id;
@@ -217,23 +226,29 @@ export function DebtTransactionModal({
   const [localDebtObjectOptions, setLocalDebtObjectOptions] = useState(debtObjectOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
   const [debtObjectNestedOpen, setDebtObjectNestedOpen] = useState(false);
-  const fallbackDebtObjectOptions: SmartSelectOption[] = useMemo(
-    () => [
-      ...(localNestedFieldData?.counterpartyId ?? []).map((item) => ({
-        id: `counterparty:${item.id}`,
+  const fallbackDebtObjectOptions: SmartSelectOption[] = useMemo(() => {
+    const counterpartyOptions = (localNestedFieldData?.counterpartyId ?? []).map((item) => ({
+      id: `counterparty:${item.id}`,
+      label: item.name,
+      subLabel: item.type === "person" ? "往来人员" : "往来组织",
+    }));
+    const bankInstitutionOptions = (localNestedFieldData?.institutionId ?? [])
+      .filter((item) => item.type === "bank")
+      .map((item) => ({
+        id: `institution:${item.id}`,
         label: item.name,
-        subLabel: item.type === "person" ? "往来人员" : "往来组织",
-      })),
-      ...(localNestedFieldData?.institutionId ?? [])
-        .filter((item) => item.type === "bank")
-        .map((item) => ({
-          id: `institution:${item.id}`,
-          label: item.name,
-          subLabel: institutionTypeLabel(item.type ?? null),
-        })),
-    ],
-    [localNestedFieldData],
-  );
+        subLabel: institutionTypeLabel(item.type ?? null),
+      }));
+
+    return [
+      ...(counterpartyOptions.length > 0
+        ? [{ id: "debt-counterparty-header", label: "往来对象", isHeader: true }, ...counterpartyOptions]
+        : []),
+      ...(bankInstitutionOptions.length > 0
+        ? [{ id: "debt-institution-source-header", label: "从机构选择", isHeader: true }, ...bankInstitutionOptions]
+        : []),
+    ];
+  }, [localNestedFieldData]);
   const visibleDebtObjectOptions = useMemo(
     () => mergeSmartSelectOptions(
       mergeSmartSelectOptions(debtObjectOptions, localDebtObjectOptions),
@@ -409,10 +424,12 @@ export function DebtTransactionModal({
       if (detail?.mode) setMode(detail.mode);
       if (detail?.defaultDate) setDate(detail.defaultDate);
       if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
-      if (detail?.mode && detail.mode !== "borrow_in") {
+      if (detail?.mode && !canCreateDebtItemForMode(detail.mode)) {
         setDebtInstitutionId("");
       } else if (detail?.defaultDebtInstitutionId) {
         setDebtInstitutionId(normalizeDebtObjectValue(detail.defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData));
+      } else if (detail?.mode === "lend_out" && detail?.defaultDebtAccountId) {
+        setDebtInstitutionId("");
       }
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
       if (detail?.defaultPrincipal != null) {
@@ -491,6 +508,31 @@ export function DebtTransactionModal({
     setPrepayTotalManual(true);
   }
 
+  function handleDebtItemOrObjectChange(id: string) {
+    if (mode === "lend_out" && id && !isDebtObjectRef(id)) {
+      setDebtAccountId(id);
+      setDebtInstitutionId("");
+      setDebtItemName("");
+      return;
+    }
+    setDebtInstitutionId(id);
+    setDebtAccountId("");
+    setDebtItemName("");
+  }
+
+  function handleModeSelect(nextMode: DebtMode) {
+    setMode(nextMode);
+    if (!canCreateDebtItemForMode(nextMode)) {
+      setDebtInstitutionId("");
+    }
+    if (nextMode === "lend_out") {
+      const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
+      if (debtAccountId && selectedDebtAccount?.debtDirection !== "receivable") {
+        setDebtAccountId("");
+      }
+    }
+  }
+
   function getPendingRepaymentLprAdjustment() {
     if (mode !== "repay_out" || editingEntryId || !repaymentLprCheck) return null;
     const discount = repaymentLprCheck.mortgageLprDiscount;
@@ -516,7 +558,7 @@ export function DebtTransactionModal({
     if (submitting) return;
     const requiresLoanScheduleFields = mode === "borrow_in" && FIXED_REPAYMENT_METHODS.has(repaymentMethod);
     if (requiresLoanScheduleFields) {
-      if (!parsePositiveNumberText(annualRate)) {
+      if (repaymentMethod !== INTEREST_FREE_REPAYMENT_METHOD && !parsePositiveNumberText(annualRate)) {
         window.alert("固定还款方式需要填写年利率");
         return;
       }
@@ -583,9 +625,10 @@ export function DebtTransactionModal({
     formData.set("editEntryId", editingEntryId);
     formData.set("mode", mode);
     formData.set("date", date);
-    formData.set("debtAccountId", mode === "borrow_in" && debtInstitutionId ? "" : debtAccountId);
-    formData.set("debtObjectId", mode === "borrow_in" ? debtInstitutionId : "");
-    formData.set("debtInstitutionId", mode === "borrow_in" ? rawDebtObjectId(debtInstitutionId) : "");
+    const shouldUseDebtObject = !editingEntryId && canCreateDebtItemForMode(mode) && !!debtInstitutionId;
+    formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
+    formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
+    formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
     formData.set("debtItemName", debtItemName);
     formData.set("cashAccountId", cashAccountId);
     formData.set("principal", principal);
@@ -697,9 +740,10 @@ export function DebtTransactionModal({
     await saveDebtTransaction(pendingKeepAdding, { skipHistoryPrompt: true });
   }
 
-  const showInterest = mode === "repay_out" || mode === "collect_in";
+  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
   const showPrepayment = mode === "prepay_out";
   const showBorrowPlan = mode === "borrow_in";
+  const canCreateDebtItem = canCreateDebtItemForMode(mode);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
@@ -714,12 +758,27 @@ export function DebtTransactionModal({
   const debtAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
+        if (mode === "borrow_in") return account.debtDirection === "payable";
         if (mode === "repay_out" || mode === "prepay_out") return account.debtDirection === "payable";
         if (mode === "collect_in") return account.debtDirection === "receivable";
+        if (mode === "lend_out") return account.debtDirection === "receivable";
         return true;
       })
       .map((account) => ({ id: account.id, label: account.label, subLabel: account.subLabel })),
     [localDebtAccounts, mode],
+  );
+  const lendOutSelectionOptions = useMemo(
+    () => mergeSmartSelectOptions(
+      debtAccountOptions.length > 0
+        ? [{ id: "debt-existing-receivable-header", label: "已有借出项", isHeader: true }, ...debtAccountOptions]
+        : [],
+      visibleDebtObjectOptions,
+    ),
+    [debtAccountOptions, visibleDebtObjectOptions],
+  );
+  const borrowInSelectionOptions = useMemo(
+    () => visibleDebtObjectOptions,
+    [visibleDebtObjectOptions],
   );
   const debtItemSuggestions = useMemo(
     () => Array.from(new Set(localDebtAccounts
@@ -734,8 +793,24 @@ export function DebtTransactionModal({
     [debtInstitutionId, localDebtAccounts],
   );
   const selectedDebtObjectName = debtObjectById.get(debtInstitutionId)?.name?.trim() || "往来对象";
+  const editingExistingDebtItem = !!editingEntryId && canCreateDebtItem;
+  const selectedExistingLendOutItem = mode === "lend_out" && !!debtAccountId && !debtInstitutionId;
+  const selectedExistingDebtItem = editingExistingDebtItem || selectedExistingLendOutItem;
+  const debtSelectorValue = editingExistingDebtItem
+    ? debtAccountId
+    : mode === "lend_out"
+      ? (debtInstitutionId || debtAccountId)
+      : debtInstitutionId;
+  const debtSelectorOptions = editingExistingDebtItem
+    ? debtAccountOptions
+    : mode === "borrow_in"
+      ? borrowInSelectionOptions
+      : mode === "lend_out"
+        ? lendOutSelectionOptions
+        : debtAccountOptions;
   const disabled = cashAccounts.length === 0;
   const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
+  const isInterestFreeRepaymentMethod = repaymentMethod === INTEREST_FREE_REPAYMENT_METHOD;
   const formatRateInput = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
   function computeAnnualRateFromBankExecutionRate(discount: number, baseRate = Number(bankExecutionRate.trim())) {
     if (!Number.isFinite(baseRate) || baseRate <= 0) return;
@@ -831,8 +906,8 @@ export function DebtTransactionModal({
                         <button
                           key={item}
                           type="button"
-                          onClick={() => setMode(item)}
-                          disabled={!!editingEntryId && item !== "repay_out" && item !== "prepay_out" && item !== "collect_in"}
+                          onClick={() => handleModeSelect(item)}
+                          disabled={!!editingEntryId && item !== mode}
                           className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
                         >
                           {MODE_LABELS[item]}
@@ -864,20 +939,28 @@ export function DebtTransactionModal({
                         </div>
                       ) : (
                         <div className="space-y-1">
-                          <div className="form-label">{mode === "borrow_in" ? "往来对象" : mode === "repay_out" ? "借款项" : "借出项"}</div>
-                          {mode === "borrow_in" ? (
+                          <div className="form-label">
+                            {editingExistingDebtItem
+                              ? (mode === "borrow_in" ? "借款项" : "借出项")
+                              : canCreateDebtItem
+                                ? (mode === "lend_out" ? "往来对象 / 借出项" : "往来对象")
+                                : mode === "repay_out"
+                                  ? "借款项"
+                                  : "借出项"}
+                          </div>
+                          {canCreateDebtItem ? (
                             <SmartSelect
                               mode="single"
-                              value={debtInstitutionId}
-                              onChange={(id) => {
-                                setDebtInstitutionId(id);
-                                setDebtAccountId("");
-                                setDebtItemName("");
-                              }}
-                              options={mergeSmartSelectOptions(visibleDebtObjectOptions, [])}
-                              placeholder="请选择"
-                              onCreateClick={() => { void openDebtObjectCreate(); }}
-                              createLabel="新增往来对象"
+                              value={debtSelectorValue}
+                              onChange={editingExistingDebtItem ? setDebtAccountId : handleDebtItemOrObjectChange}
+                              options={debtSelectorOptions}
+                              placeholder={editingExistingDebtItem
+                                ? (mode === "borrow_in" ? "请选择已有借款项" : "请选择已有借出项")
+                                : mode === "lend_out"
+                                  ? "请选择往来对象或已有借出项"
+                                  : "请选择"}
+                              onCreateClick={editingExistingDebtItem ? undefined : () => { void openDebtObjectCreate(); }}
+                              createLabel={editingExistingDebtItem ? undefined : "新增往来对象"}
                               behavior={{
                                 hierarchy: false,
                                 search: true,
@@ -905,14 +988,15 @@ export function DebtTransactionModal({
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
-                      {mode === "borrow_in" ? (
+                      {canCreateDebtItem ? (
                         <div className="space-y-1">
                           <div className="form-label">款项内容 <span className="text-slate-400">可选</span></div>
                           <input
                             value={debtItemName}
                             onChange={(event) => setDebtItemName(event.target.value)}
                             list={debtItemListId}
-                            placeholder={`不填则生成“${selectedDebtObjectName}的往来款”`}
+                            disabled={selectedExistingDebtItem}
+                            placeholder={selectedExistingDebtItem ? "已有项不需要填写" : `不填则生成“${selectedDebtObjectName}的往来款”`}
                             className="form-input"
                           />
                           <datalist id={debtItemListId}>
@@ -938,7 +1022,7 @@ export function DebtTransactionModal({
                           />
                         </div>
                       ) : (
-                      <div className={mode === "borrow_in" ? "space-y-1" : "col-span-2 space-y-1"}>
+                      <div className={canCreateDebtItem ? "space-y-1" : "col-span-2 space-y-1"}>
                         <div className="form-label">{cashAccountLabel}</div>
                         <SmartSelect
                           mode="single"
@@ -960,7 +1044,7 @@ export function DebtTransactionModal({
                     {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? "借款总额" : mode === "repay_out" || mode === "collect_in" ? "本金" : "金额"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? "借款总额" : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (
@@ -971,7 +1055,7 @@ export function DebtTransactionModal({
                       ) : null}
                       {showInterest && !showPrepayment ? (
                         <div className="space-y-1">
-                          <div className="form-label">本息合计</div>
+                            <div className="form-label">{mode === "lend_out" ? "应收本息" : "本息合计"}</div>
                           <input
                             value={repaymentTotal}
                             readOnly
@@ -1023,72 +1107,89 @@ export function DebtTransactionModal({
 
                     {showBorrowPlan ? (
                       <>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div className="space-y-1">
                             <div className="form-label">还款方式</div>
-                            <select value={repaymentMethod} onChange={(event) => setRepaymentMethod(event.target.value)} className="form-input">
+                            <select value={repaymentMethod} onChange={(event) => {
+                              const method = event.target.value;
+                              setRepaymentMethod(method);
+                              if (method === INTEREST_FREE_REPAYMENT_METHOD) {
+                                setAnnualRate("0");
+                                setAnnualRateManuallyEdited(false);
+                                setMortgageLprDiscount("");
+                                setBankExecutionRate("");
+                                setShowHistoricalRates(false);
+                                setHistoricalRateRows([]);
+                              }
+                            }} className="form-input">
                               <option value="等额本息">等额本息</option>
                               <option value="等额本金">等额本金</option>
+                              <option value={INTEREST_FREE_REPAYMENT_METHOD}>{INTEREST_FREE_REPAYMENT_METHOD}</option>
                               <option value="自由还款">自由还款</option>
                               <option value="先还利息一次性还本">先还利息一次性还本</option>
                             </select>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="form-label">
-                              银行执行利率（未折扣 %）
-                            </div>
-                            <input
-                              value={bankExecutionRate}
-                              onChange={(event) => setBankExecutionRate(event.target.value)}
-                              placeholder="例如：3.5"
-                              inputMode="decimal"
-                              className="form-input"
-                            />
-                          </div>
-                          <div className="flex items-end">
-                            <button
-                              type="button"
-                              className="secondary-button h-9 shrink-0 px-3 text-xs"
-                              onClick={fetchBankExecutionRate}
-                              disabled={!isFixedRepaymentMethod}
-                            >
-                              获取
-                            </button>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          {isFixedRepaymentMethod ? (
-                            <div className="space-y-1">
-                              <div className="form-label">房贷 LPR 折扣 <span className="text-slate-400">可选</span></div>
-                              <input
-                                value={mortgageLprDiscount}
-                                onChange={(event) => setMortgageLprDiscount(event.target.value)}
-                                onBlur={handleMortgageLprDiscountBlur}
-                                placeholder="例如：0.85"
-                                inputMode="decimal"
-                                className="form-input"
-                              />
-                            </div>
-                          ) : null}
-                          <div className="space-y-1">
-                            <div className="form-label">
-                              年利率（%） {isFixedRepaymentMethod ? <span className="text-red-500">*</span> : <span className="text-slate-400">可选</span>}
-                            </div>
-                            <input
-                              value={annualRate}
-                              onChange={(event) => {
-                                setAnnualRateManuallyEdited(true);
-                                setAnnualRate(event.target.value);
-                              }}
-                              placeholder="例如：2.975"
-                              inputMode="decimal"
-                              className="form-input"
-                            />
                           </div>
                         </div>
 
                         {isFixedRepaymentMethod ? (
                           <>
+                            {!isInterestFreeRepaymentMethod ? <>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                              <div className="space-y-1">
+                                <div className="form-label">
+                                  银行执行利率（未折扣 %）
+                                </div>
+                                <input
+                                  value={bankExecutionRate}
+                                  onChange={(event) => setBankExecutionRate(event.target.value)}
+                                  placeholder="例如：3.5"
+                                  inputMode="decimal"
+                                  className="form-input"
+                                />
+                              </div>
+                              <div className="flex items-end">
+                                <button
+                                  type="button"
+                                  className="secondary-button h-9 shrink-0 px-3 text-xs"
+                                  onClick={fetchBankExecutionRate}
+                                >
+                                  获取
+                                </button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1">
+                                <div className="form-label">房贷 LPR 折扣 <span className="text-slate-400">可选</span></div>
+                                <input
+                                  value={mortgageLprDiscount}
+                                  onChange={(event) => setMortgageLprDiscount(event.target.value)}
+                                  onBlur={handleMortgageLprDiscountBlur}
+                                  placeholder="例如：0.85"
+                                  inputMode="decimal"
+                                  className="form-input"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="form-label">
+                                  年利率（%） <span className="text-red-500">*</span>
+                                </div>
+                                <input
+                                  value={annualRate}
+                                  onChange={(event) => {
+                                    setAnnualRateManuallyEdited(true);
+                                    setAnnualRate(event.target.value);
+                                  }}
+                                  placeholder="例如：2.975"
+                                  inputMode="decimal"
+                                  className="form-input"
+                                />
+                              </div>
+                            </div>
+                            </> : (
+                              <div className="border-y border-slate-100 py-2 text-xs text-slate-500">
+                                每期只归还本金，计划利息固定为 0。
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
                                 <div className="form-label">还款周期 <span className="text-red-500">*</span></div>
@@ -1119,7 +1220,7 @@ export function DebtTransactionModal({
                           </>
                         ) : (
                           <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                            自由还款不生成固定还款计划，后续按实际还款时逐笔登记。
+                            自由还款不生成固定还款计划，也不记录约定利率；后续还款或收回时再填写实际利息。
                           </div>
                         )}
                       </>
@@ -1197,7 +1298,7 @@ export function DebtTransactionModal({
                     </span>
                   </label>
 
-                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  {!isInterestFreeRepaymentMethod ? <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <input
                       type="checkbox"
                       checked={showHistoricalRates}
@@ -1218,7 +1319,7 @@ export function DebtTransactionModal({
                       <span className="block font-medium text-slate-800">有历史利率调整</span>
                       <span className="block text-xs text-slate-500">打开利率调整界面，可按 LPR 折扣生成，也可维护实际年利率。</span>
                     </span>
-                  </label>
+                  </label> : null}
 
                   {showHistoricalRates ? (
                     <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">

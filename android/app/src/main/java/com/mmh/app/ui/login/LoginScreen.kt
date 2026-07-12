@@ -401,7 +401,7 @@ private fun ServerConfigFields(
                 value = host,
                 onValueChange = onHostChange,
                 label = "地址",
-                placeholder = "192.168.2.199",
+                placeholder = "192.168.1.100",
                 modifier = Modifier.weight(1f),
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,

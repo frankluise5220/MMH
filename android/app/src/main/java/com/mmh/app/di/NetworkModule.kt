@@ -73,7 +73,7 @@ object NetworkModule {
         tokenProvider: TokenProvider
     ): Retrofit {
         return Retrofit.Builder()
-            .baseUrl("http://192.168.2.199:7777/")
+            .baseUrl("http://localhost/")
             .client(okHttpClient)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()

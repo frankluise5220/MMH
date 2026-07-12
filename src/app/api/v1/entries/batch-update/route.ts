@@ -20,6 +20,7 @@ import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-pre
  *     type?: "expense" | "income" | "transfer" | "investment";
  *     account?: string;        // 来源账户 Account.id
  *     toAccount?: string;      // 去向账户 Account.id
+ *     categoryId?: string;     // 收支分类 Category.id，可传空字符串清空
  *     remark?: string;         // 备注，可传空字符串清空
  *     fundConfirmDate?: string;// 确认日期 YYYY-MM-DD，可传空字符串清空
  *     fundArrivalDate?: string;// 到账日期 YYYY-MM-DD，可传空字符串清空
@@ -38,6 +39,7 @@ type BatchUpdateItem = {
   type?: string;
   account?: string;
   toAccount?: string;
+  categoryId?: string;
   remark?: string;
   fundConfirmDate?: string;
   fundArrivalDate?: string;
@@ -86,7 +88,7 @@ export async function POST(req: NextRequest) {
 
     const existingRecords = await prisma.txRecord.findMany({
       where: { id: { in: ids }, deletedAt: null, ...hidFilter },
-      select: { id: true, date: true, type: true, amount: true, fundSubtype: true, source: true, accountId: true, accountName: true, toAccountId: true, toAccountName: true, note: true, fundConfirmDate: true, fundArrivalDate: true },
+      select: { id: true, date: true, type: true, amount: true, fundSubtype: true, source: true, accountId: true, accountName: true, toAccountId: true, toAccountName: true, categoryId: true, categoryName: true, note: true, fundConfirmDate: true, fundArrivalDate: true },
     });
     const existingMap = new Map(existingRecords.map((record) => [record.id, record]));
     const notFoundIds = ids.filter((id) => !existingMap.has(id));
@@ -96,6 +98,11 @@ export async function POST(req: NextRequest) {
       ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true } })
       : [];
     const accountById = new Map(accounts.map((account) => [account.id, account]));
+    const categoryIds = Array.from(new Set(updates.map((item) => String(item.categoryId ?? "").trim()).filter(Boolean)));
+    const categories = categoryIds.length > 0
+      ? await prisma.category.findMany({ where: { id: { in: categoryIds }, ...hidFilter }, select: { id: true, name: true } })
+      : [];
+    const categoryById = new Map(categories.map((category) => [category.id, category]));
 
     let updatedCount = 0;
     const changed: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }> = [];
@@ -155,6 +162,21 @@ export async function POST(req: NextRequest) {
         data.toAccountName = account.name;
         balanceAccountIds.add(account.id);
         changed.push({ id, date: ymd(existing.date), oldValue: existing.toAccountName ?? "-", newValue: account.name, field: "toAccount" });
+      }
+
+      if (item.categoryId !== undefined) {
+        const categoryId = String(item.categoryId).trim();
+        if (!categoryId) {
+          data.categoryId = null;
+          data.categoryName = null;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.categoryName ?? "-", newValue: "", field: "categoryId" });
+        } else {
+          const category = categoryById.get(categoryId);
+          if (!category) return NextResponse.json({ ok: false, error: `分类不存在：${categoryId}` }, { status: 400 });
+          data.categoryId = category.id;
+          data.categoryName = category.name;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.categoryName ?? "-", newValue: category.name, field: "categoryId" });
+        }
       }
 
       if (item.remark !== undefined) {

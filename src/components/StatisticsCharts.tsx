@@ -27,6 +27,7 @@ type MonthData = {
 };
 
 type CategoryData = {
+  id?: string | null;
   name: string;
   value: number;
   pct: number;
@@ -88,6 +89,10 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
   const pnlClsText = isRedUp ? "text-red-600" : "text-emerald-700";
   const lossClsText = isRedUp ? "text-emerald-700" : "text-red-600";
+  const pnlTypeBadge = (item: PnLItem) => {
+    if (item.subtype.includes("分红")) return "bg-emerald-50 text-emerald-600";
+    return item.profit >= 0 ? "bg-orange-50 text-orange-600" : "bg-rose-50 text-rose-600";
+  };
 
   const totalIncome = monthData.reduce((s, m) => s + m.income, 0);
   const totalExpense = monthData.reduce((s, m) => s + m.expense, 0);
@@ -191,7 +196,7 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="flex-1 space-y-1.5">
-                  {incomeCats.slice(0, 6).map((c, i) => (
+                  {incomeCats.map((c, i) => (
                     <div key={c.name} className="flex items-center gap-1.5 text-xs">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
                       <span className="text-slate-600 truncate flex-1">{c.name}</span>
@@ -223,7 +228,7 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="flex-1 space-y-1.5">
-                  {expenseCats.slice(0, 6).map((c, i) => (
+                  {expenseCats.map((c, i) => (
                     <div key={c.name} className="flex items-center gap-1.5 text-xs">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
                       <span className="text-slate-600 truncate flex-1">{c.name}</span>
@@ -335,12 +340,8 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
                       {e.fundName || e.fundCode}{e.fundName && e.fundCode && e.fundName !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
                     </td>
                     <td className="px-3 py-2 border-b border-slate-100 text-xs">
-                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                        e.subtype === "dividend_cash" ? "bg-emerald-50 text-emerald-600"
-                        : e.subtype === "redeem" ? "bg-orange-50 text-orange-600"
-                        : "bg-amber-50 text-amber-600"
-                      }`}>
-                        {e.subtype === "dividend_cash" ? "现金红利" : e.subtype === "redeem" ? "赎回" : "转出"}
+                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${pnlTypeBadge(e)}`}>
+                        {e.subtype || (e.profit >= 0 ? "投资收益" : "投资亏损")}
                       </span>
                     </td>
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">{formatMoney(Math.abs(e.amount))}</td>

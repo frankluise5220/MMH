@@ -10,7 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { SlidersHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, GripVertical, SlidersHorizontal } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
 import { useI18n } from "@/lib/i18n";
 
@@ -27,6 +27,7 @@ export type AdvancedDataTableColumn<T> = {
   className?: string;
   headerClassName?: string;
   filterText?: (row: T) => string;
+  sortValue?: (row: T) => string | number | null | undefined;
   filterKind?: "multi" | "dateRange";
   render: (row: T, index: number) => ReactNode;
 };
@@ -128,12 +129,6 @@ function sortFilterValue(a: string, b: string) {
   return a.localeCompare(b, "zh-CN", { numeric: true });
 }
 
-function isInteractiveDragTarget(target: EventTarget | null) {
-  return target instanceof Element
-    ? !!target.closest("button,input,a,select,textarea,[data-no-row-drag]")
-    : false;
-}
-
 export function AdvancedDataTable<T>({
   storageKey,
   columns,
@@ -181,6 +176,7 @@ export function AdvancedDataTable<T>({
   const [menuOpen, setMenuOpen] = useState(false);
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
+  const [sortState, setSortState] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
@@ -279,10 +275,33 @@ export function AdvancedDataTable<T>({
       return values?.includes(value);
     }));
   }, [columns, filters, rows, showFilters]);
-  const allRowKeys = useMemo(() => filteredRows.map((row, index) => rowKey(row, index)), [filteredRows, rowKey]);
+  const orderedRows = useMemo(() => {
+    if (!sortState) return filteredRows;
+    const column = columns.find((item) => item.key === sortState.key);
+    const readValue = column?.sortValue ?? column?.filterText;
+    if (!readValue) return filteredRows;
+    return filteredRows
+      .map((row, index) => ({ row, index, value: readValue(row) }))
+      .sort((a, b) => {
+        const aEmpty = a.value == null || a.value === "";
+        const bEmpty = b.value == null || b.value === "";
+        if (aEmpty || bEmpty) {
+          if (aEmpty && bEmpty) return a.index - b.index;
+          return aEmpty ? 1 : -1;
+        }
+        const compared = typeof a.value === "number" && typeof b.value === "number"
+          ? a.value - b.value
+          : String(a.value).localeCompare(String(b.value), "zh-CN", { numeric: true });
+        return compared === 0
+          ? a.index - b.index
+          : sortState.direction === "asc" ? compared : -compared;
+      })
+      .map((item) => item.row);
+  }, [columns, filteredRows, sortState]);
+  const allRowKeys = useMemo(() => orderedRows.map((row, index) => rowKey(row, index)), [orderedRows, rowKey]);
   const rowItems = useMemo(
-    () => filteredRows.map((row, index) => ({ row, index, key: rowKey(row, index) })),
-    [filteredRows, rowKey],
+    () => orderedRows.map((row, index) => ({ row, index, key: rowKey(row, index) })),
+    [orderedRows, rowKey],
   );
   const displayRowItems = useMemo(() => {
     if (!draggedRowKey || !dragTarget) return rowItems;
@@ -290,7 +309,7 @@ export function AdvancedDataTable<T>({
   }, [dragTarget, draggedRowKey, rowItems]);
 
   const layout = useMemo(() => {
-    const selectWidth = selectable ? 38 : 0;
+    const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
     const baseWidths = visibleColumns.map((column) => {
       const saved = columnWidths[column.key];
       const minWidth = column.minWidth ?? 52;
@@ -299,26 +318,26 @@ export function AdvancedDataTable<T>({
     });
     const minColumnsTotal = baseWidths.reduce((sum, column) => sum + column.minWidth, 0);
     const basePreferredColumnsTotal = baseWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
-    const basePreferredTotal = selectWidth + basePreferredColumnsTotal;
+    const basePreferredTotal = controlWidth + basePreferredColumnsTotal;
     const preferredTotal = Math.max(minTableWidth ?? 0, basePreferredTotal);
     const preferredScale =
       basePreferredColumnsTotal > 0 && preferredTotal > basePreferredTotal
-        ? Math.max(0, preferredTotal - selectWidth) / basePreferredColumnsTotal
+        ? Math.max(0, preferredTotal - controlWidth) / basePreferredColumnsTotal
         : 1;
     const preferredWidths = baseWidths.map((column) => ({
       ...column,
       preferredWidth: Math.max(column.minWidth, column.preferredWidth * preferredScale),
     }));
     const preferredColumnsTotal = preferredWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
-    const minTotal = selectWidth + minColumnsTotal;
+    const minTotal = controlWidth + minColumnsTotal;
     const availableWidth = viewportWidth || preferredTotal;
 
-    if (availableWidth >= selectWidth + preferredColumnsTotal) {
-      const availableColumnWidth = Math.max(0, availableWidth - selectWidth);
+    if (availableWidth >= controlWidth + preferredColumnsTotal) {
+      const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
       const growScale = preferredColumnsTotal > 0 ? availableColumnWidth / preferredColumnsTotal : 1;
       return {
         tableWidth: availableWidth,
-        selectWidth,
+        controlWidth,
         colWidths: Object.fromEntries(
           preferredWidths.map((column) => [column.key, column.preferredWidth * growScale]),
         ),
@@ -326,7 +345,7 @@ export function AdvancedDataTable<T>({
     }
 
     if (availableWidth >= minTotal) {
-      const availableColumnWidth = Math.max(0, availableWidth - selectWidth);
+      const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
       const shrinkNeeded = Math.max(0, preferredColumnsTotal - availableColumnWidth);
       const shrinkCapacity = preferredWidths.reduce(
         (sum, column) => sum + Math.max(0, column.preferredWidth - column.minWidth),
@@ -334,7 +353,7 @@ export function AdvancedDataTable<T>({
       );
       return {
         tableWidth: availableWidth,
-        selectWidth,
+        controlWidth,
         colWidths: Object.fromEntries(
           preferredWidths.map((column) => {
             if (shrinkCapacity <= 0) return [column.key, column.minWidth];
@@ -347,10 +366,10 @@ export function AdvancedDataTable<T>({
 
     return {
       tableWidth: minTotal,
-      selectWidth,
+      controlWidth,
       colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.minWidth])),
     };
-  }, [columnWidths, minTableWidth, selectable, viewportWidth, visibleColumns]);
+  }, [columnWidths, draggableRows, minTableWidth, selectable, viewportWidth, visibleColumns]);
 
   const setSelection = useCallback((next: Set<string>) => {
     if (onSelectionChange) onSelectionChange(next);
@@ -409,8 +428,17 @@ export function AdvancedDataTable<T>({
     setSelection(next);
   }
 
-  function handleRowDragStart(event: ReactDragEvent<HTMLTableRowElement>, key: string, dragDisabled: boolean) {
-    if (!draggableRows || dragDisabled || isInteractiveDragTarget(event.target)) {
+  function toggleSort(key: string) {
+    setSortState((current) => {
+      if (!current || current.key !== key) return { key, direction: "asc" };
+      if (current.direction === "asc") return { key, direction: "desc" };
+      return null;
+    });
+  }
+
+  function handleRowDragStart(event: ReactDragEvent<HTMLElement>, key: string, dragDisabled: boolean) {
+    const fromHandle = event.target instanceof Element && !!event.target.closest("[data-row-drag-handle]");
+    if (!draggableRows || dragDisabled || !fromHandle) {
       event.preventDefault();
       return;
     }
@@ -427,9 +455,9 @@ export function AdvancedDataTable<T>({
 
   function canDropOnRow(targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean, position: AdvancedDataTableDropPosition) {
     if (!draggableRows || dragDisabled || !draggedRowKey || draggedRowKey === targetKey) return false;
-    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === draggedRowKey);
+    const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === draggedRowKey);
     if (sourceIndex < 0) return false;
-    return rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true;
+    return rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true;
   }
 
   function handleRowDragOver(event: ReactDragEvent<HTMLTableRowElement>, row: T, index: number, key: string, dragDisabled: boolean) {
@@ -455,16 +483,22 @@ export function AdvancedDataTable<T>({
     }, 0);
   }
 
+  function hasActiveTextSelection() {
+    if (typeof window === "undefined") return false;
+    const selection = window.getSelection();
+    return !!selection && !selection.isCollapsed && selection.toString().trim().length > 0;
+  }
+
   function dropOnPreviewTarget(sourceKey: string) {
     if (!dragTarget) return false;
-    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
-    const targetIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === dragTarget.key);
+    const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
+    const targetIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === dragTarget.key);
     if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
     const targetRow = filteredRows[targetIndex];
     const targetDragDisabled = rowDragDisabled?.(targetRow, targetIndex) ?? false;
     if (targetDragDisabled) return false;
-    if (!(rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position) ?? true)) return false;
-    void onRowReorder?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position);
+    if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position) ?? true)) return false;
+    void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position);
     return true;
   }
 
@@ -491,10 +525,10 @@ export function AdvancedDataTable<T>({
       dropOnPreviewTarget(sourceKey);
       return;
     }
-    const sourceIndex = filteredRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
+    const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
     if (sourceIndex < 0) return;
-    if (!(rowDropAllowed?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
-    void onRowReorder?.(filteredRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
+    if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
+    void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
   }
 
   const selectedCount = effectiveSelectedKeys.size;
@@ -583,21 +617,23 @@ export function AdvancedDataTable<T>({
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
           <colgroup>
-            {selectable ? <col style={{ width: layout.selectWidth }} /> : null}
+            {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
             {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-white">
             <tr>
-              {selectable ? (
+              {(selectable || draggableRows) ? (
                 <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
-                  <input type="checkbox" checked={allSelected} onChange={(event) => toggleAllRows(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectAll")} />
+                  {selectable ? (
+                    <input type="checkbox" checked={allSelected} onChange={(event) => toggleAllRows(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectAll")} />
+                  ) : null}
                 </th>
               ) : null}
               {visibleColumns.map((column) => (
                 <th key={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
-                  {showFilters && column.filterText ? (
-                    <div className="flex justify-center">
-                      {column.filterKind === "dateRange" ? (
+                  <div className="flex items-center justify-center gap-1">
+                    {showFilters && column.filterText ? (
+                      column.filterKind === "dateRange" ? (
                         <DateRangeColumnFilter
                           label={labelText(column.label, column.key)}
                           from={filters[column.key]?.[0] ?? ""}
@@ -635,11 +671,24 @@ export function AdvancedDataTable<T>({
                             })
                           }
                         />
-                      )}
-                    </div>
-                  ) : (
-                    <span className="block truncate text-center">{column.label}</span>
-                  )}
+                      )
+                    ) : (
+                      <span className="block truncate text-center">{column.label}</span>
+                    )}
+                    {column.sortValue || column.filterText ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(column.key)}
+                        className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded ${sortState?.key === column.key ? "text-blue-600" : "text-slate-300 hover:text-slate-500"}`}
+                        title={sortState?.key === column.key ? (sortState.direction === "asc" ? "当前升序，点击改为降序" : "当前降序，点击取消排序") : "排序"}
+                        aria-label={`${labelText(column.label, column.key)}排序`}
+                      >
+                        {sortState?.key === column.key
+                          ? sortState.direction === "asc" ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />
+                          : <ChevronsUpDown className="h-3.5 w-3.5" />}
+                      </button>
+                    ) : null}
+                  </div>
                   <span role="separator" aria-orientation="vertical" onMouseDown={(event) => beginResize(event, column)} className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40" title={t("table.resizeColumn")} />
                 </th>
               ))}
@@ -648,7 +697,7 @@ export function AdvancedDataTable<T>({
           <tbody className="text-sm">
             {displayRowItems.length > 0 ? displayRowItems.map(({ row, index, key }, displayIndex) => {
               const isSelected = effectiveSelectedKeys.has(key);
-              const dragDisabled = rowDragDisabled?.(row, index) ?? false;
+              const dragDisabled = sortState != null || (rowDragDisabled?.(row, index) ?? false);
               const isDragging = draggedRowKey != null;
               const isDraggedRow = draggedRowKey === key;
               const isAllowedDropTarget = dragTarget
@@ -667,31 +716,47 @@ export function AdvancedDataTable<T>({
                       suppressNextClickRef.current = false;
                       return;
                     }
+                    if (hasActiveTextSelection()) return;
                     toggleCurrentRow();
                     onRowClick?.(row, displayIndex);
                   }}
                   onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row, displayIndex) : undefined}
-                  draggable={draggableRows && !dragDisabled}
-                  onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
                   onDragOver={(event) => handleRowDragOver(event, row, index, key, dragDisabled)}
                   onDrop={(event) => handleRowDrop(event, row, index, key, dragDisabled)}
-                  onDragEnd={handleRowDragEnd}
                   className={[
                     rowClassName?.(row, displayIndex) ?? "hover:bg-slate-50",
                     selectable && selectOnRowClick ? "cursor-pointer" : "",
-                    draggableRows && !dragDisabled ? "cursor-grab active:cursor-grabbing" : "",
                     isBlockedDropTarget ? "cursor-not-allowed" : "",
                     isDraggedRow ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200 shadow-[inset_0_0_0_1px_#bfdbfe]" : "",
                     isSelected ? "bg-blue-50/90 hover:bg-blue-100/80" : "",
                   ].filter(Boolean).join(" ")}
                 >
-                  {selectable ? (
+                  {(selectable || draggableRows) ? (
                     <td className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
-                      <input type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
+                      <div className="flex items-center justify-center gap-1">
+                        {draggableRows ? (
+                          <button
+                            type="button"
+                            draggable={!dragDisabled}
+                            data-row-drag-handle
+                            onClick={(event) => event.stopPropagation()}
+                            onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
+                            onDragEnd={handleRowDragEnd}
+                            className={`flex h-5 w-4 items-center justify-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 ${dragDisabled ? "cursor-not-allowed opacity-30" : "cursor-grab active:cursor-grabbing"}`}
+                            title="拖动排序"
+                            aria-label="拖动排序"
+                          >
+                            <GripVertical className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                        {selectable ? (
+                          <input type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
+                        ) : null}
+                      </div>
                     </td>
                   ) : null}
                   {visibleColumns.map((column) => (
-                    <td key={column.key} className={["border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
+                    <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
                       {column.render(row, displayIndex)}
                     </td>
                   ))}
@@ -699,7 +764,7 @@ export function AdvancedDataTable<T>({
               );
             }) : (
               <tr>
-                <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={(selectable ? 1 : 0) + visibleColumns.length || 1}>
+                <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={((selectable || draggableRows) ? 1 : 0) + visibleColumns.length || 1}>
                   {emptyText === "暂无数据" ? t("table.empty") : emptyText}
                 </td>
               </tr>
@@ -708,7 +773,7 @@ export function AdvancedDataTable<T>({
           {summaryRow ? (
             <tfoot className="sticky bottom-0 z-[1] bg-slate-50/95 backdrop-blur-sm">
               <tr className={summaryRow.rowClassName ?? ""}>
-                {selectable ? (
+                {(selectable || draggableRows) ? (
                   <td className={`border-t border-slate-200 text-center ${selectPaddingClass} ${summaryRow.cellClassName ?? ""}`}>
                     {summaryRow.selectCell ?? null}
                   </td>

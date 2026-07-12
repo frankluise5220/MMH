@@ -18,6 +18,7 @@ import {
   PanelLeftOpen,
   UserRound,
   Plus,
+  Table2,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
@@ -649,6 +650,9 @@ export function SidebarClient({
           <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
             <CalendarClock size={18} />
           </Link>
+          <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
+            <Table2 size={18} />
+          </Link>
           {!hideInitialData ? (
             <button
               onClick={() => setInitOpen(true)}
@@ -736,6 +740,10 @@ export function SidebarClient({
             <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
               <CalendarClock size={18} />
               <span className="font-medium">{t("nav.scheduledTasks")}</span>
+            </Link>
+            <Link href="/reports" className={navItemCls("/reports")}>
+              <Table2 size={18} />
+              <span className="font-medium">{t("nav.reports")}</span>
             </Link>
             {!hideInitialData ? (
               <button

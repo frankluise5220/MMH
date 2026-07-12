@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { AccountKind, TransactionType } from "@prisma/client";
+import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
+import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +21,9 @@ export const dynamic = "force-dynamic";
  *   accounts – comma-separated account IDs to filter (optional)
  *   tags     – comma-separated tag IDs to filter (optional)
  *
+ * Expense totals preserve category offsets: a stored positive expense cash flow
+ * is returned as a negative expense statistic instead of being made absolute.
+ *
  * Response 200:
  * {
  *   ok: true,
@@ -29,8 +34,8 @@ export const dynamic = "force-dynamic";
  *     totalInvestPnL: number,
  *     totalNet: number,
  *     monthData: [{ month, income, expense, investPnL, netTotal, cumNet }],
- *     incomeCategories: [{ name, value, pct }],
- *     expenseCategories: [{ name, value, pct }],
+ *     incomeCategories: [{ id, name, value, pct }],
+ *     expenseCategories: [{ id, name, value, pct }],
  *     incomeTagGroups: [{ id, name, color, value, pct }],
  *     expenseTagGroups: [{ id, name, color, value, pct }],
  *     pnlList: [{ id, date, fundCode, fundName, subtype, amount, profit, profitRate }]
@@ -40,7 +45,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   try {
     const ctx = await getHouseholdScope();
-    const { hidFilter } = ctx;
+    const { hidFilter, householdId } = ctx;
 
     const url = req.nextUrl;
     const now = new Date();
@@ -59,11 +64,19 @@ export async function GET(req: NextRequest) {
       ? rawTags.split(",").map(s => s.trim()).filter(Boolean)
       : null;
 
-    const allAccounts = await prisma.account.findMany({
-      where: { ...hidFilter, isActive: true },
-      select: { id: true, name: true, kind: true },
-      orderBy: { name: "asc" },
-    });
+    await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
+
+    const [allAccounts, categories] = await Promise.all([
+      prisma.account.findMany({
+        where: { ...hidFilter, isActive: true },
+        select: { id: true, name: true, kind: true },
+        orderBy: { name: "asc" },
+      }),
+      prisma.category.findMany({
+        where: { ...hidFilter, type: { in: ["income", "expense"] } },
+        select: { id: true, name: true, type: true },
+      }),
+    ]);
 
     const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
 
@@ -85,9 +98,13 @@ export async function GET(req: NextRequest) {
         type: true,
         amount: true,
         fundSubtype: true,
+        fundProductType: true,
         fundCode: true,
         fundName: true,
         realizedProfit: true,
+        depositInterest: true,
+        fundFee: true,
+        categoryId: true,
         categoryName: true,
         accountId: true,
         toAccountId: true,
@@ -103,13 +120,14 @@ export async function GET(req: NextRequest) {
 
     // Aggregation maps
     const monthMap = new Map<string, { income: number; expense: number; investPnL: number }>();
-    const incomeByCat = new Map<string, number>();
-    const expenseByCat = new Map<string, number>();
+    const incomeByCat = new Map<string, { id: string | null; name: string; type: "income"; value: number }>();
+    const expenseByCat = new Map<string, { id: string | null; name: string; type: "expense"; value: number }>();
     const incomeByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
     const expenseByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
     const pnlItems: { id: string; date: string; fundCode: string; fundName: string; subtype: string; amount: number; profit: number; profitRate: number }[] = [];
 
     const scopeAccountIds = selectedAccountIds ?? nonInvestAccountIds;
+    const resolveCategory = createStatisticCategoryResolver(categories);
 
     for (const e of filteredEntries) {
       const d = e.date;
@@ -122,60 +140,52 @@ export async function GET(req: NextRequest) {
       const isFromSelf = e.accountId && scopeAccountIds.includes(e.accountId);
 
       if (e.type === TransactionType.income) {
-        const effectiveAmount = isToSelf ? Math.abs(amount) : amount;
+        const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
         row.income += effectiveAmount;
-        if (e.categoryName) incomeByCat.set(e.categoryName, (incomeByCat.get(e.categoryName) ?? 0) + effectiveAmount);
+        addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
         for (const et of e.EntryTag) {
           const existing = incomeByTag.get(et.tagId);
           incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
         }
       } else if (e.type === TransactionType.expense) {
-        const effectiveAmount = isFromSelf ? Math.abs(amount) : amount;
-        row.expense += Math.abs(effectiveAmount);
-        if (e.categoryName) expenseByCat.set(e.categoryName, (expenseByCat.get(e.categoryName) ?? 0) + Math.abs(effectiveAmount));
+        const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
+        row.expense += effectiveAmount;
+        addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
         for (const et of e.EntryTag) {
           const existing = expenseByTag.get(et.tagId);
-          expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(effectiveAmount) });
+          expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
         }
       } else if (e.type === TransactionType.transfer) {
         if (isToSelf && !isFromSelf) {
           row.income += Math.abs(amount);
-          if (e.categoryName) incomeByCat.set(e.categoryName, (incomeByCat.get(e.categoryName) ?? 0) + Math.abs(amount));
+          addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           for (const et of e.EntryTag) {
             const existing = incomeByTag.get(et.tagId);
             incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
           }
         } else if (isFromSelf && !isToSelf) {
           row.expense += Math.abs(amount);
-          if (e.categoryName) expenseByCat.set(e.categoryName, (expenseByCat.get(e.categoryName) ?? 0) + Math.abs(amount));
+          addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           for (const et of e.EntryTag) {
             const existing = expenseByTag.get(et.tagId);
             expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
           }
         }
       } else if (e.type === TransactionType.investment) {
-        if (e.fundSubtype === "dividend_cash") {
-          const divAmt = Math.abs(amount);
-          row.investPnL += divAmt;
-          incomeByCat.set("投资分红", (incomeByCat.get("投资分红") ?? 0) + divAmt);
-          pnlItems.push({
-            id: e.id, date: d.toISOString().slice(0, 10), fundCode: e.fundCode ?? "", fundName: e.fundName ?? "",
-            subtype: "dividend_cash", amount: divAmt, profit: divAmt, profitRate: 0,
-          });
-        }
-        if (e.realizedProfit != null) {
-          const rp = toNumber(e.realizedProfit);
-          row.investPnL += rp;
+        for (const item of getInvestmentStatisticItems(e)) {
+          const signedProfit = item.type === "income" ? item.amount : -item.amount;
+          row.investPnL += signedProfit;
+          if (item.type === "income") {
+            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          } else {
+            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          }
           const costBase = Math.abs(amount);
-          const rate = costBase > 0 ? rp / costBase : 0;
+          const rate = costBase > 0 ? signedProfit / costBase : 0;
           pnlItems.push({
             id: e.id, date: d.toISOString().slice(0, 10), fundCode: e.fundCode ?? "", fundName: e.fundName ?? "",
-            subtype: e.fundSubtype ?? "", amount: Math.abs(amount) + (rp > 0 ? rp : 0), profit: rp, profitRate: rate,
+            subtype: item.label, amount: item.amount, profit: signedProfit, profitRate: rate,
           });
-        }
-        if (e.fundSubtype === "buy" && amount < 0) {
-          row.expense += Math.abs(amount);
-          expenseByCat.set("投资买入", (expenseByCat.get("投资买入") ?? 0) + Math.abs(amount));
         }
       }
     }
@@ -199,15 +209,8 @@ export async function GET(req: NextRequest) {
     const totalNet = totalIncome - totalExpense + totalInvestPnL;
 
     // Category breakdown (top 8)
-    const incomeCategories = Array.from(incomeByCat.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([name, value]) => ({ name, value, pct: totalIncome > 0 ? (value / totalIncome) * 100 : 0 }));
-
-    const expenseCategories = Array.from(expenseByCat.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([name, value]) => ({ name, value, pct: totalExpense > 0 ? (value / totalExpense) * 100 : 0 }));
+    const incomeCategories = buildStatisticCategoryItemsFromBuckets(incomeByCat, totalIncome);
+    const expenseCategories = buildStatisticCategoryItemsFromBuckets(expenseByCat, totalExpense);
 
     // Tag breakdown (top 8)
     const incomeTagGroups = Array.from(incomeByTag.values())

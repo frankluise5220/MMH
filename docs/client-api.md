@@ -120,6 +120,15 @@
 
 - `/api/v1/overview/summary`
 
+### Statistics
+
+- `GET /api/v1/statistics` 返回年度收支、月度收支和分类/标签汇总。
+- 支出统计使用交易的业务符号：普通支出计为正支出；以正向现金流保存的退款或冲减支出计为负支出，不转换为绝对值。
+- `totalExpense`、`monthData[].expense`、`expenseCategories[].value` 和 `expenseTagGroups[].value` 使用同一统计口径。
+- 投资类收益统计不额外生成现金收入流水：基金赎回使用 `realizedProfit`，理财和存款赎回/支取使用 `depositInterest - fundFee`，并分别归入基金、理财、存款对应的系统统计类别。投资买入本身是资产转换，不应计入收支支出统计。
+- 统计分类项优先返回并使用分类树节点 ID；普通交易按 `categoryId` 归集，旧数据可按 `categoryName` 回挂，投资收益/亏损等派生统计项会解析到系统内置分类节点。
+- `incomeCategories[]` 和 `expenseCategories[]` 返回 `{ id, name, value, pct }`；`id` 为分类树节点 ID，只有旧数据或兜底项无法解析时才可能为空。
+
 ### Accounts
 
 范围：
@@ -148,15 +157,22 @@
 - 普通转账只接受普通资金或信用卡目标账户。目标账户如果是基金/投资、存款或往来款，应按对应业务类型提交投资、存款或往来款交易，不能保存为普通转账。
 - 普通转账只支持同币种账户，并会把账户币种写入交易 `currency`。跨币种转账必须走后续专用的换汇/跨币种流程，不能用一个金额同时代表两边账户。
 - 现金、借记卡或电子钱包账户转入信用卡账户时，存储层仍为 `type = "transfer"`；客户端显示和筛选应按 `accountKind` + `toAccountKind` 识别为信用卡还款。
+- `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端仍以转账记录落库。
+- `/api/v1/record/ingest` 批量导入失败时返回 `{ ok:false, error, failedRow?, trace? }`。`failedRow` 包含 0 基 rowIndex、类型、账户、转出/转入、分类和错误原因，客户端应在预览界面直接显示到用户，而不是只提示整批回滚。
+- `/api/v1/record/ingest` 写入交易成功后，账户余额重算失败不应把导入结果改成失败；接口会返回 `recalcFailedAccountCount` 供客户端提示后续刷新。
+- 批量导入前端区分普通账单和信用卡账单：普通账单逐行解析账户；信用卡账单先统一确定整份文件的信用卡账户，还款行再单独提供 `fromAccount`。
+- 导入账户名称只有“机构 + 账户类型”而没有后四位时，只在该机构下恰好存在一个启用的对应类型账户时自动匹配；存在多个候选时不自动选择。
 - `/api/v1/transactions` 与 `/api/v1/transactions/detail` 的交易项会返回 `accountKind` 和 `toAccountKind`，用于跨客户端判断转账、还款、以及特殊账户目标语义。
-- 交易项中的 `date` 是业务发生日期。支出记录可带 `postedAt` 表示实际入账时间；未提供时服务端在新增支出时默认按 `date` 写入，收入、转账和投资记录通常为 `null`。
+- 交易项中的 `date` 是业务发生日期。支出记录可带 `postedAt` 表示实际入账日期，格式为 `YYYY-MM-DD`；未提供时服务端在新增支出时默认按 `date` 写入，收入、转账和投资记录通常为 `null`。
 - 信用卡邮箱账单导入调用 `/api/v1/statement/import` 时，`mailSource` 可携带 `{ emailAccountId, uid, hash, subject, from, date }`。服务端会用 UID、邮件列表 hash 和解析后的稳定账单指纹阻止重复导入；稳定账单指纹只使用机构、卡号后四位、账单月份/周期，避免分类、备注、明细文本等解析规则变化造成同一账单被当作新账单。
 
 ### Categories
 
 - `/api/v1/category` 用于收支分类列表、新增、重命名和移动。
+- 分类返回字段包含 `isSystem`。`isSystem=true` 的系统内置分类不能改名、移动或删除；客户端应隐藏或禁用这些操作，但仍可允许在其下新增用户子分类。
 - 分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付类型，也不区分父分类。
 - 新增或修改为已有名称时，接口返回 `{ ok:false, error:"分类名称已存在" }`，状态码为 `409`。
+- 修改系统内置分类时，接口返回 `{ ok:false, error:"系统内置类别，无法修改" }`，状态码为 `409`。
 - 分类名称全局唯一后，客户端按名称匹配导入分类时不应再自行按同级或类型消歧。
 
 范围：
@@ -173,6 +189,7 @@
 - `/api/v1/transactions/reorder` 用于同一账户明细、同一显示日期内调整记录顺序；成功返回 `orderedEntryIds`，客户端应以该顺序作为服务端最终顺序。
 - `/api/v1/entries/batch-edit`
 - `/api/v1/entries/batch-update`
+  - 批量更新支持 `categoryId`，客户端应提交真实分类 ID；传空字符串表示清空分类。层级分类中，二级、三级以及带子分类的真实分类节点都可以作为 `categoryId`。
 
 ### External Agent / DB Maintenance
 
@@ -532,6 +549,15 @@ Notes:
 移动端聚合接口可以减少请求次数，但不应复制 Web 的业务计算逻辑。聚合数据应来自同一套服务模块或统一查询口径。
 
 交易同步项包含 `accountKind` 和 `toAccountKind`。移动端应使用这两个字段识别信用卡还款等账户目标语义，不要依赖账户名称或备注文本猜测。
+
+信用卡分期生成的交易同步项还包含：
+
+- `creditCardInstallmentPlanId`: 分期计划稳定 ID。
+- `installmentNo` / `installmentTotal`: 当前期次与总期数；冲抵行的 `installmentNo` 为 `null`。
+- `installmentPrincipal` / `installmentInterest`: 本行本金与手续费/利息。
+- `installmentRole`: `adjustment` 表示原账期本金冲抵，`payment` 表示某一期应还。
+
+分期计划支持仅对原支出的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、冲抵分期本金、逐期加入本金与费用”。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
 
 ## 接口详情模板
 

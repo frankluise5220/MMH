@@ -148,6 +148,9 @@ export function calcLoanScheduledAmount(params: {
   const method = params.repaymentMethod || "自由还款";
   const principal = Math.max(0, params.principal);
   const totalRuns = Math.max(0, params.totalRuns);
+  if (method === "免息分期还本" && principal > 0 && totalRuns > 0) {
+    return roundLoanMoney(principal / totalRuns);
+  }
   if (
     principal <= 0 ||
     totalRuns <= 0 ||
@@ -184,6 +187,9 @@ export function calcLoanScheduledAmountExact(params: {
   const method = params.repaymentMethod || "自由还款";
   const principal = Math.max(0, params.principal);
   const totalRuns = Math.max(0, params.totalRuns);
+  if (method === "免息分期还本" && principal > 0 && totalRuns > 0) {
+    return principal / totalRuns;
+  }
   if (
     method !== "等额本息" ||
     principal <= 0 ||
@@ -253,6 +259,14 @@ export function calcLoanRunParts(params: {
     return {
       principal: roundLoanMoney(Math.min(remainingPrincipal, remainingPrincipal / remainingRuns)),
       interest,
+    };
+  }
+
+  if (method === "免息分期还本") {
+    return {
+      principal: roundLoanMoney(Math.min(remainingPrincipal, remainingPrincipal / remainingRuns)),
+      principalExact: Math.min(remainingPrincipal, remainingPrincipal / remainingRuns),
+      interest: 0,
     };
   }
 

@@ -1,17 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
   <title id="title">MMH logo mark</title>
-  <desc id="desc">A bold custom M monogram for MoneyMoneyHome.</desc>
-  <rect width="128" height="128" rx="32" fill="#141414"/>
+  <desc id="desc">A shared roof and two balanced spaces representing one household.</desc>
+  <rect width="128" height="128" rx="30" fill="#193B3A"/>
   <path
-    fill="#F7F3E7"
-    d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4V98H86V57.4L67 78.2c-1.6 1.8-4.4 1.8-6 0L42 57.4V98H24Z"
-  />
-  <path
-    d="M24 98V31.5c0-2.1 2.5-3 4-1.4L64 69.5l36-39.4c1.5-1.6 4-.7 4 1.4"
+    d="M27 96V59C27 40 42.5 27 64 27C85.5 27 101 40 101 59V96"
     fill="none"
-    stroke="#D2B36A"
+    stroke="#FFF9F0"
+    stroke-width="13"
     stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="8"
   />
+  <path d="M64 54V96" stroke="#E56F4D" stroke-width="11" stroke-linecap="round"/>
 </svg>

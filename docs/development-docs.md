@@ -2,6 +2,8 @@
 
 本文档说明开发过程中哪些内容应该写进哪些文档，以及代码变化时需要同步更新哪些资料。目标是让 Web、iOS、Android、NAS 部署和后续维护都能沿着同一套产品语义推进。
 
+信用卡分期规则与计算统一由 `src/lib/credit/installment.ts` 负责；数据结构在 `CreditCardInstallmentPlan` 与 `TxRecord.installment*` 字段中。修改分期费率、账期或冲抵逻辑时，同步检查账单汇总、交易 API、移动同步和删除/恢复联动。
+
 ## 文档分工
 
 ### `AGENTS.md`
@@ -294,6 +296,30 @@
 - 基金/投资计算变化是否更新 `docs/check-investment-data.md`。
 - 新增/编辑窗口行为变化是否更新 `docs/edit-window-checklist.md`。
 - `.env.example` 是否只包含公开安全的示例值。
+
+### 导入调试日志
+
+开发环境的账单/基金导入会把结构化诊断日志写入：
+
+```text
+.codex-logs/batch-import.debug.log
+```
+
+每次导入使用一个预览窗口可见的 `traceId`，可按该编号串联账户加载、文件解析、工作表合并、模式判断、校验阻断、批量修改、导入请求和数据库事务结果。
+
+查看最近日志：
+
+```powershell
+Get-Content .codex-logs/batch-import.debug.log -Tail 100
+```
+
+查找一次导入：
+
+```powershell
+Select-String -Path .codex-logs/batch-import.debug.log -Pattern "traceId"
+```
+
+日志只能记录数量、模式、耗时、文件扩展名、文件大小、HTTP 状态和错误类型等诊断字段，不记录账单原文、文件名、账户名称、备注、密钥或密码。该文件仅在 `NODE_ENV=development` 时写入，并由现有 `*.log` Git 忽略规则排除。
 
 ## 暂缓实现的设计备忘
 

@@ -151,6 +151,12 @@ _*.mjs
 # local test artifacts
 public/test-results.json
 /src/app/test-results/
+.codex-logs/
+.playwright-cli/
+public/branding/*.preview.png
+public/branding/mmh-logo-*-directions.svg
+public/branding/mmh-logo-v*.svg
+query-fund.js
 release-artifacts/
 mmh-doc-edit/
 .next-hotfix.tar.gz

@@ -18,7 +18,7 @@ const PUBLIC_PATHS = [
   "/favicon",
 ];
 
-const DEFAULT_ORIGINS = ["192.168.5.199", "192.168.2.199", "127.0.0.1", "localhost"];
+const DEFAULT_ORIGINS = ["127.0.0.1", "localhost"];
 
 let allowedOriginsCache: string[] | null = null;
 let allowedOriginsCacheTime = 0;

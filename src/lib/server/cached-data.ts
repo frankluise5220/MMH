@@ -32,7 +32,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, ...hidFilter },
-      include: { Institution: true, Counterparty: true, AccountGroup: true },
+      include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
     prisma.tag.findMany({
