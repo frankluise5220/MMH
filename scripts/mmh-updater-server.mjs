@@ -375,7 +375,7 @@ async function chooseImageSource() {
     const updaterImage = config.customUpdaterImage || imageSources.ghcr.updater;
     pushLog("使用自定义镜像源");
     await updateEnvImageSource(config.customAppImage, updaterImage);
-    return;
+    return { appImage: config.customAppImage, updaterImage };
   }
 
   if (config.source !== "auto") {
@@ -383,7 +383,7 @@ async function chooseImageSource() {
     if (!selected) throw new Error(`未知镜像源: ${config.source}`);
     pushLog(`使用 ${selected.name} 镜像源`);
     await updateEnvImageSource(selected.app, selected.updater);
-    return;
+    return { appImage: selected.app, updaterImage: selected.updater };
   }
 
   const candidates = autoImageSourceOrder.map((key) => imageSources[key]);
@@ -398,11 +398,48 @@ async function chooseImageSource() {
     if (ok) {
       pushLog(`使用 ${source.name} 镜像源`);
       await updateEnvImageSource(source.app, source.updater);
-      return;
+      return { appImage: source.app, updaterImage: source.updater };
     }
   }
 
   pushLog("镜像源检测失败，保留当前 .env 配置");
+  return { appImage: config.appImage, updaterImage: config.updaterImage };
+}
+
+function scheduleUpdaterRecreate(updaterImage) {
+  return new Promise((resolve, reject) => {
+    if (!updaterImage) {
+      reject(new Error("未找到更新执行器镜像地址"));
+      return;
+    }
+    const helperName = `mmh-updater-reloader-${Date.now()}`;
+    const recreateCommand = `sleep 3; ${composeCommand("up -d --no-deps --force-recreate updater")}`;
+    const child = spawn("docker", [
+      "run",
+      "--rm",
+      "-d",
+      "--name",
+      helperName,
+      "--volumes-from",
+      "mmh-updater",
+      "-v",
+      "/var/run/docker.sock:/var/run/docker.sock",
+      "-w",
+      workdir,
+      "--entrypoint",
+      "sh",
+      updaterImage,
+      "-lc",
+      recreateCommand,
+    ], { cwd: workdir });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `启动更新执行器重建任务失败，退出码 ${code}`));
+    });
+    child.on("error", reject);
+  });
 }
 
 async function startUpdate() {
@@ -420,8 +457,8 @@ async function startUpdate() {
   void (async () => {
     try {
       await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
-      await chooseImageSource();
-      await run(composeCommand("pull app"), "拉取应用镜像");
+      const selectedImages = await chooseImageSource();
+      await run(composeCommand("pull updater app"), "拉取应用与更新执行器镜像");
       task.status = "restarting";
       task.currentStep = "重启服务";
       pushLog("即将重启服务");
@@ -433,6 +470,8 @@ async function startUpdate() {
             task.running = false;
             task.currentStep = "完成";
             pushLog("更新完成");
+            await scheduleUpdaterRecreate(selectedImages.updaterImage);
+            pushLog("更新执行器将切换到所选镜像源");
           } catch (error) {
             task.status = "failed";
             task.running = false;

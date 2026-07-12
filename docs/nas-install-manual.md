@@ -119,6 +119,8 @@ MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
 
 选择“自动选择”时，网页里的“刷新远端版本”和实际更新都会按镜像源顺序检测可用版本；不会只检查单一源。如果全部源都无法读取镜像版本，页面会显示失败原因。
 
+固定选择 GHCR、dockerproxy、NJU、DaoCloud 或自定义源时，版本检查、`mmh-app` 和 `mmh-updater` 都统一使用用户选择的源。切换源后执行一次更新，两个容器会一起拉取并切换；不会把 NJU 或其他单一镜像源写死为所有用户的默认选择。
+
 常用可选源：
 
 - `ghcr`：`ghcr.io/frankluise5220/mmh:latest`
