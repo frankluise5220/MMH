@@ -361,6 +361,12 @@ export async function getIncomeExpenseReport(
     return null;
   }
 
+  function resolveRecordNode(record: ReportStatisticRecord) {
+    const node = record.categoryId ? nodesById.get(record.categoryId) ?? null : null;
+    if (node?.type === record.type) return node;
+    return record.categoryName ? findCategoryByName(record.type, [record.categoryName]) : null;
+  }
+
   const statisticRecords: ReportStatisticRecord[] = records.map((record) => {
     const type: ReportCategoryType = record.type === TransactionType.income ? "income" : "expense";
     return {
@@ -412,8 +418,7 @@ export async function getIncomeExpenseReport(
     const type = record.type;
     const columnIndex = columnIndexByKey.get(columnKeyForDate(record.date, params.groupBy));
     if (columnIndex == null) continue;
-    let node = record.categoryId ? nodesById.get(record.categoryId) ?? null : null;
-    if (!node || node.type !== type) node = uncategorized[type];
+    const node = resolveRecordNode(record) ?? uncategorized[type];
 
     sectionPeriodTotals[type][columnIndex] += record.amount;
     sectionPeriodCounts[type][columnIndex] += 1;
@@ -467,8 +472,7 @@ export async function getIncomeExpenseReport(
           return [];
         }
 
-        const recordNode = record.categoryId ? nodesById.get(record.categoryId) ?? null : null;
-        const validRecordNode = recordNode?.type === recordType ? recordNode : null;
+        const validRecordNode = resolveRecordNode(record);
         if (categoryKey) {
           if (categoryKey === uncategorizedKey) {
             if (validRecordNode) return [];

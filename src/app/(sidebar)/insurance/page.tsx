@@ -35,6 +35,7 @@ type InsuranceRow = {
   insuredPersonName: string;
   accountId: string;
   accountLabel: string;
+  accountHoverTitle: string;
   buyCount: number;
   redeemCount: number;
   entries: Array<{
@@ -188,6 +189,7 @@ export default async function InsurancePage() {
       insuredPersonName: product.InsuredPerson?.name?.trim() || product.InsuredUser?.name?.trim() || "",
       accountId: account.id,
       accountLabel: display.label,
+      accountHoverTitle: display.hoverTitle,
       buyCount: premiumCount,
       redeemCount: refundCount,
       entries: relatedEntries,
@@ -264,9 +266,10 @@ export default async function InsurancePage() {
                         <Link
                           key={row.id}
                           href={`/?accountId=${row.accountId}&view=insurance`}
+                          title={row.accountHoverTitle}
                           className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
                         >
-                          <span className="min-w-0 flex-1 truncate">{row.accountLabel || row.name}</span>
+                          <span className="min-w-0 flex-1 truncate" title={row.accountHoverTitle}>{row.accountLabel || row.name}</span>
                           <span className={`tabular-nums font-medium ${metricClass(row.metricMode, row.cashValue ?? 0)}`}>
                             {row.cashValue != null ? formatMoney(row.cashValue) : "-"}
                           </span>

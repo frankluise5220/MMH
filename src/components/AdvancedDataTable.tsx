@@ -94,6 +94,7 @@ export type AdvancedDataTableProps<T> = {
   showColumnVisibilityButton?: boolean;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
+  resetKey?: string;
 };
 
 function alignClass(align?: "left" | "center" | "right") {
@@ -158,6 +159,7 @@ export function AdvancedDataTable<T>({
   showColumnVisibilityButton = true,
   columnVisibilityTriggerId,
   summaryRow,
+  resetKey,
 }: AdvancedDataTableProps<T>) {
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -181,11 +183,16 @@ export function AdvancedDataTable<T>({
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
   const suppressNextClickRef = useRef(false);
+  const lastResetKeyRef = useRef(resetKey);
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
+  const hideableColumnKeys = useMemo(
+    () => new Set(columns.filter((column) => column.hideable).map((column) => column.key)),
+    [columns],
+  );
   const defaultHiddenKeys = useMemo(
-    () => columns.filter((column) => column.defaultHidden).map((column) => column.key),
+    () => columns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
     [columns],
   );
 
@@ -193,8 +200,17 @@ export function AdvancedDataTable<T>({
     setColumnWidths(readJson<Record<string, number>>(`${storageKey}:widths`, {}));
     const savedHiddenKeys = readJson<string[] | null>(hiddenStorageKey, null);
     const legacyHiddenKeys = savedHiddenKeys == null ? readJson<string[]>(`${storageKey}:hidden`, []) : [];
-    setHiddenKeys(new Set(savedHiddenKeys ?? [...defaultHiddenKeys, ...legacyHiddenKeys]));
-  }, [defaultHiddenKeys, hiddenStorageKey, storageKey]);
+    const rawHiddenKeys = savedHiddenKeys ?? [...defaultHiddenKeys, ...legacyHiddenKeys];
+    setHiddenKeys(new Set(rawHiddenKeys.filter((key) => hideableColumnKeys.has(key))));
+  }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey]);
+
+  useEffect(() => {
+    if (resetKey == null) return;
+    if (lastResetKeyRef.current === resetKey) return;
+    lastResetKeyRef.current = resetKey;
+    setFilters({});
+    setActiveFilterColumn(null);
+  }, [resetKey]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -245,7 +261,7 @@ export function AdvancedDataTable<T>({
   }, [columnVisibilityTriggerId]);
 
   const visibleColumns = useMemo(
-    () => columns.filter((column) => !hiddenKeys.has(column.key)),
+    () => columns.filter((column) => !column.hideable || !hiddenKeys.has(column.key)),
     [columns, hiddenKeys],
   );
   const filterOptions = useMemo(() => {
@@ -331,6 +347,16 @@ export function AdvancedDataTable<T>({
     const preferredColumnsTotal = preferredWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
     const minTotal = controlWidth + minColumnsTotal;
     const availableWidth = viewportWidth || preferredTotal;
+
+    if (minTableWidth && availableWidth < preferredTotal) {
+      return {
+        tableWidth: preferredTotal,
+        controlWidth,
+        colWidths: Object.fromEntries(
+          preferredWidths.map((column) => [column.key, column.preferredWidth]),
+        ),
+      };
+    }
 
     if (availableWidth >= controlWidth + preferredColumnsTotal) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
@@ -545,6 +571,9 @@ export function AdvancedDataTable<T>({
       !!toolbarRightContent ||
       showColumnVisibilityButton
     );
+  const hasHorizontalScroll =
+    needsHorizontalScroll ||
+    (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
 
   return (
     <div className={fillHeight ? "flex h-full min-h-0 flex-col" : "min-h-0"}>
@@ -611,8 +640,8 @@ export function AdvancedDataTable<T>({
         ref={viewportRef}
         className={
           fillHeight
-            ? `${needsHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
-            : `${needsHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
+            ? `${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>

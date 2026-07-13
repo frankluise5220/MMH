@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 
 export const runtime = "nodejs";
 
@@ -11,6 +13,23 @@ function cors() {
     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   } as const;
+}
+
+async function resolveBillStorageAccountId(accountId: string) {
+  const { householdId } = await getHouseholdScope();
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, householdId },
+    select: {
+      id: true,
+      householdId: true,
+      institutionId: true,
+      kind: true,
+      creditBillMode: true,
+    },
+  });
+  if (!account) return null;
+  const billAccountIds = await getCreditBillAccountIds(prisma, account);
+  return billAccountIds[0] ?? account.id;
 }
 
 export async function OPTIONS() {
@@ -24,8 +43,12 @@ export async function GET(req: Request) {
   if (!accountId || !statementMonth) {
     return NextResponse.json({ ok: true, overrides: [] }, { headers: cors() });
   }
+  const storageAccountId = await resolveBillStorageAccountId(accountId);
+  if (!storageAccountId) {
+    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+  }
   const overrides = await prisma.billOverride.findMany({
-    where: { accountId, statementMonth: { startsWith: statementMonth.slice(0, 7) } },
+    where: { accountId: storageAccountId, statementMonth: { startsWith: statementMonth.slice(0, 7) } },
     orderBy: { statementMonth: "desc" },
   });
   return NextResponse.json({ ok: true, overrides }, { headers: cors() });
@@ -46,8 +69,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400, headers: cors() });
     }
     const { accountId, statementMonth, amount, note } = parse.data;
+    const storageAccountId = await resolveBillStorageAccountId(accountId);
+    if (!storageAccountId) {
+      return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+    }
     const existing = await prisma.billOverride.findFirst({
-      where: { accountId, statementMonth },
+      where: { accountId: storageAccountId, statementMonth },
     });
     let override;
     if (existing) {
@@ -57,7 +84,7 @@ export async function POST(req: Request) {
       });
     } else {
       override = await prisma.billOverride.create({
-        data: { accountId, statementMonth, amount: String(amount), note },
+        data: { accountId: storageAccountId, statementMonth, amount: String(amount), note },
       });
     }
     revalidateAfterTxChange();
@@ -75,9 +102,13 @@ export async function DELETE(req: Request) {
   if (!accountId || !statementMonth) {
     return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400, headers: cors() });
   }
+  const storageAccountId = await resolveBillStorageAccountId(accountId);
+  if (!storageAccountId) {
+    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+  }
 
   const existing = await prisma.billOverride.findFirst({
-    where: { accountId, statementMonth },
+    where: { accountId: storageAccountId, statementMonth },
   });
   if (!existing) {
     return NextResponse.json({ ok: false, error: "账单覆盖记录不存在" }, { status: 404, headers: cors() });

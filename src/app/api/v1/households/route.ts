@@ -158,6 +158,7 @@ export async function DELETE(req: NextRequest) {
       await tx.regularInvestPlan.deleteMany({ where: { accountId: { in: accountIds } } });
     }
     // 删除该账簿下的标签
+    await tx.undoOperation.deleteMany({ where: { householdId: id } });
     await tx.tag.deleteMany({ where: { householdId: id } });
     // 删除该账簿下的机构
     await tx.institution.deleteMany({ where: { householdId: id } });

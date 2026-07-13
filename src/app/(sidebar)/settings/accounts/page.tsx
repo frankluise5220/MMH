@@ -34,6 +34,7 @@ type Account = {
   Institution: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
   billingDay: number | null; repaymentDay: number | null;
+  creditBillMode?: "separate" | "consolidated";
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
   fundUnitsDecimals?: number | null;
@@ -163,6 +164,7 @@ export default function SettingsAccountsPage() {
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
+      creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
       numberMasked: a.numberMasked || "",
       investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
@@ -182,6 +184,24 @@ export default function SettingsAccountsPage() {
     invalidateSettingsAccountData();
     loadAll({ force: true });
     notifySidebarChanged();
+  }
+
+  async function changeEditInstitution(institutionId: string) {
+    setEditForm((current) => ({ ...current, institutionId }));
+    if (editForm.kind !== "bank_credit" || !institutionId) return;
+    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .catch((error) => {
+        console.warn("[accounts] failed to load credit-card institution defaults", error);
+        return null;
+      });
+    if (!result?.ok || !result.data) return;
+    setEditForm((current) => current.institutionId !== institutionId ? current : ({
+      ...current,
+      billingDay: result.data.billingDay == null ? "" : String(result.data.billingDay),
+      repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
+      creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
+    }));
   }
 
   async function toggleActive(id: string) {
@@ -357,7 +377,7 @@ export default function SettingsAccountsPage() {
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
                         <SmartSelect mode="single" value={editForm.institutionId || ""}
-                          onChange={id => setEditForm(f => ({ ...f, institutionId: id }))}
+                          onChange={changeEditInstitution}
                           options={filteredInstitutions.map(i => ({
                             id: i.id,
                             label: i.shortName?.trim() || i.name,
@@ -441,6 +461,17 @@ export default function SettingsAccountsPage() {
                           <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
                         </div>
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">账单模式</label>
+                          <select
+                            value={editForm.creditBillMode || "separate"}
+                            onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                          >
+                            <option value="separate">独立账单</option>
+                            <option value="consolidated">同机构合并账单</option>
+                          </select>
+                        </div>
                       </div>
                     )}
 
@@ -489,6 +520,7 @@ export default function SettingsAccountsPage() {
                           {a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
                           {a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
+                          <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? "合并账单" : "独立账单"}</span>
                         </>
                       )}
                     </div>

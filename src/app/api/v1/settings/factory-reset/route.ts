@@ -61,6 +61,7 @@ export async function POST(_req: NextRequest) {
 
     // 清理全局数据
     await tx.entryTag.deleteMany();
+    await tx.undoOperation.deleteMany();
     await tx.distillLog.deleteMany();
     await tx.commandTestResult.deleteMany();
     await tx.fundNavCache.deleteMany();

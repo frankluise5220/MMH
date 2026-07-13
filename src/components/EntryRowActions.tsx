@@ -101,7 +101,7 @@ export function EntryRowActions({
 
   async function onDelete() {
     if (deleting) return;
-    if (!window.confirm("确认删除这条记录吗？删除后不可恢复。")) return;
+    if (!window.confirm("确认删除这条记录吗？删除后可使用左侧栏的撤销按钮恢复。")) return;
 
     setDeleting(true);
     try {

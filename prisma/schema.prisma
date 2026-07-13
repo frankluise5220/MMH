@@ -30,6 +30,7 @@ model Account {
   creditLimit                                                Decimal?                    @db.Decimal(18, 2)
   billingDay                                                 Int?
   repaymentDay                                               Int?
+  creditBillMode                                             CreditBillMode              @default(separate)
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
   householdId                                                String
@@ -70,6 +71,7 @@ model Account {
 
   @@index([householdId, kind])
   @@index([householdId, name])
+  @@index([householdId, institutionId, creditBillMode])
   @@index([counterpartyId])
 }
 
@@ -911,6 +913,20 @@ model TxRecord {
   @@map("transactions")
 }
 
+model UndoOperation {
+  id          String    @id @default(cuid())
+  householdId String
+  userId      String?
+  action      String
+  label       String
+  snapshots   Json
+  entryIds    Json
+  createdAt   DateTime  @default(now())
+  undoneAt    DateTime?
+
+  @@index([householdId, userId, createdAt])
+}
+
 model CommandTestResult {
   id          String   @id @default(cuid())
   index       Int
@@ -953,6 +969,11 @@ enum AccountKind {
 enum DebtDirection {
   payable
   receivable
+}
+
+enum CreditBillMode {
+  separate
+  consolidated
 }
 
 enum CostBasisMethod {

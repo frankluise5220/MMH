@@ -143,6 +143,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Ledger/batch import should not expose a separate credit-card statement template entry. Credit-card statement rows use the generic bill-record template, keep legacy `cardAccount/type/merchant` header compatibility, and still validate credit-card repayment as a transfer into the credit-card account.
 - In ledger/batch import, the presence of a `对向账户`-style column means accounts are row-level transfer accounts and must not trigger the credit-card statement unified-account mode. If `付款账户`/`还款账户` and `信用卡账户` appear together, the payment account is the source and the credit-card account is the counter/target account.
 - When an account is created or edited, all fields that were previously entered must reliably round-trip back into the edit form.
+- Any account display that does not visibly include owner and account category must expose them in hover text, using an owner-qualified shape such as `墨斗鱼 · 微信·零钱 · 电子钱包`.
+- 往来对象在当前实现中可能同时服务于 `Institution(person/organization)` 和 `Counterparty` 两类旧/新入口。新增或编辑往来人员、往来组织时必须保持两边同步，避免普通记账、借入借出和系统设置看到不同对象列表。
 
 ### Insurance
 
@@ -261,12 +263,20 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - The reports workspace must not show a page-level vertical scrollbar. The statistics panel and drill-down detail panel each scroll internally within the remaining viewport height.
 - Clicking a report amount should show the filtered records through the shared conventional transaction detail table used by account views, including the same column sizing, header filters, compact rows, selection, batch actions, and edit/delete controls. Do not maintain a separate simplified report-detail table.
 - The shared conventional transaction table is named "MMH明细表" in the UI. It should provide checkboxes, batch edit/delete, header sorting and filtering, field/column settings, persisted column widths, and pagination with page-size and show-all controls.
+- MMH明细表的筛选状态只作用于当前账户/当前表。切换账户或账单上下文时应清空筛选；列宽、隐藏列等用户偏好可以继续保留。
 - All report and MMH detail-table amounts must follow the configured red-up/green-down or green-up/red-down rule. Income uses its signed amount, expense uses its economic direction (normal expense is down; an expense refund is up), and net income uses its signed result.
 - Report grouping controls such as monthly/yearly granularity should stay compact and sit directly under the income/expense report heading.
 - Clicking a report amount should show the exactly filtered transaction records below the report, including parent-category descendants and signed expense offsets.
 - Report drill-down rows must allow editing through the shared transaction editor and deleting with confirmation. After save or deletion, refresh the report totals, drill-down rows, affected account balances, and sidebar summaries through the shared finance refresh path.
 
 ### High-Frequency UX Themes
+
+- User-initiated entry edits, batch edits, deletes, and batch deletes should expose one global "undo last operation" action. A batch is one atomic undo unit, and restoring it must refresh balances, holdings, bill caches, summaries, and current detail rows.
+- Undo history is scoped by household and user and retains only the latest entry operation. Background recalculation must not create undo history. Whole-loan-project deletion remains outside ordinary entry undo because it hard-deletes the loan account, plans, and rates.
+
+- Credit cards under the same institution share billing day, repayment day, and bill mode. Creating a card should prefill those values plus credit limit from an existing card at that institution; the inherited limit is only a default and must not overwrite existing cards.
+- Credit-card bill mode is either separate or consolidated. Consolidated mode groups credit cards by household and institution, including inactive cards so historical bills remain stable, while preserving each transaction's concrete card account. Selecting any card in that group shows one combined bill and all group details.
+- Consolidated bill cycles and manual bill overrides use one stable representative account resolved by shared server logic. Shared credit limits or institution-wide credit utilization are not inferred from consolidated billing.
 
 - Credit-card expense entry may create an installment plan for all or only part of the purchase. The original purchase remains unchanged; the financed principal is offset in its original statement, then installment principal plus fee/interest is added to each statement exactly once.
 - Credit-card installments store structured plan and row fields. Do not infer installment number, principal, fee, or plan identity from notes.
@@ -278,10 +288,15 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - XLSX bill import should merge worksheets that share the same header structure instead of reading only the first sheet, and the preview diagnostics should report sheet, candidate-row, recognized-row, and filtered-row counts.
 - In development, bill import diagnostics should persist structured, privacy-safe events under one visible trace ID so parsing, validation, batch replacement, API ingestion, and failures can be correlated without logging raw statement text or account names.
 - Import account selectors must show account type and owner alongside the account label. When multiple accounts match the same imported name, automatic matching must stop for manual confirmation, and the confirmed selection must retain a stable account ID through preview, batch replacement, and ingestion.
+- In compact import tables, batch-edit panels, and SS dropdowns, account cells/options must at least expose the full owner-qualified account label in hover text, such as `墨斗鱼 · 微信·零钱 · 电子钱包`, so a truncated visible label cannot hide the owner.
+- Import account matching must use owner-qualified labels when the imported text includes an owner/person, such as `张四·微信·零钱通`. The owner is part of the disambiguation key, so a longer account name like `零钱通` must not be blocked by a shorter same-owner account like `零钱`.
 - Import preview may use internal `account-id:` markers to keep a selected account stable, but those markers must never be displayed as account names or written into transaction account-name fields.
 - Credit-card repayment always means a one-way transfer from a debit-card or e-wallet account into a credit-card account. Preview, account selectors, validation, and ingestion must enforce the same direction.
 - Import validation summaries count distinct affected records, not the number of validation messages. Multiple reasons on one row are grouped under that row.
 - Import preview confirmation should validate and import only the current target selection. Rows outside the current filtered/selected import target must not disable the confirm button or change the confirm count.
+- Import preview should still validate the full preview set and show blocking errors immediately, without requiring the user to select all rows first. Full-preview errors may be pinned and filtered for review, while the confirm/import button only depends on the currently selected target rows.
+- Batch editing in import preview is a valid workflow. It must remain available for fixing repeated recognition mistakes, but if an original imported account identity clearly conflicts with the selected account (for example institution/card last four digits point to another card), preview and ingestion must block that write instead of silently moving rows into the wrong account.
+- Large bill imports must distinguish preview validation from server-side write progress. A row number caused by database transaction timeout is not a dirty-row validation failure; the UI/API should say the transaction timed out around that row, show write progress while importing, and keep the whole batch rollback semantics clear.
 - Import preview should avoid repeating the same recognized-record count across title, hint, button, status, and diagnostics. Keep one compact count in the table status area; show detailed diagnostics only for failures or explicit debugging.
 - The user strongly prefers direct inline workflows over hidden corner controls or disconnected secondary panels.
 - Repeatedly broken create/edit round-trips are considered a major product quality problem and should be treated as first-class regressions.
@@ -302,8 +317,10 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Fund buy units must be calculated from the net confirmed amount: `gross buy amount - linked refund amount - fee`, divided by NAV. The buy row's `fundUnits` stores this net confirmed units value. Linked buy-refund rows are cash-flow/relationship rows only and must not reduce units a second time in display, holding recalculation, NAV fill, import, or batch-edit paths.
 - On app startup, the system should run a lightweight background check after login: execute due scheduled tasks, then fill due pending fund buy rows whose NAV or units are missing. This startup check must run from server-side database queries, not by loading every fund page in the client, and pending buy unit calculation must use the same net confirmed amount rule including linked refunds.
 - Bank wealth products should use reusable wealth product master data. Wealth buy/redeem flows must select the product through SS and persist `wealthProductId` while keeping `fundName` only as display text.
+- Bank wealth accounts must route to the wealth investment view and default to the wealth entry workflow. They must not be treated as open-end fund views just because they reuse investment-account storage.
 - Wealth buy/redeem account SS must only show investment accounts whose `investProductType` is `wealth`; fund, money-fund, deposit, and precious-metal accounts must not appear in that selector.
 - Wealth redemption should select from held wealth products under the selected wealth account. The principal reduces the holding, while the arrival amount is principal plus any entered interest.
+- Wealth redemption arrival accounts may be any bank debit-card account plus e-wallet accounts under the same institution as the selected wealth account. This supports third-party wealth institutions redeeming either to linked bank debit cards or to their own e-wallet account.
 - Wealth cash dividends should select from held wealth products under the selected wealth account, use a same-institution debit card as the arrival account, and must not reduce the held principal.
 - Wealth holding selectors for redemption and dividends should respect the selected transaction date, so historical dividends can choose products that were held at that date even if they are now fully redeemed.
 

@@ -1,7 +1,7 @@
-import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { SettingsInstitutionsClient } from "./client";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const dynamic = "force-dynamic";
 
@@ -22,9 +22,7 @@ async function updateInstitutionRow(formData: FormData) {
     })
     .catch(() => null);
 
-  revalidatePath("/settings/institutions");
-  revalidatePath("/settings/accounts");
-  revalidatePath("/accounts");
+  revalidateAfterSettingsChange();
 }
 
 export default async function SettingsInstitutionsPage() {

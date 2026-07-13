@@ -25,5 +25,7 @@ export function revalidateAfterSettingsChange() {
   revalidatePath("/accounts");
   revalidatePath("/settings/accounts");
   revalidatePath("/settings/institutions");
+  revalidatePath("/settings/counterparties");
+  revalidatePath("/settings/family-members");
   revalidatePath("/settings/categories");
 }

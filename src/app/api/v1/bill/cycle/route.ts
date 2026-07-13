@@ -17,6 +17,10 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { addDaysUtc, clampDay, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import {
+  getCreditBillAccountIds,
+  syncCreditCardInstitutionSettings,
+} from "@/lib/server/credit-card-institution-settings";
 
 function parseDateOnly(value: unknown): Date | null {
   const raw = String(value ?? "").trim();
@@ -73,12 +77,22 @@ export async function PATCH(req: Request) {
 
     const account = await prisma.account.findFirst({
       where: { id: accountId, householdId, kind: AccountKind.bank_credit },
-      select: { id: true, billingDay: true, repaymentDay: true },
+      select: {
+        id: true,
+        householdId: true,
+        institutionId: true,
+        kind: true,
+        creditBillMode: true,
+        billingDay: true,
+        repaymentDay: true,
+      },
     });
     if (!account) return NextResponse.json({ ok: false, error: "信用卡账户不存在" }, { status: 404 });
+    const billAccountIds = await getCreditBillAccountIds(prisma, account);
+    const storageAccountId = billAccountIds[0] ?? account.id;
 
     const cycles = await prisma.creditCardCycle.findMany({
-      where: { accountId },
+      where: { accountId: storageAccountId },
       orderBy: { statementMonth: "asc" },
     });
     if (!cycles.some((cycle) => cycle.statementMonth === statementMonth)) {
@@ -134,15 +148,24 @@ export async function PATCH(req: Request) {
     ));
 
     await prisma.$transaction(async (tx) => {
-      await tx.account.update({
-        where: { id: accountId },
-        data: { billingDay, repaymentDay },
+      await syncCreditCardInstitutionSettings(tx, {
+        householdId,
+        institutionId: account.institutionId,
+        billingDay,
+        repaymentDay,
+        creditBillMode: account.creditBillMode,
       });
+      if (!account.institutionId) {
+        await tx.account.update({
+          where: { id: account.id },
+          data: { billingDay, repaymentDay },
+        });
+      }
 
       await tx.txRecord.updateMany({
         where: {
           deletedAt: null,
-          OR: [{ accountId }, { toAccountId: accountId }],
+          OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
           date: { gte: minDate, lt: addDaysUtc(maxDate, 1) },
         },
         data: { statementMonth: null },
@@ -152,7 +175,7 @@ export async function PATCH(req: Request) {
         await tx.txRecord.updateMany({
           where: {
             deletedAt: null,
-            OR: [{ accountId }, { toAccountId: accountId }],
+            OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
             date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) },
           },
           data: { statementMonth: cycle.statementMonth },
@@ -160,7 +183,7 @@ export async function PATCH(req: Request) {
       }
     });
 
-    const overrides = await prisma.billOverride.findMany({ where: { accountId } });
+    const overrides = await prisma.billOverride.findMany({ where: { accountId: storageAccountId } });
     const overrideByMonth = new Map(overrides.map((override) => [override.statementMonth, toNumber(override.amount)]));
 
     const recalculated: typeof adjustedCycles = [];
@@ -174,18 +197,18 @@ export async function PATCH(req: Request) {
       };
       const [expenseAgg, incomeAgg, transferOutAgg, cycleTransferInAgg, paidAgg] = await Promise.all([
         prisma.txRecord.aggregate({
-          where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.expense }] },
+          where: { AND: [cycleWindow, { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] }, { type: TransactionType.expense }] },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
-          where: { AND: [cycleWindow, { OR: [{ accountId }, { toAccountId: accountId }] }, { type: TransactionType.income }] },
+          where: { AND: [cycleWindow, { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] }, { type: TransactionType.income }] },
           _sum: { amount: true },
         }),
         prisma.txRecord.aggregate({
           where: {
             AND: [
               cycleWindow,
-              { accountId },
+              { accountId: { in: billAccountIds } },
               { type: TransactionType.transfer },
               { amount: { lt: 0 } },
             ],
@@ -196,7 +219,7 @@ export async function PATCH(req: Request) {
           where: {
             AND: [
               cycleWindow,
-              { toAccountId: accountId },
+              { toAccountId: { in: billAccountIds } },
               { type: TransactionType.transfer },
               { amount: { lt: 0 } },
             ],
@@ -206,9 +229,9 @@ export async function PATCH(req: Request) {
         prisma.txRecord.aggregate({
           where: {
             AND: [
-              { OR: [{ accountId }, { toAccountId: accountId }] },
+              { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
               { type: TransactionType.transfer },
-              { toAccountId: accountId },
+              { toAccountId: { in: billAccountIds } },
               { amount: { lt: 0 } },
               { date: { gte: addDaysUtc(cycle.periodEnd, 1), lt: addDaysUtc(repayEnd, 1) } },
             ],
@@ -268,7 +291,8 @@ export async function PATCH(req: Request) {
     return NextResponse.json({
       ok: true,
       data: {
-        accountId,
+        accountId: storageAccountId,
+        billAccountIds,
         statementMonth,
         billingDay,
         repaymentDay,

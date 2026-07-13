@@ -73,6 +73,7 @@ export default async function LiabilitiesPage() {
     return {
       id: account.id,
       name: display.label,
+      hoverTitle: display.hoverTitle,
       shortName: account.name,
       kind: account.kind,
       direction,
@@ -183,13 +184,13 @@ export default async function LiabilitiesPage() {
                     ? `/?view=debt&debtPerson=${encodeURIComponent(row.debtPersonKey)}`
                     : `/?accountId=${row.id}&view=bill`;
                   return (
-                    <Link key={row.id} href={href} className="block px-4 py-4 hover:bg-slate-50">
+                    <Link key={row.id} href={href} title={row.hoverTitle} className="block px-4 py-4 hover:bg-slate-50">
                       <div className="flex items-start gap-3">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                           <Icon className="h-4 w-4" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-semibold text-slate-800">{row.name}</div>
+                          <div className="truncate text-sm font-semibold text-slate-800" title={row.hoverTitle}>{row.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{kindLabel(row.kind)}</span>
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.groupName}</span>

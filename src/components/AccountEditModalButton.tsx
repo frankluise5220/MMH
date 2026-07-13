@@ -65,6 +65,7 @@ export function AccountEditModalButton({
     billingDay: number | null;
     repaymentDay: number | null;
     creditLimit: string | null;
+    creditBillMode?: "separate" | "consolidated" | null;
     numberMasked: string | null;
     investProductType: string | null;
     costBasisMethod: string | null;
@@ -338,6 +339,14 @@ export function AccountEditModalButton({
                       placeholder="每月还款日 1-31"
                       inputMode="numeric"
                     />
+                    <select
+                      name="creditBillMode"
+                      defaultValue={account.creditBillMode === "consolidated" ? "consolidated" : "separate"}
+                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    >
+                      <option value="separate">独立账单</option>
+                      <option value="consolidated">同机构合并账单</option>
+                    </select>
                   </div>
                 </div>
               ) : null}

@@ -209,6 +209,10 @@ const ENTITY_CONFIG = {
       { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
       { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
       { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" },
+      { key: "creditBillMode", label: "账单模式", type: "select", options: [
+        { value: "separate", label: "独立账单" },
+        { value: "consolidated", label: "同机构合并账单" },
+      ], defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
       { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" },
       { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
     ] as FieldDef[],
@@ -321,6 +325,32 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
+
+  useEffect(() => {
+    if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
+    let cancelled = false;
+    fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(form.institutionId)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) => {
+        if (cancelled || !result?.ok || !result.data) return;
+        setForm((current) => {
+          if (current.kind !== "bank_credit" || current.institutionId !== form.institutionId) return current;
+          return {
+            ...current,
+            billingDay: result.data.billingDay == null ? "" : String(result.data.billingDay),
+            repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
+            creditLimit: result.data.creditLimit == null ? "" : String(result.data.creditLimit),
+            creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
+          };
+        });
+      })
+      .catch((error) => {
+        console.warn("[account-create] failed to load credit-card institution defaults", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entityType, form.institutionId, form.kind]);
 
   /** Get default type for compact mode */
   const getDefaultTypeCompact = useCallback((): string => {

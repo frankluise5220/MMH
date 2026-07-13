@@ -106,6 +106,7 @@ async function getSidebarData() {
       name: account.name,
       label: display.label,
       shortLabel: display.selectorCoreLabel,
+      hoverTitle: display.hoverTitle,
       balance,
       kind: account.kind as string,
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",

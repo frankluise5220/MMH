@@ -31,6 +31,7 @@ export type AccountDisplayOption = {
   investProductType: string | null;
   subLabel: string;
   fullLabel: string;
+  hoverTitle: string;
 };
 
 function joinAccountSubLabel(parts: Array<string | null | undefined>) {
@@ -43,6 +44,18 @@ function joinAccountSubLabel(parts: Array<string | null | undefined>) {
     result.push(text);
   }
   return result.join(" · ");
+}
+
+export function formatAccountHoverTitle(input: {
+  label: string;
+  groupName?: string | null;
+  subLabel?: string | null;
+}) {
+  return joinAccountSubLabel([
+    input.groupName?.trim() || "未设置所有人",
+    input.label,
+    input.subLabel,
+  ]);
 }
 
 export function formatAccountDisplayName(accountName: string, institutionName?: string | null) {
@@ -177,6 +190,13 @@ export function buildAccountDisplayOption(
     numberMasked: account.numberMasked,
   });
 
+  const subLabel = kindLabel(account.kind);
+  const hoverTitle = formatAccountHoverTitle({
+    groupName,
+    label: selectorLabel || label,
+    subLabel,
+  });
+
   return {
     id: account.id,
     name: account.name,
@@ -188,8 +208,9 @@ export function buildAccountDisplayOption(
     groupName,
     institutionName,
     investProductType: account.investProductType ?? null,
-    subLabel: kindLabel(account.kind),
+    subLabel,
     fullLabel: label,
+    hoverTitle,
   };
 }
 
@@ -220,6 +241,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
       id: account.id,
       label: account.selectorLabel,
       subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+      title: account.hoverTitle,
       parentId: `group:${account.groupId}`,
     }));
 
@@ -229,6 +251,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
       id: account.id,
       label: account.selectorLabel,
       subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+      title: account.hoverTitle,
     }));
 
   return [...headers, ...groupedItems, ...ungroupedItems];
@@ -237,7 +260,10 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
 export function buildFlatAccountOptions(
   accounts: Array<Pick<AccountDisplayOption, "id" | "label" | "subLabel"> & {
     selectorLabel?: string;
+    groupName?: string | null;
     institutionName?: string | null;
+    hoverTitle?: string | null;
+    title?: string | null;
     kind?: string | null;
     investProductType?: string | null;
     debtDirection?: string | null;
@@ -249,6 +275,11 @@ export function buildFlatAccountOptions(
     id: account.id,
     label: account.selectorLabel ?? account.label,
     subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+    title: account.hoverTitle ?? account.title ?? formatAccountHoverTitle({
+      groupName: account.groupName,
+      label: account.selectorLabel ?? account.label,
+      subLabel: account.subLabel,
+    }),
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
     debtDirection: account.debtDirection ?? null,

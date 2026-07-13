@@ -72,11 +72,13 @@ type RegularInvestPlanView = {
   accountName?: string | null;
   accountLabel?: string | null;
   accountFullLabel?: string | null;
+  accountHoverTitle?: string | null;
   accountGroupName?: string | null;
   cashAccountId?: string | null;
   cashAccountName?: string | null;
   cashAccountLabel?: string | null;
   cashAccountFullLabel?: string | null;
+  cashAccountHoverTitle?: string | null;
   cashAccountGroupName?: string | null;
   fundCode: string;
   fundName?: string | null;
@@ -330,10 +332,10 @@ function sortPlans(
   });
 }
 
-function AccountCell({ label }: { label: string }) {
+function AccountCell({ label, title }: { label: string; title?: string | null }) {
   return (
     <div className="min-w-0">
-      <div className="truncate text-slate-700">{label}</div>
+      <div className="truncate text-slate-700" title={title ?? label}>{label}</div>
     </div>
   );
 }
@@ -876,12 +878,12 @@ export function RegularInvestClient({
         ) : null}
         {isColumnVisible("targetAccount") ? (
           <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <AccountCell label={planAccountLabel(plan)} />
+            <AccountCell label={planAccountLabel(plan)} title={plan.accountHoverTitle} />
           </td>
         ) : null}
         {isColumnVisible("cashAccount") ? (
           <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <AccountCell label={planCashAccountLabel(plan)} />
+            <AccountCell label={planCashAccountLabel(plan)} title={plan.cashAccountHoverTitle} />
           </td>
         ) : null}
         {isColumnVisible("amount") ? (

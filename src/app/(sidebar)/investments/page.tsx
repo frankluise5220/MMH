@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
@@ -99,6 +100,7 @@ export default async function InvestmentsPage({
     return {
       id: account.id,
       label: accountLabel,
+      hoverTitle: display.hoverTitle,
       groupName,
       groupSort: account.AccountGroup?.sortOrder ?? 9999,
       institutionName,
@@ -108,7 +110,7 @@ export default async function InvestmentsPage({
       totalCost,
       floatingPnL,
       floatingRate: totalCost > 0 ? floatingPnL / totalCost : 0,
-      href: `/?accountId=${account.id}&view=${account.investProductType === "money" ? "investmoney" : "investfund"}`,
+      href: `/?accountId=${account.id}&view=${getInvestmentAccountView(account)}`,
     };
   });
 
@@ -221,9 +223,9 @@ export default async function InvestmentsPage({
                 </div>
                 <div className="divide-y divide-slate-100">
                   {group.rows.map((row) => (
-                    <Link key={row.id} href={row.href} className="grid grid-cols-[minmax(0,1fr)_120px_120px_86px] items-center gap-3 px-4 py-3 hover:bg-blue-50/40">
+                    <Link key={row.id} href={row.href} title={row.hoverTitle} className="grid grid-cols-[minmax(0,1fr)_120px_120px_86px] items-center gap-3 px-4 py-3 hover:bg-blue-50/40">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-slate-800">{row.label}</div>
+                        <div className="truncate text-sm font-medium text-slate-800" title={row.hoverTitle}>{row.label}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
                           {groupBy !== "group" ? <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{row.groupName}</span> : null}
                           {groupBy !== "institution" ? <span>{row.institutionName}</span> : null}

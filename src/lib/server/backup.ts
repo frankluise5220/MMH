@@ -437,6 +437,7 @@ export async function restoreHouseholdBackup(
       await tx.accountAlias.deleteMany({ where: { accountId: { in: currentAccountIds } } });
     }
 
+    await tx.undoOperation.deleteMany({ where: { householdId } });
     await tx.txRecord.deleteMany({ where: { householdId } });
     await tx.account.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });

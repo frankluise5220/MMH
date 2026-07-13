@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -29,14 +31,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: `往来对象“${name}”已存在` }, { status: 409 });
   }
 
-  const created = await prisma.counterparty.create({
-    data: {
-      name,
-      shortName: shortName || null,
-      type: safeType,
-      householdId,
-    },
+  const created = await prisma.$transaction(async (tx) => {
+    const counterparty = await tx.counterparty.create({
+      data: {
+        name,
+        shortName: shortName || null,
+        type: safeType,
+        householdId,
+      },
+    });
+    const institution = await ensureInstitutionForCounterparty(tx, counterparty);
+    return {
+      ...counterparty,
+      sourceInstitutionId: institution?.id ?? counterparty.sourceInstitutionId,
+    };
   });
+
+  revalidateAfterSettingsChange();
 
   return NextResponse.json({
     ok: true,

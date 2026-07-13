@@ -3,17 +3,14 @@ import { cookies } from "next/headers";
 import { Download } from "lucide-react";
 import { TransactionType } from "@prisma/client";
 
-import type { DetailEntry } from "@/components/DetailViewClient";
-import { ReportDetailTable } from "@/components/ReportDetailTable";
-import { ReportResizableSplit } from "@/components/ReportResizableSplit";
+import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateLocal, formatDateUtc, toNumber } from "@/lib/date-utils";
-import { formatMoney } from "@/lib/format";
-import { pnlColor, type ColorScheme } from "@/lib/client/colors";
+import { formatDateUtc } from "@/lib/date-utils";
+import type { ColorScheme } from "@/lib/client/colors";
 import {
   getIncomeExpenseReport,
   type IncomeExpenseGroupBy,
@@ -21,6 +18,7 @@ import {
   type IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 
 export const dynamic = "force-dynamic";
 
@@ -78,53 +76,6 @@ function presetQuery(params: {
     query.set("endYear", params.end.slice(0, 4));
   }
   return `/reports?${query.toString()}`;
-}
-
-function detailQuery(
-  params: {
-    start: string;
-    end: string;
-    accountId: string;
-    groupBy: IncomeExpenseGroupBy;
-  },
-  detail: {
-    type: IncomeExpenseReportDetailType;
-    categoryKey?: string;
-    columnKey?: string;
-  },
-) {
-  const query = new URLSearchParams();
-  query.set("start", params.start);
-  query.set("end", params.end);
-  if (params.accountId) query.set("accountId", params.accountId);
-  query.set("groupBy", params.groupBy);
-  query.set("detailType", detail.type);
-  if (detail.categoryKey) query.set("detailCategoryKey", detail.categoryKey);
-  if (detail.columnKey) query.set("detailColumnKey", detail.columnKey);
-  return `/reports?${query.toString()}#report-details`;
-}
-
-function AmountLink({
-  value,
-  count,
-  href,
-  className = "",
-}: {
-  value: number;
-  count: number;
-  href: string;
-  className?: string;
-}) {
-  if (count === 0) return <span className={className}>{formatMoney(value)}</span>;
-  return (
-    <Link
-      href={href}
-      className={`${className} cursor-pointer decoration-dotted underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300`}
-      title={`查看 ${count} 条明细`}
-    >
-      {formatMoney(value)}
-    </Link>
-  );
 }
 
 export default async function ReportsPage({
@@ -213,6 +164,7 @@ export default async function ReportsPage({
   const accounts = accountRecords.map((account) => ({
     id: account.id,
     label: accountDisplayById.get(account.id)?.label ?? account.name,
+    title: accountDisplayById.get(account.id)?.hoverTitle,
     subLabel: kindLabel(account.kind),
     kind: account.kind,
     investProductType: account.investProductType,
@@ -227,6 +179,7 @@ export default async function ReportsPage({
   const investmentAccounts = investmentAccountRecords.map((account) => ({
     id: account.id,
     label: allAccountDisplayById.get(account.id)?.label ?? account.name,
+    title: allAccountDisplayById.get(account.id)?.hoverTitle,
     subLabel: kindLabel(account.kind),
     kind: account.kind,
     investProductType: account.investProductType,
@@ -327,76 +280,7 @@ export default async function ReportsPage({
   const detailEntryIds = report.details
     ? [...new Set(report.details.rows.map((row) => row.entryId))]
     : [];
-  const detailRecords = detailEntryIds.length > 0
-    ? await prisma.txRecord.findMany({
-        where: {
-          ...ctx.hidFilter,
-          deletedAt: null,
-          id: { in: detailEntryIds },
-        },
-        include: {
-          EntryTag: { include: { Tag: true } },
-          account: { include: { Institution: { select: { name: true } } } },
-          toAccount: { include: { Institution: { select: { name: true } } } },
-        },
-      })
-    : [];
-  const detailEntryById = new Map<string, DetailEntry>(detailRecords.map((record) => [record.id, {
-    id: record.id,
-    date: formatDateLocal(record.date),
-    postedAt: record.postedAt ? formatDateLocal(record.postedAt) : null,
-    createdAt: record.createdAt.toISOString(),
-    dayOrder: record.dayOrder,
-    amount: toNumber(record.amount),
-    runningBalance: null,
-    type: record.type,
-    categoryId: record.categoryId,
-    categoryName: record.categoryName,
-    accountId: record.accountId,
-    accountName: record.accountName,
-    accountKind: record.account?.kind ?? null,
-    accountDebtDirection: record.account?.debtDirection ?? null,
-    accountInstitutionName: record.account?.Institution?.name ?? "",
-    counterpartyInstitutionId: record.counterpartyInstitutionId,
-    counterpartyInstitutionName: record.counterpartyInstitutionName,
-    toAccountId: record.toAccountId,
-    toAccountName: record.toAccountName,
-    toAccountKind: record.toAccount?.kind ?? null,
-    toAccountDebtDirection: record.toAccount?.debtDirection ?? null,
-    toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
-    note: record.note,
-    toNote: record.toNote,
-    fundSubtype: record.fundSubtype,
-    fundCode: record.fundCode,
-    fundName: record.fundName,
-    wealthProductId: record.wealthProductId,
-    metalTypeId: record.metalTypeId,
-    metalTypeName: record.metalTypeName,
-    metalUnitId: record.metalUnitId,
-    metalUnitName: record.metalUnitName,
-    metalQuantity: record.metalQuantity == null ? null : toNumber(record.metalQuantity),
-    metalUnitPrice: record.metalUnitPrice == null ? null : toNumber(record.metalUnitPrice),
-    metalFee: record.metalFee == null ? null : toNumber(record.metalFee),
-    source: record.source,
-    fundProductType: record.fundProductType,
-    fundUnits: record.fundUnits == null ? null : toNumber(record.fundUnits),
-    fundNav: record.fundNav == null ? null : toNumber(record.fundNav),
-    depositAnnualRate: record.depositAnnualRate == null ? null : toNumber(record.depositAnnualRate),
-    depositInterest: record.depositInterest == null ? null : toNumber(record.depositInterest),
-    depositSourceEntryId: record.depositSourceEntryId,
-    fundFee: record.fundFee == null ? null : toNumber(record.fundFee),
-    fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
-    fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
-    fundArrivalAmount: record.fundArrivalAmount == null ? null : toNumber(record.fundArrivalAmount),
-    entryTags: record.EntryTag.map((entryTag) => ({
-      tagId: entryTag.tagId,
-      Tag: entryTag.Tag ? { name: entryTag.Tag.name, color: entryTag.Tag.color ?? "#3B82F6" } : null,
-    })),
-  }]));
-  const detailEntries = detailEntryIds.flatMap((entryId) => {
-    const entry = detailEntryById.get(entryId);
-    return entry ? [entry] : [];
-  });
+  const detailEntries = await loadReportDetailEntries(ctx, detailEntryIds);
   const investmentProductTypeByAccountId = Object.fromEntries(
     allAccountRecords.map((account) => [account.id, account.investProductType]),
   );
@@ -528,211 +412,20 @@ export default async function ReportsPage({
               </button>
           </form>
 
-          <ReportResizableSplit hasDetails={Boolean(report.details)}>
-          <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 overflow-auto">
-              <table className="min-w-[960px] w-full border-separate border-spacing-0">
-                <thead className="bg-white">
-                  <tr>
-                    <th className="sticky left-0 top-0 z-30 border-b border-slate-200 bg-white px-4 py-2 text-left text-xs font-semibold text-slate-600">分类</th>
-                    {report.columns.map((column) => (
-                      <th
-                        key={column.key}
-                        className="sticky top-0 z-20 border-b border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-600"
-                      >
-                        {column.label}
-                      </th>
-                    ))}
-                    <th className="sticky top-0 z-20 border-b border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-700">合计</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="bg-emerald-50/70">
-                    <td className="sticky left-0 z-10 border-b border-emerald-100 bg-emerald-50/70 px-4 py-2 text-sm font-semibold text-emerald-700">
-                      收入合计
-                    </td>
-                    {report.income.periodTotals.map((value, index) => (
-                      <td key={`income-total-${index}`} className="border-b border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
-                        <AmountLink
-                          value={value}
-                          count={report.income.periodCounts[index]}
-                          className={pnlColor(value, colorScheme)}
-                          href={detailQuery(currentReportQuery, {
-                            type: "income",
-                            columnKey: report.columns[index].key,
-                          })}
-                        />
-                      </td>
-                    ))}
-                    <td className="border-b border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
-                      <AmountLink
-                        value={report.income.total}
-                        count={report.income.count}
-                        className={pnlColor(report.income.total, colorScheme)}
-                        href={detailQuery(currentReportQuery, { type: "income" })}
-                      />
-                    </td>
-                  </tr>
-                  {report.income.rows.map((row) => (
-                    <tr key={row.key} className="hover:bg-slate-50">
-                      <td
-                        className="sticky left-0 border-b border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700"
-                        style={{ paddingLeft: `${16 + row.depth * 20}px` }}
-                      >
-                        <span className={row.depth === 0 ? "font-semibold text-slate-800" : ""}>{row.name}</span>
-                      </td>
-                      {row.values.map((value, index) => (
-                        <td key={`${row.key}-${index}`} className="border-b border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
-                          <AmountLink
-                            value={value}
-                            count={row.counts[index]}
-                            className={pnlColor(value, colorScheme)}
-                            href={detailQuery(currentReportQuery, {
-                              type: "income",
-                              categoryKey: row.key,
-                              columnKey: report.columns[index].key,
-                            })}
-                          />
-                        </td>
-                      ))}
-                      <td className="border-b border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
-                        <AmountLink
-                          value={row.total}
-                          count={row.count}
-                          className={pnlColor(row.total, colorScheme)}
-                          href={detailQuery(currentReportQuery, {
-                            type: "income",
-                            categoryKey: row.key,
-                          })}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-
-                  <tr className="bg-rose-50/70">
-                    <td className="sticky left-0 z-10 border-b border-rose-100 bg-rose-50/70 px-4 py-2 text-sm font-semibold text-rose-700">
-                      支出合计
-                    </td>
-                    {report.expense.periodTotals.map((value, index) => (
-                      <td key={`expense-total-${index}`} className="border-b border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
-                        <AmountLink
-                          value={value}
-                          count={report.expense.periodCounts[index]}
-                          className={pnlColor(-value, colorScheme)}
-                          href={detailQuery(currentReportQuery, {
-                            type: "expense",
-                            columnKey: report.columns[index].key,
-                          })}
-                        />
-                      </td>
-                    ))}
-                    <td className="border-b border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
-                      <AmountLink
-                        value={report.expense.total}
-                        count={report.expense.count}
-                        className={pnlColor(-report.expense.total, colorScheme)}
-                        href={detailQuery(currentReportQuery, { type: "expense" })}
-                      />
-                    </td>
-                  </tr>
-                  {report.expense.rows.map((row) => (
-                    <tr key={row.key} className="hover:bg-slate-50">
-                      <td
-                        className="sticky left-0 border-b border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700"
-                        style={{ paddingLeft: `${16 + row.depth * 20}px` }}
-                      >
-                        <span className={row.depth === 0 ? "font-semibold text-slate-800" : ""}>{row.name}</span>
-                      </td>
-                      {row.values.map((value, index) => (
-                        <td key={`${row.key}-${index}`} className="border-b border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
-                          <AmountLink
-                            value={value}
-                            count={row.counts[index]}
-                            className={pnlColor(-value, colorScheme)}
-                            href={detailQuery(currentReportQuery, {
-                              type: "expense",
-                              categoryKey: row.key,
-                              columnKey: report.columns[index].key,
-                            })}
-                          />
-                        </td>
-                      ))}
-                      <td className="border-b border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
-                        <AmountLink
-                          value={row.total}
-                          count={row.count}
-                          className={pnlColor(-row.total, colorScheme)}
-                          href={detailQuery(currentReportQuery, {
-                            type: "expense",
-                            categoryKey: row.key,
-                          })}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot className="sticky bottom-0 bg-slate-50">
-                  <tr>
-                    <td className="sticky left-0 border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
-                      净收支
-                    </td>
-                    {report.netPeriodTotals.map((value, index) => (
-                      <td
-                        key={`net-${index}`}
-                        className={`border-t border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(value, colorScheme)}`}
-                      >
-                        <AmountLink
-                          value={value}
-                          count={report.income.periodCounts[index] + report.expense.periodCounts[index]}
-                          href={detailQuery(currentReportQuery, {
-                            type: "net",
-                            columnKey: report.columns[index].key,
-                          })}
-                          className={value > 0 ? "before:content-['+']" : ""}
-                        />
-                      </td>
-                    ))}
-                    <td className={`border-t border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(report.netTotal, colorScheme)}`}>
-                      <AmountLink
-                        value={report.netTotal}
-                        count={report.income.count + report.expense.count}
-                        href={detailQuery(currentReportQuery, { type: "net" })}
-                        className={report.netTotal > 0 ? "before:content-['+']" : ""}
-                      />
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-
-            {report.income.rows.length === 0 && report.expense.rows.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-400">
-                当前筛选范围内暂无收支数据
-              </div>
-            ) : null}
-          </div>
-
-          {report.details ? (
-            <div id="report-details" className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-              <ReportDetailTable
-                accountId={selectedAccount?.id ?? ""}
-                entries={detailEntries}
-                accountOptions={accounts}
-                categoryOptions={[...expenseCategories, ...incomeCategories].map((category) => ({
-                  value: category.id,
-                  label: category.label,
-                  parentId: category.parentId ?? undefined,
-                }))}
-                investmentProductTypeByAccountId={investmentProductTypeByAccountId}
-                title={`${report.details.typeLabel}明细${report.details.categoryName ? ` · ${report.details.categoryName}` : ""} · ${report.details.columnLabel}`}
-                total={report.details.total}
-                colorValue={report.details.type === "expense" ? -report.details.total : report.details.total}
-                clearHref={presetQuery(currentReportQuery)}
-                resetKey={`${report.details.type}:${report.details.categoryKey ?? "all"}:${report.details.columnKey ?? "all"}`}
-              />
-            </div>
-          ) : null}
-          </ReportResizableSplit>
+          <IncomeExpenseReportClient
+            report={report}
+            initialDetailEntries={detailEntries}
+            currentReportQuery={currentReportQuery}
+            colorScheme={colorScheme}
+            accountId={selectedAccount?.id ?? ""}
+            accountOptions={accounts}
+            categoryOptions={[...expenseCategories, ...incomeCategories].map((category) => ({
+              value: category.id,
+              label: category.label,
+              parentId: category.parentId ?? undefined,
+            }))}
+            investmentProductTypeByAccountId={investmentProductTypeByAccountId}
+          />
           <ReportTransactionEditHost
             accounts={accounts}
             accountSSOptions={accountSSOptions}

@@ -35,6 +35,7 @@ export function ReportDetailTable({
   total,
   colorValue,
   clearHref,
+  onClear,
   resetKey,
 }: {
   accountId: string;
@@ -45,7 +46,8 @@ export function ReportDetailTable({
   title: string;
   total: number;
   colorValue: number;
-  clearHref: string;
+  clearHref?: string;
+  onClear?: () => void;
   resetKey: string;
 }) {
   const router = useRouter();
@@ -102,15 +104,18 @@ export function ReportDetailTable({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           toolbarTitle={(
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0">MMH明细表</span>
-              <span className="truncate text-xs font-normal text-slate-500" title={title}>{title}</span>
+            <span className="flex min-w-0 items-center">
+              <span className="truncate text-xs font-normal text-slate-600" title={title}>{title}</span>
             </span>
           )}
           toolbarRightContent={(
             <div className="flex items-center gap-3 text-xs text-slate-500">
               <span>{entries.length} 条，合计 <strong className={`tabular-nums ${pnlColor(colorValue, colorScheme)}`}>{formatMoney(total)}</strong></span>
-              <Link href={clearHref} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</Link>
+              {onClear ? (
+                <button type="button" onClick={onClear} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</button>
+              ) : clearHref ? (
+                <Link href={clearHref} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</Link>
+              ) : null}
               <span className="text-slate-300">|</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}

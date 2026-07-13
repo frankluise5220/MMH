@@ -37,6 +37,7 @@ import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount, isSpecia
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
@@ -1461,6 +1462,7 @@ export async function PUT(req: Request) {
     }
 
     const { householdId } = ctx;
+    const undo = await prepareEntryUndo(prisma, householdId, [entryId]);
 
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;
@@ -1924,6 +1926,7 @@ return;
     if (!updated) {
       return NextResponse.json({ ok: false, error: "更新后记录不存在" }, { status: 404 });
     }
+    await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
 
     return NextResponse.json({
       ok: true,
@@ -2014,6 +2017,7 @@ export async function DELETE(req: Request) {
     if (txRecord.householdId && txRecord.householdId !== householdId) {
       return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
     }
+    const undo = await prepareEntryUndo(prisma, householdId, [id]);
 
     // Soft delete
     await prisma.txRecord.update({
@@ -2045,6 +2049,7 @@ export async function DELETE(req: Request) {
       revalidateAfterTxChange();
     }
 
+    await saveEntryUndo(prisma, ctx, undo, "delete", "删除明细");
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "删除失败";

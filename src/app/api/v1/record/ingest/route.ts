@@ -3,16 +3,25 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
+import { normalizeDefaultCategoryHierarchyForHousehold, type CategorySnapshot, type ResolveCategorySnapshotInput } from "@/lib/default-categories";
 import { defaultModel, localProvider } from "@/lib/ai/config";
 import {
+  createImportAccountIdentityConflictChecker,
   normalizeImportAccountMatchKey,
   parseImportAccountId,
   resolveImportAccountIdFromList,
+  type ImportAccountIdentityConflict,
 } from "@/lib/account-import-match";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { writeImportDebugLog } from "@/lib/server/import-debug-log";
+import {
+  beginImportRun,
+  finishImportProgress,
+  finishImportRun,
+  startImportProgress,
+  updateImportProgress,
+} from "@/lib/server/import-progress";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
@@ -39,12 +48,19 @@ type AccountLookupRow = {
   currency: string | null;
   numberMasked: string | null;
   Institution: { name: string | null; shortName?: string | null } | null;
+  AccountGroup?: { name: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
 };
 type ImportContext = {
   householdId: string;
   accountMetaById: Map<string, { name: string; kind: AccountKind; billingDay: number | null; currency: string | null }>;
   accountLookupRows: AccountLookupRow[];
+  accountIdentityConflictFor: (
+    selectedAccount: AccountLookupRow | null | undefined,
+    originalText: string | undefined,
+  ) => ImportAccountIdentityConflict | null;
+  categorySnapshotById: Map<string, CategorySnapshot>;
+  categorySnapshotByKey: Map<string, CategorySnapshot>;
   tagIdByName: Map<string, string>;
   institutionIdByName: Map<string, string>;
   defaultAccountGroupId: string | null;
@@ -59,6 +75,7 @@ type ImportFailureDetail = {
   category?: string;
   remark?: string;
   error: string;
+  reasonKind?: "transaction_timeout";
 };
 
 class ImportItemError extends Error {
@@ -77,8 +94,21 @@ function compactImportText(value?: string | null, maxLength = 80) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
+function getImportTransactionTimeoutMs(itemCount: number) {
+  if (itemCount <= 500) return 60_000;
+  return Math.min(45 * 60_000, Math.max(2 * 60_000, itemCount * 350));
+}
+
+function isTransactionExpiredErrorMessage(message: string) {
+  return /expired transaction/i.test(message) || /timeout for this transaction/i.test(message);
+}
+
 function buildImportFailureDetail(rowIndex: number, item: ParsedItem, error: unknown): ImportFailureDetail {
-  const message = error instanceof Error ? error.message : String(error || "导入失败");
+  const rawMessage = error instanceof Error ? error.message : String(error || "导入失败");
+  const reasonKind = isTransactionExpiredErrorMessage(rawMessage) ? "transaction_timeout" : undefined;
+  const message = reasonKind === "transaction_timeout"
+    ? `数据库事务超时：写入进行到第 ${rowIndex + 1} 行附近时超过事务时限，整批已回滚。这不是第 ${rowIndex + 1} 行数据校验失败，而是服务端写库耗时过长。`
+    : rawMessage;
   return {
     rowIndex,
     type: item.type,
@@ -88,6 +118,7 @@ function buildImportFailureDetail(rowIndex: number, item: ParsedItem, error: unk
     category: compactImportText(item.category),
     remark: compactImportText(item.remark ?? item.rawText),
     error: message,
+    reasonKind,
   };
 }
 
@@ -130,6 +161,12 @@ const ParsedItemSchema = z.object({
   account: z.string().optional(),
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
+  importMode: z.enum(["normal", "credit_card"]).optional(),
+  statementAccount: z.string().optional(),
+  importSourceAccount: z.string().optional(),
+  importSourceFromAccount: z.string().optional(),
+  importSourceToAccount: z.string().optional(),
+  importSourceStatementAccount: z.string().optional(),
   category: z.string().optional(),
   institution: z.string().optional(),
   tags: z.string().optional(),
@@ -206,6 +243,7 @@ async function resolveAccountId(ctx: ImportContext, tx: Db, accountName?: string
           shortName: true,
         },
       },
+      AccountGroup: { select: { name: true } },
       AccountAlias: { select: { alias: true } },
     },
   });
@@ -270,7 +308,7 @@ async function ensureAccountId(ctx: ImportContext, tx: Db, accountName?: string)
       },
     });
     ctx.accountMetaById.set(created.id, { name: created.name, kind: created.kind, billingDay: created.billingDay, currency: created.currency });
-    ctx.accountLookupRows.push({ id: created.id, name: created.name, kind: created.kind, billingDay: created.billingDay, currency: created.currency, numberMasked: created.numberMasked, Institution: null });
+    ctx.accountLookupRows.push({ id: created.id, name: created.name, kind: created.kind, billingDay: created.billingDay, currency: created.currency, numberMasked: created.numberMasked, Institution: null, AccountGroup: null });
     return created.id;
   } catch {
     return (await resolveAccountId(ctx, tx, name)) ?? null;
@@ -307,6 +345,29 @@ function resolveInstitutionId(ctx: ImportContext, institutionName?: string) {
   return ctx.institutionIdByName.get(normalizeInstitutionMatchKey(raw)) ?? null;
 }
 
+function categorySnapshotKey(name: string, type: string | null) {
+  return `${type ?? ""}\u0000${name.trim()}`;
+}
+
+function resolveCategorySnapshotFromContext(
+  ctx: ImportContext,
+  input: ResolveCategorySnapshotInput,
+): CategorySnapshot | null {
+  const categoryId = String(input.categoryId ?? "").trim();
+  if (categoryId) {
+    const category = ctx.categorySnapshotById.get(categoryId);
+    if (category && (!input.type || category.type === input.type)) return category;
+  }
+
+  const categoryName = String(input.categoryName ?? "").trim();
+  if (!categoryName) return null;
+  if (input.type) {
+    const typed = ctx.categorySnapshotByKey.get(categorySnapshotKey(categoryName, input.type));
+    if (typed) return typed;
+  }
+  return ctx.categorySnapshotByKey.get(categorySnapshotKey(categoryName, null)) ?? null;
+}
+
 async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: string) {
   const tagIds = resolveTagIds(ctx, tags);
   if (tagIds.length === 0) return;
@@ -339,10 +400,30 @@ async function accountMetaFor(ctx: ImportContext, tx: Db, accountId: string | nu
   return meta;
 }
 
+function accountLookupFor(ctx: ImportContext, accountId: string | null) {
+  if (!accountId) return null;
+  return ctx.accountLookupRows.find((account) => account.id === accountId) ?? null;
+}
+
+function assertImportAccountIdentity(
+  ctx: ImportContext,
+  accountId: string | null,
+  originalText: string | undefined,
+  fieldLabel: string,
+) {
+  const original = String(originalText ?? "").trim();
+  if (!original || !accountId) return;
+  const selected = accountLookupFor(ctx, accountId);
+  const conflict = ctx.accountIdentityConflictFor(selected, original);
+  if (!conflict) return;
+  const selectedName = selected?.name ?? accountId;
+  throw new Error(`${fieldLabel}“${selectedName}”与导入原始账户“${conflict.originalText}”不一致，请重新选择匹配账户`);
+}
+
 async function buildImportContext(): Promise<ImportContext> {
   const { householdId } = await getHouseholdScope();
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
-  const [accounts, tags, institutions, defaultGroup] = await Promise.all([
+  const [accounts, tags, institutions, categories, defaultGroup] = await Promise.all([
     prisma.account.findMany({
       where: { householdId, isActive: true },
       select: {
@@ -358,6 +439,7 @@ async function buildImportContext(): Promise<ImportContext> {
             shortName: true,
           },
         },
+        AccountGroup: { select: { name: true } },
         AccountAlias: { select: { alias: true } },
       },
     }),
@@ -369,16 +451,27 @@ async function buildImportContext(): Promise<ImportContext> {
       where: { householdId },
       select: { id: true, name: true, shortName: true },
     }),
+    prisma.category.findMany({
+      where: {
+        OR: [{ householdId }, { householdId: null }],
+      },
+      orderBy: [{ householdId: "desc" }, { id: "asc" }],
+      select: { id: true, name: true, type: true },
+    }),
     prisma.accountGroup.findFirst({
       where: { householdId, name: "未指定" },
       select: { id: true },
     }),
   ]);
+  const accountLookupRows: AccountLookupRow[] = accounts;
 
   const ctx: ImportContext = {
     householdId,
     accountMetaById: new Map(),
-    accountLookupRows: accounts,
+    accountLookupRows,
+    accountIdentityConflictFor: createImportAccountIdentityConflictChecker(accountLookupRows),
+    categorySnapshotById: new Map(),
+    categorySnapshotByKey: new Map(),
     tagIdByName: new Map(),
     institutionIdByName: new Map(),
     defaultAccountGroupId: defaultGroup?.id ?? null,
@@ -389,6 +482,14 @@ async function buildImportContext(): Promise<ImportContext> {
   }
   for (const tag of tags) {
     ctx.tagIdByName.set(tag.name, tag.id);
+  }
+  for (const category of categories) {
+    const snapshot: CategorySnapshot = { id: category.id, name: category.name, type: category.type };
+    ctx.categorySnapshotById.set(category.id, snapshot);
+    const typedKey = categorySnapshotKey(category.name, category.type);
+    const anyKey = categorySnapshotKey(category.name, null);
+    if (!ctx.categorySnapshotByKey.has(typedKey)) ctx.categorySnapshotByKey.set(typedKey, snapshot);
+    if (!ctx.categorySnapshotByKey.has(anyKey)) ctx.categorySnapshotByKey.set(anyKey, snapshot);
   }
   for (const institution of institutions) {
     const fullName = String(institution.name ?? "").trim();
@@ -445,6 +546,8 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         throw new Error("信用卡还款的对手账户必须是信用卡账户");
       }
     }
+    assertImportAccountIdentity(ctx, sourceAccountId, item.importSourceFromAccount, "转出账户");
+    assertImportAccountIdentity(ctx, toAccountId, item.importSourceToAccount, "转入账户");
     const transactionCurrency = item.type === "transfer" && fromAccountMeta && toAccountMeta
       ? resolveSameCurrencyTransfer(fromAccountMeta, toAccountMeta)
       : normalizeCurrency(fromAccountMeta?.currency ?? toAccountMeta?.currency);
@@ -495,15 +598,19 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
   }
 
   const accountName = pickAccountName(item.account, defaultAccountName);
-  const [accountId, category] = await Promise.all([
-    ensureAccountId(ctx, tx, accountName),
-    resolveCategorySnapshot(tx, ctx.householdId, {
-      categoryName: item.category,
-      type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
-    }),
-  ]);
+  const accountId = await ensureAccountId(ctx, tx, accountName);
+  const category = resolveCategorySnapshotFromContext(ctx, {
+    categoryName: item.category,
+    type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
+  });
   const statementMonth = statementMonthForAccountMeta(ctx, accountId, date);
   const accountMeta = await accountMetaFor(ctx, tx, accountId);
+  assertImportAccountIdentity(
+    ctx,
+    accountId,
+    item.importSourceAccount || item.importSourceStatementAccount,
+    "本账户",
+  );
   const storedAccountName = accountName
     ? (parseImportAccountId(accountName) ? accountMeta?.name ?? accountName : accountName)
     : "未识别账户";
@@ -689,29 +796,99 @@ export async function POST(req: Request) {
     );
   }
 
+  startImportProgress(traceId, items.length);
+  let importLockHouseholdId: string | null = null;
+  let importLockAcquired = false;
+
   try {
+    updateImportProgress(traceId, {
+      phase: "preparing",
+      total: items.length,
+      processed: 0,
+      created: 0,
+      currentRow: null,
+    });
     const ctx = await buildImportContext();
+    importLockHouseholdId = ctx.householdId;
+    const importRun = beginImportRun(ctx.householdId, traceId, items.length);
+    if (!importRun.ok) {
+      const error = `已有一批导入正在写入（${importRun.active.itemCount} 条，traceId: ${importRun.active.traceId}），请等待完成后再导入`;
+      finishImportProgress(traceId, {
+        ok: false,
+        total: items.length,
+        processed: 0,
+        created: 0,
+        currentRow: null,
+        error,
+        failedRow: null,
+      });
+      if (traceId) {
+        await writeImportDebugLog({
+          traceId,
+          event: "server_import_rejected_busy",
+          householdId: ctx.householdId,
+          details: {
+            itemCount: items.length,
+            activeTraceId: importRun.active.traceId,
+            activeItemCount: importRun.active.itemCount,
+          },
+        });
+      }
+      return NextResponse.json(
+        { ok: false, error, trace },
+        { status: 409, headers: corsHeaders() },
+      );
+    }
+    importLockAcquired = true;
+    const transactionTimeoutMs = getImportTransactionTimeoutMs(items.length);
     if (traceId) {
       await writeImportDebugLog({
         traceId,
         event: "server_import_started",
         householdId: ctx.householdId,
-        details: { itemCount: items.length, source: bodyItems?.success ? "client_preview" : "text_parse" },
+        details: {
+          itemCount: items.length,
+          source: bodyItems?.success ? "client_preview" : "text_parse",
+          transactionTimeoutMs,
+        },
       });
     }
     const created = await prisma.$transaction(async (tx) => {
       const rows: Awaited<ReturnType<typeof createTransactionFromItem>>[] = [];
       for (const [rowIndex, item] of items.entries()) {
         try {
+          updateImportProgress(traceId, {
+            phase: "writing",
+            processed: rowIndex,
+            created: rows.length,
+            currentRow: rowIndex + 1,
+          });
           rows.push(await createTransactionFromItem(ctx, tx, item, defaultAccountName));
+          if ((rowIndex + 1) % 20 === 0 || rowIndex + 1 === items.length) {
+            updateImportProgress(traceId, {
+              phase: "writing",
+              processed: rowIndex + 1,
+              created: rows.length,
+              currentRow: rowIndex + 1,
+            });
+          }
         } catch (error) {
-          throw new ImportItemError(buildImportFailureDetail(rowIndex, item, error));
+          const detail = buildImportFailureDetail(rowIndex, item, error);
+          updateImportProgress(traceId, {
+            phase: "failed",
+            processed: rowIndex,
+            created: rows.length,
+            currentRow: rowIndex + 1,
+            failedRow: rowIndex + 1,
+            error: detail.error,
+          });
+          throw new ImportItemError(detail);
         }
       }
       return rows;
     }, {
       maxWait: 10_000,
-      timeout: 60_000,
+      timeout: transactionTimeoutMs,
     });
 
     const accountIdsToRecalc = new Set<string>();
@@ -721,6 +898,12 @@ export async function POST(req: Request) {
     }
     let recalculatedAccountCount = 0;
     const recalcFailedAccountIds: string[] = [];
+    updateImportProgress(traceId, {
+      phase: "recalculating",
+      processed: created.length,
+      created: created.length,
+      currentRow: null,
+    });
     for (const accountId of accountIdsToRecalc) {
       try {
         await recalcAndSaveAccountBalance(accountId);
@@ -742,6 +925,15 @@ export async function POST(req: Request) {
         },
       });
     }
+    finishImportProgress(traceId, {
+      ok: true,
+      total: items.length,
+      processed: items.length,
+      created: created.length,
+      currentRow: null,
+      error: null,
+      failedRow: null,
+    });
 
     // Client-side handles page refresh
     return NextResponse.json(
@@ -763,6 +955,15 @@ export async function POST(req: Request) {
   } catch (e) {
     const error = e instanceof Error ? e.message : "导入失败";
     const failureDetail = e instanceof ImportItemError ? e.detail : null;
+    finishImportProgress(traceId, {
+      ok: false,
+      total: items.length,
+      processed: failureDetail?.rowIndex ?? 0,
+      created: 0,
+      currentRow: failureDetail ? failureDetail.rowIndex + 1 : null,
+      error,
+      failedRow: failureDetail ? failureDetail.rowIndex + 1 : null,
+    });
     if (traceId) {
       const scope = await getHouseholdScope().catch(() => null);
       if (scope) {
@@ -786,18 +987,29 @@ export async function POST(req: Request) {
         error,
         failedRow: failureDetail,
         trace: failureDetail
-          ? [
-              `失败行：第 ${failureDetail.rowIndex + 1} 行`,
-              `类型：${failureDetail.type}`,
-              `账户：${failureDetail.account ?? "-"}`,
-              `转出：${failureDetail.fromAccount ?? "-"}`,
-              `转入：${failureDetail.toAccount ?? "-"}`,
-              `分类：${failureDetail.category ?? "-"}`,
-              `原因：${failureDetail.error}`,
-            ]
+          ? failureDetail.reasonKind === "transaction_timeout"
+            ? [
+                "失败类型：数据库事务超时",
+                `执行位置：第 ${failureDetail.rowIndex + 1} 行附近`,
+                "说明：预览校验并未发现这行数据本身错误，是服务端写库时间超过事务上限，整批已回滚。",
+                `原因：${failureDetail.error}`,
+              ]
+            : [
+                `失败行：第 ${failureDetail.rowIndex + 1} 行`,
+                `类型：${failureDetail.type}`,
+                `账户：${failureDetail.account ?? "-"}`,
+                `转出：${failureDetail.fromAccount ?? "-"}`,
+                `转入：${failureDetail.toAccount ?? "-"}`,
+                `分类：${failureDetail.category ?? "-"}`,
+                `原因：${failureDetail.error}`,
+              ]
           : trace,
       },
       { status: 500, headers: corsHeaders() },
     );
+  } finally {
+    if (importLockAcquired && importLockHouseholdId) {
+      finishImportRun(importLockHouseholdId, traceId);
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 
 function parsePrompt(prompt: string) {
   let dateFrom = "";
@@ -49,7 +50,8 @@ function parsePrompt(prompt: string) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { hidFilter } = await getHouseholdScope();
+    const ctx = await getHouseholdScope();
+    const { hidFilter } = ctx;
     const body = await req.json();
     const prompt = String(body.prompt ?? "").trim();
     if (!prompt) return NextResponse.json({ ok: false, error: "请输入修改指令" }, { status: 400 });
@@ -102,6 +104,7 @@ export async function POST(req: NextRequest) {
     if (ids.length === 0) {
       return NextResponse.json({ ok: false, error: "没有匹配的记录" }, { status: 404 });
     }
+    const undo = await prepareEntryUndo(prisma, ctx.householdId, ids.map((entry) => entry.id));
 
     if (newFundCode) {
       const name = await prisma.fundNavCache.findFirst({
@@ -114,6 +117,8 @@ export async function POST(req: NextRequest) {
         data: { fundCode: newFundCode, fundName: name?.name ?? newFundCode },
       });
     }
+
+    await saveEntryUndo(prisma, ctx, undo, "batch_edit", `批量编辑 ${ids.length} 条明细`);
 
     return NextResponse.json({ ok: true, updatedCount: ids.length });
   } catch (e) {

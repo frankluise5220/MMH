@@ -230,9 +230,11 @@ export default async function RegularInvestPage() {
       confirmedAmount: stats.confirmedAmount,
       accountLabel: fundAccount?.label ?? plan.accountName,
       accountFullLabel: fundAccount?.fullLabel ?? plan.accountName,
+      accountHoverTitle: fundAccount?.hoverTitle ?? null,
       accountGroupName: fundAccount?.groupName ?? "",
       cashAccountLabel: cashAccount?.label ?? plan.cashAccountName,
       cashAccountFullLabel: cashAccount?.fullLabel ?? plan.cashAccountName,
+      cashAccountHoverTitle: cashAccount?.hoverTitle ?? null,
       cashAccountGroupName: cashAccount?.groupName ?? "",
     };
   });

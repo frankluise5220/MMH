@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { ensureCounterpartyForInstitution } from "@/lib/server/counterparty-sync";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -22,13 +24,18 @@ export async function POST(req: NextRequest) {
   const validTypes = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"];
   const safeType = validTypes.includes(type) ? type : "organization";
 
-  const created = await prisma.institution.create({
-    data: { name, shortName: shortName || null, type: safeType, ...hidFilter },
+  const created = await prisma.$transaction(async (tx) => {
+    const institution = await tx.institution.create({
+      data: { name, shortName: shortName || null, type: safeType, ...hidFilter },
+    });
+    await ensureCounterpartyForInstitution(tx, institution);
+    return institution;
   }).catch(() => null);
 
   if (!created) {
     return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
   }
+  revalidateAfterSettingsChange();
 
   // Client-side handles page refresh
   return NextResponse.json({

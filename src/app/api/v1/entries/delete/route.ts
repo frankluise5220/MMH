@@ -10,6 +10,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 
 /**
  * 删除 / 恢复 交易记录
@@ -27,7 +28,8 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
  */
 export async function POST(req: Request) {
   try {
-    const { householdId, user } = await getHouseholdScope();
+    const ctx = await getHouseholdScope();
+    const { householdId, user } = ctx;
     const body = await req.json().catch(() => null);
     const action: string | undefined = body?.action;
 
@@ -104,6 +106,7 @@ export async function POST(req: Request) {
     if (!entryIds || !Array.isArray(entryIds) || entryIds.length === 0) {
       return NextResponse.json({ ok: false, error: "缺少 entryIds" }, { status: 400 });
     }
+    const undo = await prepareEntryUndo(prisma, householdId, entryIds);
 
     let deletedCount = 0;
     const fundAccountsToRecalc = new Map<string, string[]>();
@@ -265,6 +268,14 @@ export async function POST(req: Request) {
         { status: 404 }
       );
     }
+
+    await saveEntryUndo(
+      prisma,
+      ctx,
+      undo,
+      deletedCount > 1 ? "batch_delete" : "delete",
+      deletedCount > 1 ? `批量删除 ${deletedCount} 条明细` : "删除明细",
+    );
 
     // Client-side handles page refresh via router.refresh() + mmh:fund:refresh
     return NextResponse.json({

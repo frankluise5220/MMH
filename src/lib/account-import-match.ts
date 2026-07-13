@@ -6,6 +6,7 @@ export type ImportAccountMatchSource = {
   kind?: ImportAccountKind | null;
   numberMasked?: string | null;
   Institution?: { name?: string | null; shortName?: string | null } | null;
+  AccountGroup?: { name?: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
 };
 
@@ -14,6 +15,20 @@ export type ImportAccountMatchResult<T extends ImportAccountMatchSource> = {
   ambiguousAccounts: T[];
   targetKind: ImportAccountKind | null;
   targetBankNames: string[];
+};
+
+export type ImportAccountIdentityConflictKind =
+  | "account"
+  | "ambiguous"
+  | "kind"
+  | "last4"
+  | "bank";
+
+export type ImportAccountIdentityConflict = {
+  kind: ImportAccountIdentityConflictKind;
+  originalText: string;
+  selectedAccountId?: string;
+  matchedAccountId?: string;
 };
 
 export const IMPORT_ACCOUNT_ID_PREFIX = "account-id:";
@@ -75,6 +90,86 @@ function accountLast4(account: ImportAccountMatchSource) {
   return "";
 }
 
+function accountBankKeys(account: ImportAccountMatchSource) {
+  return [
+    account.Institution?.name ?? "",
+    account.Institution?.shortName ?? "",
+    ...inferBankNames(account.name),
+    ...expandBankName(account.Institution?.name ?? ""),
+    ...expandBankName(account.Institution?.shortName ?? ""),
+  ].map(normalizeImportAccountMatchKey).filter(Boolean);
+}
+
+function accountOwnerNames(account: ImportAccountMatchSource) {
+  return [account.AccountGroup?.name ?? ""]
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function bankKeyMatchesAccount(account: ImportAccountMatchSource, targetBankNames: string[]) {
+  const targetBankKeys = targetBankNames.map(normalizeImportAccountMatchKey).filter(Boolean);
+  if (targetBankKeys.length === 0) return true;
+  const bankKeys = accountBankKeys(account);
+  return targetBankKeys.some((targetBankKey) =>
+    bankKeys.some((bankKey) => bankKey.includes(targetBankKey) || targetBankKey.includes(bankKey)),
+  );
+}
+
+export function getImportAccountIdentityConflict<T extends ImportAccountMatchSource>(
+  selectedAccount: T | null | undefined,
+  originalText: string | undefined,
+  accounts: T[],
+): ImportAccountIdentityConflict | null {
+  return createImportAccountIdentityConflictChecker(accounts)(selectedAccount, originalText);
+}
+
+export function createImportAccountIdentityConflictChecker<T extends ImportAccountMatchSource>(accounts: T[]) {
+  const matchImportAccount = createImportAccountMatcher(accounts);
+  return (
+    selectedAccount: T | null | undefined,
+    originalText: string | undefined,
+  ): ImportAccountIdentityConflict | null => {
+  const original = String(originalText ?? "").trim();
+  if (!original || !selectedAccount) return null;
+
+  const directAccountId = parseImportAccountId(original);
+  if (directAccountId) {
+    return directAccountId === selectedAccount.id
+      ? null
+      : { kind: "account", originalText: original, selectedAccountId: selectedAccount.id, matchedAccountId: directAccountId };
+  }
+
+  const match = matchImportAccount(original);
+  if (match.account) {
+    return match.account.id === selectedAccount.id
+      ? null
+      : { kind: "account", originalText: original, selectedAccountId: selectedAccount.id, matchedAccountId: match.account.id };
+  }
+
+  if (match.ambiguousAccounts.length > 0) {
+    return match.ambiguousAccounts.some((account) => account.id === selectedAccount.id)
+      ? null
+      : { kind: "ambiguous", originalText: original, selectedAccountId: selectedAccount.id };
+  }
+
+  if (match.targetKind && selectedAccount.kind && selectedAccount.kind !== match.targetKind) {
+    return { kind: "kind", originalText: original, selectedAccountId: selectedAccount.id };
+  }
+
+  const originalLast4 = extractImportAccountLast4(original);
+  const selectedLast4 = accountLast4(selectedAccount);
+  if (originalLast4 && selectedLast4 && originalLast4 !== selectedLast4) {
+    return { kind: "last4", originalText: original, selectedAccountId: selectedAccount.id };
+  }
+
+  if (match.targetBankNames.length > 0 && !bankKeyMatchesAccount(selectedAccount, match.targetBankNames)) {
+    return { kind: "bank", originalText: original, selectedAccountId: selectedAccount.id };
+  }
+
+  return null;
+  };
+}
+
 export function buildImportAccountInputCandidates(value?: string) {
   const raw = String(value ?? "").trim();
   if (!raw) return [];
@@ -88,11 +183,21 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
     account.Institution?.shortName?.trim() ?? "",
     ...inferBankNames(account.name),
   ].filter(Boolean);
+  const ownerNames = accountOwnerNames(account);
   const accountNames = [account.name.trim(), ...accountKindNames(account.kind)];
   const last4 = accountLast4(account);
 
   for (const name of accountNames) {
     candidates.add(name);
+    for (const ownerName of ownerNames) {
+      candidates.add(`${ownerName}${name}`);
+      candidates.add(`${ownerName}·${name}`);
+      if (last4) {
+        candidates.add(`${ownerName}${name}${last4}`);
+        candidates.add(`${ownerName}${name}(${last4})`);
+        candidates.add(`${ownerName}·${name}·${last4}`);
+      }
+    }
     for (const institutionName of institutionNames) {
       candidates.add(`${institutionName}${name}`);
       candidates.add(`${institutionName}·${name}`);
@@ -104,6 +209,22 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
       for (const expandedInstitution of expandBankName(institutionName)) {
         candidates.add(`${expandedInstitution}${name}`);
         if (last4) candidates.add(`${expandedInstitution}${name}(${last4})`);
+      }
+      for (const ownerName of ownerNames) {
+        candidates.add(`${ownerName}${institutionName}${name}`);
+        candidates.add(`${ownerName}·${institutionName}·${name}`);
+        candidates.add(`${ownerName}${institutionName}·${name}`);
+        candidates.add(`${ownerName}·${institutionName}${name}`);
+        if (last4) {
+          candidates.add(`${ownerName}${institutionName}${name}${last4}`);
+          candidates.add(`${ownerName}${institutionName}${name}(${last4})`);
+          candidates.add(`${ownerName}·${institutionName}·${name}·${last4}`);
+        }
+        for (const expandedInstitution of expandBankName(institutionName)) {
+          candidates.add(`${ownerName}${expandedInstitution}${name}`);
+          candidates.add(`${ownerName}·${expandedInstitution}·${name}`);
+          if (last4) candidates.add(`${ownerName}${expandedInstitution}${name}(${last4})`);
+        }
       }
     }
     if (last4) {

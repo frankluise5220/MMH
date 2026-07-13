@@ -159,6 +159,8 @@
 - 现金、借记卡或电子钱包账户转入信用卡账户时，存储层仍为 `type = "transfer"`；客户端显示和筛选应按 `accountKind` + `toAccountKind` 识别为信用卡还款。
 - `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端仍以转账记录落库。
 - `/api/v1/record/ingest` 批量导入失败时返回 `{ ok:false, error, failedRow?, trace? }`。`failedRow` 包含 0 基 rowIndex、类型、账户、转出/转入、分类和错误原因，客户端应在预览界面直接显示到用户，而不是只提示整批回滚。
+- `/api/v1/record/ingest/progress?traceId=...` 返回 `{ ok:true, progress }`，用于长时间批量导入的写库进度。`progress.phase` 包含 `preparing | writing | recalculating | done | failed`，`processed/total` 表示服务端写库进度。事务超时导致的行号表示执行到该行附近，不代表预览校验漏掉了该行脏数据。
+- `/api/v1/record/ingest` 同一账簿同一时间只允许一批批量导入写库。已有导入未完成时，新的导入请求返回 409 和 `{ ok:false, error }`，客户端应提示用户等待当前导入完成，不能叠加第二批写入。
 - `/api/v1/record/ingest` 写入交易成功后，账户余额重算失败不应把导入结果改成失败；接口会返回 `recalcFailedAccountCount` 供客户端提示后续刷新。
 - 批量导入前端区分普通账单和信用卡账单：普通账单逐行解析账户；信用卡账单先统一确定整份文件的信用卡账户，还款行再单独提供 `fromAccount`。
 - 导入账户名称只有“机构 + 账户类型”而没有后四位时，只在该机构下恰好存在一个启用的对应类型账户时自动匹配；存在多个候选时不自动选择。
@@ -549,6 +551,15 @@ Notes:
 移动端聚合接口可以减少请求次数，但不应复制 Web 的业务计算逻辑。聚合数据应来自同一套服务模块或统一查询口径。
 
 交易同步项包含 `accountKind` 和 `toAccountKind`。移动端应使用这两个字段识别信用卡还款等账户目标语义，不要依赖账户名称或备注文本猜测。
+
+账户同步项包含 `creditBillMode`，值为 `separate` 或 `consolidated`。合并账单按同一账簿、同一机构下标记为 `consolidated` 的有效信用卡归组；交易的 `accountId` / `toAccountId` 仍指向具体信用卡，不改写为代表账户。
+
+### 撤销最近一次明细操作
+
+- `GET /api/v1/undo` 返回当前用户最近一次资金明细编辑/删除操作及 `canUndo`。
+- `POST /api/v1/undo` 将最近一次单条编辑、批量编辑、单条删除或批量删除作为一个整体恢复。
+- 撤销恢复交易字段与标签，并触发账户余额、基金/贵金属持仓和信用卡账单缓存刷新。
+- 贷款项目整体删除涉及账户、计划和利率硬删除，当前不进入普通明细撤销。
 
 信用卡分期生成的交易同步项还包含：
 

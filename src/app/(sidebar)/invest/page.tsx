@@ -5,6 +5,7 @@ import { InvestHeaderSync } from "@/components/InvestHeaderSync";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan } from "@/lib/format";
+import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { cookies } from "next/headers";
@@ -147,7 +148,9 @@ const investProductTypeLabel = (type: string | null) => {
   type AccountRow = {
     id: string;
     label: string;
+    hoverTitle: string;
     groupName: string;
+    investProductType: string | null;
     productTypeLabel: string;
     balance: number;
     marketValue: number;
@@ -219,7 +222,9 @@ const investProductTypeLabel = (type: string | null) => {
     return {
       id: a.id,
       label,
+      hoverTitle: display.hoverTitle,
       groupName,
+      investProductType: a.investProductType,
       productTypeLabel,
       balance: toNumber(a.balance),
       marketValue,
@@ -349,7 +354,7 @@ const investProductTypeLabel = (type: string | null) => {
                   <tr key={r.id} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5 border-b border-slate-100">
                       <div className="max-w-[240px]">
-                        <div className="truncate text-xs font-semibold text-slate-800">{r.label}</div>
+                        <div className="truncate text-xs font-semibold text-slate-800" title={r.hoverTitle}>{r.label}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
                           <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{r.groupName}</span>
                           <span>{r.productTypeLabel}</span>
@@ -365,7 +370,7 @@ const investProductTypeLabel = (type: string | null) => {
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-500">{r.totalFee > 0 ? fmt(r.totalFee) : <span className="text-slate-300">-</span>}</td>
                     <td className="px-3 py-2 border-b border-slate-100 text-center text-xs text-slate-500">{r.txCount > 0 ? r.txCount : <span className="text-slate-300">-</span>}</td>
                     <td className="px-3 py-2 border-b border-slate-100">
-                      <a href={`/?accountId=${r.id}&view=${r.marketValue > 0 ? "invest" : "investfund"}`} className="text-xs text-blue-600 hover:text-blue-800">明细</a>
+                      <a href={`/?accountId=${r.id}&view=${getInvestmentAccountView(r)}`} className="text-xs text-blue-600 hover:text-blue-800">明细</a>
                     </td>
                   </tr>
                 ))}

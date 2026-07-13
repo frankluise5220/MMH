@@ -13,6 +13,7 @@ import {
 
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
+import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 
 type AssetDistItem = {
   kind: string;
@@ -58,6 +59,7 @@ type AccountTypeTotals = {
 
 type InvestmentOverviewItem = {
   accountId?: string;
+  investProductType?: string | null;
   fundCode: string;
   name: string;
   marketValue: number;
@@ -207,7 +209,7 @@ export function OverviewDashboard({
                 topPositions.slice(0, 5).map((item) => (
                   <Link
                     key={item.accountId ?? item.fundCode}
-                    href={item.accountId ? `/?accountId=${item.accountId}&view=investfund` : "/invest"}
+                    href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/invest"}
                     prefetch={false}
                     scroll={false}
                     className="grid grid-cols-[minmax(0,1fr)_96px_96px_72px] items-center gap-3 px-4 py-3 hover:bg-slate-50"

@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
  *     debtAccountList: [{ id, name, kind, balance, groupName, institutionName }],
  *     creditAccountList: [{
  *       id, name, kind, balance, groupName, institutionName,
- *       creditLimit, availableLimit, billingDay, repaymentDay,
+ *       creditLimit, availableLimit, billingDay, repaymentDay, creditBillMode,
  *       currentBill, paid, remain, dueDate
  *     }],
  *     creditUsedTotal: number,

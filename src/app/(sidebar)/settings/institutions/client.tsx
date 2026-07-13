@@ -65,8 +65,12 @@ export function SettingsInstitutionsClient({
 
   const refreshList = useCallback(async (options?: { force?: boolean }) => {
     const data = await fetchSettingsAccountData(options).catch(() => null);
+    if (mode === "counterparty") {
+      if (data?.counterparties) setInstitutions(data.counterparties as Institution[]);
+      return;
+    }
     if (data?.institutions) setInstitutions(data.institutions as Institution[]);
-  }, []);
+  }, [mode]);
 
   function handleCreated() {
     invalidateSettingsAccountData();
@@ -78,7 +82,7 @@ export function SettingsInstitutionsClient({
       <EntityCreateForm
         mode="full"
         layout="inline"
-        entityType="institution"
+        entityType={mode === "counterparty" ? "counterparty" : "institution"}
         defaultType={allowedTypes[0]}
         allowedInstitutionTypes={[...allowedTypes]}
         title={createTitle}

@@ -12,7 +12,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-12-system-finance-categories-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-12-system-finance-categories-v2";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -456,7 +456,7 @@ async function mergeCategoryInto(
   targetName: string,
 ) {
   await writer.category.updateMany({
-    where: { householdId, parentId: sourceId },
+    where: { householdId, parentId: sourceId, NOT: { id: targetId } },
     data: { parentId: targetId },
   });
   await writer.txRecord.updateMany({
@@ -464,6 +464,28 @@ async function mergeCategoryInto(
     data: { categoryId: targetId, categoryName: targetName },
   });
   await writer.category.deleteMany({ where: { id: sourceId } });
+}
+
+async function mergeSameTypeCategoryNameDuplicates(
+  writer: CategoryWriter,
+  householdId: string,
+  type: DefaultCategoryType,
+  name: string,
+  targetId: string,
+) {
+  const duplicates = await writer.category.findMany({
+    where: {
+      householdId,
+      type,
+      name,
+      NOT: { id: targetId },
+    },
+    select: { id: true },
+  });
+
+  for (const duplicate of duplicates) {
+    await mergeCategoryInto(writer, householdId, duplicate.id, targetId, name);
+  }
 }
 
 async function renameRootCategory(
@@ -556,6 +578,14 @@ async function ensureDefaultCategory(
     select: { id: true, parentId: true, isSystem: true },
   });
 
+  if (!category) {
+    category = await writer.category.findFirst({
+      where: { householdId, type, name },
+      orderBy: { id: "asc" },
+      select: { id: true, parentId: true, isSystem: true },
+    });
+  }
+
   if (!category && isSystem) {
     category = await writer.category.findFirst({
       where: { householdId, type, name },
@@ -564,10 +594,12 @@ async function ensureDefaultCategory(
   }
 
   if (!category) {
-    return writer.category.create({
+    const created = await writer.category.create({
       data: { type, name, parentId, householdId, isSystem },
       select: { id: true },
     });
+    await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, created.id);
+    return created;
   }
 
   if (category.parentId !== parentId || (isSystem && !category.isSystem)) {
@@ -579,6 +611,8 @@ async function ensureDefaultCategory(
       },
     });
   }
+
+  await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, category.id);
 
   return { id: category.id };
 }

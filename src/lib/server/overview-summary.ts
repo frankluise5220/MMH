@@ -47,6 +47,7 @@ export type CreditAccountRow = AccountListRow & {
   availableLimit: number;
   billingDay: number | null;
   repaymentDay: number | null;
+  creditBillMode: "separate" | "consolidated";
   currentBill: number;
   paid: number;
   remain: number;
@@ -76,6 +77,7 @@ export type AccountTypeTotals = {
 
 export type TopPositionRow = {
   accountId?: string;
+  investProductType?: string | null;
   fundCode: string;
   name: string;
   marketValue: number;
@@ -157,6 +159,8 @@ export async function computeOverviewSummary(
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
+      creditBillMode: true,
+      institutionId: true,
       numberMasked: true,
       investProductType: true,
       Institution: { select: { name: true, shortName: true } },
@@ -240,7 +244,39 @@ export async function computeOverviewSummary(
     };
   });
 
-  const creditIds = creditAccounts.map((account) => account.id);
+  const consolidatedInstitutionIds = Array.from(new Set(
+    creditAccounts
+      .filter((account) => account.creditBillMode === "consolidated" && !!account.institutionId)
+      .map((account) => account.institutionId!),
+  ));
+  const consolidatedGroupAccounts = consolidatedInstitutionIds.length > 0
+    ? await prisma.account.findMany({
+        where: {
+          ...hidFilter,
+          kind: AccountKind.bank_credit,
+          creditBillMode: "consolidated",
+          institutionId: { in: consolidatedInstitutionIds },
+        },
+        select: { id: true, institutionId: true },
+        orderBy: { id: "asc" },
+      })
+    : [];
+  const consolidatedStorageIdByInstitutionId = new Map<string, string>();
+  for (const account of consolidatedGroupAccounts) {
+    if (account.institutionId && !consolidatedStorageIdByInstitutionId.has(account.institutionId)) {
+      consolidatedStorageIdByInstitutionId.set(account.institutionId, account.id);
+    }
+  }
+  const creditStorageIdByAccountId = new Map(
+    creditAccounts.map((account) => {
+      if (account.creditBillMode !== "consolidated" || !account.institutionId) {
+        return [account.id, account.id] as const;
+      }
+      const storageId = consolidatedStorageIdByInstitutionId.get(account.institutionId) ?? account.id;
+      return [account.id, storageId] as const;
+    }),
+  );
+  const creditIds = Array.from(new Set(creditStorageIdByAccountId.values()));
   const currentCycles =
     creditIds.length > 0
       ? await prisma.creditCardCycle.findMany({
@@ -265,7 +301,7 @@ export async function computeOverviewSummary(
     );
     const balance = toNumber(account.balance);
     const creditLimit = toNumber(account.creditLimit);
-    const cycle = cycleByAccountId.get(account.id);
+    const cycle = cycleByAccountId.get(creditStorageIdByAccountId.get(account.id) ?? account.id);
 
     return {
       id: account.id,
@@ -278,6 +314,7 @@ export async function computeOverviewSummary(
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
       billingDay: account.billingDay,
       repaymentDay: account.repaymentDay,
+      creditBillMode: account.creditBillMode,
       currentBill: toNumber(cycle?.effectiveBill),
       paid: toNumber(cycle?.paid),
       remain: toNumber(cycle?.cumulativeRemain),
@@ -353,6 +390,7 @@ export async function computeOverviewSummary(
       );
       return {
         accountId: account.id,
+        investProductType: account.investProductType,
         fundCode: "",
         name: display.label,
         marketValue,

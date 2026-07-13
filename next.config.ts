@@ -2,7 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  allowedDevOrigins: ["localhost", "127.0.0.1"],
+  allowedDevOrigins: [
+    "localhost",
+    "127.0.0.1",
+    "192.168.2.199",
+    "tempswise.floatingice.win",
+    "tempswiseme.floatingice.win",
+  ],
   async headers() {
     const headers = [
       { key: "X-Content-Type-Options", value: "nosniff" },

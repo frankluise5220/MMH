@@ -10,6 +10,12 @@ import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-def
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
 import { supportsCostBasisMethod } from "@/lib/investment-config";
+import {
+  getCreditCardInstitutionDefaults,
+  normalizeCreditBillMode,
+  syncCreditCardInstitutionSettings,
+} from "@/lib/server/credit-card-institution-settings";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 
 export const runtime = "nodejs";
 
@@ -81,6 +87,26 @@ export async function POST(req: NextRequest) {
       : null;
     if (requestedUserId && !owner) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
 
+    const creditDefaults = isCreditLike
+      ? await getCreditCardInstitutionDefaults(prisma, householdId, institution?.id)
+      : null;
+    const requestedBillingDay = parseDay(body.billingDay);
+    const requestedRepaymentDay = parseDay(body.repaymentDay);
+    const billingDay = isCreditLike
+      ? requestedBillingDay ?? creditDefaults?.billingDay ?? null
+      : null;
+    const repaymentDay = isCreditLike
+      ? requestedRepaymentDay ?? creditDefaults?.repaymentDay ?? null
+      : null;
+    const creditLimit = isCreditLike
+      ? String(body.creditLimit ?? "").trim() || creditDefaults?.creditLimit || null
+      : null;
+    const creditBillMode = isCreditLike
+      ? body.creditBillMode !== undefined
+        ? normalizeCreditBillMode(body.creditBillMode)
+        : creditDefaults?.creditBillMode ?? normalizeCreditBillMode(null)
+      : normalizeCreditBillMode(null);
+
     const account = await prisma.account.create({
       data: {
         name,
@@ -92,9 +118,10 @@ export async function POST(req: NextRequest) {
         userId: owner?.id ?? null,
         householdId,
         isActive: true,
-        billingDay: isCreditLike ? (parseDay(body.billingDay) ?? null) : null,
-        repaymentDay: isCreditLike ? (parseDay(body.repaymentDay) ?? null) : null,
-        creditLimit: isCreditLike ? String(body.creditLimit ?? "").trim() || null : null,
+        billingDay,
+        repaymentDay,
+        creditLimit,
+        creditBillMode,
         numberMasked: isCreditLike ? String(body.numberMasked ?? "").trim() || null : null,
         investProductType: investProductType as any,
         costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
@@ -107,6 +134,22 @@ export async function POST(req: NextRequest) {
         Institution: { select: { id: true, name: true, shortName: true, type: true } },
       },
     });
+    if (isCreditLike) {
+      await syncCreditCardInstitutionSettings(prisma, {
+        householdId,
+        institutionId: account.institutionId,
+        billingDay: account.billingDay,
+        repaymentDay: account.repaymentDay,
+        creditBillMode: account.creditBillMode,
+      });
+      const institutionCards = account.institutionId
+        ? await prisma.account.findMany({
+            where: { householdId, institutionId: account.institutionId, kind: "bank_credit" },
+            select: { id: true },
+          })
+        : [{ id: account.id }];
+      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id));
+    }
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, account });
   } catch (e) {
@@ -146,11 +189,15 @@ export async function PUT(req: NextRequest) {
       data.repaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
       data.creditLimit = body.creditLimit !== undefined ? (String(body.creditLimit ?? "").trim() || null) : existing.creditLimit;
       data.numberMasked = body.numberMasked !== undefined ? (String(body.numberMasked ?? "").trim() || null) : existing.numberMasked;
+      data.creditBillMode = body.creditBillMode !== undefined
+        ? normalizeCreditBillMode(body.creditBillMode)
+        : existing.creditBillMode;
     } else {
       data.billingDay = null;
       data.repaymentDay = null;
       data.creditLimit = null;
       data.numberMasked = null;
+      data.creditBillMode = normalizeCreditBillMode(null);
     }
     if (nextKind === "investment") {
       if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
@@ -169,7 +216,23 @@ export async function PUT(req: NextRequest) {
       data.defaultFundQueryApiId = null;
     }
 
-    await prisma.account.update({ where: { id }, data });
+    const updated = await prisma.account.update({ where: { id }, data });
+    if (updated.kind === "bank_credit") {
+      await syncCreditCardInstitutionSettings(prisma, {
+        householdId: updated.householdId,
+        institutionId: updated.institutionId,
+        billingDay: updated.billingDay,
+        repaymentDay: updated.repaymentDay,
+        creditBillMode: updated.creditBillMode,
+      });
+      const institutionCards = updated.institutionId
+        ? await prisma.account.findMany({
+            where: { householdId: updated.householdId, institutionId: updated.institutionId, kind: "bank_credit" },
+            select: { id: true },
+          })
+        : [{ id: updated.id }];
+      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id));
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });

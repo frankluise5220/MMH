@@ -2,6 +2,8 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { SettingsInstitutionsClient } from "../institutions/client";
+import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const dynamic = "force-dynamic";
 
@@ -16,16 +18,19 @@ async function updateCounterpartyRow(formData: FormData) {
   if (!counterpartyId || !name) return;
 
   const safeType = ["person", "organization"].includes(type) ? type : "person";
-  await prisma.counterparty
-    .updateMany({
-      where: { id: counterpartyId, householdId },
-      data: { name, shortName: shortName || null, type: safeType },
-    })
-    .catch(() => null);
+  const existing = await prisma.counterparty.findFirst({ where: { id: counterpartyId, householdId } });
+  if (!existing) return;
 
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.counterparty.update({
+      where: { id: counterpartyId },
+      data: { name, shortName: shortName || null, type: safeType },
+    });
+    await ensureInstitutionForCounterparty(tx, updated);
+  }).catch(() => null);
+
+  revalidateAfterSettingsChange();
   revalidatePath("/settings/counterparties");
-  revalidatePath("/settings/accounts");
-  revalidatePath("/accounts");
 }
 
 export default async function SettingsCounterpartiesPage() {

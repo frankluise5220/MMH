@@ -9,6 +9,7 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 
 /**
  * 批量更新交易记录
@@ -73,7 +74,8 @@ function parseAmountUpdate(raw: string, baseAmountAbs: number) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { hidFilter } = await getHouseholdScope();
+    const ctx = await getHouseholdScope();
+    const { hidFilter } = ctx;
     const body = await req.json();
     const updates: BatchUpdateItem[] = body.updates;
 
@@ -92,6 +94,7 @@ export async function POST(req: NextRequest) {
     });
     const existingMap = new Map(existingRecords.map((record) => [record.id, record]));
     const notFoundIds = ids.filter((id) => !existingMap.has(id));
+    const undo = await prepareEntryUndo(prisma, ctx.householdId, existingRecords.map((record) => record.id));
 
     const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
@@ -406,6 +409,14 @@ export async function POST(req: NextRequest) {
       }
       await syncFundTransactionsFromTxRecords(Array.from(touchedRecordIds)).catch(() => {});
     }
+
+    await saveEntryUndo(
+      prisma,
+      ctx,
+      undo,
+      updatedCount > 1 ? "batch_edit" : "edit",
+      updatedCount > 1 ? `批量编辑 ${updatedCount} 条明细` : "编辑明细",
+    );
 
     // Client-side handles page refresh
     return NextResponse.json({

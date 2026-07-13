@@ -7,7 +7,13 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchRepl
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { formatAccountSelectorLabel } from "@/lib/account-display";
-import { IMPORT_ACCOUNT_ID_PREFIX, createImportAccountMatcher, encodeImportAccountId, normalizeImportAccountMatchKey } from "@/lib/account-import-match";
+import {
+  IMPORT_ACCOUNT_ID_PREFIX,
+  createImportAccountMatcher,
+  createImportAccountIdentityConflictChecker,
+  encodeImportAccountId,
+  normalizeImportAccountMatchKey,
+} from "@/lib/account-import-match";
 import { kindLabel } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -32,6 +38,10 @@ type ParsedItem = {
   account?: string;
   fromAccount?: string;
   toAccount?: string;
+  importSourceAccount?: string;
+  importSourceFromAccount?: string;
+  importSourceToAccount?: string;
+  importSourceStatementAccount?: string;
   category?: string;
   institution?: string;
   tags?: string;
@@ -117,6 +127,17 @@ type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counte
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
 type FundImportKind = "normal" | "fund" | null;
+type ServerImportProgress = {
+  total: number;
+  processed: number;
+  created: number;
+  phase: "preparing" | "writing" | "recalculating" | "done" | "failed";
+  currentRow: number | null;
+  done: boolean;
+  ok: boolean | null;
+  error: string | null;
+  failedRow: number | null;
+};
 type ImportFileParseResult = {
   rows: string[][];
   sourceDataRowCount: number;
@@ -856,6 +877,24 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       outflow,
       transferDirection,
     );
+    const previewFromAccount = type === "transfer"
+      ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
+        ? counterAccount
+        : majorType === "transfer"
+          ? account
+          : transferDirection === "in"
+            ? counterAccount
+            : account
+      : "";
+    const previewToAccount = type === "transfer"
+      ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
+        ? account
+        : majorType === "transfer"
+          ? counterAccount
+          : transferDirection === "in"
+            ? account
+            : counterAccount
+      : "";
 
     return {
       rawText: row.join(" "),
@@ -869,24 +908,12 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       outflow: flow.outflow,
       inflow: flow.inflow,
       account: type === "transfer" ? (importMode === "credit_card" ? account : "") : account,
-      fromAccount: type === "transfer"
-        ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
-          ? counterAccount
-          : majorType === "transfer"
-            ? account
-            : transferDirection === "in"
-              ? counterAccount
-              : account
-        : "",
-      toAccount: type === "transfer"
-        ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
-          ? account
-          : majorType === "transfer"
-            ? counterAccount
-            : transferDirection === "in"
-              ? account
-              : counterAccount
-        : "",
+      fromAccount: previewFromAccount,
+      toAccount: previewToAccount,
+      importSourceAccount: rowAccount || account,
+      importSourceFromAccount: previewFromAccount,
+      importSourceToAccount: previewToAccount,
+      importSourceStatementAccount: importMode === "credit_card" ? rowAccount || account : "",
       category,
       institution,
       tags,
@@ -1083,6 +1110,10 @@ export default function BatchImportPage() {
   const [columnFilters, setColumnFilters] = useState<Partial<Record<FilterColumn, string[]>>>({});
   const [showImportErrorsOnly, setShowImportErrorsOnly] = useState(false);
   const [previewCount, setPreviewCount] = useState(INITIAL_PREVIEW_COUNT);
+  const [previewIssues, setPreviewIssues] = useState<ImportIssue[]>([]);
+  const [previewValidationProgress, setPreviewValidationProgress] = useState<{ checked: number; total: number } | null>(null);
+  const [selectionBusy, setSelectionBusy] = useState(false);
+  const [importProgress, setImportProgress] = useState<ServerImportProgress | null>(null);
 
   useEffect(() => {
     try {
@@ -1092,7 +1123,7 @@ export default function BatchImportPage() {
         setActiveImportKind("normal");
         setActiveBillMode(storedItems[0]?.importMode === "credit_card" ? "credit_card" : "normal");
         setItems(storedItems);
-        setSelected(new Set(storedItems.map((_, idx) => idx)));
+        setSelected(new Set());
       }
     } catch {
       sessionStorage.removeItem("batchImportItems");
@@ -1138,6 +1169,20 @@ export default function BatchImportPage() {
     });
   }, []);
 
+  const accountOwnerLabel = useCallback((account: AccountOption) => {
+    return account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset");
+  }, [t]);
+
+  const accountOptionSubLabel = useCallback((account: AccountOption) => {
+    return [kindLabel(account.kind), accountOwnerLabel(account)].filter(Boolean).join(" · ");
+  }, [accountOwnerLabel]);
+
+  const accountHoverTitle = useCallback((account: AccountOption) => {
+    return [accountOwnerLabel(account), accountDisplayLabel(account), kindLabel(account.kind)]
+      .filter(Boolean)
+      .join(" · ");
+  }, [accountDisplayLabel, accountOwnerLabel]);
+
   const activeAccountOptions = useMemo(
     () => accountOptions.filter((account) => account.isActive !== false),
     [accountOptions],
@@ -1153,6 +1198,10 @@ export default function BatchImportPage() {
       return match;
     };
   }, [activeAccountOptions]);
+  const getAccountIdentityConflict = useMemo(
+    () => createImportAccountIdentityConflictChecker(activeAccountOptions),
+    [activeAccountOptions],
+  );
   const findMatchedAccountId = useCallback((value: string): string | null => (
     getAccountMatch(value).account?.id ?? null
   ), [getAccountMatch]);
@@ -1162,9 +1211,10 @@ export default function BatchImportPage() {
       activeAccountOptions.map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
-        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
+        subLabel: accountOptionSubLabel(account),
+        title: accountHoverTitle(account),
       })),
-    [activeAccountOptions, accountDisplayLabel, t],
+    [accountDisplayLabel, accountHoverTitle, accountOptionSubLabel, activeAccountOptions],
   );
   const accountById = useMemo(() => new Map(accountOptions.map((account) => [account.id, account])), [accountOptions]);
 
@@ -1181,9 +1231,10 @@ export default function BatchImportPage() {
       .map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
-        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
+        subLabel: accountOptionSubLabel(account),
+        title: accountHoverTitle(account),
       } satisfies SmartSelectOption)),
-  [activeAccountOptions, accountDisplayLabel, accountMatchesPickerRole, t]);
+  [accountDisplayLabel, accountHoverTitle, accountMatchesPickerRole, accountOptionSubLabel, activeAccountOptions]);
 
   const matchedAccountForText = useCallback((value: string) => {
     const matchedId = findMatchedAccountId(value);
@@ -1278,6 +1329,27 @@ export default function BatchImportPage() {
     return account && accountMatchesPickerRole(account, role) ? accountDisplayLabel(account) : current;
   }, [accountById, accountDisplayLabel, accountMatchesPickerRole, findMatchedAccountId]);
 
+  const accountCellTitle = useCallback((value: string, role: AccountPickerRole = "any") => {
+    const current = value.trim();
+    if (!current) return t("batchImport.doubleClickToEdit");
+    const matchedId = findMatchedAccountId(current);
+    const account = matchedId ? accountById.get(matchedId) : undefined;
+    const display = account && accountMatchesPickerRole(account, role)
+      ? accountHoverTitle(account)
+      : current;
+    return `${display}\n${t("batchImport.doubleClickToEdit")}`;
+  }, [accountById, accountHoverTitle, accountMatchesPickerRole, findMatchedAccountId, t]);
+
+  const accountIdentityConflictMessage = useCallback((selectedText: string, originalText?: string) => {
+    const selected = getAccountMatch(selectedText).account;
+    const conflict = getAccountIdentityConflict(selected, originalText);
+    if (!conflict) return "";
+    return formatText("batchImport.issue.accountIdentityConflict", {
+      account: selected ? accountDisplayLabel(selected) : selectedText.trim(),
+      original: conflict.originalText,
+    });
+  }, [accountDisplayLabel, formatText, getAccountIdentityConflict, getAccountMatch]);
+
   const accountIssueMessage = useCallback((
     value: string,
     keys: { unmatched: string; ambiguous: string },
@@ -1293,19 +1365,28 @@ export default function BatchImportPage() {
     return formatText(keys.unmatched, { account: current });
   }, [formatText, getAccountMatch]);
 
-  const accountStorageText = useCallback((value?: string) => {
+  const accountStorageText = useCallback((value?: string, originalValue?: string) => {
     const current = String(value ?? "").trim();
     if (!current) return "";
-    const account = getAccountMatch(current).account;
-    return account ? accountDisplayLabel(account) : current;
-  }, [accountDisplayLabel, getAccountMatch]);
+    if (current.startsWith(IMPORT_ACCOUNT_ID_PREFIX)) return current;
+
+    const original = String(originalValue ?? "").trim();
+    const currentMatch = getAccountMatch(current).account;
+    if (currentMatch && !getAccountIdentityConflict(currentMatch, original)) {
+      return encodeImportAccountId(currentMatch.id);
+    }
+
+    const originalMatch = original ? getAccountMatch(original).account : null;
+    if (originalMatch) return encodeImportAccountId(originalMatch.id);
+    return currentMatch ? encodeImportAccountId(currentMatch.id) : current;
+  }, [getAccountIdentityConflict, getAccountMatch]);
 
   const normalizeAccountFieldsForImport = useCallback((item: ParsedItem): ParsedItem => ({
     ...item,
-    account: accountStorageText(item.account),
-    fromAccount: accountStorageText(item.fromAccount),
-    toAccount: accountStorageText(item.toAccount),
-    statementAccount: accountStorageText(item.statementAccount),
+    account: accountStorageText(item.account, item.importSourceAccount || item.importSourceStatementAccount),
+    fromAccount: accountStorageText(item.fromAccount, item.importSourceFromAccount),
+    toAccount: accountStorageText(item.toAccount, item.importSourceToAccount),
+    statementAccount: accountStorageText(item.statementAccount, item.importSourceStatementAccount || item.importSourceAccount),
   }), [accountStorageText]);
 
   const downloadTemplate = useCallback(async (template: ImportTemplate) => {
@@ -1720,15 +1801,19 @@ export default function BatchImportPage() {
   );
 
   const toggleAllFiltered = useCallback(() => {
-    setSelected((prev) => {
-      const allFilteredSelected = filteredIndexes.length > 0 && filteredIndexes.every((idx) => prev.has(idx));
-      const next = new Set(prev);
-      for (const idx of filteredIndexes) {
-        if (allFilteredSelected) next.delete(idx);
-        else next.add(idx);
-      }
-      return next;
-    });
+    setSelectionBusy(true);
+    window.setTimeout(() => {
+      setSelected((prev) => {
+        const allFilteredSelected = filteredIndexes.length > 0 && filteredIndexes.every((idx) => prev.has(idx));
+        const next = new Set(prev);
+        for (const idx of filteredIndexes) {
+          if (allFilteredSelected) next.delete(idx);
+          else next.add(idx);
+        }
+        return next;
+      });
+      setSelectionBusy(false);
+    }, 0);
   }, [filteredIndexes]);
 
   const selectedFilteredIndexes = useMemo(
@@ -1739,71 +1824,121 @@ export default function BatchImportPage() {
   const importTargetIndexes = selectedFilteredIndexes;
   const importTargetCount = importTargetIndexes.length;
 
-  const importIssues = useMemo(() => {
+  const collectImportIssuesForIndex = useCallback((idx: number) => {
     const issues: ImportIssue[] = [];
-    for (const idx of importTargetIndexes) {
-      const item = normalizeForStorage(getItem(idx));
-      const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
-      const account = item.type === "transfer"
-        ? (direction === "in" ? item.toAccount : item.fromAccount) || ""
-        : item.account || "";
-      const counterAccount = item.type === "transfer"
-        ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
-        : "";
-      if (!account.trim()) issues.push({ idx, level: "error", message: t("batchImport.issue.accountMissing") });
-      else {
-        const match = getAccountMatch(account);
-        if (!match.account) {
-          issues.push({
-            idx,
-            level: "error",
-            message: accountIssueMessage(account, {
-              unmatched: "batchImport.issue.accountUnmatched",
-              ambiguous: "batchImport.issue.accountAmbiguous",
-            }),
-          });
-        }
+    const item = normalizeAccountFieldsForImport(normalizeForStorage(getItem(idx)));
+    const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
+    const account = item.type === "transfer"
+      ? (direction === "in" ? item.toAccount : item.fromAccount) || ""
+      : item.account || "";
+    const counterAccount = item.type === "transfer"
+      ? (direction === "in" ? item.fromAccount : item.toAccount) || ""
+      : "";
+    if (!account.trim()) issues.push({ idx, level: "error", message: t("batchImport.issue.accountMissing") });
+    else {
+      const match = getAccountMatch(account);
+      if (!match.account) {
+        issues.push({
+          idx,
+          level: "error",
+          message: accountIssueMessage(account, {
+            unmatched: "batchImport.issue.accountUnmatched",
+            ambiguous: "batchImport.issue.accountAmbiguous",
+          }),
+        });
       }
-      if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: t("batchImport.issue.amountInvalid") });
-      if (item.importMode === "credit_card") {
-        const statementAccount = matchedAccountForText(
-          item.statementAccount || item.toAccount || item.account || "",
-        );
-        if (!isCreditCardRepaymentTargetAccountKind(statementAccount?.kind)) {
-          issues.push({ idx, level: "error", message: t("batchImport.issue.creditStatementAccount") });
-        }
+    }
+    if (!Number.isFinite(item.amount) || item.amount <= 0) issues.push({ idx, level: "error", message: t("batchImport.issue.amountInvalid") });
+    if (item.type === "transfer") {
+      const fromConflict = accountIdentityConflictMessage(item.fromAccount ?? "", item.importSourceFromAccount);
+      const toConflict = accountIdentityConflictMessage(item.toAccount ?? "", item.importSourceToAccount);
+      if (fromConflict) issues.push({ idx, level: "error", message: fromConflict });
+      if (toConflict) issues.push({ idx, level: "error", message: toConflict });
+    } else {
+      const accountConflict = accountIdentityConflictMessage(
+        item.account ?? "",
+        item.importSourceAccount || item.importSourceStatementAccount,
+      );
+      if (accountConflict) issues.push({ idx, level: "error", message: accountConflict });
+    }
+    if (item.importMode === "credit_card") {
+      const statementAccount = matchedAccountForText(
+        item.statementAccount || item.toAccount || item.account || "",
+      );
+      if (!isCreditCardRepaymentTargetAccountKind(statementAccount?.kind)) {
+        issues.push({ idx, level: "error", message: t("batchImport.issue.creditStatementAccount") });
       }
-      if (item.type === "transfer" && counterAccount.trim()) {
-        const counterMatch = getAccountMatch(counterAccount);
-        if (!counterMatch.account) {
-          issues.push({
-            idx,
-            level: "warning",
-            message: accountIssueMessage(counterAccount, {
-              unmatched: "batchImport.issue.counterAccountUnmatched",
-              ambiguous: "batchImport.issue.counterAccountAmbiguous",
-            }),
-          });
-        }
-      } else if (item.type === "transfer" && !counterAccount.trim()) {
-        issues.push({ idx, level: "warning", message: t("batchImport.issue.counterAccountMissing") });
+    }
+    if (item.type === "transfer" && counterAccount.trim()) {
+      const counterMatch = getAccountMatch(counterAccount);
+      if (!counterMatch.account) {
+        issues.push({
+          idx,
+          level: "warning",
+          message: accountIssueMessage(counterAccount, {
+            unmatched: "batchImport.issue.counterAccountUnmatched",
+            ambiguous: "batchImport.issue.counterAccountAmbiguous",
+          }),
+        });
       }
-      if (isCreditCardRepaymentItem(item)) {
-        const fromAccount = matchedAccountForText(item.fromAccount ?? "");
-        const toAccount = matchedAccountForText(item.toAccount ?? "");
-        if (!isCreditCardRepaymentImportSourceAccountKind(fromAccount?.kind)) {
-          issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentSource") });
-        }
-        if (!isCreditCardRepaymentTargetAccountKind(toAccount?.kind)) {
-          issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentTarget") });
-        }
+    } else if (item.type === "transfer" && !counterAccount.trim()) {
+      issues.push({ idx, level: "warning", message: t("batchImport.issue.counterAccountMissing") });
+    }
+    if (isCreditCardRepaymentItem(item)) {
+      const fromAccount = matchedAccountForText(item.fromAccount ?? "");
+      const toAccount = matchedAccountForText(item.toAccount ?? "");
+      if (!isCreditCardRepaymentImportSourceAccountKind(fromAccount?.kind)) {
+        issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentSource") });
+      }
+      if (!isCreditCardRepaymentTargetAccountKind(toAccount?.kind)) {
+        issues.push({ idx, level: "error", message: t("batchImport.issue.creditCardRepaymentTarget") });
       }
     }
     return issues;
-  }, [accountIssueMessage, getAccountMatch, importTargetIndexes, getItem, isCreditCardRepaymentItem, matchedAccountForText, t]);
+  }, [accountIdentityConflictMessage, accountIssueMessage, getAccountMatch, getItem, isCreditCardRepaymentItem, matchedAccountForText, normalizeAccountFieldsForImport, t]);
+
+  useEffect(() => {
+    if (items.length === 0) {
+      setPreviewIssues([]);
+      setPreviewValidationProgress(null);
+      return;
+    }
+    let cancelled = false;
+    const total = items.length;
+    const chunkSize = total > 3000 ? 120 : 240;
+    const nextIssues: ImportIssue[] = [];
+    let checked = 0;
+    setPreviewIssues([]);
+    setPreviewValidationProgress({ checked: 0, total });
+
+    const runChunk = () => {
+      if (cancelled) return;
+      const end = Math.min(total, checked + chunkSize);
+      for (let idx = checked; idx < end; idx += 1) {
+        nextIssues.push(...collectImportIssuesForIndex(idx));
+      }
+      checked = end;
+      if (checked < total) {
+        setPreviewValidationProgress({ checked, total });
+        window.setTimeout(runChunk, 0);
+        return;
+      }
+      setPreviewIssues(nextIssues);
+      setPreviewValidationProgress(null);
+    };
+
+    window.setTimeout(runChunk, 0);
+    return () => {
+      cancelled = true;
+    };
+  }, [collectImportIssuesForIndex, items.length]);
+
+  const importIssues = useMemo(
+    () => previewIssues.filter((issue) => selected.has(issue.idx)),
+    [previewIssues, selected],
+  );
 
   const importErrorIssues = useMemo(() => importIssues.filter((issue) => issue.level === "error"), [importIssues]);
-  const importWarningIssues = useMemo(() => importIssues.filter((issue) => issue.level === "warning"), [importIssues]);
   const importIssuesByRow = useMemo(() => {
     const map = new Map<number, ImportIssue[]>();
     for (const issue of importIssues) map.set(issue.idx, [...(map.get(issue.idx) ?? []), issue]);
@@ -1814,10 +1949,32 @@ export default function BatchImportPage() {
     for (const issue of importErrorIssues) set.add(issue.idx);
     return set;
   }, [importErrorIssues]);
-  const importWarningRowCount = useMemo(
-    () => new Set(importWarningIssues.map((issue) => issue.idx)).size,
-    [importWarningIssues],
+  const previewErrorIssues = useMemo(() => previewIssues.filter((issue) => issue.level === "error"), [previewIssues]);
+  const previewWarningIssues = useMemo(() => previewIssues.filter((issue) => issue.level === "warning"), [previewIssues]);
+  const previewIssuesByRow = useMemo(() => {
+    const map = new Map<number, ImportIssue[]>();
+    for (const issue of previewIssues) map.set(issue.idx, [...(map.get(issue.idx) ?? []), issue]);
+    return map;
+  }, [previewIssues]);
+  const previewErrorRowIndexes = useMemo(() => {
+    const set = new Set<number>();
+    for (const issue of previewErrorIssues) set.add(issue.idx);
+    return set;
+  }, [previewErrorIssues]);
+  const previewWarningRowCount = useMemo(
+    () => new Set(previewWarningIssues.map((issue) => issue.idx)).size,
+    [previewWarningIssues],
   );
+  const previewErrorRows = useMemo(() => (
+    Array.from(previewErrorRowIndexes)
+      .sort((a, b) => a - b)
+      .map((idx) => ({
+        idx,
+        messages: (previewIssuesByRow.get(idx) ?? [])
+          .filter((issue) => issue.level === "error")
+          .map((issue) => issue.message),
+      }))
+  ), [previewErrorRowIndexes, previewIssuesByRow]);
   const importErrorRows = useMemo(() => (
     Array.from(importErrorRowIndexes)
       .sort((a, b) => a - b)
@@ -1830,25 +1987,56 @@ export default function BatchImportPage() {
   ), [importErrorRowIndexes, importIssuesByRow]);
   const displayedFilteredIndexes = useMemo(() => {
     const source = showImportErrorsOnly
-      ? filteredIndexes.filter((idx) => importErrorRowIndexes.has(idx))
+      ? filteredIndexes.filter((idx) => previewErrorRowIndexes.has(idx))
       : filteredIndexes;
     return [...source].sort((a, b) => {
-      const aError = importErrorRowIndexes.has(a);
-      const bError = importErrorRowIndexes.has(b);
+      const aError = previewErrorRowIndexes.has(a);
+      const bError = previewErrorRowIndexes.has(b);
       if (aError !== bError) return aError ? -1 : 1;
       return a - b;
     });
-  }, [filteredIndexes, importErrorRowIndexes, showImportErrorsOnly]);
+  }, [filteredIndexes, previewErrorRowIndexes, showImportErrorsOnly]);
   const displayedVisibleIndexes = useMemo(
     () => displayedFilteredIndexes.slice(0, previewCount),
     [displayedFilteredIndexes, previewCount],
   );
-  const importErrorPreviewText = useMemo(() => (
-    importErrorRows
+  const previewErrorPreviewText = useMemo(() => (
+    previewErrorRows
       .slice(0, 6)
       .map((row) => `第 ${row.idx + 1} 行：${row.messages.join("；")}`)
       .join("；")
-  ), [importErrorRows]);
+  ), [previewErrorRows]);
+  const previewValidationRunning = previewValidationProgress !== null;
+  const importProgressPercent = useMemo(() => {
+    if (!importProgress?.total) return 0;
+    return Math.max(0, Math.min(100, Math.round((importProgress.processed / importProgress.total) * 100)));
+  }, [importProgress]);
+  const importProgressPhaseLabel = useMemo(() => {
+    if (!importProgress) return "";
+    switch (importProgress.phase) {
+      case "preparing":
+        return t("batchImport.importPhase.preparing");
+      case "writing":
+        return t("batchImport.importPhase.writing");
+      case "recalculating":
+        return t("batchImport.importPhase.recalculating");
+      case "done":
+        return t("batchImport.importPhase.done");
+      case "failed":
+        return t("batchImport.importPhase.failed");
+      default:
+        return "";
+    }
+  }, [importProgress, t]);
+  const importProgressText = useMemo(() => {
+    if (!importProgress) return "";
+    return formatText("batchImport.importProgress", {
+      phase: importProgressPhaseLabel,
+      processed: importProgress.processed,
+      total: importProgress.total,
+      percent: importProgressPercent,
+    });
+  }, [formatText, importProgress, importProgressPercent, importProgressPhaseLabel]);
 
   const fundImportIssues = useMemo(() => (
     Array.from(fundSelected)
@@ -1897,7 +2085,8 @@ export default function BatchImportPage() {
   }, [fundPreviewWarningGroups, formatText]);
 
   const applyReplaceToTargets = useCallback((replaceField: ReplaceField, replaceValue: string) => {
-    if (batchTargetIndexes.length === 0) throw new Error(t("batchImport.batchReplaceNoTarget"));
+    const targetIndexes = [...batchTargetIndexes];
+    if (targetIndexes.length === 0) throw new Error(t("batchImport.batchReplaceNoTarget"));
     const value = replaceValue.trim();
     const accountValue = replaceField === "account" || replaceField === "counterAccount"
       ? accountSelectTextById(value)
@@ -1907,8 +2096,9 @@ export default function BatchImportPage() {
     const nextDrafts = { ...drafts };
     let changed = 0;
     let invalid = 0;
+    const changedIndexes: number[] = [];
 
-    for (const idx of batchTargetIndexes) {
+    for (const idx of targetIndexes) {
       const item = { ...getItem(idx), ...(nextDrafts[idx] ?? {}) };
       const patch: Partial<ParsedItem> = {};
       const type = item.type ?? "expense";
@@ -1985,9 +2175,15 @@ export default function BatchImportPage() {
       else if (replaceField === "remark") patch.remark = value;
       nextDrafts[idx] = { ...(nextDrafts[idx] ?? {}), ...patch };
       changed++;
+      changedIndexes.push(idx);
     }
 
     setDrafts(nextDrafts);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const idx of changedIndexes) next.delete(idx);
+      return next;
+    });
     const invalidSuffix = invalid > 0 ? formatText("batchImport.batchReplaceInvalidCount", { count: invalid }) : "";
     const resultMessage = formatText("batchImport.batchReplaceResult", {
       count: changed,
@@ -2000,7 +2196,7 @@ export default function BatchImportPage() {
       importKind: "bill",
       billMode: activeBillMode,
       field: replaceField,
-      targetCount: batchTargetIndexes.length,
+      targetCount: targetIndexes.length,
       changedCount: changed,
       invalidCount: invalid,
     });
@@ -2009,6 +2205,13 @@ export default function BatchImportPage() {
 
   const handleImport = useCallback(async () => {
     if (importing) return;
+    if (previewValidationRunning) {
+      setMessage(formatText("batchImport.previewChecking", {
+        checked: previewValidationProgress?.checked ?? 0,
+        total: previewValidationProgress?.total ?? items.length,
+      }));
+      return;
+    }
     const selectedIndexes = importTargetIndexes;
     const selectedItems = selectedIndexes.map((idx) => normalizeAccountFieldsForImport(normalizeForStorage(getItem(idx))));
     const missingCounterAccountCount = selectedItems.filter((item) => item.type === "transfer" && (!item.fromAccount?.trim() || !item.toAccount?.trim())).length;
@@ -2041,7 +2244,40 @@ export default function BatchImportPage() {
     setImportedCount(0);
     setMessage(formatText("batchImport.importingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
+    setImportProgress({
+      total: selectedItems.length,
+      processed: 0,
+      created: 0,
+      phase: "preparing",
+      currentRow: null,
+      done: false,
+      ok: null,
+      error: null,
+      failedRow: null,
+    });
     const importStartedAt = performance.now();
+    const traceId = importTraceIdRef.current;
+    const progressController = new AbortController();
+    const pollImportProgress = async () => {
+      const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+      while (!progressController.signal.aborted) {
+        try {
+          const progressRes = await fetch(`/api/v1/record/ingest/progress?traceId=${encodeURIComponent(traceId)}`, {
+            cache: "no-store",
+            signal: progressController.signal,
+          });
+          const progressData = await progressRes.json().catch(() => null) as { ok?: boolean; progress?: ServerImportProgress | null } | null;
+          if (progressData?.ok && progressData.progress) {
+            setImportProgress(progressData.progress);
+            if (progressData.progress.done) break;
+          }
+        } catch {
+          if (progressController.signal.aborted) break;
+        }
+        await sleep(1000);
+      }
+    };
+    void pollImportProgress();
     postImportDebugLog(importTraceIdRef.current, "import_started", {
       importKind: "bill",
       billMode: activeBillMode,
@@ -2053,7 +2289,7 @@ export default function BatchImportPage() {
       const res = await fetch("/api/v1/record/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Import": "batch-import" },
-        body: JSON.stringify({ items: selectedItems, traceId: importTraceIdRef.current }),
+        body: JSON.stringify({ items: selectedItems, traceId }),
       });
       const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; trace?: string[]; failedRow?: { rowIndex?: number; error?: string } } | null;
       if (!res.ok || !data || data.error) {
@@ -2069,6 +2305,9 @@ export default function BatchImportPage() {
         });
         setImportedCount(0);
         setImporting(false);
+        setImportProgress((current) => current
+          ? { ...current, phase: "failed", done: true, ok: false, error: data?.error || res.statusText || `HTTP ${res.status}` }
+          : null);
         setMessage(formatText("batchImport.importFailedRollback", { reason: data?.error || res.statusText || `HTTP ${res.status}` }));
         setUploadDebug(data?.trace?.join("\n") ?? data?.error ?? null);
         return;
@@ -2083,13 +2322,17 @@ export default function BatchImportPage() {
       });
       setImportedCount(success);
       setImporting(false);
+      setImportProgress((current) => current
+        ? { ...current, phase: "done", done: true, ok: true, processed: selectedItems.length, created: success, error: null }
+        : null);
       setMessage(formatText("batchImport.importSuccess", {
         count: success,
         missingCounterAccountNote: missingCounterAccountCount > 0
           ? formatText("batchImport.importSuccessMissingCounterAccounts", { count: missingCounterAccountCount })
           : "",
-        redirectNote: t("batchImport.openingDetailList"),
+        redirectNote: "",
       }));
+      sessionStorage.removeItem("batchImportItems");
     } catch (error) {
       postImportDebugLog(importTraceIdRef.current, "import_failed", {
         importKind: "bill",
@@ -2100,16 +2343,15 @@ export default function BatchImportPage() {
       });
       setImportedCount(0);
       setImporting(false);
+      setImportProgress((current) => current
+        ? { ...current, phase: "failed", done: true, ok: false, error: error instanceof Error ? error.message : String(error) }
+        : null);
       setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
       return;
+    } finally {
+      progressController.abort();
     }
-    if (selectedItems.length > 0) {
-      setTimeout(() => {
-        sessionStorage.removeItem("batchImportItems");
-        router.push("/?view=detail");
-      }, 1500);
-    }
-  }, [activeBillMode, formatText, getItem, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, normalizeAccountFieldsForImport, router, t]);
+  }, [activeBillMode, formatText, getItem, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, items.length, normalizeAccountFieldsForImport, previewValidationProgress, previewValidationRunning, t]);
 
   const handleFundImport = useCallback(async () => {
     if (importing) return;
@@ -2176,7 +2418,7 @@ export default function BatchImportPage() {
         setFundRulesDirty(false);
         setFundSelected(new Set());
         setActiveImportKind(null);
-        router.push("/?view=invest");
+        router.push("/invest");
       }, 1500);
     } catch (error) {
       setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
@@ -2205,6 +2447,7 @@ export default function BatchImportPage() {
     setShowImportErrorsOnly(false);
     setMessage(null);
     setUploadDebug(null);
+    setImportProgress(null);
   }, []);
 
   const renderColumnFilter = (column: FilterColumn, label: string) => {
@@ -2232,10 +2475,11 @@ export default function BatchImportPage() {
       return {
         value: account.id,
         label,
-        subLabel: [kindLabel(account.kind), account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset")].join(" · "),
+        subLabel: accountOptionSubLabel(account),
+        title: accountHoverTitle(account),
       };
     }),
-  ], [activeAccountOptions, accountDisplayLabel, t]);
+  ], [accountDisplayLabel, accountHoverTitle, accountOptionSubLabel, activeAccountOptions, t]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
     { value: "date", label: replaceFieldLabels.date, kind: "date" },
@@ -2261,8 +2505,16 @@ export default function BatchImportPage() {
           {items.length > 0 && (
             <span className="text-sm text-slate-500">
               {formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}
-              {importErrorRows.length > 0 && <span className="ml-2 font-medium text-red-600">{formatText("batchImport.errorCount", { count: importErrorRows.length })}</span>}
-              {importWarningRowCount > 0 && <span className="ml-2 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: importWarningRowCount })}</span>}
+              {previewErrorRows.length > 0 && <span className="ml-2 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span>}
+              {previewWarningRowCount > 0 && <span className="ml-2 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span>}
+              {previewValidationRunning && (
+                <span className="ml-2 font-medium text-blue-600">
+                  {formatText("batchImport.previewChecking", {
+                    checked: previewValidationProgress?.checked ?? 0,
+                    total: previewValidationProgress?.total ?? items.length,
+                  })}
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -2278,7 +2530,7 @@ export default function BatchImportPage() {
           {items.length > 0 && (
             <button
               onClick={handleImport}
-              disabled={importing || importTargetCount === 0 || importErrorIssues.length > 0}
+              disabled={importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
               className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
@@ -2290,6 +2542,18 @@ export default function BatchImportPage() {
       {activeImportKind !== "fund" && message && (
         <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-blue-700 text-sm">
           {message}
+        </div>
+      )}
+
+      {activeImportKind === "normal" && importProgress && (
+        <div className="mx-4 mt-2 rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-slate-600">
+          <div className="mb-1 flex items-center justify-between gap-3">
+            <span>{importProgressText}</span>
+            <span className="font-medium text-slate-700">{importProgressPercent}%</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-blue-500 transition-[width] duration-300" style={{ width: `${importProgressPercent}%` }} />
+          </div>
         </div>
       )}
 
@@ -2429,7 +2693,7 @@ export default function BatchImportPage() {
                 </button>
                 <button
                   onClick={handleImport}
-                  disabled={uploading || importing || importTargetCount === 0 || importErrorIssues.length > 0}
+                  disabled={uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
                   className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
@@ -2439,6 +2703,17 @@ export default function BatchImportPage() {
             {message && (
               <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
                 {message}
+              </div>
+            )}
+            {importProgress && (
+              <div className="shrink-0 border-b border-blue-100 bg-white px-4 py-2 text-xs text-slate-600">
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <span>{importProgressText}</span>
+                  <span className="font-medium text-slate-700">{importProgressPercent}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full rounded-full bg-blue-500 transition-[width] duration-300" style={{ width: `${importProgressPercent}%` }} />
+                </div>
               </div>
             )}
             {uploadDebug && (
@@ -2472,13 +2747,31 @@ export default function BatchImportPage() {
                     ? formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })
                     : formatText("batchImport.totalCount", { total: items.length })}
                 </span>
-                {importErrorRows.length > 0 && (
+                {previewValidationRunning && (
+                  <span className="rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
+                    {formatText("batchImport.previewChecking", {
+                      checked: previewValidationProgress?.checked ?? 0,
+                      total: previewValidationProgress?.total ?? items.length,
+                    })}
+                  </span>
+                )}
+                {selectionBusy && (
+                  <span className="rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
+                    {t("batchImport.selectingRows")}
+                  </span>
+                )}
+                {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && (
+                  <span className="rounded bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
+                    {t("batchImport.previewPassed")}
+                  </span>
+                )}
+                {previewErrorRows.length > 0 && (
                   <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-700">
-                    阻断错误记录 {importErrorRows.length} 条，已置顶
+                    {formatText("batchImport.previewBlockingBadge", { count: previewErrorRows.length })}
                   </span>
                 )}
                 <span className="text-slate-400">{t("batchImport.filterHint")}</span>
-                {importErrorRows.length > 0 && (
+                {previewErrorRows.length > 0 && (
                   <button
                     type="button"
                     onClick={() => {
@@ -2487,7 +2780,7 @@ export default function BatchImportPage() {
                     }}
                     className="h-8 px-2 rounded border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
                   >
-                    {showImportErrorsOnly ? "显示全部" : "只看错误"}
+                    {showImportErrorsOnly ? t("batchImport.showAllRows") : t("batchImport.showErrorRows")}
                   </button>
                 )}
                 <button
@@ -2502,12 +2795,14 @@ export default function BatchImportPage() {
                   {t("batchImport.clearAllFilters")}
                 </button>
               </div>
-              {importErrorRows.length > 0 && (
+              {previewErrorRows.length > 0 && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  <div className="font-semibold">确认导入按钮灰掉，是因为选中记录里还有阻断错误。</div>
+                  <div className="font-semibold">{t("batchImport.previewBlockingHint")}</div>
                   <div className="mt-1 leading-5">
-                    {importErrorPreviewText}
-                    {importErrorRows.length > 6 ? `；还有 ${importErrorRows.length - 6} 条记录` : ""}
+                    {previewErrorPreviewText}
+                    {previewErrorRows.length > 6
+                      ? formatText("batchImport.previewBlockingMore", { count: previewErrorRows.length - 6 })
+                      : ""}
                   </div>
                 </div>
               )}
@@ -2522,6 +2817,7 @@ export default function BatchImportPage() {
                         type="checkbox"
                         checked={displayedFilteredIndexes.length > 0 && displayedFilteredIndexes.every((idx) => selected.has(idx))}
                         onChange={toggleAllFiltered}
+                        disabled={selectionBusy}
                         className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
                         title={t("batchImport.selectFiltered")}
                       />
@@ -2589,7 +2885,7 @@ export default function BatchImportPage() {
                   const isSelected = selected.has(idx);
                   const editingField = editingCell?.idx === idx ? editingCell.field : null;
                   const typeLabel = getTypeLabel(currentRowItem);
-                  const rowIssues = importIssuesByRow.get(idx) ?? [];
+                  const rowIssues = previewIssuesByRow.get(idx) ?? [];
                   const rowHasError = rowIssues.some((issue) => issue.level === "error");
                   const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
 
@@ -2709,7 +3005,7 @@ export default function BatchImportPage() {
                           />
                         ) : (inflow ? inflow.toFixed(2) : "-")}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title={t("batchImport.doubleClickToEdit")}>
+                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title={accountCellTitle(account, accountPickerRole)}>
                         {editingField === "account" ? (
                           <div className="w-80">
                             <SmartSelect
@@ -2736,7 +3032,7 @@ export default function BatchImportPage() {
                           </div>
                         ) : (account ? accountDisplayText(account, accountPickerRole) : <span className="text-red-500">{t("batchImport.unrecognized")}</span>)}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={t("batchImport.doubleClickToEdit")}>
+                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={accountCellTitle(counterAccount, counterAccountPickerRole)}>
                         {editingField === "counterAccount" ? (
                           <div className="w-80">
                             <SmartSelect

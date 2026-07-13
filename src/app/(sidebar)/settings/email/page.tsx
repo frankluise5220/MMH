@@ -867,10 +867,19 @@ export default function EmailSettingsPage() {
     const account = previewAccountDisplayById.get(accountId);
     return account?.selectorLabel ?? account?.label ?? null;
   }, [previewAccountDisplayById]);
+  const previewAccountDisplayTitleById = useCallback((accountId?: string | null) => {
+    if (!accountId) return null;
+    const account = previewAccountDisplayById.get(accountId);
+    return account?.hoverTitle ?? account?.selectorLabel ?? account?.label ?? null;
+  }, [previewAccountDisplayById]);
   const selectedPreviewAccountDisplayLabel = useCallback((row: ImportPreviewItem) => {
     const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
     return previewAccountDisplayLabelById(accountId);
   }, [importPreview?.statementAccountId, previewAccountDisplayLabelById]);
+  const selectedPreviewAccountDisplayTitle = useCallback((row: ImportPreviewItem) => {
+    const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
+    return previewAccountDisplayTitleById(accountId);
+  }, [importPreview?.statementAccountId, previewAccountDisplayTitleById]);
 
   const hasImportPreview = importPreview !== null;
   const previewFilterRows = useMemo(() => importPreview?.items ?? [], [importPreview]);
@@ -908,7 +917,7 @@ export default function EmailSettingsPage() {
     return [
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
-        .map((account) => ({ value: account.id, label: account.selectorLabel })),
+        .map((account) => ({ value: account.id, label: account.selectorLabel, title: account.hoverTitle })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
@@ -917,7 +926,7 @@ export default function EmailSettingsPage() {
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
         .filter((account) => account.kind === "bank_debit")
-        .map((account) => ({ value: account.id, label: account.selectorLabel })),
+        .map((account) => ({ value: account.id, label: account.selectorLabel, title: account.hoverTitle })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountDisplayOptions = useMemo(
@@ -1536,7 +1545,9 @@ export default function EmailSettingsPage() {
                         <td className="px-3 py-2 align-top text-slate-700">
                           {row.ready || item.type === "transfer" ? (
                             <div className="space-y-1">
-                              <span className="whitespace-nowrap text-slate-700">{selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}</span>
+                              <span className="whitespace-nowrap text-slate-700" title={selectedPreviewAccountDisplayTitle(row) ?? accountLabel(item)}>
+                                {selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}
+                              </span>
                               {item.type === "transfer" ? <div className="text-[11px] text-slate-400">到账账户</div> : null}
                             </div>
                           ) : (
@@ -1549,7 +1560,7 @@ export default function EmailSettingsPage() {
                               >
                                 <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
                                 {previewAccountOptions(item).map((account) => (
-                                  <option key={account.id} value={account.id}>
+                                  <option key={account.id} value={account.id} title={account.hoverTitle}>
                                     {account.selectorLabel}
                                   </option>
                                 ))}

@@ -96,6 +96,15 @@ function wealthHoldingAmountAt(holding: WealthHoldingOption, date: string) {
   );
 }
 
+function isWealthRedeemArrivalAccount(account: AccountOption, wealthInstitutionId?: string | null) {
+  if (account.kind === "bank_debit") return true;
+  return account.kind === "ewallet" && !!wealthInstitutionId && account.institutionId === wealthInstitutionId;
+}
+
+function isWealthDividendArrivalAccount(account: AccountOption, wealthInstitutionId?: string | null) {
+  return account.kind === "bank_debit" && (!wealthInstitutionId || account.institutionId === wealthInstitutionId);
+}
+
 export function WealthFormModal({
   mode = "create",
   accountId: defaultAccountId,
@@ -198,6 +207,16 @@ export function WealthFormModal({
     [localInvestSSOpts, wealthAccountIds],
   );
   const { ownerFilterLabel: wealthOwnerLabel, cycleOwnerFilter: cycleWealthOwner, filteredOptions: wealthFiltered } = useAccountSSFilter(localWealthSSOpts);
+  const cashAccountOptions = useMemo<SmartSelectOption[]>(
+    () => cashAccountList.map((account) => ({ ...account, kind: account.kind ?? null })),
+    [cashAccountList],
+  );
+  const wealthAccountOptions = useMemo<SmartSelectOption[]>(
+    () => wealthAccountList.map((account) => ({ ...account, kind: account.kind ?? null })),
+    [wealthAccountList],
+  );
+  const cashSelectOptions = cashFiltered ?? cashAccountOptions;
+  const wealthSelectOptions = wealthFiltered ?? wealthAccountOptions;
   const selectedWealthAccount = useMemo(
     () => wealthAccountList.find((account) => account.id === toAccountId) ?? null,
     [toAccountId, wealthAccountList],
@@ -205,14 +224,15 @@ export function WealthFormModal({
   const isRedeem = subtype === "redeem";
   const isDividend = subtype === "dividend_cash";
   const isHoldingAction = isRedeem || isDividend;
+  const selectedWealthInstitutionId = selectedWealthAccount?.institutionId ?? null;
   const redeemCashOptions = useMemo(
     () =>
       cashAccountList.filter(
-        (account) =>
-          account.kind === "bank_debit" &&
-          (!selectedWealthAccount?.institutionId || account.institutionId === selectedWealthAccount.institutionId),
+        (account) => isRedeem
+          ? isWealthRedeemArrivalAccount(account, selectedWealthInstitutionId)
+          : isWealthDividendArrivalAccount(account, selectedWealthInstitutionId),
       ),
-    [cashAccountList, selectedWealthAccount?.institutionId],
+    [cashAccountList, isRedeem, selectedWealthInstitutionId],
   );
   const filteredHoldingOptions = useMemo(
     () =>
@@ -657,7 +677,7 @@ export function WealthFormModal({
                         mode="single"
                         value={toAccountId}
                         onChange={setToAccountId}
-                        options={sortOptionsByRecent(wealthFiltered ?? wealthAccountList, recentAccountIds)}
+                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
                         placeholder="选择理财账户"
                         onCreateClick={() => setNestedEntityType("invest-account")}
                         createLabel="新增账户"
@@ -717,7 +737,11 @@ export function WealthFormModal({
                         value={cashAccountId}
                         onChange={setCashAccountId}
                         options={sortOptionsByRecent(redeemCashOptions, recentAccountIds)}
-                        placeholder={redeemCashOptions.length > 0 ? "选择同机构借记卡" : "该机构暂无借记卡"}
+                        placeholder={
+                          redeemCashOptions.length > 0
+                            ? isRedeem ? "选择借记卡或同机构电子钱包" : "选择同机构借记卡"
+                            : isRedeem ? "暂无借记卡或同机构电子钱包" : "该机构暂无借记卡"
+                        }
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel="新增账户"
                         onCycleOwnerFilter={cfCycle}
@@ -828,7 +852,7 @@ export function WealthFormModal({
                         mode="single"
                         value={cashAccountId}
                         onChange={setCashAccountId}
-                        options={sortOptionsByRecent(cashFiltered ?? cashAccountList, recentAccountIds)}
+                        options={sortOptionsByRecent(cashSelectOptions, recentAccountIds)}
                         placeholder="选择账户"
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel="新增账户"
@@ -842,7 +866,7 @@ export function WealthFormModal({
                         mode="single"
                         value={toAccountId}
                         onChange={setToAccountId}
-                        options={sortOptionsByRecent(wealthFiltered ?? wealthAccountList, recentAccountIds)}
+                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
                         placeholder="选择理财账户"
                         onCreateClick={() => setNestedEntityType("invest-account")}
                         createLabel="新增账户"
@@ -905,11 +929,12 @@ export function WealthFormModal({
             }
             setNestedEntityType(null);
           }}
-          extraFields={{
-            kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment",
+          defaultType={nestedEntityType === "cash-account" ? "bank_debit" : "investment"}
+          extraFields={nestedEntityType === "invest-account" ? {
+            kind: "investment",
             investProductType: "wealth",
-          }}
-          hiddenFields={["kind"]}
+          } : undefined}
+          hiddenFields={nestedEntityType === "invest-account" ? ["kind"] : undefined}
           nestedFieldData={nestedFieldData}
         />
       ) : null}
@@ -1013,5 +1038,3 @@ export function WealthFormModal({
     document.body,
   );
 }
-
-

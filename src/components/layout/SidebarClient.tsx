@@ -45,12 +45,15 @@ import {
 import { warmSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
+import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 
 type AccountItem = {
   id?: string | null;
   name: string;
   label: string;
   shortLabel?: string;
+  hoverTitle?: string;
   balance: number;
   kind: string;
   groupName?: string;
@@ -60,6 +63,9 @@ type AccountItem = {
 
 function normalizeSidebarItemKind(item: Pick<AccountItem, "kind" | "investProductType">) {
   if (item.kind === "investment" && item.investProductType === "deposit") return "deposit";
+  if (item.kind === "investment" && item.investProductType === "money") return "investment_money";
+  if (item.kind === "investment" && item.investProductType === "wealth") return "investment_wealth";
+  if (item.kind === "investment" && item.investProductType === "fund") return "investment_fund";
   return item.kind;
 }
 
@@ -133,6 +139,7 @@ function normalizeSidebarItems(items: AccountItem[]) {
       id: "__debt__",
       name: "借入/借出",
       label: "借入/借出",
+      hoverTitle: "未设置所有人 · 借入/借出 · 借入/借出",
       balance: loanBalance,
       kind: "loan_summary",
       groupName: "未设置所有人",
@@ -157,6 +164,7 @@ function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_C
     name: a.name,
     label: display.label,
     shortLabel: display.selectorCoreLabel,
+    hoverTitle: display.hoverTitle,
     balance: Number(a.balance ?? 0),
     kind: a.kind,
     groupName: display.groupName || "未设置所有人",
@@ -270,7 +278,7 @@ export function SidebarClient({
                 let changed = false;
                 const next = prev.map(p => {
                   const f = fresh.find(f => f.id === p.id);
-                  if (f && (p.balance !== f.balance || p.name !== f.name || p.groupName !== f.groupName || p.institution !== f.institution || p.label !== f.label || p.kind !== f.kind)) {
+                  if (f && (p.balance !== f.balance || p.name !== f.name || p.groupName !== f.groupName || p.institution !== f.institution || p.label !== f.label || p.hoverTitle !== f.hoverTitle || p.kind !== f.kind)) {
                     changed = true;
                     return f;
                   }
@@ -680,6 +688,8 @@ export function SidebarClient({
           </Link>
         </nav>
 
+        <UndoLastOperationButton compact />
+
         <NewLedgerSetupCheck />
         <InitModal open={initOpen} onOpenChange={setInitOpen} />
         <DailyTaskCheck />
@@ -854,8 +864,8 @@ export function SidebarClient({
                                 const q = new URLSearchParams();
                                 if (it.id) q.set("accountId", it.id);
                                 else q.set("account", it.name);
-                                const view = it.kind === "investment"
-                                  ? (it.investProductType === "money" ? "investmoney" : "investfund")
+                                const view = it.kind.startsWith("investment")
+                                  ? getInvestmentAccountView(it)
                                   : it.kind === "deposit"
                                     ? "deposit"
                                     : it.kind === "insurance"
@@ -864,16 +874,18 @@ export function SidebarClient({
                                 q.set("view", view);
                                 return `/?${q.toString()}`;
                               })();
+                              const itemTitle = it.hoverTitle ?? [it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
                               return (
                                 <Link
                                   key={`${group.key}:${it.id}:${it.name}`}
                                   href={href}
                                   prefetch={false}
                                   scroll={false}
+                                  title={itemTitle}
                                   className={`${accountLinkCls(active)} ${group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : ""} ${index > 0 ? "border-t border-slate-100/90" : ""}`}
                                 >
                                   <span className="min-w-0 flex-1 pr-2">
-                                    <span className="text-fade-right block min-w-0">
+                                    <span className="text-fade-right block min-w-0" title={itemTitle}>
                                     {sidebarGroupBy === "institution"
                                       ? it.kind === "insurance"
                                         ? (it.shortLabel || it.label)
@@ -897,6 +909,7 @@ export function SidebarClient({
         </div>
 
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
+          <UndoLastOperationButton />
           <Link
             href="/settings"
             prefetch={false}

@@ -16,7 +16,7 @@ type SelectionContextValue = {
   setDeleteMessage: (msg: string) => void;
 };
 
-type AccountOption = { id: string; label: string };
+type AccountOption = { id: string; label: string; title?: string | null };
 export type BasicDetailBatchCategoryOption = BatchReplaceOption;
 
 const fieldLabels: Record<BatchReplaceField, string> = {
@@ -142,7 +142,7 @@ export function BasicDetailBatchReplaceButton({
   const fieldConfigs = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => {
     const accountSelectOptions = [
       { value: "", label: "选择账户" },
-      ...accountOptions.map((account) => ({ value: account.id, label: account.label })),
+      ...accountOptions.map((account) => ({ value: account.id, label: account.label, title: account.title ?? undefined })),
     ];
     const categorySelectOptions = [
       { value: "", label: "清除分类" },

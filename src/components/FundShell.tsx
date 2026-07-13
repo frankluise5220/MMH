@@ -177,7 +177,17 @@ export function FundShell(props: Props) {
   const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
 
   const formatFundUnits = (value: number) => value.toFixed(fundUnitsDecimals);
-  const isMetalAccount = selectedAccount?.investProductType === "metal";
+  const accountProductType = selectedAccount?.investProductType ?? null;
+  const isMetalAccount = accountProductType === "metal";
+  const isWealthAccount = accountProductType === "wealth";
+  const assetNameLabel = isMetalAccount ? "品种" : isWealthAccount ? "理财产品" : "基金";
+  const holdingTabLabel = isMetalAccount ? "持仓贵金属" : isWealthAccount ? "持仓理财" : "持仓基金";
+  const clearedTabLabel = isWealthAccount ? "已赎回理财" : "清仓基金";
+  const noClearedText = isWealthAccount ? "暂无已赎回理财" : "暂无清仓基金";
+  const chooseHoldingText = `请先选择上方${isWealthAccount ? "理财持仓" : "基金持仓"}`;
+  const investmentAccountLabel = isWealthAccount ? "理财账户" : "基金账户";
+  const detailNameLabel = isWealthAccount ? "理财产品" : "基金";
+  const navColumnLabel = isMetalAccount ? "单价" : isWealthAccount ? "净值/估值" : "净值";
   const entryAssetKey = useCallback((entry: any) => String(isMetalAccount ? entry?.metalTypeId ?? "" : entry?.fundCode ?? "").trim(), [isMetalAccount]);
 
 
@@ -539,7 +549,7 @@ export function FundShell(props: Props) {
 
     const label = scope === "current" ? fundCode || "current" : "all";
 
-    const header = ["申请日期", "确认日期", "到账日期", "资金账户", "基金代码", "基金名称", "净值", "份额", "交易类型", "金额", "收益", "状态"];
+    const header = ["申请日期", "确认日期", "到账日期", "资金账户", `${detailNameLabel}代码`, `${detailNameLabel}名称`, navColumnLabel, isWealthAccount ? "份额/本金" : "份额", "交易类型", "金额", "收益", "状态"];
 
     const accountLabelByIdLocal = new Map<string, string>();
 
@@ -1423,7 +1433,7 @@ export function FundShell(props: Props) {
 
       value: "fundAccountId",
 
-      label: "基金账户",
+      label: investmentAccountLabel,
 
       kind: "select",
 
@@ -1439,7 +1449,7 @@ export function FundShell(props: Props) {
 
     { value: "remark", label: "备注", kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
 
-  ], [cashAccounts, investmentAccounts]);
+  ], [cashAccounts, investmentAccountLabel, investmentAccounts]);
 
 
 
@@ -1507,7 +1517,7 @@ export function FundShell(props: Props) {
 
     if (ids.length === 0 || batchDeleting) return;
 
-    if (!window.confirm(`确认删除已勾选 ${ids.length} 条基金明细？删除后会进入回收站。`)) return;
+    if (!window.confirm(`确认删除已勾选 ${ids.length} 条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`)) return;
 
 
 
@@ -1630,9 +1640,9 @@ export function FundShell(props: Props) {
 
             <div className="flex items-center gap-0.5">
 
-              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{isMetalAccount ? "持仓贵金属" : "持仓基金"}</button>
+              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{holdingTabLabel}</button>
 
-              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>清仓基金</button> : null}
+              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{clearedTabLabel}</button> : null}
 
             </div>
 
@@ -1642,7 +1652,7 @@ export function FundShell(props: Props) {
 
             {!showCleared ? (<>
 
-              {!isMetalAccount && d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
+              {!isMetalAccount && !isWealthAccount && d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
 
             </>) : null}
 
@@ -1668,10 +1678,10 @@ export function FundShell(props: Props) {
 
                 <tr>
 
-                  <SortHead sk="fundCode" label={isMetalAccount ? "品种" : "基金"} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
+                  <SortHead sk="fundCode" label={assetNameLabel} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    {isMetalAccount ? "数量" : "份额"}
+                    {isMetalAccount ? "数量" : isWealthAccount ? "份额/本金" : "份额"}
                     <ResizeGrip table="positions" colKey="units" width={colWidth("positions", "units", 92)} minWidth={64} />
                   </th>
 
@@ -1681,7 +1691,7 @@ export function FundShell(props: Props) {
                   </th>
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    {isMetalAccount ? "单价" : "净值"}
+                    {navColumnLabel}
                     <ResizeGrip table="positions" colKey="nav" width={colWidth("positions", "nav", 136)} minWidth={118} />
                   </th>
 
@@ -1738,7 +1748,9 @@ export function FundShell(props: Props) {
                       key={p.fundCode}
 
                       onClick={() => switchFund(p.fundCode)}
-                      onDoubleClick={() => openPositionEntryModal(p)}
+                      onDoubleClick={() => {
+                        if (!isWealthAccount) openPositionEntryModal(p);
+                      }}
 
                       className={`cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`}
 
@@ -1854,7 +1866,7 @@ export function FundShell(props: Props) {
                               );
                             })()
                           ) : null}
-                          {!isMetalAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" /> : null}
+                          {!isMetalAccount && !isWealthAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" /> : null}
                         </div>
                       </td>
 
@@ -1912,7 +1924,7 @@ export function FundShell(props: Props) {
 
                 <tr>
 
-                  <SortHead sk="fundCode" label="基金名称" cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="fund" width={colWidth("cleared", "fund", 220)} minWidth={150} />
+                  <SortHead sk="fundCode" label={`${assetNameLabel}名称`} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="fund" width={colWidth("cleared", "fund", 220)} minWidth={150} />
 
                   <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
                     初次购买
@@ -1946,7 +1958,7 @@ export function FundShell(props: Props) {
 
                 {sortedClearedPositions.length === 0 ? (
 
-                  <tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={7}>暂无清仓基金</td></tr>
+                  <tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={7}>{noClearedText}</td></tr>
 
                 ) : sortedClearedPositions.map((c: any) => {
 
@@ -2078,7 +2090,7 @@ export function FundShell(props: Props) {
 
             交易明细{fundCode && <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>{fundCode}</span>}
 
-            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode ? `${filteredByColumns.length}/${filtered.length}` : "请先选择上方基金持仓"}</span>
+            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
 
           </div>
 
@@ -2151,7 +2163,15 @@ export function FundShell(props: Props) {
                             onChange={() => toggleDetailColumnVisibility(key)}
                             className="h-3.5 w-3.5 rounded border-slate-300"
                           />
-                          <span className="truncate">{DETAIL_COLUMN_LABELS[key]}</span>
+                          <span className="truncate">
+                            {key === "fund"
+                              ? detailNameLabel
+                              : key === "nav"
+                                ? navColumnLabel
+                                : key === "units" && isWealthAccount
+                                  ? "份额/本金"
+                                  : DETAIL_COLUMN_LABELS[key]}
+                          </span>
                         </label>
                       );
                     })}
@@ -2182,7 +2202,7 @@ export function FundShell(props: Props) {
 
                       className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
-                      导出当前基金明细
+                      导出当前{isWealthAccount ? "理财" : "基金"}明细
 
                     </button>
 
@@ -2192,7 +2212,7 @@ export function FundShell(props: Props) {
 
                     className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
-                    导出账户全部基金
+                    导出账户全部{isWealthAccount ? "理财" : "基金"}
 
                   </button>
 
@@ -2511,21 +2531,21 @@ export function FundShell(props: Props) {
 
                 {isDetailColumnVisible("fund") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  基金
+                  {detailNameLabel}
                   <ResizeGrip table="details" colKey="fund" width={colWidth("details", "fund", 156)} minWidth={110} />
                 </th>
                 ) : null}
 
                 {isDetailColumnVisible("nav") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  净值
+                  {navColumnLabel}
                   <ResizeGrip table="details" colKey="nav" width={colWidth("details", "nav", 86)} minWidth={76} />
                 </th>
                 ) : null}
 
                 {isDetailColumnVisible("units") ? (
                 <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  份额
+                  {isWealthAccount ? "份额/本金" : "份额"}
                   <ResizeGrip table="details" colKey="units" width={colWidth("details", "units", 84)} minWidth={64} />
                 </th>
                 ) : null}
@@ -2692,7 +2712,7 @@ export function FundShell(props: Props) {
 
                           className="h-3.5 w-3.5 accent-blue-600"
 
-                          aria-label="选择基金交易明细"
+                          aria-label={`选择${isWealthAccount ? "理财" : "基金"}交易明细`}
 
                         />
 
@@ -2806,7 +2826,7 @@ export function FundShell(props: Props) {
 
                       <div className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1" onClick={(ev) => ev.stopPropagation()}>
 
-                        {e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+                        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
 
                         {e.fundProductType === "wealth" ? (
 
@@ -2984,7 +3004,7 @@ export function FundShell(props: Props) {
 
                 );
 
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode ? "暂无交易记录" : "请先选择上方基金持仓"}</td></tr>)}
+              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode ? "暂无交易记录" : chooseHoldingText}</td></tr>)}
 
             </tbody>
 

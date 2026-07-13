@@ -112,6 +112,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
       return {
         id: account.id,
         name: display.label,
+        hoverTitle: display.hoverTitle,
         kind: account.kind,
         groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance: toNumber(account.balance),
@@ -137,6 +138,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
       return {
         id: account.id,
         name: display.label,
+        hoverTitle: display.hoverTitle,
         kind: account.kind,
         groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
         balance,
@@ -236,10 +238,10 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <div className="divide-y divide-slate-100">
                 {creditAccounts.length > 0 ? (
                   creditAccounts.map((account) => (
-                    <Link key={account.id} href={`/?accountId=${account.id}&view=bill`} className="block px-4 py-4 hover:bg-slate-50">
+                    <Link key={account.id} href={`/?accountId=${account.id}&view=bill`} title={account.hoverTitle} className="block px-4 py-4 hover:bg-slate-50">
                       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
+                          <div className="truncate text-sm font-semibold text-slate-800" title={account.hoverTitle}>{account.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
                             <span>账单日 {dayLabel(account.billingDay)}</span>
@@ -319,12 +321,12 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                           ? "debt"
                           : "detail";
                     return (
-                      <Link key={account.id} href={`/?accountId=${account.id}&view=${detailView}`} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+                      <Link key={account.id} href={`/?accountId=${account.id}&view=${detailView}`} title={account.hoverTitle} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                           <Icon className="h-4 w-4" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
+                          <div className="truncate text-sm font-semibold text-slate-800" title={account.hoverTitle}>{account.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                             <span>{KIND_LABEL[account.kind] ?? account.kind}</span>
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>

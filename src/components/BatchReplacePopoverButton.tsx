@@ -12,6 +12,7 @@ export type BatchReplaceOption = {
   value: string;
   label: string;
   subLabel?: string;
+  title?: string;
   color?: string | null;
   isHeader?: boolean;
   isGroup?: boolean;
@@ -222,6 +223,7 @@ export function BatchReplacePopoverButton<Field extends string>({
                       id: option.value,
                       label: option.label,
                       subLabel: option.subLabel,
+                      title: option.title,
                       color: option.color,
                       isHeader: option.isHeader,
                       isGroup: option.isGroup,

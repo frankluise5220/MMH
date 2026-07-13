@@ -24,6 +24,7 @@ export type SmartSelectOption = {
   id: string;
   label: string;
   subLabel?: string;
+  title?: string;
   color?: string | null;
   isHeader?: boolean;
   isGroup?: boolean;
@@ -150,7 +151,7 @@ function stripIndent(label: string) {
 }
 
 function optionSearchText(option: SmartSelectOption) {
-  return `${stripIndent(option.label)} ${option.subLabel ?? ""}`.toLowerCase();
+  return `${stripIndent(option.label)} ${option.subLabel ?? ""} ${option.title ?? ""}`.toLowerCase();
 }
 
 function hasHierarchy(options: SmartSelectOption[]) {
@@ -451,7 +452,7 @@ export function SmartSelect(props: SmartSelectProps) {
     : undefined;
   const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : "";
   const selectedTitle = selectedOption
-    ? [selectedLabel, selectedOption.subLabel].filter(Boolean).join(" · ")
+    ? (selectedOption.title || [selectedLabel, selectedOption.subLabel].filter(Boolean).join(" · "))
     : (placeholder || "请选择");
   const groupChildCounts = useMemo(() => buildGroupChildCounts(effectiveOptions), [effectiveOptions]);
   const selectableOptions = useMemo(
@@ -892,6 +893,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     type="button"
                     role="option"
                     aria-selected={selected}
+                    title={option.title || stripIndent(option.label)}
                     onClick={() => {
                       if ((!selectableGroups || groupSelectOnDoubleClick) && hierarchy && collapsibleGroups) {
                         toggleGroup(option.id);
@@ -927,7 +929,7 @@ export function SmartSelect(props: SmartSelectProps) {
                         </>
                       ) : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate" title={stripIndent(option.label)}>{singleGridColumns ? stripIndent(option.label) : option.label}</span>
+                    <span className="min-w-0 flex-1 truncate" title={option.title || stripIndent(option.label)}>{singleGridColumns ? stripIndent(option.label) : option.label}</span>
                     {option.subLabel ? (
                       <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
                     ) : null}
@@ -944,6 +946,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   type="button"
                   role="option"
                   aria-selected={selected}
+                  title={option.title || optionLabel}
                   onClick={() => selectSingle(option.id)}
                   onMouseEnter={() => setFocusedIndex(index)}
                   className={singleGridColumns
@@ -954,7 +957,7 @@ export function SmartSelect(props: SmartSelectProps) {
                         index === focusedIndex ? "bg-blue-50" : ""
                       } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                 >
-                  <span className="min-w-0 flex-1 truncate" title={optionLabel}>{optionLabel}</span>
+                  <span className="min-w-0 flex-1 truncate" title={option.title || optionLabel}>{optionLabel}</span>
                   {option.subLabel ? (
                     <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
                   ) : null}

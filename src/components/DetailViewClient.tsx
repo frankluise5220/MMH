@@ -86,7 +86,7 @@ export type DetailEntry = {
 };
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-type DetailAccountOption = { id: string; label: string; kind?: string | null; debtDirection?: string | null };
+type DetailAccountOption = { id: string; label: string; title?: string | null; kind?: string | null; debtDirection?: string | null };
 
 /* Helpers */
 
@@ -673,10 +673,12 @@ export function DetailViewClient({
       label: "账户",
       width: 160,
       minWidth: 110,
-      filterText: (e: DetailEntry) => accountOptions.find((option) => option.id === e.accountId)?.label ?? e.accountName ?? "",
+      filterText: (e: DetailEntry) => accountOptionById.get(e.accountId ?? "")?.label ?? e.accountName ?? "",
       render: (e: DetailEntry) => {
-        const text = accountOptions.find((option) => option.id === e.accountId)?.label ?? e.accountName ?? "";
-        return <span className="block truncate text-slate-600" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
+        const option = accountOptionById.get(e.accountId ?? "");
+        const text = option?.label ?? e.accountName ?? "";
+        const title = option?.title ?? text;
+        return <span className="block truncate text-slate-600" title={title}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
     {
@@ -696,16 +698,21 @@ export function DetailViewClient({
       minWidth: 100,
       filterText: (e) => {
         const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccountLabel = accountOptions.find((a) => a.id === e.accountId)?.label ?? e.accountName;
-        const targetAccountLabel = e.toAccountId ? accountOptions.find((a) => a.id === e.toAccountId)?.label ?? e.toAccountName : null;
+        const sourceAccountLabel = accountOptionById.get(e.accountId ?? "")?.label ?? e.accountName;
+        const targetAccountLabel = e.toAccountId ? accountOptionById.get(e.toAccountId)?.label ?? e.toAccountName : null;
         return isToAccount ? sourceAccountLabel ?? "" : targetAccountLabel ?? "";
       },
       render: (e) => {
         const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccountLabel = accountOptions.find((a) => a.id === e.accountId)?.label ?? e.accountName;
-        const targetAccountLabel = e.toAccountId ? accountOptions.find((a) => a.id === e.toAccountId)?.label ?? e.toAccountName : null;
+        const sourceAccount = accountOptionById.get(e.accountId ?? "");
+        const targetAccount = e.toAccountId ? accountOptionById.get(e.toAccountId) : undefined;
+        const sourceAccountLabel = sourceAccount?.label ?? e.accountName;
+        const targetAccountLabel = e.toAccountId ? targetAccount?.label ?? e.toAccountName : null;
         const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
-        return <span className="block truncate text-slate-500" title={relatedAccountLabel ?? ""}>{relatedAccountLabel ?? <span className="text-slate-300">-</span>}</span>;
+        const relatedAccountTitle = isToAccount
+          ? (sourceAccount?.title ?? sourceAccountLabel ?? "")
+          : (targetAccount?.title ?? targetAccountLabel ?? "");
+        return <span className="block truncate text-slate-500" title={relatedAccountTitle}>{relatedAccountLabel ?? <span className="text-slate-300">-</span>}</span>;
       },
     },
     ...(showRunningBalance ? [{
@@ -893,7 +900,7 @@ export function DetailViewClient({
         );
       },
     },
-  ], [accountId, accountOptionById, accountOptions, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
+  ], [accountId, accountOptionById, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -903,10 +910,12 @@ export function DetailViewClient({
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
     </div>
   ) : undefined;
+  const tableResetKey = resetKey ?? `${accountId}:detail-table`;
 
   return (
     <AdvancedDataTable
       storageKey={storageKey}
+      resetKey={tableResetKey}
       columns={columns}
       rows={entries}
       rowKey={(entry) => entry.id}

@@ -35,6 +35,8 @@ import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { getFundArrivalDays, getFundConfirmDays, normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
@@ -55,7 +57,7 @@ import {
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
 import { debtActionLabel } from "@/lib/debt";
-import { isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getAccountFundUnitsDecimals, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
@@ -2880,6 +2882,8 @@ async function updateTransactionFromDialog(formData: FormData) {
   if (!amountAbs) return { ok: false as const, error: "金额不正确" };
 
   try {
+    const ctx = await getHouseholdScope();
+    const undo = await prepareEntryUndo(prisma, ctx.householdId, [entryId]);
     let investRecalcAccountId: string | null = null;
     let investRecalcFundCode: string | null = null;
     const touchedAccountIds = new Set<string>();
@@ -3090,6 +3094,7 @@ async function updateTransactionFromDialog(formData: FormData) {
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     if (type === "investment") revalidateAfterInvestChange();
     else revalidateAfterTxChange();
+    await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
     return { ok: true as const };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "保存失败";
@@ -3198,8 +3203,10 @@ export default async function Home({
         ? "detail"
         : params?.view === "investfund"
           ? "investfund"
-          : params?.view === "investmoney"
-            ? "investmoney"
+        : params?.view === "investmoney"
+          ? "investmoney"
+          : params?.view === "investwealth"
+            ? "investwealth"
             : params?.view === "regularinvest"
               ? "regularinvest"
               : params?.view === "debt"
@@ -3295,6 +3302,11 @@ export default async function Home({
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
+  const billAccountIds = selectedAccount && isBillAccount
+    ? await getCreditBillAccountIds(prisma, selectedAccount)
+    : [];
+  const billAccountIdSet = new Set(billAccountIds);
+  const billStorageAccountId = billAccountIds[0] ?? selectedAccount?.id ?? "";
   const isDebtAccount = selectedAccount?.kind === AccountKind.loan;
   const isInvestAccount = selectedAccount ? isPureInvestmentAccount(selectedAccount) : false;
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
@@ -3304,7 +3316,7 @@ export default async function Home({
     !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
       : viewParam
@@ -3316,7 +3328,7 @@ export default async function Home({
           : isInsuranceView
             ? "insurance"
           : isInvestAccount
-            ? (selectedAccount?.investProductType === "money" ? "investmoney" : "investfund")
+            ? getInvestmentAccountView(selectedAccount)
             : isOverview
               ? "overview"
               : "detail";
@@ -3325,9 +3337,12 @@ export default async function Home({
   const legacyNames = (() => {
     if (!selectedAccount) return [];
     const set = new Set<string>();
-    set.add(selectedAccount.name);
-    const inst = (selectedAccount.Institution?.name ?? "").trim();
-    if (inst) set.add(`${inst}·${selectedAccount.name}`);
+    const scopedAccounts = accounts.filter((account) => billAccountIdSet.has(account.id));
+    for (const account of scopedAccounts.length > 0 ? scopedAccounts : [selectedAccount]) {
+      set.add(account.name);
+      const inst = (account.Institution?.name ?? "").trim();
+      if (inst) set.add(`${inst}·${account.name}`);
+    }
     return [...set].filter(Boolean);
   })();
 
@@ -3683,6 +3698,8 @@ export default async function Home({
       name: a.name,
       kind: a.kind,
       label: display.selectorLabel,
+      title: display.hoverTitle,
+      hoverTitle: display.hoverTitle,
       groupId: a.groupId ?? "",
       groupName: a.AccountGroup?.name ?? "",
       institutionName: display.institutionName,
@@ -3697,7 +3714,7 @@ export default async function Home({
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; debtDirection?: string | null; institutionId?: string | null; currency?: string | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; debtDirection?: string | null; institutionId?: string | null; currency?: string | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -3729,6 +3746,7 @@ export default async function Home({
         id: a.id,
         label: a.label,
         subLabel: joinSSSubLabel([a.groupName, a.institutionName, a.subLabel]),
+        title: a.hoverTitle,
         parentId: `group:${a.groupId}`,
         kind: a.kind,
         investProductType: a.investProductType ?? null,
@@ -3742,6 +3760,7 @@ export default async function Home({
       id: a.id,
       label: a.label,
       subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      title: a.hoverTitle,
       kind: a.kind,
       investProductType: a.investProductType ?? null,
       debtDirection: a.debtDirection ?? null,
@@ -3770,6 +3789,8 @@ export default async function Home({
         name: a.name,
         kind: a.kind,
         label: display.selectorLabel,
+        title: display.hoverTitle,
+        hoverTitle: display.hoverTitle,
         groupId: a.groupId ?? "",
         groupName: a.AccountGroup?.name ?? "",
         institutionId: a.institutionId ?? "",
@@ -3798,6 +3819,8 @@ export default async function Home({
         name: a.name,
         kind: a.kind,
         label: display.selectorLabel,
+        title: display.hoverTitle,
+        hoverTitle: display.hoverTitle,
         groupId: a.groupId ?? "",
         groupName: a.AccountGroup?.name ?? "",
         institutionId: a.institutionId ?? "",
@@ -3861,6 +3884,8 @@ export default async function Home({
       kind: a.kind,
       institutionId: a.institutionId || null,
       label: a.label,
+      title: a.hoverTitle,
+      hoverTitle: a.hoverTitle,
       subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
       currency: a.currency,
     }));
@@ -3873,6 +3898,8 @@ export default async function Home({
       institutionId: a.institutionId || null,
       investProductType: a.investProductType ?? null,
       label: a.label,
+      title: a.hoverTitle,
+      hoverTitle: a.hoverTitle,
       subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
       currency: a.currency,
     }));
@@ -4690,8 +4717,8 @@ export default async function Home({
   const billScope = selectedAccount
     ? {
         OR: [
-          { accountId: selectedAccount.id },
-          { toAccountId: selectedAccount.id },
+          { accountId: { in: billAccountIds } },
+          { toAccountId: { in: billAccountIds } },
           ...legacyNames.map((n) => ({ accountName: n })),
         ],
       }
@@ -4702,13 +4729,13 @@ export default async function Home({
   const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 6, 12, 13, 0, 0));
   const persistedCyclesInitial = isBillAccount && selectedAccount
     ? await prisma.creditCardCycle.findMany({
-        where: { accountId: selectedAccount.id },
+        where: { accountId: billStorageAccountId },
         orderBy: { statementMonth: "desc" },
       })
     : [];
   const billOverrides = isBillAccount && selectedAccount
     ? await prisma.billOverride.findMany({
-        where: { accountId: selectedAccount.id },
+        where: { accountId: billStorageAccountId },
         orderBy: { statementMonth: "desc" },
       })
     : [];
@@ -4834,20 +4861,20 @@ export default async function Home({
           };
           const repaymentMatch = {
             amount: { lt: 0 },
-            toAccountId: selectedAccount.id,
+            toAccountId: { in: billAccountIds },
             type: TransactionType.transfer,
             deletedAt: null,
             date: { gte: addDaysUtc(end, 1), lt: addDaysUtc(repayEnd, 1) },
           };
           const cycleTransferInMatch = {
-            toAccountId: selectedAccount.id,
+            toAccountId: { in: billAccountIds },
             amount: { lt: 0 },
             type: TransactionType.transfer,
             deletedAt: null,
             date: { gte: start, lt: addDaysUtc(end, 1) },
           };
           const cycleTransferOutMatch = {
-            accountId: selectedAccount.id,
+            accountId: { in: billAccountIds },
             amount: { lt: 0 },
             type: TransactionType.transfer,
             deletedAt: null,
@@ -5076,13 +5103,13 @@ export default async function Home({
                     },
                     {
                       type: TransactionType.transfer,
-                      toAccountId: selectedAccount.id,
+                      toAccountId: { in: billAccountIds },
                       amount: { lt: 0 },
                       date: { gte: rangeStart, lt: rangeEndExclusive },
                     },
                     {
                       type: TransactionType.transfer,
-                      accountId: selectedAccount.id,
+                      accountId: { in: billAccountIds },
                       amount: { lt: 0 },
                       OR: [
                         { statementMonth: { in: statementMonths } },
@@ -5140,7 +5167,7 @@ export default async function Home({
 
       if (
         row.type === TransactionType.transfer &&
-        row.toAccountId === selectedAccount?.id &&
+        billAccountIdSet.has(row.toAccountId ?? "") &&
         amount < 0
       ) {
         const month = findMonthByDate(row.date);
@@ -5151,7 +5178,7 @@ export default async function Home({
 
       if (
         row.type === TransactionType.transfer &&
-        row.accountId === selectedAccount?.id &&
+        billAccountIdSet.has(row.accountId) &&
         amount < 0
       ) {
         const explicitMonth = row.statementMonth && cycleByMonth.has(row.statementMonth)
@@ -5297,12 +5324,12 @@ export default async function Home({
   if (creditCycleCacheStale && isBillAccount && selectedAccount) {
     await prisma.$transaction(async (tx) => {
       await tx.creditCardCycle.deleteMany({
-        where: { accountId: selectedAccount.id },
+        where: { accountId: billStorageAccountId },
       });
       if (creditCardCyclePersistRows.length === 0) return;
       await tx.creditCardCycle.createMany({
         data: creditCardCyclePersistRows.map((row) => ({
-          accountId: selectedAccount.id,
+          accountId: billStorageAccountId,
           statementMonth: row.statementMonth,
           periodStart: row.periodStart,
           periodEnd: row.periodEnd,
@@ -5408,7 +5435,7 @@ export default async function Home({
             postedAt: toDateOnlyLocalOrNull(e.postedAt),
             createdAt: toIsoOrNull(e.createdAt),
             dayOrder: e.dayOrder ?? 0,
-            amount: toNumber(e.type === TransactionType.transfer && !!selectedAccount?.id && e.toAccountId === selectedAccount.id ? Math.abs(toNumber(e.amount)) : e.amount),
+            amount: toNumber(e.type === TransactionType.transfer && billAccountIdSet.has(e.toAccountId ?? "") ? Math.abs(toNumber(e.amount)) : e.amount),
             runningBalance: null,
             type: e.type,
             categoryId: e.categoryId,
@@ -5477,9 +5504,20 @@ export default async function Home({
   const investmoneyData = view === "investmoney" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
+  const investwealthData = view === "investwealth" && accountId
+    ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
+    : null;
   const investfundData = view === "investfund" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
+  const currentInvestData =
+    view === "investfund"
+      ? investfundData
+      : view === "investmoney"
+        ? investmoneyData
+        : view === "investwealth"
+          ? investwealthData
+          : null;
 
   // 定投计划数据加载
   const regularInvestData = viewParam === "regularinvest" && accountId && selectedAccount
@@ -6204,10 +6242,8 @@ export default async function Home({
                 </span>
               ) : !selectedAccount ? (
                 <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
-              ) : view === "investmoney" && investmoneyData ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(investmoneyData.totalMarketValue)}`}>{formatMoney(investmoneyData.totalMarketValue)}</span>
-              ) : view === "investfund" && investfundData ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(investfundData.totalMarketValue)}`}>{formatMoney(investfundData.totalMarketValue)}</span>
+              ) : currentInvestData ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(currentInvestData.totalMarketValue)}`}>{formatMoney(currentInvestData.totalMarketValue)}</span>
               ) : view === "deposit" && selectedAccount ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(depositViewBalance)}`}>{formatMoney(depositViewBalance)}</span>
               ) : (
@@ -6226,8 +6262,14 @@ export default async function Home({
                 defaultAction={
                   isDepositView
                     ? "deposit"
-                    : (view === "investfund" || view === "investmoney")
-                      ? (selectedAccount?.investProductType === "metal" ? "metal" : "investment")
+                    : currentInvestData
+                      ? (
+                          selectedAccount?.investProductType === "metal"
+                            ? "metal"
+                            : selectedAccount?.investProductType === "wealth"
+                              ? "wealth"
+                              : "investment"
+                        )
                       : view === "regularinvest"
                         ? "regular-task"
                         : view === "debt"
@@ -6291,9 +6333,9 @@ export default async function Home({
                 accountId={defaultInvestmentCreateAccountId}
                 accountProductType={selectedAccount && isPureInvestmentAccount(selectedAccount) ? selectedAccount.investProductType ?? null : null}
                 defaults={{
-                  fundCode: (view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode ?? undefined,
-                  fundName: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.name ?? undefined,
-                  fundUnits: (view === "investfund" ? investfundData : investmoneyData)?.positions.find(p => p.fundCode === ((view === "investfund" ? investfundData : investmoneyData)?.selectedFundCode))?.units ?? undefined,
+                  fundCode: currentInvestData?.selectedFundCode ?? undefined,
+                  fundName: currentInvestData?.positions.find(p => p.fundCode === currentInvestData?.selectedFundCode)?.name ?? undefined,
+                  fundUnits: currentInvestData?.positions.find(p => p.fundCode === currentInvestData?.selectedFundCode)?.units ?? undefined,
                 }}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
@@ -6302,8 +6344,8 @@ export default async function Home({
                 metalTypes={metalTypes}
                 metalUnits={metalUnits}
                 nestedFieldData={nestedFieldData}
-                holdings={(view === "investfund" ? investfundData : investmoneyData)?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
-                allEntries={(view === "investfund" ? investfundData : investmoneyData)?.allEntries.map(e => ({
+                holdings={currentInvestData?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
+                allEntries={currentInvestData?.allEntries.map(e => ({
                   id: e.id,
                   date: toYmdOrNull(e.date) ?? "",
                   createdAt: toIsoOrNull(e.createdAt),
@@ -6621,6 +6663,40 @@ export default async function Home({
               isRedUp={isRedUp}
               fundUnitsDecimals={fundUnitsDecimals}
             />
+          ) : view === "investwealth" && investwealthData ? (
+            <FundShell
+              key={`investwealth-${accountId}`}
+              view="investwealth"
+              initialFundCode={investwealthData.selectedFundCode}
+              positions={investwealthData.positions}
+              clearedPositions={investwealthData.clearedPositions}
+              allEntries={JSON.parse(JSON.stringify(investwealthData.allEntries))}
+              totalMarketValue={investwealthData.totalMarketValue}
+              totalCost={investwealthData.totalCost}
+              totalHistoricalProfit={investwealthData.totalHistoricalProfit}
+              confirmDaysMap={investwealthData.confirmDaysMap}
+              feeRateMap={investwealthData.feeRateMap}
+              initialShowCleared={showCleared}
+              baseQuery={baseQuery.toString()}
+              accountId={accountId}
+              selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
+              selectedAccountLabel={selectedAccountLabel}
+              accountOptions={accountOptions}
+              cashAccounts={cashAccountList}
+              investmentAccounts={investmentAccountList}
+              cashAccountSSOptions={cashAccountSSOptions}
+              investmentAccountSSOptions={investmentAccountSSOptions}
+              metalTypes={metalTypes}
+              metalUnits={metalUnits}
+              nestedFieldData={nestedFieldData}
+              createAction={createTransaction}
+              editAction={editInvestment}
+              fillNavAction={fillFundNavFromCache}
+              regularInvestFormAction={regularInvestFormAction}
+              lastUsedCashAccount={lastUsedCashAccount}
+              isRedUp={isRedUp}
+              fundUnitsDecimals={fundUnitsDecimals}
+            />
           ) : view === "investfund" && investfundData ? (
             <FundShell
               key={`investfund-${accountId}`}
@@ -6669,7 +6745,7 @@ export default async function Home({
                   initialDetailAll={detailAll}
                   normalExportHref={normalExportHref}
                   normalExportFilename={normalExportFilename}
-                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label }))}
+                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, title: a.hoverTitle }))}
                   categoryOptions={categoryBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                   compactRows={selectedAccount?.kind === AccountKind.bank_debit}

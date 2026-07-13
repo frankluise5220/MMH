@@ -6,6 +6,8 @@ export type AccountKindLike = {
 
 export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "debt";
 
+export type InvestmentAccountView = "investfund" | "investmoney" | "investwealth";
+
 
 export function isLegacyDepositAccount(account: AccountKindLike) {
   return account.kind === "investment" && account.investProductType === "deposit";
@@ -17,6 +19,12 @@ export function isDepositAccount(account: AccountKindLike) {
 
 export function isPureInvestmentAccount(account: AccountKindLike) {
   return account.kind === "investment" && account.investProductType !== "deposit";
+}
+
+export function getInvestmentAccountView(account: Pick<AccountKindLike, "investProductType"> | null | undefined): InvestmentAccountView {
+  if (account?.investProductType === "money") return "investmoney";
+  if (account?.investProductType === "wealth") return "investwealth";
+  return "investfund";
 }
 
 export function isInsuranceAccount(account: AccountKindLike) {
