@@ -7,6 +7,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const dynamic = "force-dynamic";
@@ -24,9 +25,9 @@ function amountClass(value: number, intent: "payable" | "receivable" | "neutral"
   return value > 0 ? "text-slate-900" : "text-slate-500";
 }
 
-function directionOf(account: { kind: AccountKind; balance: unknown }): "payable" | "receivable" {
-  if (account.kind === AccountKind.bank_credit) return "payable";
-  return toNumber(account.balance) >= 0 ? "receivable" : "payable";
+function directionOf(kind: AccountKind, balance: number): "payable" | "receivable" {
+  if (kind === AccountKind.bank_credit) return "payable";
+  return balance >= 0 ? "receivable" : "payable";
 }
 
 function kindLabel(kind: AccountKind) {
@@ -53,9 +54,36 @@ export default async function LiabilitiesPage() {
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
+  const loanDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+    accounts
+      .filter((account) => account.kind === AccountKind.loan)
+      .map((account) => ({
+        id: account.id,
+        kind: account.kind,
+        investProductType: account.investProductType,
+        billingDay: account.billingDay,
+      })),
+    hidFilter,
+  );
+  const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id);
+  const currentCreditCycles = creditIds.length > 0
+    ? await prisma.creditCardCycle.findMany({
+        where: { accountId: { in: creditIds }, isCurrentCycle: true },
+        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+      })
+    : [];
+  const currentCreditBalanceByAccountId = new Map(
+    currentCreditCycles.map((cycle) => [
+      cycle.accountId,
+      toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+    ]),
+  );
+
   const rows = accounts.map((account) => {
-    const direction = directionOf(account);
-    const balance = toNumber(account.balance);
+    const balance = account.kind === AccountKind.bank_credit
+      ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
+      : loanDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+    const direction = directionOf(account.kind, balance);
     const amount = Math.abs(balance);
     const display = buildAccountDisplayOption({
       id: account.id,

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { formatMoney } from "@/lib/format";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
 import Link from "next/link";
@@ -23,7 +24,17 @@ export default async function AssetsPage() {
     orderBy: [{ name: "asc" }],
   });
 
-  const total = accounts.reduce((sum, account) => sum + Number(account.balance), 0);
+  const displayBalanceByAccountId = await computeAccountDisplayBalances(
+    accounts.map((account) => ({
+      id: account.id,
+      kind: account.kind,
+      investProductType: account.investProductType,
+      billingDay: account.billingDay,
+    })),
+    hidFilter,
+  );
+
+  const total = accounts.reduce((sum, account) => sum + (displayBalanceByAccountId.get(account.id) ?? Number(account.balance)), 0);
 
 
   return (
@@ -47,7 +58,7 @@ export default async function AssetsPage() {
 
       <div className="space-y-3">
         {accounts.map(a => {
-          const bal = Number(a.balance);
+          const bal = displayBalanceByAccountId.get(a.id) ?? Number(a.balance);
           const instLabel = a.Institution?.name?.trim() || "";
           const prefix = instLabel ? `${instLabel}·` : "";
           return (

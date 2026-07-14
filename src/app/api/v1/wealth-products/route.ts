@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 
 export const runtime = "nodejs";
 
@@ -63,14 +64,15 @@ export async function GET(req: NextRequest) {
  * Body:
  * - name: string
  * - shortName?: string
- * - institutionId?: string
+ * - cashAccountId: string
+ * - wealthAccountId?: string
  * - currency?: string
  * - annualRate?: number
  * - termDays?: number
  * - note?: string
  *
  * Response:
- * - { ok: true, product }
+ * - { ok: true, product, wealthAccount }
  */
 export async function POST(req: NextRequest) {
   try {
@@ -78,35 +80,40 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const name = String(body.name ?? "").trim();
     const shortName = String(body.shortName ?? "").trim() || null;
-    const institutionId = String(body.institutionId ?? "").trim() || null;
+    const cashAccountId = String(body.cashAccountId ?? "").trim();
+    const requestedWealthAccountId = String(body.wealthAccountId ?? "").trim() || null;
     const currency = normalizeCurrency(body.currency);
     const annualRate = parsePositiveNumber(body.annualRate);
     const termDays = parsePositiveNumber(body.termDays);
     const note = String(body.note ?? "").trim() || null;
 
     if (!name) return NextResponse.json({ ok: false, error: "产品名称必填" }, { status: 400 });
+    if (!cashAccountId) return NextResponse.json({ ok: false, error: "请选择资金来源账户" }, { status: 400 });
 
-    if (institutionId) {
-      const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
-      if (!institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
-    }
-
-    const existing = await prisma.wealthProduct.findFirst({
-      where: { householdId, institutionId, name },
-      include: { Institution: { select: { id: true, name: true, shortName: true } } },
-    });
-    const product = existing ?? await prisma.wealthProduct.create({
-      data: {
+    const { product, wealthAccount } = await prisma.$transaction(async (tx) => {
+      const resolvedAccount = await resolveOrCreateWealthAccount(tx, {
         householdId,
-        name,
-        shortName,
-        institutionId,
-        currency,
-        annualRate,
-        termDays: termDays == null ? null : Math.round(termDays),
-        note,
-      },
-      include: { Institution: { select: { id: true, name: true, shortName: true } } },
+        cashAccountId,
+        requestedAccountId: requestedWealthAccountId,
+      });
+      const existing = await tx.wealthProduct.findFirst({
+        where: { householdId, institutionId: resolvedAccount.institutionId, name },
+        include: { Institution: { select: { id: true, name: true, shortName: true } } },
+      });
+      const resolvedProduct = existing ?? await tx.wealthProduct.create({
+        data: {
+          householdId,
+          name,
+          shortName,
+          institutionId: resolvedAccount.institutionId,
+          currency: currency || resolvedAccount.currency,
+          annualRate,
+          termDays: termDays == null ? null : Math.round(termDays),
+          note,
+        },
+        include: { Institution: { select: { id: true, name: true, shortName: true } } },
+      });
+      return { product: resolvedProduct, wealthAccount: resolvedAccount };
     });
 
     return NextResponse.json({
@@ -121,6 +128,19 @@ export async function POST(req: NextRequest) {
         annualRate: product.annualRate == null ? null : Number(product.annualRate),
         termDays: product.termDays,
         note: product.note,
+      },
+      wealthAccount: {
+        id: wealthAccount.id,
+        name: wealthAccount.name,
+        kind: wealthAccount.kind,
+        investProductType: wealthAccount.investProductType,
+        groupId: wealthAccount.groupId,
+        groupName: wealthAccount.AccountGroup?.name ?? "",
+        institutionId: wealthAccount.institutionId,
+        institutionName: wealthAccount.Institution?.name ?? "",
+        institutionShortName: wealthAccount.Institution?.shortName ?? "",
+        institutionType: wealthAccount.Institution?.type ?? "",
+        currency: wealthAccount.currency,
       },
     });
   } catch (error) {

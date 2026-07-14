@@ -3,7 +3,6 @@
 import { ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
@@ -20,6 +19,7 @@ import {
   summarizeCreditCardInstallments,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
+import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
 type DebtTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
@@ -194,7 +194,6 @@ export function TransactionFormModal({
   nestedFieldData?: NestedFieldData;
   hideTrigger?: boolean;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
   const [submitting, setSubmitting] = useState(false);
@@ -202,6 +201,7 @@ export function TransactionFormModal({
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
+  const [editOriginalTransferAccounts, setEditOriginalTransferAccounts] = useState<{ fromAccountId: string; toAccountId: string } | null>(null);
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
@@ -443,6 +443,10 @@ export function TransactionFormModal({
     }
     return sortOptionsByRecent(base, recentAccountIds);
   }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
+  const incomeExpenseInstitutionOptions = useMemo(
+    () => filterIncomeExpenseInstitutions(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []),
+    [localNestedFieldData, nestedFieldData],
+  );
   const compactAccountSelectBehavior = useMemo(() => ({
     density: "compact" as const,
     dropdownMaxHeight: 320,
@@ -599,6 +603,7 @@ export function TransactionFormModal({
     setEditEntryId(null);
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
+    setEditOriginalTransferAccounts(null);
     setFromAccountIdEdited(false);
   }
   useCloseOnNavigation(open, () => {
@@ -615,6 +620,7 @@ export function TransactionFormModal({
     setEditEntryId(null);
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
+    setEditOriginalTransferAccounts(null);
     if (txType === "transfer" && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
@@ -625,6 +631,13 @@ export function TransactionFormModal({
     const prevTo = toAccountId;
     setFromAccountId(prevTo);
     setToAccountId(prevFrom);
+  }
+
+  function switchType(nextType: TxType) {
+    setTxType(nextType);
+    if (nextType === "expense" && editEntryOriginalType === "transfer" && editOriginalTransferAccounts?.toAccountId) {
+      setAccountId(editOriginalTransferAccounts.toAccountId);
+    }
   }
 
   useEffect(() => {
@@ -744,6 +757,7 @@ export function TransactionFormModal({
         setCategoryId("");
         setFromAccountId(nextFromAccountId);
         setToAccountId(nextToAccountId);
+        setEditOriginalTransferAccounts({ fromAccountId: nextFromAccountId, toAccountId: nextToAccountId });
         setFromAccountIdEdited(true);
       } else {
         const nextAccountId = detail.accountId ?? (defaultAccountId ?? "");
@@ -761,6 +775,7 @@ export function TransactionFormModal({
         setCategoryId(detail.categoryId ?? "");
         setFromAccountId("");
         setToAccountId(detail.toAccountId ?? "");
+        setEditOriginalTransferAccounts(null);
         setFromAccountIdEdited(false);
       }
     }
@@ -820,7 +835,6 @@ export function TransactionFormModal({
           }
           requestAnimationFrame(() => {
             dispatchFinanceDataChanged({ reason: "transaction-save" });
-            setTimeout(() => router.refresh(), 120);
           });
           resetDraft();
         } catch (err) {
@@ -890,7 +904,6 @@ export function TransactionFormModal({
       }
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "transaction-save" });
-        setTimeout(() => router.refresh(), 120);
       });
       if (submitModeRef.current === "repeat" && !editEntryId) {
         repeatDraft();
@@ -951,7 +964,7 @@ export function TransactionFormModal({
                   <>
                     <button
                       type="button"
-                      onClick={() => setTxType("expense")}
+                      onClick={() => switchType("expense")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "expense"
                           ? "segment-button-active"
@@ -959,6 +972,28 @@ export function TransactionFormModal({
                       }`}
                     >
                       支出
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => switchType("income")}
+                      className={`segment-button h-9 flex-1 ${
+                        txType === "income"
+                          ? "segment-button-active"
+                          : ""
+                      }`}
+                    >
+                      收入
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => switchType("advance")}
+                      className={`segment-button h-9 flex-1 ${
+                        txType === "advance"
+                          ? "segment-button-active"
+                          : ""
+                      }`}
+                    >
+                      代付
                     </button>
                     <button
                       type="button"
@@ -992,7 +1027,7 @@ export function TransactionFormModal({
                   <>
                     <button
                       type="button"
-                      onClick={() => setTxType("expense")}
+                      onClick={() => switchType("expense")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "expense"
                           ? "segment-button-active"
@@ -1003,7 +1038,7 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTxType("income")}
+                      onClick={() => switchType("income")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "income"
                           ? "segment-button-active"
@@ -1014,7 +1049,7 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTxType("advance")}
+                      onClick={() => switchType("advance")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "advance"
                           ? "segment-button-active"
@@ -1212,7 +1247,9 @@ export function TransactionFormModal({
                           mode="single"
                           value={counterpartyInstitutionId}
                           onChange={setCounterpartyInstitutionId}
-                          options={((txType === "advance" ? localNestedFieldData?.counterpartyId : localNestedFieldData?.institutionId) ?? [])
+                          options={(txType === "advance"
+                            ? ((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
+                            : incomeExpenseInstitutionOptions)
                             .filter((item) => txType !== "advance" || COUNTERPARTY_TYPES.has(item.type ?? "other"))
                             .map((item) => ({ id: item.id, label: item.name }))}
                           placeholder={txType === "advance" ? "请选择" : "可选"}
@@ -1240,7 +1277,7 @@ export function TransactionFormModal({
                           }}
                           className="h-4 w-4 accent-slate-800"
                         />
-                        分期
+                        消费分期
                       </label>
                       {createInstallment ? (
                         <>
@@ -1307,7 +1344,7 @@ export function TransactionFormModal({
                         mode="single"
                         value={counterpartyInstitutionId}
                         onChange={setCounterpartyInstitutionId}
-                        options={(localNestedFieldData?.institutionId ?? []).map((item) => ({ id: item.id, label: item.name }))}
+                        options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
                         placeholder="可选"
                         createLabel="新增往来对象"
                         searchable
@@ -1343,7 +1380,7 @@ export function TransactionFormModal({
                         mode="single"
                         value={counterpartyInstitutionId}
                         onChange={setCounterpartyInstitutionId}
-                        options={(localNestedFieldData?.institutionId ?? []).map((item) => ({ id: item.id, label: item.name }))}
+                        options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
                         placeholder="可选"
                         onCreateClick={() => setInstitutionNestedOpen(true)}
                         createLabel="新增收支机构"
@@ -1535,22 +1572,20 @@ export function TransactionFormModal({
         entityType="institution"
         open={institutionNestedOpen}
         onClose={() => setInstitutionNestedOpen(false)}
-        defaultType="other"
+        defaultType="payment"
         title="新增收支机构"
         nameLabel="机构名称"
-        namePlaceholder="例如：支付宝、工商银行、某商户"
-        allowedInstitutionTypes={["bank", "insurance", "brokerage", "payment", "ewallet", "organization", "other"]}
-        existingNames={(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []).map((item) => item.name)}
+        namePlaceholder="例如：支付宝、微信支付、工商银行"
+        allowedInstitutionTypes={["bank", "payment", "ewallet"]}
+        existingNames={incomeExpenseInstitutionOptions.map((item) => item.name)}
         onCreated={(id, name, extra) => {
-          const next = { id, name, type: extra?.type ?? "other" };
+          const next = { id, name, type: extra?.type ?? "payment" };
           setLocalNestedFieldData((prev) => {
             const base = prev ?? nestedFieldData ?? {};
             return {
               ...base,
               institutionId: [...(base.institutionId ?? []), next],
-              counterpartyId: COUNTERPARTY_TYPES.has(next.type ?? "")
-                ? [...(base.counterpartyId ?? []), next]
-                : base.counterpartyId ?? [],
+              counterpartyId: base.counterpartyId ?? [],
             };
           });
           setCounterpartyInstitutionId(id);

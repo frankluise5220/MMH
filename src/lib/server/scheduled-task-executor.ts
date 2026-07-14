@@ -1,4 +1,4 @@
-import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type Account, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
+import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
@@ -13,8 +13,9 @@ import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
-type AccountRef = Pick<Account, "id" | "name">;
 type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
 
 export type NonFundScheduledTaskResult = {
@@ -67,9 +68,9 @@ function makeNextRunDate(plan: RegularInvestPlan, fromDate: Date) {
 
 async function loadTaskAccounts(plan: RegularInvestPlan) {
   const [targetAcc, cashAcc] = await Promise.all([
-    prisma.account.findUnique({ where: { id: plan.accountId }, select: { id: true, name: true } }),
+    prisma.account.findUnique({ where: { id: plan.accountId }, select: { id: true, name: true, kind: true } }),
     plan.cashAccountId
-      ? prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
+      ? prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true, kind: true } })
       : Promise.resolve(null),
   ]);
   return { targetAcc, cashAcc };
@@ -263,6 +264,13 @@ export async function executeNonFundScheduledTaskPlan(params: {
         }) ?? rollingScheduledAmount
       )
     : amountNum;
+  const repaymentCategory = task.type === "transfer" && isCreditCardRepaymentTransfer({
+    type: TransactionType.transfer,
+    accountKind: cashAcc.kind,
+    toAccountKind: targetAcc.kind,
+  })
+    ? await resolveCreditCardRepaymentCategory(prisma, householdId)
+    : null;
   const affectedAccountIds = new Set<string>([cashAcc.id, targetAcc.id]);
   await prisma.$transaction(async (tx) => {
     for (const [runIndex, runDate] of datesToProcess.entries()) {
@@ -337,6 +345,8 @@ export async function executeNonFundScheduledTaskPlan(params: {
             toAccountId: targetAcc.id,
             toAccountName: targetAcc.name,
             amount: -amountNum,
+            categoryId: repaymentCategory?.id ?? null,
+            categoryName: repaymentCategory?.name ?? null,
             source: "scheduled_task",
             regularInvestPlanId: plan.id,
             note: getTaskNote(task.type),

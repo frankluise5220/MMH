@@ -3,6 +3,13 @@ import { toNumber } from "@/lib/date-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { isInsuranceRefund } from "@/lib/insurance/transaction";
 
+function localDateKey(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export async function computeInsuranceAccountDisplayBalances(
   accountIds: string[],
   hidFilter?: { householdId?: string },
@@ -44,6 +51,7 @@ export async function computeInsuranceAccountDisplayBalances(
       insuranceProductId: { in: Array.from(balanceProductIds) },
     },
     select: {
+      date: true,
       accountId: true,
       toAccountId: true,
       amount: true,
@@ -53,8 +61,10 @@ export async function computeInsuranceAccountDisplayBalances(
     },
   });
 
+  const todayKey = localDateKey(new Date());
   const productAccountIdById = new Map(products.map((product) => [product.id, product.accountId]));
   for (const entry of entries) {
+    if (localDateKey(entry.date) > todayKey) continue;
     const productId = entry.insuranceProductId ?? "";
     const accountId = productAccountIdById.get(productId);
     if (!accountId) continue;

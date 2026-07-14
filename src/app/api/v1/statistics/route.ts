@@ -7,6 +7,7 @@ import { toNumber } from "@/lib/date-utils";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
+    const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
 
     const accountFilter = selectedAccountIds
       ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
@@ -97,6 +99,8 @@ export async function GET(req: NextRequest) {
         date: true,
         type: true,
         amount: true,
+        source: true,
+        insuranceAction: true,
         fundSubtype: true,
         fundProductType: true,
         fundCode: true,
@@ -156,6 +160,11 @@ export async function GET(req: NextRequest) {
           expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
         }
       } else if (e.type === TransactionType.transfer) {
+        if (isCreditCardRepaymentTransfer({
+          type: e.type,
+          accountKind: accountKindById.get(e.accountId),
+          toAccountKind: accountKindById.get(e.toAccountId ?? ""),
+        })) continue;
         if (isToSelf && !isFromSelf) {
           row.income += Math.abs(amount);
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
@@ -172,6 +181,26 @@ export async function GET(req: NextRequest) {
           }
         }
       } else if (e.type === TransactionType.investment) {
+        if (e.source === "insurance") {
+          const effectiveAmount = Math.abs(amount);
+          const isRefund = e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
+          if (isRefund) {
+            row.income += effectiveAmount;
+            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: "保险回款" }), effectiveAmount);
+            for (const et of e.EntryTag) {
+              const existing = incomeByTag.get(et.tagId);
+              incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
+            }
+          } else {
+            row.expense += effectiveAmount;
+            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: "保险支出" }), effectiveAmount);
+            for (const et of e.EntryTag) {
+              const existing = expenseByTag.get(et.tagId);
+              expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
+            }
+          }
+          continue;
+        }
         for (const item of getInvestmentStatisticItems(e)) {
           const signedProfit = item.type === "income" ? item.amount : -item.amount;
           row.investPnL += signedProfit;

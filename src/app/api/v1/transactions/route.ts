@@ -44,6 +44,7 @@ export async function GET(req: Request) {
     include: {
       account: { include: { Institution: { select: { name: true } } } },
       toAccount: { include: { Institution: { select: { name: true } } } },
+      CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: limit,
@@ -72,6 +73,8 @@ export async function GET(req: Request) {
     installmentPrincipal: e.installmentPrincipal,
     installmentInterest: e.installmentInterest,
     installmentRole: e.installmentRole,
+    installmentSourceType: e.CreditCardInstallmentPlan?.sourceType ?? null,
+    installmentSourceStatementMonth: e.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
     counterparty: null,
     sourceText: null,
   }));

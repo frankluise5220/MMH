@@ -8,6 +8,8 @@ import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { toStatementMonth } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { RegularInvestClient } from "./RegularInvestClient";
+import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 async function unavailableCreateTransaction(_formData: FormData) {
   "use server";
@@ -53,6 +55,13 @@ async function updateScheduledTransferRecord(formData: FormData) {
         (toAcc.kind === AccountKind.bank_credit || toAcc.kind === AccountKind.loan) && toAcc.billingDay
           ? toStatementMonth(date, toAcc.billingDay)
           : null;
+      const repaymentCategory = isCreditCardRepaymentTransfer({
+        type: TransactionType.transfer,
+        accountKind: fromAcc.kind,
+        toAccountKind: toAcc.kind,
+      })
+        ? await resolveCreditCardRepaymentCategory(tx, householdId)
+        : null;
 
       const updated = await tx.txRecord.update({
         where: { id: entryId },
@@ -64,8 +73,8 @@ async function updateScheduledTransferRecord(formData: FormData) {
           accountName: fromAcc.name,
           toAccountId: toAcc.id,
           toAccountName: toAcc.name,
-          categoryId: null,
-          categoryName: null,
+          categoryId: repaymentCategory?.id ?? null,
+          categoryName: repaymentCategory?.name ?? null,
           statementMonth,
           note: note || null,
           toNote: (toNote || note) || null,

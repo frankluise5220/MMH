@@ -158,8 +158,10 @@ function canImportItem(item: ParsedItem) {
 }
 
 export function CreditBillMailImportButton({
+  accountId,
   accountName,
 }: {
+  accountId?: string;
   accountName: string;
 }) {
   const router = useRouter();
@@ -183,6 +185,7 @@ export function CreditBillMailImportButton({
   const [parsed, setParsed] = useState<ParseState | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewSelectedKeys, setPreviewSelectedKeys] = useState<Set<number>>(new Set());
+  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountText: string } | null>(null);
 
   const importableItems = useMemo(
     () => parsed?.items.filter(canImportItem) ?? [],
@@ -345,6 +348,7 @@ export function CreditBillMailImportButton({
     setPreviewSelectedKeys(new Set());
     setError("");
     setInfo(mail.imported ? "这封账单邮件已经导入过，本次仍可重新预览并再次导入。" : "");
+    setImportComplete(null);
     setParsed(null);
     try {
       const fetchRes = await fetch("/api/v1/email/imap/fetch", {
@@ -378,8 +382,9 @@ export function CreditBillMailImportButton({
   }
 
   function openImportPreview() {
-    if (!parsed || importableItems.length === 0 || importing) return;
+    if (!parsed || importableItems.length === 0 || importing || importComplete) return;
     setError("");
+    setImportComplete(null);
     setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => row.key)));
     setPreviewOpen(true);
   }
@@ -423,7 +428,7 @@ export function CreditBillMailImportButton({
   }
 
   async function importParsed() {
-    if (!parsed || selectedPreviewItems.length === 0 || importing) return;
+    if (!parsed || selectedPreviewItems.length === 0 || importing || importComplete) return;
     setImporting(true);
     setError("");
     setInfo("");
@@ -456,16 +461,15 @@ export function CreditBillMailImportButton({
       if (skippedCount > 0) {
         setError(firstError ? `有 ${skippedCount} 条未导入：${firstError}` : `有 ${skippedCount} 条未导入，请检查账户匹配。`);
       }
-      setInfo(`${tf("creditBill.importDone", { created: data.createdCount ?? 0, skipped: skippedCount })}${accountText}`);
-      if ((data.createdCount ?? 0) > 0) {
+      const createdCount = data.createdCount ?? 0;
+      setInfo(`${tf("creditBill.importDone", { created: createdCount, skipped: skippedCount })}${accountText}`);
+      setImportComplete({ created: createdCount, skipped: skippedCount, accountText });
+      if (createdCount > 0) {
         const importedMail = parsed.mail;
         setMails((prev) => prev.map((mail) => sameMail(mail, importedMail)
           ? { ...mail, imported: true, importedAt: new Date().toISOString() }
           : mail));
       }
-      setParsed(null);
-      setPreviewOpen(false);
-      setPreviewSelectedKeys(new Set());
       dispatchFinanceDataChanged({ reason: "credit-bill-mail-import" });
       router.refresh();
     } catch (err) {
@@ -473,6 +477,17 @@ export function CreditBillMailImportButton({
     } finally {
       setImporting(false);
     }
+  }
+
+  function confirmImportComplete() {
+    setParsed(null);
+    setPreviewOpen(false);
+    setPreviewSelectedKeys(new Set());
+    setImportComplete(null);
+    setOpen(false);
+    dispatchFinanceDataChanged({ reason: "credit-bill-mail-import", accountIds: accountId ? [accountId] : undefined });
+    if (accountId) router.push(`/?accountId=${encodeURIComponent(accountId)}&view=bill`);
+    router.refresh();
   }
 
   return (
@@ -642,7 +657,7 @@ export function CreditBillMailImportButton({
                   <button
                     type="button"
                     onClick={openImportPreview}
-                    disabled={!parsed || importableItems.length === 0 || importing}
+                    disabled={!parsed || importableItems.length === 0 || importing || Boolean(importComplete)}
                     className="primary-button h-8 px-3 text-xs disabled:opacity-50"
                   >
                     {tf("creditBill.openImportPreview", { count: importableItems.length })}
@@ -665,7 +680,7 @@ export function CreditBillMailImportButton({
               </div>
               <button
                 type="button"
-                onClick={() => setPreviewOpen(false)}
+                onClick={() => importComplete ? confirmImportComplete() : setPreviewOpen(false)}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                 title={t("creditBill.close")}
               >
@@ -747,20 +762,34 @@ export function CreditBillMailImportButton({
 
             <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
               <div className="text-xs text-slate-500">
-                {tf("creditBill.importPreviewSelected", { selected: selectedPreviewItems.length, total: previewRows.length })}
+                {importComplete
+                  ? t("batchImport.importCompleteConfirmHint")
+                  : tf("creditBill.importPreviewSelected", { selected: selectedPreviewItems.length, total: previewRows.length })}
               </div>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => setPreviewOpen(false)} className="secondary-button h-8 px-3 text-xs">
-                  {t("creditBill.close")}
-                </button>
-                <button
-                  type="button"
-                  onClick={importParsed}
-                  disabled={selectedPreviewItems.length === 0 || importing}
-                  className="primary-button h-8 px-3 text-xs disabled:opacity-50"
-                >
-                  {importing ? t("creditBill.importing") : tf("creditBill.confirmImport", { count: selectedPreviewItems.length })}
-                </button>
+                {!importComplete && (
+                  <button type="button" onClick={() => setPreviewOpen(false)} className="secondary-button h-8 px-3 text-xs">
+                    {t("creditBill.close")}
+                  </button>
+                )}
+                {importComplete ? (
+                  <button
+                    type="button"
+                    onClick={confirmImportComplete}
+                    className="primary-button h-8 px-3 text-xs"
+                  >
+                    {accountId ? t("batchImport.importCompleteOpenAccount") : t("common.ok")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={importParsed}
+                    disabled={selectedPreviewItems.length === 0 || importing}
+                    className="primary-button h-8 px-3 text-xs disabled:opacity-50"
+                  >
+                    {importing ? t("creditBill.importing") : tf("creditBill.confirmImport", { count: selectedPreviewItems.length })}
+                  </button>
+                )}
               </div>
             </div>
           </div>

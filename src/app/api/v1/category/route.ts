@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -11,7 +12,7 @@ export const runtime = "nodejs";
  * 获取分类列表（树形结构支持）
  *
  * Query params:
- *   type? - 可选过滤: "expense" | "income" | "advance"
+ *   type? - 可选过滤: "expense" | "income" | "advance" | "transfer" | "investment"
  *
  * 返回: { ok: true, categories: [{ id, name, type, parentId, isSystem }] }
  */
@@ -37,7 +38,7 @@ export async function GET(req: Request) {
     const typeFilter = url.searchParams.get("type")?.trim();
 
     const where: Record<string, unknown> = { ...hidFilter };
-    if (typeFilter && !["expense", "income", "advance"].includes(typeFilter)) {
+    if (typeFilter && !["expense", "income", "advance", "transfer", "investment"].includes(typeFilter)) {
       return NextResponse.json({ ok: true, categories: [] });
     }
     if (typeFilter) {
@@ -57,8 +58,8 @@ export async function GET(req: Request) {
   }
 }
 
-const CATEGORY_TYPES = ["expense", "income", "advance"] as const;
-const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "代付", "投资"]);
+const CATEGORY_TYPES = ["expense", "income", "advance", "transfer", "investment"] as const;
+const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "代付", "转账", "投资"]);
 
 async function findDuplicateCategoryName(
   householdId: string,
@@ -75,14 +76,18 @@ async function findDuplicateCategoryName(
   });
 }
 
+function isDuplicateCategoryNameError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
 /**
  * POST /api/v1/category
  * 新增分类。
  *
- * Body: { name: string, type?: "expense" | "income" | "advance", parentId?: string }
+ * Body: { name: string, type?: "expense" | "income" | "advance" | "transfer" | "investment", parentId?: string }
  * - parentId 存在时，分类类型继承上级分类。
  * - 分类名称在同一账簿内必须全局唯一，不区分收支类型或上级分类。
- * - "支出"、"收入"、"代付"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
+ * - "支出"、"收入"、"代付"、"转账"、"投资" 是分类类型根，不允许作为普通分类名称写入数据库。
  * - 系统内置的投资收益、投资亏损、还款、贷款等业务分类会显示在同一棵分类树中，供统计项挂接；这些系统分类不可改名、移动或删除。
  *
  * 返回: { ok: true, category: { id, name, type, parentId, isSystem } }
@@ -99,7 +104,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
     }
     if (RESERVED_CATEGORY_NAMES.has(name)) {
-      return NextResponse.json({ ok: false, error: "支出、收入、代付、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "支出、收入、代付、转账、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
     }
     if (!CATEGORY_TYPES.includes(requestedType as typeof CATEGORY_TYPES[number])) {
       return NextResponse.json({ ok: false, error: "分类类型不正确" }, { status: 400 });
@@ -129,6 +134,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, category });
   } catch (e) {
+    if (isDuplicateCategoryNameError(e)) {
+      return NextResponse.json({ ok: false, error: "分类名称已存在" }, { status: 409 });
+    }
     console.error("POST /api/v1/category error:", e);
     return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
   }
@@ -169,7 +177,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "分类名称不合法（1-50字）" }, { status: 400 });
     }
     if (hasName && RESERVED_CATEGORY_NAMES.has(requestedName)) {
-      return NextResponse.json({ ok: false, error: "支出、收入、代付、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "支出、收入、代付、转账、投资是分类根目录，不能作为普通分类名称" }, { status: 400 });
     }
 
     const current = await prisma.category.findFirst({
@@ -242,6 +250,9 @@ export async function PUT(req: NextRequest) {
 
     return NextResponse.json({ ok: true, category });
   } catch (e) {
+    if (isDuplicateCategoryNameError(e)) {
+      return NextResponse.json({ ok: false, error: "分类名称已存在" }, { status: 409 });
+    }
     console.error("PUT /api/v1/category error:", e);
     return NextResponse.json({ ok: false, error: "修改失败" }, { status: 500 });
   }

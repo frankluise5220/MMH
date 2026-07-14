@@ -22,7 +22,13 @@ export function getInsuranceDetailNote(entry: InsuranceDetailLike) {
   if (entry.source !== "insurance") {
     return rawNote;
   }
-  const actionLabel = getInsuranceAction(entry) === "refund" ? "保险回款" : "保险续期";
+  const action = getInsuranceAction(entry);
+  const actionLabel =
+    action === "refund"
+      ? "保险回款"
+      : action === "additional_premium"
+        ? "保全缴费"
+        : "保险续期";
   const taskPrefix = rawNote.includes("计划任务") ? "计划任务：" : "";
   const productName = getInsuranceProductName(entry);
   return productName ? `${taskPrefix}${actionLabel}：${productName}` : `${taskPrefix}${actionLabel}`;

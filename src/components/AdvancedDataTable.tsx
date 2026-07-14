@@ -16,6 +16,12 @@ import { useI18n } from "@/lib/i18n";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 
+function isInteractiveRowTarget(target: EventTarget | null) {
+  return target instanceof Element && !!target.closest(
+    "button, input, select, textarea, a, [role='button'], [data-row-double-click-ignore]",
+  );
+}
+
 export type AdvancedDataTableColumn<T> = {
   key: string;
   label: ReactNode;
@@ -46,6 +52,7 @@ export type AdvancedDataTableSummaryRow = {
 };
 
 export type AdvancedDataTableDropPosition = "before" | "after";
+type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
 
 type RowItem<T> = {
   row: T;
@@ -120,6 +127,27 @@ function writeJson(key: string, value: unknown) {
   } catch {}
 }
 
+function normalizeStoredFilters(
+  value: Partial<Record<string, string[]>> | null | undefined,
+  filterableColumnKeys: ReadonlySet<string>,
+) {
+  const next: Partial<Record<string, string[]>> = {};
+  for (const [key, values] of Object.entries(value ?? {})) {
+    if (!filterableColumnKeys.has(key) || !Array.isArray(values)) continue;
+    next[key] = values.filter((item): item is string => typeof item === "string");
+  }
+  return next;
+}
+
+function normalizeStoredSortState(
+  value: AdvancedDataTableSortState | null | undefined,
+  sortableColumnKeys: ReadonlySet<string>,
+) {
+  if (!value || !sortableColumnKeys.has(value.key)) return null;
+  if (value.direction !== "asc" && value.direction !== "desc") return null;
+  return value;
+}
+
 function labelText(label: ReactNode, fallback: string) {
   return typeof label === "string" ? label : fallback;
 }
@@ -178,12 +206,15 @@ export function AdvancedDataTable<T>({
   const [menuOpen, setMenuOpen] = useState(false);
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
-  const [sortState, setSortState] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
   const suppressNextClickRef = useRef(false);
   const lastResetKeyRef = useRef(resetKey);
+  const tableDisplayStateHydratedRef = useRef(false);
+  const skipNextFiltersWriteRef = useRef(false);
+  const skipNextSortWriteRef = useRef(false);
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
@@ -195,6 +226,16 @@ export function AdvancedDataTable<T>({
     () => columns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
     [columns],
   );
+  const filterableColumnKeys = useMemo(
+    () => new Set(columns.filter((column) => column.filterText).map((column) => column.key)),
+    [columns],
+  );
+  const sortableColumnKeys = useMemo(
+    () => new Set(columns.filter((column) => column.sortValue || column.filterText).map((column) => column.key)),
+    [columns],
+  );
+  const filtersStorageKey = `${storageKey}:filters:v1`;
+  const sortStorageKey = `${storageKey}:sort:v1`;
 
   useEffect(() => {
     setColumnWidths(readJson<Record<string, number>>(`${storageKey}:widths`, {}));
@@ -205,12 +246,51 @@ export function AdvancedDataTable<T>({
   }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey]);
 
   useEffect(() => {
+    tableDisplayStateHydratedRef.current = false;
+    skipNextFiltersWriteRef.current = true;
+    skipNextSortWriteRef.current = true;
+    setFilters(normalizeStoredFilters(
+      readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
+      filterableColumnKeys,
+    ));
+    setSortState(normalizeStoredSortState(
+      readJson<AdvancedDataTableSortState | null>(sortStorageKey, null),
+      sortableColumnKeys,
+    ));
+    setActiveFilterColumn(null);
+    tableDisplayStateHydratedRef.current = true;
+  }, [filterableColumnKeys, filtersStorageKey, sortStorageKey, sortableColumnKeys]);
+
+  useEffect(() => {
+    if (!tableDisplayStateHydratedRef.current) return;
+    if (skipNextFiltersWriteRef.current) {
+      skipNextFiltersWriteRef.current = false;
+      return;
+    }
+    writeJson(filtersStorageKey, filters);
+  }, [filters, filtersStorageKey]);
+
+  useEffect(() => {
+    if (!tableDisplayStateHydratedRef.current) return;
+    if (skipNextSortWriteRef.current) {
+      skipNextSortWriteRef.current = false;
+      return;
+    }
+    writeJson(sortStorageKey, sortState);
+  }, [sortState, sortStorageKey]);
+
+  useEffect(() => {
     if (resetKey == null) return;
     if (lastResetKeyRef.current === resetKey) return;
     lastResetKeyRef.current = resetKey;
+    skipNextFiltersWriteRef.current = false;
+    skipNextSortWriteRef.current = false;
     setFilters({});
+    setSortState(null);
     setActiveFilterColumn(null);
-  }, [resetKey]);
+    writeJson(filtersStorageKey, {});
+    writeJson(sortStorageKey, null);
+  }, [filtersStorageKey, resetKey, sortStorageKey]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -749,7 +829,10 @@ export function AdvancedDataTable<T>({
                     toggleCurrentRow();
                     onRowClick?.(row, displayIndex);
                   }}
-                  onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row, displayIndex) : undefined}
+                  onDoubleClick={onRowDoubleClick ? (event) => {
+                    if (isInteractiveRowTarget(event.target)) return;
+                    onRowDoubleClick(row, displayIndex);
+                  } : undefined}
                   onDragOver={(event) => handleRowDragOver(event, row, index, key, dragDisabled)}
                   onDrop={(event) => handleRowDrop(event, row, index, key, dragDisabled)}
                   className={[

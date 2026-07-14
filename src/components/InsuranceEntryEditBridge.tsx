@@ -7,7 +7,11 @@ import {
   type InsuranceEntryEditValue,
 } from "./InsuranceEntryEditModal";
 import type { SmartSelectOption } from "./SmartSelect";
-import { getInsuranceAction, getInsuranceProductName } from "@/lib/insurance/transaction";
+import {
+  getInsuranceAction,
+  getInsuranceProductName,
+  type InsuranceAction,
+} from "@/lib/insurance/transaction";
 
 type AccountOption = {
   id: string;
@@ -27,7 +31,7 @@ type InsuranceEditEventDetail = {
   cashAccountId?: string;
   accountId?: string | null;
   toAccountId?: string | null;
-  insuranceAction?: "premium" | "refund";
+  insuranceAction?: InsuranceAction;
   insuranceProductName?: string | null;
   insuranceProductId?: string | null;
 };

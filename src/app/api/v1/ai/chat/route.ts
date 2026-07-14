@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { TransactionType } from "@prisma/client";
+import { Prisma, TransactionType } from "@prisma/client";
 import { corsHeaders, joinBaseUrl } from "@/lib/http";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdScope, type HouseholdContext } from "@/lib/server/household-scope";
 import { callAiForCommand, parseUpdateCommand, normalizeOperationText, type AnalyzedCommand, type ParsedDateRange, type ParsedUpdateCommand } from "@/lib/commandParser";
 import { SYSTEM_PROMPT, buildFundSystemPrompt, buildBillHeaderContext } from "@/lib/ai/prompts";
 import type { BillHeader } from "@/lib/ai/prompts";
 import { modelSupportsVision, buildAccountContextText, classifyInput } from "@/lib/ai/client";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import {
   type ParsedItem,
   formatYmd,
@@ -22,6 +23,7 @@ import {
   parseFundTradeFromText,
 } from "@/lib/ai/parser";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
 
 export const runtime = "nodejs";
 
@@ -524,10 +526,128 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
   };
 }
 
-function parseDeleteCommand(text: string) {
+type DeleteAmountRange = {
+  min?: number;
+  max?: number;
+  includeMin?: boolean;
+  includeMax?: boolean;
+};
+
+type DeletePlan = {
+  year?: number;
+  month?: number;
+  hasMonth: boolean;
+  startDay: number;
+  endDay: number;
+  accountQuery?: string;
+  allAccounts?: boolean;
+  type?: "expense" | "income" | "transfer";
+  amountRange?: DeleteAmountRange;
+  remarkCondition?: { hasRemark?: boolean; keyword?: string };
+};
+
+const DELETE_PREVIEW_LIMIT = 5000;
+
+function parseCommandAmount(raw: string) {
+  const normalized = raw.replace(/,/g, "").trim();
+  const m = normalized.match(/([+-]?\d+(?:\.\d+)?)(?:\s*万)?/);
+  if (!m) return undefined;
+  const value = Number(m[1]);
+  if (!Number.isFinite(value)) return undefined;
+  return /万/.test(normalized) ? value * 10000 : value;
+}
+
+function parseAmountRange(text: string): DeleteAmountRange | undefined {
+  const between = text.match(/金额?\s*(?:在|介于)?\s*([+-]?\d+(?:\.\d+)?\s*万?)\s*(?:到|至|-|~)\s*([+-]?\d+(?:\.\d+)?\s*万?)/);
+  if (between) {
+    const a = parseCommandAmount(between[1]);
+    const b = parseCommandAmount(between[2]);
+    if (a != null && b != null) return { min: Math.min(Math.abs(a), Math.abs(b)), max: Math.max(Math.abs(a), Math.abs(b)), includeMin: true, includeMax: true };
+  }
+
+  const lt = text.match(/(?:金额|钱|数额)?\s*(小于|低于|少于|不足|不超过|不大于|<=|<)\s*([+-]?\d+(?:\.\d+)?\s*万?)/);
+  const gt = text.match(/(?:金额|钱|数额)?\s*(大于|高于|超过|不少于|不低于|>=|>)\s*([+-]?\d+(?:\.\d+)?\s*万?)/);
+  const range: DeleteAmountRange = {};
+  if (lt) {
+    const value = parseCommandAmount(lt[2]);
+    if (value != null) {
+      range.max = Math.abs(value);
+      range.includeMax = /不超过|不大于|<=/.test(lt[1]);
+    }
+  }
+  if (gt) {
+    const value = parseCommandAmount(gt[2]);
+    if (value != null) {
+      range.min = Math.abs(value);
+      range.includeMin = /不少于|不低于|>=/.test(gt[1]);
+    }
+  }
+  return range.min != null || range.max != null ? range : undefined;
+}
+
+function amountRangeToWhere(range: DeleteAmountRange): Prisma.TxRecordWhereInput {
+  const min = range.min != null ? Math.abs(range.min) : undefined;
+  const max = range.max != null ? Math.abs(range.max) : undefined;
+  if (min != null && max != null) {
+    const positive: Prisma.DecimalFilter<"TxRecord"> = {};
+    const negative: Prisma.DecimalFilter<"TxRecord"> = {};
+    if (range.includeMin) {
+      positive.gte = min;
+      negative.lte = -min;
+    } else {
+      positive.gt = min;
+      negative.lt = -min;
+    }
+    if (range.includeMax) {
+      positive.lte = max;
+      negative.gte = -max;
+    } else {
+      positive.lt = max;
+      negative.gt = -max;
+    }
+    const absRange: Prisma.TxRecordWhereInput = { OR: [{ amount: positive }, { amount: negative }] };
+    return min === 0 ? { AND: [absRange, { NOT: { amount: 0 } }] } : absRange;
+  }
+  if (max != null) {
+    const belowMax: Prisma.TxRecordWhereInput = {
+      amount: range.includeMax
+        ? { gte: -max, lte: max }
+        : { gt: -max, lt: max },
+    };
+    return {
+      AND: [belowMax, { NOT: { amount: 0 } }],
+    };
+  }
+  if (min != null) {
+    return {
+      OR: [
+        { amount: range.includeMin ? { gte: min } : { gt: min } },
+        { amount: range.includeMin ? { lte: -min } : { lt: -min } },
+      ],
+    };
+  }
+  return {};
+}
+
+function describeAmountRange(range?: DeleteAmountRange) {
+  if (!range) return "不限金额";
+  const minText = range.min != null ? `${range.includeMin ? "大于等于" : "大于"} ${range.min}` : "";
+  const maxText = range.max != null ? `${range.includeMax ? "小于等于" : "小于"} ${range.max}` : "";
+  return [minText, maxText].filter(Boolean).join(" 且 ") || "不限金额";
+}
+
+function stripAmountCondition(text: string) {
+  return text
+    .replace(/金额?\s*(?:在|介于)?\s*[+-]?\d+(?:\.\d+)?\s*万?\s*(?:到|至|-|~)\s*[+-]?\d+(?:\.\d+)?\s*万?/g, "")
+    .replace(/(?:金额|钱|数额)?\s*(?:小于|低于|少于|不足|不超过|不大于|<=|<|大于|高于|超过|不少于|不低于|>=|>)\s*[+-]?\d+(?:\.\d+)?\s*万?/g, "");
+}
+
+function parseDeleteCommand(text: string): DeletePlan | null {
   const t = normalizeOperationText(text);
   if (!t) return null;
   if (!/^删除/.test(t)) return null;
+  const amountRange = parseAmountRange(t);
+  const allAccounts = /(?:全部|所有|全)[^，。；;]{0,4}账户/.test(t);
 
   const ym = t.match(/(\d{4})\s*年\s*(\d{1,2})\s*月/);
   const hasMonth = !!ym;
@@ -535,7 +655,7 @@ function parseDeleteCommand(text: string) {
   const month = hasMonth ? Number(ym![2]) : undefined;
   if (hasMonth && (!Number.isFinite(year) || !Number.isFinite(month) || (month as number) < 1 || (month as number) > 12)) return null;
 
-  const type = /收入/.test(t) ? "income" : /转账/.test(t) ? "transfer" : "expense";
+  const explicitType = /收入/.test(t) ? "income" : /转账/.test(t) ? "transfer" : /支出|消费/.test(t) ? "expense" : undefined;
 
   let startDay = 1;
   let endDay = 31;
@@ -569,18 +689,20 @@ function parseDeleteCommand(text: string) {
     }
   }
 
-  let accountQuery = "";
-  if (/招行信用卡|招商信用卡|信用卡/.test(t) && /招行|招商/.test(t)) accountQuery = "招商信用卡";
-  else if (/花呗/.test(t)) accountQuery = "花呗";
-  else if (/微信/.test(t)) accountQuery = "微信";
-  else if (/支付宝/.test(t)) accountQuery = "支付宝";
-  else if (/招行|招商/.test(t)) accountQuery = "招商";
+  const textWithoutAmount = stripAmountCondition(t);
+  let accountQuery: string | undefined;
+  if (/招行信用卡|招商信用卡|信用卡/.test(textWithoutAmount) && /招行|招商/.test(textWithoutAmount)) accountQuery = "招商信用卡";
+  else if (/花呗/.test(textWithoutAmount)) accountQuery = "花呗";
+  else if (/微信/.test(textWithoutAmount)) accountQuery = "微信";
+  else if (/支付宝/.test(textWithoutAmount)) accountQuery = "支付宝";
+  else if (/招行|招商/.test(textWithoutAmount)) accountQuery = "招商";
 
   if (!accountQuery) {
-    const m = t.match(/(?:所有|全部)?(?:的)?(.+?)(?:消费|记录|明细)/);
-    if (m?.[1]) accountQuery = m[1].trim();
+    const m = textWithoutAmount.match(/(?:所有|全部)?(?:的)?(.+?)(?:消费|交易|记录|明细)/);
+    const candidate = m?.[1]?.replace(/^删除/, "").replace(/[的\s]/g, "").trim();
+    if (candidate && !/^(所有|全部)$/.test(candidate)) accountQuery = candidate;
   }
-  if (!accountQuery) return null;
+  if (!accountQuery && !amountRange) return null;
 
   return {
     year: year as number | undefined,
@@ -589,57 +711,114 @@ function parseDeleteCommand(text: string) {
     startDay,
     endDay,
     accountQuery,
-    type: type as "expense" | "income" | "transfer",
+    allAccounts,
+    type: explicitType,
+    amountRange,
   };
 }
 
-async function executeDeletePlan(plan: { year?: number; month?: number; hasMonth: boolean; startDay: number; endDay: number; accountQuery: string; type: "expense" | "income" | "transfer"; amountRange?: { min?: number; max?: number }; remarkCondition?: { hasRemark?: boolean; keyword?: string } }, apply: boolean, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
+async function executeDeletePlan(
+  plan: DeletePlan,
+  apply: boolean,
+  ctx: HouseholdContext,
+  viewAccount?: { accountId?: string; accountName?: string },
+) {
+  const { hidFilter } = ctx;
   const start = plan.hasMonth ? new Date(Date.UTC(plan.year as number, (plan.month as number) - 1, plan.startDay, 0, 0, 0)) : null;
   const end = plan.hasMonth ? new Date(Date.UTC(plan.year as number, (plan.month as number) - 1, plan.endDay + 1, 0, 0, 0)) : null;
+  let accountName = "全部账户";
+  let accountId: string | undefined;
+  const hasExplicitAccountQuery = Boolean(plan.accountQuery?.trim());
 
-  const accounts = await prisma.account.findMany({
-    where: { isActive: true, ...hidFilter },
-    include: { Institution: true },
-    orderBy: { name: "asc" },
-    take: 300,
-  });
-
-  const q = plan.accountQuery.trim();
-  const candidates = accounts.filter((a) => {
-    const inst = (a.Institution?.name ?? "").trim();
-    const label = inst ? `${inst}·${a.name}` : a.name;
-    return a.name.includes(q) || inst.includes(q) || label.includes(q) || q.includes(a.name);
-  });
-
-  const picked = candidates.find((a) => a.name === q) ?? candidates[0] ?? null;
-  if (!picked) {
-    return { ok: false as const, error: `未找到账户：${plan.accountQuery}` };
+  if (!hasExplicitAccountQuery && !plan.allAccounts && viewAccount?.accountId) {
+    const currentAccount = await prisma.account.findFirst({
+      where: { id: viewAccount.accountId, ...hidFilter },
+      select: { id: true, name: true },
+    });
+    if (currentAccount) {
+      accountId = currentAccount.id;
+      accountName = currentAccount.name;
+    }
+  } else if (!hasExplicitAccountQuery && !plan.allAccounts && viewAccount?.accountName) {
+    accountName = viewAccount.accountName;
   }
 
-  const txType =
-    plan.type === "expense" ? TransactionType.expense : plan.type === "income" ? TransactionType.income : TransactionType.transfer;
+  if (hasExplicitAccountQuery) {
+    const explicitAccountQuery = plan.accountQuery?.trim() ?? "";
+    const accounts = await prisma.account.findMany({
+      where: { isActive: true, ...hidFilter },
+      include: { Institution: true },
+      orderBy: { name: "asc" },
+      take: 300,
+    });
+
+    const q = explicitAccountQuery;
+    const candidates = accounts.filter((a) => {
+      const inst = (a.Institution?.name ?? "").trim();
+      const label = inst ? `${inst}·${a.name}` : a.name;
+      return a.name.includes(q) || inst.includes(q) || label.includes(q) || q.includes(a.name);
+    });
+
+    const picked = candidates.find((a) => a.name === q) ?? candidates[0] ?? null;
+    if (!picked) {
+      return { ok: false as const, error: `未找到账户：${plan.accountQuery}` };
+    }
+    accountId = picked.id;
+    accountName = picked.name;
+  } else if (!accountId && accountName !== "全部账户") {
+    const matched = await prisma.account.findFirst({
+      where: { name: accountName, isActive: true, ...hidFilter },
+      select: { id: true, name: true },
+    });
+    if (matched) {
+      accountId = matched.id;
+      accountName = matched.name;
+    }
+  }
+
+  const txType = plan.type === "expense"
+    ? TransactionType.expense
+    : plan.type === "income"
+      ? TransactionType.income
+      : plan.type === "transfer"
+        ? TransactionType.transfer
+        : undefined;
+
+  const andFilters: Prisma.TxRecordWhereInput[] = [
+    { NOT: { source: { in: [BALANCE_RECONCILE_SOURCE, BALANCE_INITIALIZATION_SOURCE] } } },
+  ];
+  if (accountId) {
+    andFilters.push({ OR: [{ accountId }, { toAccountId: accountId }] });
+  } else if (accountName !== "全部账户") {
+    andFilters.push({ OR: [{ accountName }, { toAccountName: accountName }] });
+  }
+  if (plan.amountRange) andFilters.push(amountRangeToWhere(plan.amountRange));
+  if (plan.remarkCondition?.keyword) andFilters.push({ note: { contains: plan.remarkCondition.keyword } });
 
   const txIds = await prisma.txRecord.findMany({
     where: {
-      accountId: picked.id,
       deletedAt: null,
-      type: txType,
-      date: { gte: start as Date, lt: end as Date },
+      ...(txType ? { type: txType } : {}),
+      ...(start && end ? { date: { gte: start, lt: end } } : {}),
+      AND: andFilters,
       ...hidFilter,
     },
     select: { id: true },
-    take: 20000,
+    take: DELETE_PREVIEW_LIMIT + 1,
   });
 
   const ids = txIds.map((r) => r.id);
+  if (ids.length > DELETE_PREVIEW_LIMIT) {
+    return { ok: false as const, error: `命中超过 ${DELETE_PREVIEW_LIMIT} 条记录，请增加时间、账户、类型或金额范围后再删除` };
+  }
   if (ids.length === 0) {
-    return { ok: true as const, deletedCount: 0, accountName: picked.name, targets: [] as Array<{ transactionId: string; date: string; accountName: string; amount: number; remark: string }> };
+    return { ok: true as const, deletedCount: 0, accountName, targets: [] as Array<{ transactionId: string; date: string; accountName: string; amount: number; remark: string; type?: string }> };
   }
 
   const preview = await prisma.txRecord.findMany({
     where: { id: { in: ids } },
-    orderBy: [{ date: "desc" }],
-    take: 5,
+    select: { id: true, date: true, accountName: true, amount: true, note: true, type: true },
+    orderBy: [{ date: "desc" }, { dayOrder: "desc" }, { createdAt: "desc" }],
   });
 
   const targets = preview.map((tx) => {
@@ -649,20 +828,16 @@ async function executeDeletePlan(plan: { year?: number; month?: number; hasMonth
       accountName: tx.accountName,
       amount: Number(tx.amount),
       remark: tx.note ?? "",
+      type: tx.type,
     };
   });
 
-  if (!apply && ids.length > 5) {
-    return { ok: true as const, deletedCount: ids.length, accountName: picked.name, requiresConfirm: true as const, targets };
+  if (!apply) {
+    return { ok: true as const, deletedCount: ids.length, accountName, requiresConfirm: true as const, targets };
   }
 
-  const deletedAt = new Date();
-  const res = await prisma.txRecord.updateMany({
-    where: { id: { in: ids } },
-    data: { deletedAt },
-  });
-
-  return { ok: true as const, deletedCount: res.count, accountName: picked.name, deletedAt, requiresConfirm: false as const, targets };
+  const res = await softDeleteEntriesByIds(ctx, ids, `AI 删除 ${ids.length} 条明细`);
+  return { ok: true as const, deletedCount: res.deletedCount, accountName, requiresConfirm: false as const, targets };
 }
 
 function parseRestoreCommand(text: string) {
@@ -691,7 +866,7 @@ async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFil
     };
   });
 
-  if (!apply && rows.length > 5) {
+  if (!apply) {
     return { ok: true as const, restoredCount: rows.length, requiresConfirm: true as const, targets };
   }
 
@@ -793,7 +968,8 @@ async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, 
 }
 
 export async function POST(req: Request) {
-  const { hidFilter, householdId } = await getHouseholdScope();
+  const ctx = await getHouseholdScope();
+  const { hidFilter, householdId } = ctx;
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = z
     .object({
@@ -802,6 +978,7 @@ export async function POST(req: Request) {
       baseUrl: z.string().optional(),
       apiKey: z.string().optional(),
       modelName: z.string().optional(),
+      accountId: z.string().optional(),
       accountName: z.string().optional(),
       fundContext: z.object({
         fundCode: z.string(),
@@ -820,6 +997,7 @@ export async function POST(req: Request) {
   const baseUrl = (parse.data.baseUrl ?? "").trim();
   const apiKey = (parse.data.apiKey ?? "").trim();
   const modelName = (parse.data.modelName ?? "").trim();
+  const accountId = (parse.data.accountId ?? "").trim();
   const accountName = (parse.data.accountName ?? "").trim();
 
   if (!text && !imageDataUrl) {
@@ -848,7 +1026,17 @@ export async function POST(req: Request) {
     const restorePlan = parseRestoreCommand(text);
     if (restorePlan) {
       try {
-        const r = await executeRestorePlan(restorePlan, false, hidFilter, householdId);
+        const applyNow = /确认|继续|执行|立即/.test(text);
+        const r = await executeRestorePlan(restorePlan, applyNow, hidFilter, householdId);
+        if (applyNow) {
+          return NextResponse.json({
+            ok: true,
+            operation: "restore",
+            restoredCount: r.restoredCount,
+            targets: r.targets ?? [],
+            trace: [`已确认执行恢复：恢复 ${r.restoredCount} 条记录。`],
+          }, { headers: corsHeaders() });
+        }
         return NextResponse.json({
           ok: true,
           operation: "restore",
@@ -929,8 +1117,21 @@ export async function POST(req: Request) {
     if (plan) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
-        const result = await executeDeletePlan(plan, false, hidFilter, householdId);
+        const result = await executeDeletePlan(plan, applyNow, ctx, { accountId, accountName });
         if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 422, headers: corsHeaders() });
+        if (applyNow) {
+          return NextResponse.json({
+            ok: true,
+            operation: "delete",
+            deletedCount: result.deletedCount,
+            accountName: result.accountName,
+            targets: result.targets,
+            trace: [
+              `已确认执行删除：${result.accountName} ${describeAmountRange(plan.amountRange)}`,
+              `已删除 ${result.deletedCount} 条记录`,
+            ],
+          }, { headers: corsHeaders() });
+        }
         const scopeText = plan.hasMonth
           ? `${plan.year}-${String(plan.month).padStart(2, "0")}-${String(plan.startDay).padStart(2, "0")} 到 ${String(plan.endDay).padStart(2, "0")}`
           : `全部时间`;
@@ -943,7 +1144,7 @@ export async function POST(req: Request) {
           yearMonth: plan.hasMonth ? `${plan.year}-${String(plan.month).padStart(2, "0")}` : undefined,
           targets: result.targets,
           trace: [
-            `识别为删除指令：${scopeText} ${plan.accountQuery} ${plan.type}`,
+            `识别为删除指令：${scopeText} ${result.accountName} ${plan.type ?? "全部类型"} ${describeAmountRange(plan.amountRange)}`,
             `命中 ${result.deletedCount} 条记录`,
           ],
         }, { headers: corsHeaders() });

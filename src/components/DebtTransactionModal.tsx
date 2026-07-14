@@ -29,6 +29,7 @@ import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loa
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 type PrepayStrategy = LoanPrepayStrategy;
+type LoanFundingMode = "cash_disbursement" | "financed_purchase";
 
 type AccountOption = {
   id: string;
@@ -292,6 +293,7 @@ export function DebtTransactionModal({
   const [submitting, setSubmitting] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState("");
   const [mode, setMode] = useState<DebtMode>("borrow_in");
+  const [loanFundingMode, setLoanFundingMode] = useState<LoanFundingMode>("cash_disbursement");
   const [date, setDate] = useState(today);
   const [debtAccountId, setDebtAccountId] = useState(defaultDebtAccountId ?? debtAccounts[0]?.id ?? "");
   const [debtInstitutionId, setDebtInstitutionId] = useState(normalizeDebtObjectValue(defaultDebtInstitutionId, nestedFieldData));
@@ -356,6 +358,7 @@ export function DebtTransactionModal({
 
   const resetDraft = useCallback(() => {
     setMode("borrow_in");
+    setLoanFundingMode("cash_disbursement");
     setEditingEntryId("");
     setDate(today);
     setDebtAccountId(defaultDebtAccountId ?? localDebtAccounts[0]?.id ?? "");
@@ -418,10 +421,12 @@ export function DebtTransactionModal({
         defaultCurrentAnnualRate?: number | null;
         defaultMortgageLprDiscount?: number | null;
         defaultLoanRateAdjustments?: LoanRateAdjustment[];
+        defaultLoanFundingMode?: LoanFundingMode;
       }>).detail;
       resetDraft();
       if (detail?.editEntryId) setEditingEntryId(detail.editEntryId);
       if (detail?.mode) setMode(detail.mode);
+      if (detail?.defaultLoanFundingMode) setLoanFundingMode(detail.defaultLoanFundingMode);
       if (detail?.defaultDate) setDate(detail.defaultDate);
       if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
       if (detail?.mode && !canCreateDebtItemForMode(detail.mode)) {
@@ -624,6 +629,7 @@ export function DebtTransactionModal({
     const formData = new FormData();
     formData.set("editEntryId", editingEntryId);
     formData.set("mode", mode);
+    formData.set("loanFundingMode", loanFundingMode);
     formData.set("date", date);
     const shouldUseDebtObject = !editingEntryId && canCreateDebtItemForMode(mode) && !!debtInstitutionId;
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
@@ -749,7 +755,7 @@ export function DebtTransactionModal({
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
   const cashAccountLabel = mode === "borrow_in"
-    ? "入账账户"
+    ? (loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
     : mode === "repay_out" || mode === "prepay_out"
       ? "支出账户"
       : mode === "collect_in"
@@ -915,9 +921,31 @@ export function DebtTransactionModal({
                       ))}
                     </div>
 
+                    {mode === "borrow_in" ? (
+                      <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 border-y border-slate-100 py-2">
+                        <div className="form-label">贷款形式</div>
+                        <div className="grid grid-cols-2 gap-1 rounded border border-slate-200 bg-slate-50 p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setLoanFundingMode("cash_disbursement")}
+                            className={`h-7 rounded text-xs ${loanFundingMode === "cash_disbursement" ? "bg-white font-medium text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                          >
+                            资金到账
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setLoanFundingMode("financed_purchase")}
+                            className={`h-7 rounded text-xs ${loanFundingMode === "financed_purchase" ? "bg-white font-medium text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                          >
+                            消费分期
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? "入账日期" : "日期"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? (loanFundingMode === "financed_purchase" ? "发生日期" : "入账日期") : "日期"}</div>
                         <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
                       {showPrepayment ? (
@@ -993,7 +1021,13 @@ export function DebtTransactionModal({
                           <div className="form-label">款项内容 <span className="text-slate-400">可选</span></div>
                           <input
                             value={debtItemName}
-                            onChange={(event) => setDebtItemName(event.target.value)}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setDebtItemName(value);
+                              if (mode === "borrow_in" && /(车贷|汽车贷款|购车)/.test(value)) {
+                                setLoanFundingMode("financed_purchase");
+                              }
+                            }}
                             list={debtItemListId}
                             disabled={selectedExistingDebtItem}
                             placeholder={selectedExistingDebtItem ? "已有项不需要填写" : `不填则生成“${selectedDebtObjectName}的往来款”`}
@@ -1044,7 +1078,7 @@ export function DebtTransactionModal({
                     {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? "借款总额" : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? (loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (

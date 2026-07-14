@@ -1,5 +1,6 @@
 ﻿import { AccountKind } from "@prisma/client";
 import { Banknote, Coins, CreditCard, HandCoins, Landmark, PiggyBank, Wallet } from "lucide-react";
+import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
@@ -8,11 +9,21 @@ import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+type CurrentCreditCycle = {
+  accountId: string;
+  effectiveBill: Prisma.Decimal | number | string | null;
+  paid: Prisma.Decimal | number | string | null;
+  cumulativeRemain: Prisma.Decimal | number | string | null;
+  cumulativeOverpaid: Prisma.Decimal | number | string | null;
+  dueDate: Date | null;
+};
 
 const MONEY_KINDS: AccountKind[] = [
   AccountKind.bank_debit,
@@ -81,20 +92,35 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   });
 
   const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id);
-  const currentCycles =
+  const currentCyclesPromise: Promise<CurrentCreditCycle[]> =
     creditIds.length > 0
-      ? await prisma.creditCardCycle.findMany({
+      ? prisma.creditCardCycle.findMany({
           where: { accountId: { in: creditIds }, isCurrentCycle: true },
           select: {
             accountId: true,
             effectiveBill: true,
             paid: true,
             cumulativeRemain: true,
+            cumulativeOverpaid: true,
             dueDate: true,
           },
         })
-      : [];
-  const cycleByAccountId = new Map(currentCycles.map((cycle) => [cycle.accountId, cycle]));
+      : Promise.resolve([]);
+  const [displayBalanceByAccountId, currentCycles] = await Promise.all([
+    computeAccountDisplayBalances(
+      accounts
+        .filter((account) => account.kind !== AccountKind.bank_credit)
+        .map((account) => ({
+          id: account.id,
+          kind: account.kind,
+          investProductType: account.investProductType,
+          billingDay: account.billingDay,
+        })),
+      hidFilter,
+    ),
+    currentCyclesPromise,
+  ]);
+  const cycleByAccountId = new Map<string, CurrentCreditCycle>(currentCycles.map((cycle) => [cycle.accountId, cycle]));
 
   const moneyAccounts = accounts
     .filter((account) => MONEY_KINDS.includes(account.kind))
@@ -115,7 +141,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         hoverTitle: display.hoverTitle,
         kind: account.kind,
         groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
-        balance: toNumber(account.balance),
+        balance: displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       };
     });
 
@@ -133,7 +159,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         AccountGroup: account.AccountGroup,
       }, creditCardLabelTemplate);
       const cycle = cycleByAccountId.get(account.id);
-      const balance = toNumber(account.balance);
+      const balance = cycle
+        ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
+        : toNumber(account.balance);
       const creditLimit = toNumber(account.creditLimit);
       return {
         id: account.id,
@@ -179,7 +207,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
             <div className="text-xs text-slate-500">现金、借记卡、信用卡和债务/债权</div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <TopEntryLauncher defaultAction={tab === "credit" ? "transfer" : "transaction"} />
+            <TopEntryLauncher defaultAction="transaction" />
             <Link href="/batch-import" className="secondary-button h-8 px-3 text-xs">
               导入账单
             </Link>

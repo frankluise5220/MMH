@@ -1,8 +1,17 @@
-import { Prisma } from "@prisma/client";
+import { AccountKind, Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME } from "@/lib/transaction-semantics";
+import {
+  SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
+  SYSTEM_FUND_INVESTMENT_CATEGORY,
+  SYSTEM_INVESTMENT_CATEGORIES,
+  SYSTEM_METAL_INVESTMENT_CATEGORY,
+  SYSTEM_OTHER_INVESTMENT_CATEGORY,
+  SYSTEM_WEALTH_INVESTMENT_CATEGORY,
+} from "@/lib/investment-category";
 
-export type DefaultCategoryType = "expense" | "income" | "advance";
-type CategoryMainType = DefaultCategoryType | "investment";
+export type DefaultCategoryType = "expense" | "income" | "advance" | "transfer" | "investment";
+type CategoryMainType = DefaultCategoryType;
 
 export type DefaultCategoryTemplate = {
   type: DefaultCategoryType;
@@ -12,7 +21,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-12-system-finance-categories-v2";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-14-system-category-roots-v6";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -55,7 +64,6 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   ]),
   expense: new Set([
     "还款",
-    "信用卡还款",
     "贷款还款",
     "贷款",
     "贷款本金",
@@ -68,6 +76,8 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "股票亏损",
   ]),
   advance: new Set(),
+  transfer: new Set(["转账", CREDIT_CARD_REPAYMENT_CATEGORY_NAME]),
+  investment: new Set(["投资", ...SYSTEM_INVESTMENT_CATEGORIES]),
 };
 
 function isSystemCategoryTemplate(type: DefaultCategoryType, name: string) {
@@ -110,6 +120,13 @@ export async function resolveCategorySnapshot(
   return category ?? null;
 }
 
+export function resolveCreditCardRepaymentCategory(writer: CategoryWriter, householdId: string) {
+  return resolveCategorySnapshot(writer, householdId, {
+    categoryName: CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
+    type: "transfer",
+  });
+}
+
 const rootCategoryRenames = [
   { type: "expense", from: "餐饮饮食", to: "餐饮费" },
   { type: "expense", from: "生活日用", to: "生活费" },
@@ -130,6 +147,7 @@ const categoryTypeLabels: Record<CategoryMainType, string> = {
   expense: "支出",
   income: "收入",
   advance: "代付",
+  transfer: "转账",
   investment: "投资",
 };
 
@@ -137,6 +155,7 @@ const categoryTypeFallbackNames: Record<CategoryMainType, string> = {
   expense: "其他支出",
   income: "其他收入",
   advance: "其他代付",
+  transfer: "其他转账",
   investment: "投资记录",
 };
 
@@ -209,7 +228,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "还款",
-    children: ["信用卡还款", "贷款还款"],
+    children: ["贷款还款"],
   },
   {
     type: "expense",
@@ -275,6 +294,18 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "advance",
     name: "朋友代付",
     children: ["朋友差旅费", "朋友代购费", "朋友其他代付"],
+  },
+  {
+    type: "transfer",
+    name: "转账",
+    isSystem: true,
+    children: [CREDIT_CARD_REPAYMENT_CATEGORY_NAME],
+  },
+  {
+    type: "investment",
+    name: "投资",
+    isSystem: true,
+    children: [...SYSTEM_INVESTMENT_CATEGORIES],
   },
 ];
 
@@ -343,7 +374,10 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
     await renameRootCategory(writer, householdId, item.type, item.from, item.to);
   }
 
+  await migrateCreditCardRepaymentCategoryType(writer, householdId);
   await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
+  await normalizeCreditCardRepaymentTransferCategories(writer, householdId);
+  await normalizeInvestmentTransactionCategories(writer, householdId);
 
   for (const category of defaultCategoryTemplates) {
     await normalizeSameNameChild(writer, householdId, category.type, category.name);
@@ -356,12 +390,92 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
   });
 }
 
+async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, householdId: string) {
+  const categories = await writer.category.findMany({
+    where: { householdId, type: "investment", name: { in: [...SYSTEM_INVESTMENT_CATEGORIES] } },
+    select: { id: true, name: true },
+  });
+  const categoryByName = new Map(categories.map((category) => [category.name, category]));
+  const canAutoClassify: Prisma.TxRecordWhereInput = {
+    OR: [
+      { categoryId: null },
+      { Category: { type: "investment", isSystem: true } },
+    ],
+  };
+
+  const assignments: Array<{ name: string; where: Prisma.TxRecordWhereInput }> = [
+    { name: SYSTEM_FUND_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] } } },
+    { name: SYSTEM_WEALTH_INVESTMENT_CATEGORY, where: { fundProductType: "wealth" } },
+    { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, where: { fundProductType: "deposit" } },
+    { name: SYSTEM_METAL_INVESTMENT_CATEGORY, where: { fundProductType: "metal" } },
+    { name: SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: null } },
+  ];
+
+  for (const assignment of assignments) {
+    const category = categoryByName.get(assignment.name);
+    if (!category) continue;
+    await writer.txRecord.updateMany({
+      where: {
+        householdId,
+        type: TransactionType.investment,
+        deletedAt: null,
+        AND: [canAutoClassify, assignment.where],
+      },
+      data: { categoryId: category.id, categoryName: category.name },
+    });
+  }
+}
+
+async function migrateCreditCardRepaymentCategoryType(writer: CategoryWriter, householdId: string) {
+  const categories = await writer.category.findMany({
+    where: { householdId, name: CREDIT_CARD_REPAYMENT_CATEGORY_NAME },
+    orderBy: [{ type: "asc" }, { id: "asc" }],
+    select: { id: true, type: true, parentId: true, isSystem: true },
+  });
+  if (categories.length === 0) return;
+
+  const target = categories.find((category) => category.type === "transfer") ?? categories[0]!;
+  if (target.type !== "transfer" || !target.isSystem) {
+    await writer.category.update({
+      where: { id: target.id },
+      data: { type: "transfer", isSystem: true },
+    });
+  }
+
+  for (const duplicate of categories) {
+    if (duplicate.id === target.id) continue;
+    await mergeCategoryInto(writer, householdId, duplicate.id, target.id, CREDIT_CARD_REPAYMENT_CATEGORY_NAME);
+  }
+}
+
+async function normalizeCreditCardRepaymentTransferCategories(writer: CategoryWriter, householdId: string) {
+  const category = await resolveCreditCardRepaymentCategory(writer, householdId);
+  if (!category) return;
+
+  await writer.txRecord.updateMany({
+    where: {
+      householdId,
+      type: TransactionType.transfer,
+      deletedAt: null,
+      account: {
+        kind: { in: [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewallet] },
+      },
+      toAccount: { kind: AccountKind.bank_credit },
+    },
+    data: {
+      categoryId: category.id,
+      categoryName: category.name,
+    },
+  });
+}
+
 function categoryNormalizationKey(householdId: string) {
   return `category_hierarchy_normalized:${householdId}`;
 }
 
 async function normalizeCategoryTypeLabelNodes(writer: CategoryWriter, householdId: string) {
   for (const type of Object.keys(categoryTypeLabels) as CategoryMainType[]) {
+    if (type === "transfer" || type === "investment") continue;
     await normalizeCategoryTypeLabelNode(writer, householdId, type);
   }
 }

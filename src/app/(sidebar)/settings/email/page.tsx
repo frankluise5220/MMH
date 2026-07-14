@@ -2,11 +2,13 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { createImportAccountResolver } from "@/lib/account-import-match";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
 type BatchReplacePopoverButtonComponent = typeof import("@/components/BatchReplacePopoverButton").BatchReplacePopoverButton;
@@ -217,6 +219,7 @@ type AccountCreateDraft = {
 };
 
 export default function EmailSettingsPage() {
+  const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -259,6 +262,7 @@ export default function EmailSettingsPage() {
   const [accountDraft, setAccountDraft] = useState<AccountCreateDraft | null>(null);
   const [savingAccountDraft, setSavingAccountDraft] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountId: string | null } | null>(null);
   const [mailRange, setMailRange] = useState("month");
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
@@ -463,7 +467,7 @@ export default function EmailSettingsPage() {
 
   async function listMails(accountId = selectedId) {
     if (!accountId) return;
-    setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null);
+    setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
@@ -505,7 +509,7 @@ export default function EmailSettingsPage() {
 
   async function fetchMail(uid: number, autoParse = false) {
     if (!selectedId) return;
-    setLoadingMails(true); setError(""); setParsedItems([]); setImportPreview(null);
+    setLoadingMails(true); setError(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
@@ -533,6 +537,7 @@ export default function EmailSettingsPage() {
     const sourceContent = buildStatementParseContent(mail, mail === selectedMail ? mailContent : (mail?.text || mail?.html || ""));
     if (!sourceContent) { setError("无邮件内容"); return; }
     setParsing(true); setError("");
+    setImportComplete(null);
     try {
       const res = await fetch("/api/v1/statement/parse", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -556,6 +561,7 @@ export default function EmailSettingsPage() {
   }
 
   async function importItems() {
+    if (importComplete) return;
     const sourceItems = importPreview
       ? importPreview.items
           .filter((row) => importPreview.selectedKeys.has(row.key))
@@ -573,7 +579,15 @@ export default function EmailSettingsPage() {
           })
       : parsedItems;
     if (!sourceItems.length) return;
+    const selectedAccountIds = importPreview
+      ? Array.from(new Set(importPreview.items
+          .filter((row) => importPreview.selectedKeys.has(row.key))
+          .map((row) => row.selectedAccountId ?? row.matchedAccountId ?? importPreview.statementAccountId)
+          .filter((id): id is string => Boolean(id))))
+      : [];
+    const targetAccountId = selectedAccountIds.length === 1 ? selectedAccountIds[0] : null;
     setImporting(true); setError("");
+    setImportComplete(null);
     try {
       const res = await fetch("/api/v1/statement/import", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -585,16 +599,33 @@ export default function EmailSettingsPage() {
         const accountText = createdAccounts.length
           ? `；已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}`
           : "";
-        setInfo(`导入完成: 创建 ${data.createdCount} 条, 跳过 ${data.skippedCount} 条${accountText}`);
+        const createdCount = data.createdCount ?? 0;
+        const skippedCount = data.skippedCount ?? 0;
+        setInfo(`导入完成: 创建 ${createdCount} 条, 跳过 ${skippedCount} 条${accountText}`);
         if ((data.skippedCount ?? 0) > 0) {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
           setError(firstError ? `有 ${data.skippedCount} 条未导入：${firstError}` : `有 ${data.skippedCount} 条未导入，请检查账户匹配。`);
         }
-        setParsedItems([]); setImportPreview(null);
+        setImportComplete({ created: createdCount, skipped: skippedCount, accountId: targetAccountId });
+        dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: targetAccountId ? [targetAccountId] : undefined });
       }
       else setError(data.error ?? "导入失败");
     } catch { setError("网络错误"); }
     finally { setImporting(false); }
+  }
+
+  function confirmImportComplete() {
+    const targetAccountId = importComplete?.accountId ?? null;
+    setParsedItems([]);
+    setImportPreview(null);
+    setImportComplete(null);
+    dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: targetAccountId ? [targetAccountId] : undefined });
+    if (targetAccountId) {
+      const account = bookAccounts.find((item) => item.id === targetAccountId);
+      const view = account?.kind === "bank_credit" ? "bill" : "detail";
+      router.push(`/?accountId=${encodeURIComponent(targetAccountId)}&view=${view}`);
+    }
+    router.refresh();
   }
 
   const selectedAccount = accounts.find(a => a.id === selectedId);
@@ -1057,7 +1088,7 @@ export default function EmailSettingsPage() {
           expandedGroupColumns: 4,
         },
       },
-      { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "输入收支机构" },
+      { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "银行或第三方支付机构" },
       { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额" },
       { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
     ];
@@ -1447,7 +1478,7 @@ export default function EmailSettingsPage() {
                   已识别 {importPreview.items.length} 条，默认选择可导入记录。信用卡会按账单中的姓名、银行、尾号、账单日自动匹配或生成账户。
                 </div>
               </div>
-              <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => setImportPreview(null)}>×</button>
+              <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => importComplete ? confirmImportComplete() : setImportPreview(null)}>×</button>
             </div>
 
             <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-2">
@@ -1655,11 +1686,26 @@ export default function EmailSettingsPage() {
               </table>
             </div>
 
-            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
-              <button className="h-9 px-4 rounded-md border border-slate-300 bg-white text-sm hover:bg-slate-50" onClick={() => setImportPreview(null)}>取消</button>
-              <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={importItems} disabled={importing || importPreview.selectedKeys.size === 0 || importPreview.items.some((row) => importPreview.selectedKeys.has(row.key) && !row.ready)}>
-                {importing ? "导入中…" : `确认导入 ${importPreview.selectedKeys.size} 条`}
-              </button>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-xs text-slate-500">
+                {importComplete ? "导入已完成，请确认后返回。" : `将导入 ${importPreview.selectedKeys.size} 条`}
+              </div>
+              <div className="flex items-center gap-2">
+                {!importComplete && (
+                  <button className="h-9 px-4 rounded-md border border-slate-300 bg-white text-sm hover:bg-slate-50" onClick={() => setImportPreview(null)}>
+                    取消
+                  </button>
+                )}
+                {importComplete ? (
+                  <button className="h-9 px-4 rounded-md bg-green-600 text-white text-sm hover:bg-green-700" onClick={confirmImportComplete}>
+                    {importComplete.accountId ? "确定并打开账户" : "确定并返回开始界面"}
+                  </button>
+                ) : (
+                  <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" onClick={importItems} disabled={importing || importPreview.selectedKeys.size === 0 || importPreview.items.some((row) => importPreview.selectedKeys.has(row.key) && !row.ready)}>
+                    {importing ? "导入中…" : `确认导入 ${importPreview.selectedKeys.size} 条`}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

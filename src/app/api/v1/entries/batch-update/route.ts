@@ -10,6 +10,8 @@ import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 /**
  * 批量更新交易记录
@@ -90,7 +92,25 @@ export async function POST(req: NextRequest) {
 
     const existingRecords = await prisma.txRecord.findMany({
       where: { id: { in: ids }, deletedAt: null, ...hidFilter },
-      select: { id: true, date: true, type: true, amount: true, fundSubtype: true, source: true, accountId: true, accountName: true, toAccountId: true, toAccountName: true, categoryId: true, categoryName: true, note: true, fundConfirmDate: true, fundArrivalDate: true },
+      select: {
+        id: true,
+        date: true,
+        type: true,
+        amount: true,
+        fundSubtype: true,
+        source: true,
+        accountId: true,
+        accountName: true,
+        account: { select: { id: true, name: true, kind: true, investProductType: true } },
+        toAccountId: true,
+        toAccountName: true,
+        toAccount: { select: { id: true, name: true, kind: true, investProductType: true } },
+        categoryId: true,
+        categoryName: true,
+        note: true,
+        fundConfirmDate: true,
+        fundArrivalDate: true,
+      },
     });
     const existingMap = new Map(existingRecords.map((record) => [record.id, record]));
     const notFoundIds = ids.filter((id) => !existingMap.has(id));
@@ -98,18 +118,25 @@ export async function POST(req: NextRequest) {
 
     const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
-      ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true } })
+      ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true } })
       : [];
     const accountById = new Map(accounts.map((account) => [account.id, account]));
+    const existingAccountById = new Map(
+      existingRecords.flatMap((record) => [record.account, record.toAccount].filter((account): account is NonNullable<typeof record.account> => !!account).map((account) => [account.id, account] as const)),
+    );
+    const resolveAccountMeta = (accountId: string | null | undefined) => {
+      const id = String(accountId ?? "").trim();
+      return id ? accountById.get(id) ?? existingAccountById.get(id) ?? null : null;
+    };
     const categoryIds = Array.from(new Set(updates.map((item) => String(item.categoryId ?? "").trim()).filter(Boolean)));
     const categories = categoryIds.length > 0
       ? await prisma.category.findMany({ where: { id: { in: categoryIds }, ...hidFilter }, select: { id: true, name: true } })
       : [];
     const categoryById = new Map(categories.map((category) => [category.id, category]));
+    const repaymentCategory = await resolveCreditCardRepaymentCategory(prisma, ctx.householdId);
 
     let updatedCount = 0;
     const changed: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }> = [];
-    let investChanged = false;
     const touchedRecordIds = new Set<string>();
     const balanceAccountIds = new Set<string>();
     const amountTouchedIds = new Set<string>();
@@ -120,8 +147,6 @@ export async function POST(req: NextRequest) {
       if (!existing) continue;
 
       const data: Record<string, unknown> = {};
-      if (existing.type === "investment") investChanged = true;
-
       if (existing.accountId) balanceAccountIds.add(existing.accountId);
       if (existing.toAccountId) balanceAccountIds.add(existing.toAccountId);
 
@@ -137,7 +162,6 @@ export async function POST(req: NextRequest) {
         if (!validTypes.has(typeValue)) return NextResponse.json({ ok: false, error: `交易类型不正确：${typeValue}` }, { status: 400 });
         data.type = typeValue;
         changed.push({ id, date: ymd(existing.date), oldValue: existing.type, newValue: typeValue, field: "type" });
-        if (typeValue === "investment") investChanged = true;
       }
 
       if (item.account !== undefined) {
@@ -197,7 +221,6 @@ export async function POST(req: NextRequest) {
           data.fundConfirmDate = null;
         }
         changed.push({ id, date: ymd(existing.date), oldValue: existing.fundConfirmDate ? ymd(existing.fundConfirmDate) : "", newValue: value, field: "fundConfirmDate" });
-        investChanged = true;
       }
 
       if (item.fundArrivalDate !== undefined) {
@@ -209,7 +232,6 @@ export async function POST(req: NextRequest) {
           data.fundArrivalDate = null;
         }
         changed.push({ id, date: ymd(existing.date), oldValue: existing.fundArrivalDate ? ymd(existing.fundArrivalDate) : "", newValue: value, field: "fundArrivalDate" });
-        investChanged = true;
       }
 
       if (item.cashAccountId !== undefined || item.fundAccountId !== undefined) {
@@ -233,7 +255,6 @@ export async function POST(req: NextRequest) {
             balanceAccountIds.add(cashAcc.id);
             changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: cashAcc.name, field: "cashAccount" });
           }
-          investChanged = true;
         }
 
         if (fundAccountId) {
@@ -250,7 +271,6 @@ export async function POST(req: NextRequest) {
             balanceAccountIds.add(fundAcc.id);
             changed.push({ id, date: ymd(existing.date), oldValue: existing.toAccountName ?? "-", newValue: fundAcc.name, field: "fundAccount" });
           }
-          investChanged = true;
         }
       }
 
@@ -263,8 +283,45 @@ export async function POST(req: NextRequest) {
         const signed = oldN < 0 ? -absNew : absNew;
         data.amount = signed;
         changed.push({ id, date: ymd(existing.date), oldValue: String(Math.abs(oldN)), newValue: String(absNew), field: "amount" });
-        investChanged = true;
         amountTouchedIds.add(id);
+      }
+
+      if ((data.type ?? existing.type) === TransactionType.investment) {
+        const finalAccountId = typeof data.accountId === "string" ? data.accountId : existing.accountId;
+        const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
+        const finalAccount = resolveAccountMeta(finalAccountId);
+        const finalToAccount = resolveAccountMeta(finalToAccountId);
+        const investmentAccount = finalToAccount?.kind === "investment"
+          ? finalToAccount
+          : finalAccount?.kind === "investment"
+            ? finalAccount
+            : null;
+        if (investmentAccount) {
+          data.fundProductType = investmentAccount.investProductType ?? existing.toAccount?.investProductType ?? existing.account?.investProductType ?? "fund";
+          data.fundSubtype = existing.fundSubtype ?? (finalToAccount?.id === investmentAccount.id ? "buy" : "redeem");
+          data.categoryId = null;
+          data.categoryName = null;
+        }
+      }
+
+      const finalType = String(data.type ?? existing.type);
+      const finalAccountId = typeof data.accountId === "string" ? data.accountId : existing.accountId;
+      const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
+      const finalAccount = resolveAccountMeta(finalAccountId);
+      const finalToAccount = resolveAccountMeta(finalToAccountId);
+      if (isCreditCardRepaymentTransfer({
+        type: finalType,
+        accountKind: finalAccount?.kind,
+        toAccountKind: finalToAccount?.kind,
+      })) {
+        data.categoryId = repaymentCategory?.id ?? null;
+        data.categoryName = repaymentCategory?.name ?? CREDIT_CARD_REPAYMENT_CATEGORY_NAME;
+      } else if (
+        existing.categoryName === CREDIT_CARD_REPAYMENT_CATEGORY_NAME &&
+        (item.type !== undefined || item.account !== undefined || item.toAccount !== undefined)
+      ) {
+        data.categoryId = null;
+        data.categoryName = null;
       }
 
       if (Object.keys(data).length === 0) continue;

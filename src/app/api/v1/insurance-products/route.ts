@@ -667,6 +667,7 @@ export async function PUT(req: NextRequest) {
     const accountingTypeRaw = String(body.accountingType ?? "asset").trim() as InsuranceAccountingType;
     const statusRaw = String(body.status ?? "active").trim() as InsuranceStatus;
     const policyNo = String(body.policyNo ?? "").trim() || null;
+    const effectiveDate = parseDate(body.effectiveDate);
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const institutionId = String(body.institutionId ?? "").trim() || null;
     const ownerGroupId = String(body.ownerGroupId ?? "").trim() || null;
@@ -741,9 +742,11 @@ export async function PUT(req: NextRequest) {
         data: {
           accountId: account.id,
           ownerGroupId: ownerGroup.id,
+          policyNo,
           policyholderPersonId: policyholderPerson?.id ?? null,
           insuredUserId: null,
           insuredPersonId: insuredPerson?.id ?? null,
+          effectiveDate,
           paymentTermYears,
           coverageAmount,
         },
@@ -782,9 +785,11 @@ export async function PUT(req: NextRequest) {
           id: updatedPolicy.id,
           accountId: updatedPolicy.accountId,
           ownerGroupId: updatedPolicy.ownerGroupId,
+          policyNo: updatedPolicy.policyNo,
           policyholderPersonId: updatedPolicy.policyholderPersonId,
           insuredUserId: updatedPolicy.insuredUserId,
           insuredPersonId: updatedPolicy.insuredPersonId,
+          effectiveDate: updatedPolicy.effectiveDate?.toISOString().slice(0, 10) ?? null,
           paymentTermYears: updatedPolicy.paymentTermYears ? Number(updatedPolicy.paymentTermYears) : null,
           coverageAmount: updatedPolicy.coverageAmount ? Number(updatedPolicy.coverageAmount) : null,
           accountName: account.name,

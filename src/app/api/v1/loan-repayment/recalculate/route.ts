@@ -152,7 +152,7 @@ export async function POST(req: Request) {
       where: {
         householdId,
         deletedAt: null,
-        source: "debt_borrow_in",
+        source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
         type: TransactionType.transfer,
         accountId: plan.accountId,
       },

@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Pencil, Shield, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
 import { formatMoney } from "@/lib/format";
 import {
@@ -22,7 +22,7 @@ import {
   BasicDetailSelectionProvider,
   useBasicDetailSelection,
 } from "./BasicDetailSelection";
-import { EntryRowActions } from "./EntryRowActions";
+import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import {
   InsurancePolicyEditModal,
   type InsurancePolicyEditMeta,
@@ -73,6 +73,7 @@ type InsuranceCashAccountOption = {
 type InsuranceHolding = {
   id: string;
   label: string;
+  policyNo?: string | null;
   startDate?: string | null;
   ownerName?: string;
   policyholderPersonId?: string | null;
@@ -82,6 +83,7 @@ type InsuranceHolding = {
   cashValue?: number | null;
   coverageAmount?: number | null;
   totalPremium?: number | null;
+  lastPremiumAmount?: number | null;
   status?: string | null;
   statusLabel?: string;
   frequencyLabel?: string;
@@ -106,6 +108,7 @@ type InsuranceHolding = {
 type InsuranceProductRow = {
   id: string;
   accountId?: string | null;
+  policyNo?: string | null;
   name: string;
   productType?: string | null;
   accountingType?: string | null;
@@ -141,6 +144,12 @@ function amountClass(value: number) {
 
 function stopRowClick(event: React.MouseEvent) {
   event.stopPropagation();
+}
+
+function todayLocalYmd() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
 }
 
 function normalizeInsuranceMetricMode(
@@ -236,6 +245,12 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
         fundSubtype: typeof entry.fundSubtype === "string" ? entry.fundSubtype : null,
       });
       const isRedeemEntry = insuranceAction === "refund";
+      const typeLabel =
+        isRedeemEntry
+          ? "回款"
+          : insuranceAction === "additional_premium"
+            ? "保全缴费"
+            : "续期";
       const rawAmount = Number(entry.amount ?? 0);
       const amount = isRedeemEntry ? Math.abs(rawAmount) : -Math.abs(rawAmount);
       const productName = getInsuranceProductName({
@@ -263,7 +278,7 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
       return {
         id: String(entry.id ?? ""),
         date: String(entry.date ?? ""),
-        typeLabel: isRedeemEntry ? "回款" : "续期",
+        typeLabel,
         productName,
         cashAccountLabel,
         cashAccountId,
@@ -312,10 +327,14 @@ function buildInsuranceHoldings(
     const totalPremium = relatedEntries
       .filter((entry) => entry.amount < 0)
       .reduce((sum, entry) => sum + Math.abs(entry.amount), 0);
+    const lastPremiumEntry = [...relatedEntries]
+      .filter((entry) => entry.amount < 0)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
 
     return {
       id: product.id,
       label: product.name,
+      policyNo: product.policyNo ?? null,
       startDate: sortedEntries[0]?.date ?? product.startDate ?? null,
       ownerName: product.policyholderPersonName ?? product.ownerGroupName ?? "",
       policyholderPersonId: product.policyholderPersonId ?? null,
@@ -325,6 +344,7 @@ function buildInsuranceHoldings(
       cashValue: metricMode === "coverage" ? null : balance,
       coverageAmount: product.coverageAmount ?? null,
       totalPremium,
+      lastPremiumAmount: lastPremiumEntry ? Math.abs(lastPremiumEntry.amount) : null,
       status: product.status ?? null,
       statusLabel: statusLabel(product.status),
       frequencyLabel: frequencyLabel(product.premiumFrequencyMonths),
@@ -353,11 +373,13 @@ function InsuranceEntryRecordsTable({
   rows,
   hasSelectedHolding,
   cashAccounts,
+  onRowDoubleClick,
 }: {
   columns: AdvancedDataTableColumn<InsuranceEntry>[];
   rows: InsuranceEntry[];
   hasSelectedHolding: boolean;
   cashAccounts: InsuranceCashAccountOption[];
+  onRowDoubleClick: (entry: InsuranceEntry) => void;
 }) {
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const accountOptions = useMemo(
@@ -377,6 +399,7 @@ function InsuranceEntryRecordsTable({
       fillHeight
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
+      onRowDoubleClick={onRowDoubleClick}
       batchActionSlot={
         <>
           <BasicDetailBatchReplaceButton
@@ -486,6 +509,7 @@ export function InsuranceShell({
         if (!previous) return holding;
         return {
           ...holding,
+          policyNo: holding.policyNo ?? previous.policyNo ?? null,
           ownerName: holding.ownerName || previous.ownerName,
           policyholderPersonId:
             holding.policyholderPersonId ?? previous.policyholderPersonId ?? null,
@@ -558,7 +582,7 @@ export function InsuranceShell({
         accountId?: string;
         cashAccountId?: string;
         insuranceProductId?: string | null;
-        insuranceAction?: "premium" | "refund";
+        insuranceAction?: InsuranceAction;
         insuranceProductName?: string;
         source?: string | null;
       }>).detail;
@@ -651,6 +675,34 @@ export function InsuranceShell({
     return currentEntries.filter((entry) => relatedIds.has(entry.id));
   }, [currentEntries, selectedHolding]);
 
+  const openInsurancePaymentModal = useCallback((insuranceAction: "premium" | "additional_premium") => {
+    if (!selectedHolding) return;
+    const recentCashAccountId =
+      [...visibleEntries]
+        .reverse()
+        .find((entry) => entry.amount < 0 && entry.cashAccountId)?.cashAccountId ??
+      cashAccounts[0]?.id ??
+      "";
+    const defaultAmount =
+      insuranceAction === "premium" && selectedHolding.lastPremiumAmount != null
+        ? String(selectedHolding.lastPremiumAmount)
+        : "";
+    setEntryEditValue({
+      id: "",
+      date: todayLocalYmd(),
+      amount: defaultAmount,
+      cashAccountId: recentCashAccountId,
+      coverageAmount:
+        selectedHolding.coverageAmount != null ? String(selectedHolding.coverageAmount) : "",
+      paymentTermYears:
+        selectedHolding.paymentTermYears != null ? String(selectedHolding.paymentTermYears) : "",
+      note: "",
+      insuranceAction,
+      insuranceProductId: selectedHolding.id,
+      insuranceProductName: selectedHolding.label,
+    });
+  }, [cashAccounts, selectedHolding, visibleEntries]);
+
   const holdingSummary = useMemo(() => {
     const totalCashValue = visibleHoldings.reduce(
       (sum, holding) => sum + (holding.cashValue ?? 0),
@@ -701,6 +753,8 @@ export function InsuranceShell({
 
     const policyholderPersonId = next.policyholderPersonId.trim() || null;
     const insuredPersonId = next.insuredPersonId.trim() || null;
+    const policyNo = next.policyNo.trim() || null;
+    const effectiveDate = next.effectiveDate.trim() || null;
     const paymentTermYears = parseOptionalNumber(next.paymentTermYears);
     const coverageAmount = parseOptionalNumber(next.coverageAmount);
 
@@ -712,6 +766,8 @@ export function InsuranceShell({
         body: JSON.stringify({
           id: next.id,
           mode: "policy",
+          policyNo,
+          effectiveDate,
           policyholderPersonId,
           policyholderPersonName: policyholderPersonId
             ? familyMemberOptionsState.find((item) => item.id === policyholderPersonId)?.label?.trim() || undefined
@@ -810,6 +866,7 @@ export function InsuranceShell({
         width: 240,
         minWidth: 160,
         filterText: (holding) => holding.label,
+        sortValue: (holding) => holding.label,
         render: (holding) => (
           <span className="block truncate font-medium text-slate-700" title={holding.label}>
             {holding.label}
@@ -817,14 +874,16 @@ export function InsuranceShell({
         ),
       },
       {
-        key: "ownerName",
-        label: "投保人",
-        width: 110,
-        minWidth: 84,
+        key: "policyNo",
+        label: "保单号",
+        width: 140,
+        minWidth: 96,
         hideable: true,
-        filterText: (holding) => holding.ownerName ?? "",
+        filterText: (holding) => holding.policyNo ?? "",
         render: (holding) => (
-          <span className="truncate text-slate-600">{holding.ownerName || "-"}</span>
+          <span className="block truncate tabular-nums text-slate-600" title={holding.policyNo ?? ""}>
+            {holding.policyNo || "-"}
+          </span>
         ),
       },
       {
@@ -834,19 +893,21 @@ export function InsuranceShell({
         minWidth: 84,
         hideable: true,
         filterText: (holding) => holding.insuredPersonName ?? "",
+        sortValue: (holding) => holding.insuredPersonName ?? "",
         render: (holding) => (
           <span className="truncate text-slate-600">{holding.insuredPersonName || "-"}</span>
         ),
       },
       {
-        key: "status",
-        label: "状态",
-        width: 96,
-        minWidth: 72,
+        key: "ownerName",
+        label: "投保人",
+        width: 110,
+        minWidth: 84,
         hideable: true,
-        filterText: (holding) => holding.statusLabel ?? "",
+        filterText: (holding) => holding.ownerName ?? "",
+        sortValue: (holding) => holding.ownerName ?? "",
         render: (holding) => (
-          <span className="text-slate-600">{holding.statusLabel || "-"}</span>
+          <span className="truncate text-slate-600">{holding.ownerName || "-"}</span>
         ),
       },
       {
@@ -856,19 +917,9 @@ export function InsuranceShell({
         minWidth: 88,
         hideable: true,
         filterText: (holding) => holding.startDate ?? "",
+        sortValue: (holding) => holding.startDate ?? "",
         render: (holding) => (
           <span className="tabular-nums text-slate-600">{holding.startDate || "-"}</span>
-        ),
-      },
-      {
-        key: "frequency",
-        label: "缴费频率",
-        width: 100,
-        minWidth: 78,
-        hideable: true,
-        filterText: (holding) => holding.frequencyLabel ?? "",
-        render: (holding) => (
-          <span className="text-slate-600">{holding.frequencyLabel || "-"}</span>
         ),
       },
       {
@@ -885,15 +936,16 @@ export function InsuranceShell({
         ),
       },
       {
-        key: "coverageTerm",
-        label: "保障年限",
-        width: 96,
-        minWidth: 74,
+        key: "lastPremiumAmount",
+        label: "末次缴费金额",
+        width: 128,
+        minWidth: 100,
         align: "right",
         hideable: true,
+        sortValue: (holding) => holding.lastPremiumAmount ?? -1,
         render: (holding) => (
-          <span className="tabular-nums text-slate-600">
-            {holding.coverageTermYears != null ? `${holding.coverageTermYears} 年` : "-"}
+          <span className="font-semibold tabular-nums text-slate-700">
+            {holding.lastPremiumAmount != null ? formatMoney(holding.lastPremiumAmount) : "-"}
           </span>
         ),
       },
@@ -903,6 +955,7 @@ export function InsuranceShell({
         width: 120,
         minWidth: 92,
         align: "right",
+        sortValue: (holding) => holding.totalPremium ?? 0,
         render: (holding) => (
           <span className="font-semibold tabular-nums text-slate-700">
             {formatMoney(holding.totalPremium ?? 0)}
@@ -945,10 +998,12 @@ export function InsuranceShell({
           <div className="flex items-center justify-end gap-1" onClick={stopRowClick}>
             <button
               type="button"
-              className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500 hover:text-blue-600"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
               onClick={() => {
                 setPolicyEditValue({
                   id: holding.id,
+                  policyNo: holding.policyNo ?? "",
+                  effectiveDate: holding.effectiveDate ?? holding.startDate ?? "",
                   policyholderPersonId:
                     holding.policyholderPersonId ??
                     familyMemberOptionsStateRef.current.find(
@@ -973,7 +1028,7 @@ export function InsuranceShell({
             </button>
             <button
               type="button"
-              className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500 hover:text-red-600"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-red-200 bg-white text-red-700 transition-colors hover:bg-red-50 hover:text-red-700"
               onClick={() => {
                 setDeletePolicyValue({
                   id: holding.id,
@@ -1118,10 +1173,10 @@ export function InsuranceShell({
               columns={holdingColumns}
               rows={visibleHoldings}
               rowKey={(holding) => holding.id}
-              minTableWidth={1360}
+              minTableWidth={1120}
               emptyText="暂无保单"
               showFilters={false}
-              showColumnVisibilityButton={false}
+              showColumnVisibilityButton
               fillHeight
               summaryRow={holdingSummaryRow}
               onRowClick={(holding) =>
@@ -1152,10 +1207,32 @@ export function InsuranceShell({
               <Shield className="h-4 w-4 text-blue-500" />
               投保记录
             </div>
-            <div className="text-xs text-slate-400">
-              {selectedHolding
-                ? `当前显示 ${visibleEntries.length} 条关联记录`
-                : "请先选择上方保单"}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!selectedHolding}
+                onClick={() => openInsurancePaymentModal("premium")}
+                title={selectedHolding ? "给当前保单手动记录一次续期保费" : "请先选择上方保单"}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                续期
+              </button>
+              <button
+                type="button"
+                className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!selectedHolding}
+                onClick={() => openInsurancePaymentModal("additional_premium")}
+                title={selectedHolding ? "对当前保单追加保全保费" : "请先选择上方保单"}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                追加
+              </button>
+              <div className="text-xs text-slate-400">
+                {selectedHolding
+                  ? `当前显示 ${visibleEntries.length} 条关联记录`
+                  : "请先选择上方保单"}
+              </div>
             </div>
           </div>
 
@@ -1169,6 +1246,10 @@ export function InsuranceShell({
                 rows={visibleEntries}
                 hasSelectedHolding={!!selectedHolding}
                 cashAccounts={cashAccounts}
+                onRowDoubleClick={(entry) => {
+                  if (!entry.edit) return;
+                  dispatchEntryEdit({ entryId: entry.id, edit: entry.edit });
+                }}
               />
             </div>
           </BasicDetailSelectionProvider>
@@ -1227,6 +1308,7 @@ export function InsuranceShell({
         onClose={() => setEntryEditValue(null)}
         onSaved={async (next) => {
           setEntryEditValue(next);
+          await refreshInsuranceData();
           dispatchFinanceDataChanged({ reason: "insurance-entry-save", accountIds: [accountId] });
         }}
       />

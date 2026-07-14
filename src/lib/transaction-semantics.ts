@@ -12,6 +12,7 @@ type StatementAccountLike = {
 };
 
 export const CREDIT_CARD_REPAYMENT_BUSINESS_TYPE = "credit_card_repayment" as const;
+export const CREDIT_CARD_REPAYMENT_CATEGORY_NAME = "信用卡还款" as const;
 export type CreditCardRepaymentBusinessType = typeof CREDIT_CARD_REPAYMENT_BUSINESS_TYPE;
 
 const REPAYMENT_SOURCE_ACCOUNT_KINDS = new Set(["cash", "bank_debit", "ewallet"]);

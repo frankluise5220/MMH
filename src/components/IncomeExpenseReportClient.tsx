@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ReportDetailTable } from "@/components/ReportDetailTable";
 import { ReportResizableSplit } from "@/components/ReportResizableSplit";
@@ -132,19 +132,40 @@ export function IncomeExpenseReportClient({
   const [activeDetails, setActiveDetails] = useState<IncomeExpenseReportDetails | null>(report.details);
   const [detailEntries, setDetailEntries] = useState<DetailEntry[]>(initialDetailEntries);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
-  const initialKey = useMemo(
-    () => `${report.start}:${report.end}:${report.groupBy}:${accountId}:${activeDetailKey(report.details)}`,
-    [accountId, report.details, report.end, report.groupBy, report.start],
+  const reportContextKey = useMemo(
+    () => `${report.start}:${report.end}:${report.groupBy}:${accountId}`,
+    [accountId, report.end, report.groupBy, report.start],
   );
+  const reportContextRef = useRef(reportContextKey);
+  const hasClientDetailSelectionRef = useRef(false);
+  const clientDetailKeyRef = useRef<string | null>(null);
+  const detailRequestSequenceRef = useRef(0);
 
   useEffect(() => {
+    const contextChanged = reportContextRef.current !== reportContextKey;
+    if (contextChanged) {
+      reportContextRef.current = reportContextKey;
+      hasClientDetailSelectionRef.current = false;
+      clientDetailKeyRef.current = null;
+      setActiveDetails(report.details);
+      setDetailEntries(initialDetailEntries);
+      setLoadingKey(null);
+      return;
+    }
+
+    if (hasClientDetailSelectionRef.current) {
+      if (!report.details || activeDetailKey(report.details) !== clientDetailKeyRef.current) return;
+      hasClientDetailSelectionRef.current = false;
+      clientDetailKeyRef.current = null;
+    }
     setActiveDetails(report.details);
     setDetailEntries(initialDetailEntries);
     setLoadingKey(null);
-  }, [initialDetailEntries, initialKey, report.details]);
+  }, [initialDetailEntries, report.details, reportContextKey]);
 
   async function selectDetail(detail: DetailSelection) {
     const key = detailKey(detail);
+    const requestSequence = ++detailRequestSequenceRef.current;
     setLoadingKey(key);
     try {
       const params = buildDetailSearch(currentReportQuery, detail);
@@ -153,19 +174,27 @@ export function IncomeExpenseReportClient({
       if (!res.ok || !data?.ok || !data.data) {
         throw new Error(data?.error ?? "查询明细失败");
       }
+      if (requestSequence !== detailRequestSequenceRef.current) return;
+      if (!data.data.details) throw new Error("当前筛选没有可显示的明细");
+      hasClientDetailSelectionRef.current = true;
+      clientDetailKeyRef.current = activeDetailKey(data.data.details);
       setActiveDetails(data.data.details);
       setDetailEntries(data.data.entries ?? []);
+      window.history.replaceState(window.history.state, "", `/reports?${params.toString()}`);
       window.requestAnimationFrame(() => {
         document.getElementById("report-details")?.scrollIntoView({ block: "nearest" });
       });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "查询明细失败");
     } finally {
-      setLoadingKey(null);
+      if (requestSequence === detailRequestSequenceRef.current) setLoadingKey(null);
     }
   }
 
   function clearDetails() {
+    detailRequestSequenceRef.current += 1;
+    hasClientDetailSelectionRef.current = false;
+    clientDetailKeyRef.current = null;
     setActiveDetails(null);
     setDetailEntries([]);
     window.history.pushState(null, "", buildClearUrl(currentReportQuery));

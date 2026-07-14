@@ -61,8 +61,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Insurance cash value belongs to the same family as balance/value displays.
 - Coverage amount must be shown separately from cash value/balance, not merged into one ambiguous metric.
 - Credit card amounts are liabilities and should follow the unified liability color/sign semantics.
-- Transfers from debit/cash asset accounts into credit card accounts remain transfer records in storage, but activity-type display and filters should recognize them as "信用卡还款" rather than ordinary transfers or a vague "还款".
-- Batch import must preserve "信用卡还款" as an explicit preview business type while saving it as `type=transfer`. Its payment source is limited to debit-card and e-wallet accounts, and its target is limited to credit-card accounts.
+- Transfers from cash/debit/e-wallet accounts into credit card accounts are internal transfers. Store and display them as `type=transfer`, set their category to "信用卡还款", and exclude them from income/expense statistics.
+- Batch import must preserve "信用卡还款" as an explicit preview business type while saving it as `type=transfer` with category "信用卡还款". Its payment source is limited to debit-card and e-wallet accounts, and its target is limited to credit-card accounts.
 - Bill import has two explicit modes. Regular-bill mode resolves the source and counter account for every row. Credit-card-statement mode uses one shared credit-card account for the whole file; spending/refunds belong to that card, while repayment rows separately select a debit-card or e-wallet source flowing into the shared card.
 - Credit card unbilled/current-cycle rows may show cycle expense and refund/income activity, but should not show a bill amount or expose manual bill-amount editing before the statement is generated.
 - Credit card billed-cycle rows that have been fully paid should show a clear settled marker in the repayment column, instead of requiring the user to infer settled status from amounts.
@@ -72,6 +72,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card sidebar account numbers should show the current bill balance after repayments and overpayment are applied (`cumulativeRemain - cumulativeOverpaid`), not the current statement bill amount (`effectiveBill`).
 - Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
 - Credit cards may also be the source side of an ordinary transfer. When the credit card is the source account, the row belongs to that credit card's statement month and counts as an outflow; only debit/e-wallet/cash transfers into a credit card should be labeled as credit-card repayment.
+- 信用卡与借记卡共用支出、收入、代付、转账四种记账语义。信用卡支出和收入沿用相同分类及正负方向；信用卡代付属于信用卡转出并进入对应账期；信用卡还款属于借记卡/现金/电子钱包转入信用卡的转账，分类为“信用卡还款”，不计入收支统计。
+- 信用卡账单列表和账单周期缓存默认只显示/生成到当前日期所属账期。未来分期还款流水可以保留在明细中，但不能把账单列表延展到未来年份。
 - Credit card email bill import should mark mail that has local import history as "已导入", but must still allow the user to preview and import it again. Use mailbox UID, envelope hash, and stable parsed statement fingerprint only for marking and user warning, not as a hard duplicate block.
 - Credit card views should expose an import entry in the visible detail/table workflow, not only inside the bill-summary mail-reading control.
 - A credit-card statement's card heading is the account identity for every transaction listed under that heading. Parse the institution, card display name, and last four digits from headings such as "平安银行美国运通耀红卡（2222） 主卡", use them to match the existing credit-card account, and do not silently replace that account with whichever account page opened the mail-import window. If a statement contains multiple primary or supplementary-card headings, apply each heading only to its following transaction block.
@@ -104,10 +106,13 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Categories
 
-- 收支分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付类型，也不区分上级分类。
+- 分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付、转账类型，也不区分一级、二级、三级或上级分类。二级和三级分类不能在不同父级下使用相同名称。
 - 分类树可以表达层级和归属，但不能靠不同父级来区分同名分类。
 - 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
-- 投资、还款、贷款等系统业务类别必须出现在收支类别列表中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
+- 投资、还款、贷款等系统业务类别必须出现在分类管理中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
+- 分类管理包含真正的“转账”系统父分类，“信用卡还款”是其子分类。分类管理用“转账”类型标题代表该父节点，避免重复显示两层“转账”。
+- 分类管理包含真正的“投资”系统父分类，基金投资、理财投资、存款投资、贵金属投资、其他投资是其子分类；投资买入、赎回和定投不计为普通收支，用户自定义的投资分类优先于自动系统分类。保险不统一归为投资：保费按保险支出、理赔/退保/满期领取按保险回款处理，只有未来明确建模的投连险投资账户部分才归投资。
+- 在往来款明细中删除任何一笔记录都只软删除所选记录。删除首笔借入/借出记录不能删除往来账户、后续明细、还款计划或利率调整；删除整个往来项目必须使用独立的项目/账户删除入口。
 - 基金、理财、存款卖出/赎回/支取收益不应额外生成一条现金收入流水。现金账户只体现真实到账金额；基金已实现收益保存在投资交易 `realizedProfit` 中，理财和存款收益按 `depositInterest - fundFee` 计算，手续费必须扣入净收益。投资买入本身属于资产转换，不应作为收支支出统计；收支报表/统计应只映射收益、亏损、分红、利息等结果项。
 - 统计项应优先挂接到收支分类树的分类 ID。普通交易使用保存的 `categoryId`，旧数据可按 `categoryName` 回挂；基金收益/亏损、理财收益/亏损、存款利息/手续费等派生统计项也必须解析到系统内置分类节点。分类名称只是显示兜底，不应成为长期统计主键。
 
@@ -132,6 +137,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Accounts
 
+- 银行理财买入时，理财账户只能使用资金来源账户的同机构账户，或同一所有人名下的第三方支付/钱包机构账户；不得选择其他银行的理财账户。新增理财产品时若同机构尚无理财账户，系统应继承资金来源账户的机构、所有人和币种自动建立并立即选中，已有账户则直接复用。
 - In cash/debit account entry, the counter/target account determines the business operation: normal cash targets save as transfers; fund/investment targets open investment entry; deposit targets open deposit-in/out entry; debt/settlement targets open borrow/lend/repay entry. Do not save these special targets as ordinary transfers.
 - Account uniqueness matters. Avoid allowing indistinguishable duplicate accounts when institution and name are the same and there is no differentiator such as last four digits.
 - Dropdown display names are not constrained by sidebar display settings. They should favor clarity.
@@ -144,7 +150,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - In ledger/batch import, the presence of a `对向账户`-style column means accounts are row-level transfer accounts and must not trigger the credit-card statement unified-account mode. If `付款账户`/`还款账户` and `信用卡账户` appear together, the payment account is the source and the credit-card account is the counter/target account.
 - When an account is created or edited, all fields that were previously entered must reliably round-trip back into the edit form.
 - Any account display that does not visibly include owner and account category must expose them in hover text, using an owner-qualified shape such as `墨斗鱼 · 微信·零钱 · 电子钱包`.
-- 往来对象在当前实现中可能同时服务于 `Institution(person/organization)` 和 `Counterparty` 两类旧/新入口。新增或编辑往来人员、往来组织时必须保持两边同步，避免普通记账、借入借出和系统设置看到不同对象列表。
+- 收支机构永远只表示银行和第三方支付机构（`bank`、`payment`、`ewallet`），不得包含往来人员、往来组织、家庭成员或其他往来对象。普通收入/支出/转账里的“收支机构”使用机构表；代付、借入借出、还款等往来款流程使用往来对象表和往来对象 SS。
+- 账户显示余额永远只计算到当前日期。账户列表、侧栏、概览、移动同步和账户 API 的余额不得提前纳入未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水；未来记录可以存在于明细或计划中，但不能改变今天的账户显示余额。
 
 ### Insurance
 
@@ -216,11 +223,14 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
   - one owned policy/holding table for one person's actual purchased policy under one insurer/account context
   - transaction records should ultimately link to the owned policy/holding record, not directly treat the reusable product master as the holding itself
 - Insurance policy list should include policyholder, insured person, total premium paid, cash value balance, coverage amount, and status.
+- Insurance policy number and effective date belong to the owned policy/holding, not to the reusable insurance product master. Policy creation and policy editing should preserve them for document reconciliation.
 - Insurance policy list summary should be a table-like summary row at the bottom: "汇总" in the policy-name column and totals under total premium, cash value balance, and coverage amount.
 - The lower insurance detail list should be called "投保记录", not generic "保险记录".
 - Selecting a policy should filter the lower detail list to only records linked to that policy.
 - Double-clicking a policy should open an edit dialog for policy name, policyholder, insured person, beneficiary, payment term, and related policy fields, using SS dropdowns where selection is needed.
 - Editing an insurance premium record should only edit premium date, funding account, non-editable insurance product/policy, premium amount with two decimals, and note.
+- Manual insurance renewal should be available from the selected policy's detail header as a policy-linked premium action. It creates another normal premium record under the existing policy and must not create a new policy.
+- Policy-level additional premium / preservation premium ("保全缴费") is a one-off policy-linked premium addition. It increases total premium paid and cash value/balance, stays under insurance expense, must not change coverage amount or payment term, and must not create or alter future premium plans.
 - Insurance create/edit dialogs must stay inside the viewport with a fixed full-screen overlay and scrollable body; they must not jump to the top of the page or overflow above the viewport.
 
 ### Deposits
@@ -234,7 +244,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Debt
 
-- Interest-free vehicle and other standalone loans use the explicit repayment method `免息分期还本`. They remain debt/borrowing records, not credit-card consumption installments. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
+- Loan creation distinguishes `资金到账` from `消费分期`. Cash-disbursed loans create a transfer into the selected cash account. Financed purchases such as vehicle loans establish the payable principal directly on the loan account and use the selected cash account only for future repayments; they must never increase that cash account balance.
+- Vehicle and other financed purchases remain loan liabilities with normal repayment plans, not credit-card installment plans. Their initial source is `debt_financed_purchase`; principal is recognized when the financed purchase occurs, while later repayments reduce the liability without counting principal again.
+- Interest-free vehicle and other standalone financed purchases may use the explicit repayment method `免息分期还本`. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
 
 - Debt/claim displays should match the user mental model for personal/family finance, not corporate finance wording.
 - Names such as borrower/lender, borrowed/lent, or institution/person context matter and should be chosen carefully.
@@ -278,10 +290,13 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit-card bill mode is either separate or consolidated. Consolidated mode groups credit cards by household and institution, including inactive cards so historical bills remain stable, while preserving each transaction's concrete card account. Selecting any card in that group shows one combined bill and all group details.
 - Consolidated bill cycles and manual bill overrides use one stable representative account resolved by shared server logic. Shared credit limits or institution-wide credit utilization are not inferred from consolidated billing.
 
+- Credit-card installments have two explicit entries: `消费分期` in new credit-card expense entry, and `账单分期` on a posted statement row. Do not merge them into one ambiguous entry.
 - Credit-card expense entry may create an installment plan for all or only part of the purchase. The original purchase remains unchanged; the financed principal is offset in its original statement, then installment principal plus fee/interest is added to each statement exactly once.
+- A posted statement may convert all or part of its unpaid balance into a statement installment. Keep every original purchase unchanged, offset only the financed principal in the source statement, and add installments from the next statement month. The unfinanced balance remains due normally.
+- Statement installments are owned by credit-card account plus source statement month, not by an arbitrary purchase. Current/unposted cycles and settled statements cannot create statement installments; a consolidated statement allows only one active plan for the same source month.
 - Credit-card installments store structured plan and row fields. Do not infer installment number, principal, fee, or plan identity from notes.
 - Installment rate input must distinguish annual interest from a per-period fee rate because these are not equivalent financial meanings.
-- Deleting or restoring the source purchase must delete or restore the linked offset and all installment rows together.
+- Deleting or restoring the source purchase or any generated installment row must cancel or restore the linked offset and all installment rows together.
 
 - The product should reduce user operations wherever defaults can be inferred from institution, owner, account type, prior records, or current page context.
 - Bill import has one user-facing upload entry. During parsing, the system automatically chooses regular-bill mode or credit-card-statement mode from the file structure and account content.

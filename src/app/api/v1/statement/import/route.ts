@@ -8,6 +8,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { expandImportBankName, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
+import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 
 export const runtime = "nodejs";
 
@@ -277,8 +278,8 @@ async function findInstitution(tx: Db, householdId: string, institutionName?: st
   const key = normalizeInstitutionKey(name);
   if (!targetKeys.includes(key)) targetKeys.push(key);
   const institutions = await tx.institution.findMany({
-    where: { householdId },
-    select: { id: true, name: true, shortName: true },
+    where: { householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
+    select: { id: true, name: true, shortName: true, type: true },
   });
   return institutions.find((item) => {
     const itemKeys = [
@@ -590,7 +591,7 @@ async function resolveInstitution(tx: Db, householdId: string, institutionName?:
   const name = String(institutionName ?? "").trim();
   if (!name) return { id: null as string | null, name: null as string | null };
   const found = await findInstitution(tx, householdId, name);
-  return { id: found?.id ?? null, name };
+  return { id: found?.id ?? null, name: found ? name : null };
 }
 
 function buildNote(item: ParsedItem) {

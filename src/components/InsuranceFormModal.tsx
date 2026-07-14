@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
@@ -45,6 +44,7 @@ type InsuranceProductOption = {
   institutionId?: string | null;
   institutionName?: string | null;
   institutionShortName?: string | null;
+  policyNo?: string | null;
   productType?: string | null;
   accountingType?: string | null;
   policyholderPersonId?: string | null;
@@ -234,6 +234,7 @@ function mapInsuranceProduct(item: Record<string, unknown>): InsuranceProductOpt
     institutionId: nullableStringFromRecord(item, "institutionId"),
     institutionName: nullableStringFromRecord(item, "institutionName"),
     institutionShortName: nullableStringFromRecord(item, "institutionShortName"),
+    policyNo: nullableStringFromRecord(item, "policyNo"),
     productType: nullableStringFromRecord(item, "productType"),
     accountingType: nullableStringFromRecord(item, "accountingType"),
     policyholderPersonId: nullableStringFromRecord(item, "policyholderPersonId"),
@@ -292,7 +293,6 @@ export function InsuranceFormModal({
   cashAccountSSOptions?: SmartSelectOption[];
   nestedFieldData?: NestedFieldData;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
@@ -316,6 +316,7 @@ export function InsuranceFormModal({
 
   const [insuranceProductId, setInsuranceProductId] = useState(mode === "edit" ? (entry?.insuranceProductId ?? "") : "");
   const [productType, setProductType] = useState("savings");
+  const [policyNo, setPolicyNo] = useState("");
   const [policyholderPersonId, setPolicyholderPersonId] = useState("");
   const [insuredPersonId, setInsuredPersonId] = useState("");
   const [beneficiaryPersonId, setBeneficiaryPersonId] = useState("");
@@ -617,6 +618,7 @@ export function InsuranceFormModal({
     setEditEntryId(null);
     setInsuranceProductId("");
     setProductType("savings");
+    setPolicyNo("");
     setPolicyholderPersonId("");
     setInsuredPersonId("");
     setBeneficiaryPersonId("");
@@ -779,6 +781,7 @@ export function InsuranceFormModal({
         fundName: selectedInsuranceProduct.label || undefined,
         insuranceProductId: selectedInsuranceProduct.isMaster ? undefined : selectedInsuranceProduct.id,
         insuranceProductMasterId: selectedInsuranceProduct.isMaster ? selectedInsuranceProduct.productMasterId : undefined,
+        policyNo: !isEdit && subtype === "buy" ? policyNo.trim() || undefined : undefined,
         policyholderPersonId: policyholderPersonId || undefined,
         policyholderPersonName: selectedPolicyholderName || undefined,
         insuredPersonId: insuredPersonId || undefined,
@@ -820,7 +823,6 @@ export function InsuranceFormModal({
       if (!isEdit) resetForm();
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "insurance-save" });
-        setTimeout(() => router.refresh(), 120);
       });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存失败");
@@ -1081,7 +1083,16 @@ export function InsuranceFormModal({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">保单号</div>
+                      <input
+                        value={policyNo}
+                        onChange={(event) => setPolicyNo(event.target.value)}
+                        placeholder="可选"
+                        className="form-input"
+                      />
+                    </div>
                     <div className="space-y-1">
                       <div className="form-label">交款方式</div>
                       <select

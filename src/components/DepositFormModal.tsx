@@ -115,6 +115,7 @@ export function DepositFormModal({
   mode = "create",
   accountId: defaultAccountId,
   entry,
+  openSignal,
   cashAccounts = [],
   investmentAccounts = [],
   cashAccountSSOptions,
@@ -128,6 +129,7 @@ export function DepositFormModal({
   mode?: "create" | "edit";
   accountId: string;
   entry?: Entry;
+  openSignal?: number;
   cashAccounts?: AccountOption[];
   investmentAccounts?: AccountOption[];
   cashAccountSSOptions?: SmartSelectOption[];
@@ -224,6 +226,10 @@ export function DepositFormModal({
   useEffect(() => {
     setLocalDepositSSOpts(investmentAccountSSOptions);
   }, [investmentAccountSSOptions]);
+
+  useEffect(() => {
+    if (mode === "edit" && entry && openSignal) setOpen(true);
+  }, [entry, mode, openSignal]);
 
   const redeemDepositOptions = useMemo(
     () => depositAccountList.filter((option) => isDepositLikeOption(option)),

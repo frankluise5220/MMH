@@ -13,6 +13,10 @@
  * - 服务端会按当前账簿或系统字典校验品种和单位，并回写 metalTypeName / metalUnitName。
  * - 贵金属不使用 fundCode / fundUnits / fundNav 作为事实字段。
  *
+ * 保险投保:
+ * - 选择 insuranceProductMasterId 创建新保单时可接收 policyNo，写入保单层 InsuranceProduct.policyNo。
+ * - policyNo 属于保单，不属于可复用保险产品主数据。
+ *
  * 接受的实体类型: TxRecord.id
  *
  * 认证方式（混合）：
@@ -26,16 +30,20 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
+import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundConfirmDays, getFundArrivalDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
-import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
+import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
+import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
@@ -46,10 +54,16 @@ import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
-import { statementMonthForTransfer } from "@/lib/transaction-semantics";
-import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 
 export const runtime = "nodejs";
+const DETAIL_LIST_MAX_PAGE_SIZE = 5000;
+const TX_EDIT_TRANSACTION_OPTIONS = {
+  maxWait: 15_000,
+  timeout: 20_000,
+} as const;
 
 /* ────────────────── HELPERS ────────────────── */
 
@@ -65,6 +79,43 @@ function parseMoney(val: unknown): number {
 function positiveNumber(value: unknown) {
   const n = toNumber(value);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function resolveAccountDisplayBalance(
+  account: { id: string; kind: AccountKind; balance: unknown; investProductType?: string | null; billingDay?: number | null },
+  hidFilter: { householdId?: string },
+) {
+  if (isPureInvestmentAccount(account)) {
+    const householdId = hidFilter.householdId;
+    if (!householdId) return toNumber(account.balance);
+    const balances = await computeInvestBalances({ hidFilter: { householdId }, householdId, user: null });
+    return balances.get(account.id)?.marketValue ?? toNumber(account.balance);
+  }
+
+  if (account.kind === AccountKind.insurance) {
+    const balances = await computeInsuranceAccountDisplayBalances([account.id], hidFilter);
+    return balances.get(account.id) ?? toNumber(account.balance);
+  }
+
+  if (account.kind === AccountKind.bank_credit && account.billingDay) {
+    const cycle = await prisma.creditCardCycle.findFirst({
+      where: { accountId: account.id, isCurrentCycle: true },
+      select: { cumulativeRemain: true, cumulativeOverpaid: true },
+    });
+    return cycle
+      ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
+      : toNumber(account.balance);
+  }
+
+  const balances = await computeAccountDisplayBalances([
+    {
+      id: account.id,
+      kind: account.kind,
+      investProductType: account.investProductType,
+      billingDay: account.billingDay,
+    },
+  ], hidFilter);
+  return balances.get(account.id) ?? toNumber(account.balance);
 }
 
 function insurancePremiumTotalCycles(paymentTermYears: unknown, premiumFrequencyMonths: number) {
@@ -383,7 +434,7 @@ export async function GET(req: Request) {
   const accountId = (url.searchParams.get("accountId") ?? "").trim();
   const entryId = (url.searchParams.get("id") ?? "").trim();
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-  const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), 200);
+  const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), DETAIL_LIST_MAX_PAGE_SIZE);
 
   try {
     const { hidFilter } = await getHouseholdScope();
@@ -396,6 +447,7 @@ export async function GET(req: Request) {
           EntryTag: { include: { Tag: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
+          CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
         },
       });
       if (!record || record.deletedAt || record.householdId !== hidFilter.householdId) {
@@ -458,6 +510,8 @@ export async function GET(req: Request) {
         installmentPrincipal: record.installmentPrincipal ? toNumber(record.installmentPrincipal) : null,
         installmentInterest: record.installmentInterest ? toNumber(record.installmentInterest) : null,
         installmentRole: record.installmentRole,
+        installmentSourceType: record.CreditCardInstallmentPlan?.sourceType ?? null,
+        installmentSourceStatementMonth: record.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
         source: record.source,
         entryTags: mapEntryTags(record),
         linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
@@ -488,6 +542,7 @@ export async function GET(req: Request) {
           EntryTag: { include: { Tag: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
+          CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
         },
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       }),
@@ -497,6 +552,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
     }
 
+    const accountDisplayBalance = await resolveAccountDisplayBalance(account, hidFilter);
     const orderedEntries = [...allEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
     const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     const runningBalanceById = new Map<string, number>();
@@ -566,6 +622,8 @@ export async function GET(req: Request) {
       installmentPrincipal: e.installmentPrincipal ? toNumber(e.installmentPrincipal) : null,
       installmentInterest: e.installmentInterest ? toNumber(e.installmentInterest) : null,
       installmentRole: e.installmentRole,
+      installmentSourceType: e.CreditCardInstallmentPlan?.sourceType ?? null,
+      installmentSourceStatementMonth: e.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
       source: e.source,
       entryTags: mapEntryTags(e),
     }));
@@ -574,7 +632,7 @@ export async function GET(req: Request) {
       ok: true,
       data: {
         accountId: account.id,
-        accountBalance: toNumber(account.balance),
+        accountBalance: accountDisplayBalance,
         totalCount,
         page,
         pageSize,
@@ -594,7 +652,7 @@ export async function GET(req: Request) {
  * 创建交易记录
  *
  * Body (JSON):
- *   type: "expense" | "income" | "transfer" | "investment"
+ *   type: "expense" | "income" | "advance" | "transfer" | "investment"
  *   date: string (YYYY-MM-DD)
  *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
  *   amount: number
@@ -618,6 +676,7 @@ export async function GET(req: Request) {
  *   fundArrivalDate?: string (YYYY-MM-DD)
  *   fundArrivalAmount?: number
  *   cashAccountId?: string
+ *   counterpartyInstitutionId?: string (expense/income uses bank/payment institution id; advance uses Counterparty.id or legacy Institution.id)
  *   source?: string (default "manual")
  *
  * 返回: { ok: true, data: { id, ... } } | { ok: false, error }
@@ -654,7 +713,55 @@ export async function POST(req: Request) {
     let createdPlanId: string | undefined;
     let changedInvestment = false;
 
-    if (type === "transfer") {
+    if (type === "advance") {
+      const accountId = String(body.accountId ?? "").trim();
+      const categoryId = String(body.categoryId ?? "").trim();
+      if (!accountId || !counterpartyInstitutionId) {
+        return NextResponse.json({ ok: false, error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
+      }
+      let advanceAccountId = "";
+      await prisma.$transaction(async (tx) => {
+        const [acc, cat] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId } }),
+          resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
+        ]);
+        if (!acc) throw new Error("账户不存在");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
+          householdId,
+          cashAccountId: acc.id,
+          debtObjectId: counterpartyInstitutionId,
+        });
+        advanceAccountId = resolvedAdvance.account.id;
+        const statementMonth =
+          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
+            ? toStatementMonth(date, acc.billingDay)
+            : null;
+        const created = await tx.txRecord.create({
+          data: {
+            householdId,
+            accountId: acc.id,
+            accountName: acc.name,
+            toAccountId: resolvedAdvance.account.id,
+            toAccountName: resolvedAdvance.account.name,
+            categoryId: cat?.id ?? null,
+            categoryName: cat?.name ?? null,
+            counterpartyInstitutionId: resolvedAdvance.objectId,
+            counterpartyInstitutionName: resolvedAdvance.objectName,
+            amount: -amountAbs,
+            type: TransactionType.transfer,
+            date,
+            statementMonth,
+            source: "advance",
+            note: note || "代付",
+          },
+        });
+        createdId = created.id;
+        await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+      });
+      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
+      if (advanceAccountId) await recalcAndSaveAccountBalance(advanceAccountId).catch(logger.catchLog("操作失败", "route.ts"));
+    } else if (type === "transfer") {
       const fromAccountId = String(body.fromAccountId ?? body.accountId ?? "").trim();
       const toAccountId = String(body.toAccountId ?? "").trim();
       if (!fromAccountId || !toAccountId) {
@@ -676,6 +783,13 @@ export async function POST(req: Request) {
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
+        const repaymentCategory = isCreditCardRepaymentTransfer({
+          type: TransactionType.transfer,
+          accountKind: fromAcc.kind,
+          toAccountKind: toAcc.kind,
+        })
+          ? await resolveCreditCardRepaymentCategory(tx, householdId)
+          : null;
 
         const created = await tx.txRecord.create({
           data: {
@@ -686,6 +800,8 @@ export async function POST(req: Request) {
             amount: -amountAbs,
             type: TransactionType.transfer,
             date,
+            categoryId: repaymentCategory?.id ?? null,
+            categoryName: repaymentCategory?.name ?? null,
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
@@ -704,8 +820,13 @@ export async function POST(req: Request) {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
       const counterpartyInstitution = counterpartyInstitutionId
-        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        ? await prisma.institution.findFirst({
+            where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
+          })
         : null;
+      if (counterpartyInstitutionId && !counterpartyInstitution) {
+        return NextResponse.json({ ok: false, error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+      }
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -747,8 +868,13 @@ export async function POST(req: Request) {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
       const counterpartyInstitution = counterpartyInstitutionId
-        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        ? await prisma.institution.findFirst({
+            where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
+          })
         : null;
+      if (counterpartyInstitutionId && !counterpartyInstitution) {
+        return NextResponse.json({ ok: false, error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+      }
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -857,7 +983,10 @@ export async function POST(req: Request) {
             : (String(body.source ?? "manual").trim() || "manual");
       const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
       const isInsurance = sourceValue === "insurance";
-      if (!accountId && fundProductType !== "deposit" && !isInsurance) {
+      const insuranceActionForEntry = isInsurance
+        ? (redeemLike ? "refund" : normalizeInsuranceAction(body.insuranceAction, "premium"))
+        : null;
+      if (!accountId && fundProductType !== "deposit" && fundProductType !== "wealth" && !isInsurance) {
         return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
       }
       if (isInsurance && !insuranceProductId && !insuranceProductMasterId && !ownerGroupId && !String(body.policyholderPersonId ?? "").trim()) {
@@ -885,9 +1014,15 @@ export async function POST(req: Request) {
                 cashAccountId: cashAccountIdInput,
                 fundName: fundNameInput || note || null,
               })
-            : accountId
-              ? await tx.account.findUnique({ where: { id: accountId } })
-              : null;
+            : fundProductType === "wealth" && finalFundSubtype === FundSubtype.buy
+              ? await resolveOrCreateWealthAccount(tx, {
+                  householdId,
+                  cashAccountId: cashAccountIdInput ?? "",
+                  requestedAccountId: accountId || null,
+                })
+              : accountId
+                ? await tx.account.findUnique({ where: { id: accountId } })
+                : null;
 
         if (isInsurance) {
           const policyholderPersonIdInput = String(body.policyholderPersonId ?? "").trim() || null;
@@ -895,6 +1030,7 @@ export async function POST(req: Request) {
           const policyholderPersonName = String(body.policyholderPersonName ?? "").trim() || null;
           const insuredPersonName = String(body.insuredPersonName ?? "").trim() || null;
           const beneficiaryName = String(body.beneficiaryName ?? "").trim() || null;
+          const policyNo = String(body.policyNo ?? "").trim() || null;
           const policyholderPerson = await ensureFamilyMemberInstitutionInTx({
             tx,
             householdId,
@@ -934,6 +1070,7 @@ export async function POST(req: Request) {
                 ownerGroupId: resolvedOwnerGroupId,
                 institutionId: productMaster.institutionId,
                 productMasterId: productMaster.id,
+                policyNo,
                 name: productMaster.name,
                 shortName: productMaster.shortName,
                 productType: productMaster.productType,
@@ -1027,7 +1164,7 @@ export async function POST(req: Request) {
         if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
         const wealthProduct = fundProductType === "wealth"
           ? (wealthProductIdInput
-              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
               : fundNameInput
                 ? await tx.wealthProduct.findFirst({
                     where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
@@ -1046,7 +1183,7 @@ export async function POST(req: Request) {
         const isMetalProduct = fundProductType === "metal";
         const entryFundCode = isMetalProduct ? null : fundCode || null;
         const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode || null;
-        const isInsurancePremiumBuy = isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike;
+        const isInsurancePremiumBuy = isInsurance && insuranceActionForEntry === "premium" && finalFundSubtype === FundSubtype.buy && !redeemLike;
         const premiumFrequencyMonths = insuranceProductForPlan
           ? Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0)
           : 0;
@@ -1071,6 +1208,7 @@ export async function POST(req: Request) {
           !shouldUseInsurancePremiumPlan &&
           isInsurance &&
           insuranceProductId &&
+          insuranceActionForEntry === "premium" &&
           finalFundSubtype === FundSubtype.buy &&
           !redeemLike
         ) {
@@ -1230,9 +1368,7 @@ export async function POST(req: Request) {
             metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
             metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
             insuranceProductId: insuranceProductId ?? undefined,
-            insuranceAction: isInsurance
-              ? (redeemLike ? "refund" : "premium")
-              : undefined,
+            insuranceAction: insuranceActionForEntry ?? undefined,
             insuranceProductName: isInsurance ? entryFundName : undefined,
             fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
             fundSubtype: finalFundSubtype,
@@ -1246,7 +1382,9 @@ export async function POST(req: Request) {
             fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
             fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
             fundArrivalAmount: fundArrivalAmount ?? undefined,
-            note: note || (isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike ? `保险缴费：${entryFundName}` : undefined),
+            note: note || (isInsurance && finalFundSubtype === FundSubtype.buy && !redeemLike
+              ? `${insuranceActionForEntry === "additional_premium" ? "保全缴费" : "保险缴费"}：${entryFundName}`
+              : undefined),
             householdId,
           },
         });
@@ -1405,7 +1543,7 @@ export async function POST(req: Request) {
  *   date?: string (YYYY-MM-DD)
  *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
  *   amount?: number
- *   type?: "expense" | "income" | "transfer" | "investment"
+ *   type?: "expense" | "income" | "advance" | "transfer" | "investment"
  *   accountId?: string
  *   categoryId?: string
  *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and debt targets must use their specialized transaction payloads.)
@@ -1467,6 +1605,7 @@ export async function PUT(req: Request) {
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;
     let investmentAccId: string | undefined;
+    let advanceAccountId: string | undefined;
     let changedInvestment = false;
 
     await prisma.$transaction(async (tx) => {
@@ -1499,6 +1638,13 @@ export async function PUT(req: Request) {
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
+        const repaymentCategory = isCreditCardRepaymentTransfer({
+          type: TransactionType.transfer,
+          accountKind: fromAcc.kind,
+          toAccountKind: toAcc.kind,
+        })
+          ? await resolveCreditCardRepaymentCategory(tx, householdId)
+          : null;
 
         await tx.txRecord.update({
           where: { id: entryId },
@@ -1508,8 +1654,8 @@ export async function PUT(req: Request) {
             accountName: fromAcc.name,
             toAccountId: toAcc.id,
             toAccountName: toAcc.name,
-            categoryId: null,
-            categoryName: null,
+            categoryId: repaymentCategory?.id ?? null,
+            categoryName: repaymentCategory?.name ?? null,
             statementMonth: transferStatementMonth,
             date,
             postedAt: null,
@@ -1545,6 +1691,14 @@ export async function PUT(req: Request) {
     const isBuyFailedRefund = subtype === "buy_failed" && sourceValue === "regular_invest_refund";
     const cashReceivingLike = redeemLike || subtype === "dividend_cash" || isBuyFailedRefund;
     const isInsuranceEdit = sourceValue === "insurance";
+    const insuranceActionForEdit = isInsuranceEdit
+      ? (redeemLike
+          ? "refund"
+          : normalizeInsuranceAction(
+              body.insuranceAction,
+              entry.insuranceAction === "additional_premium" ? "additional_premium" : "premium",
+            ))
+      : null;
 
     let investAcc = isInsuranceEdit && !accountIdFormData
       ? null
@@ -1575,6 +1729,15 @@ export async function PUT(req: Request) {
           data: { accountId: investAcc.id },
         });
       }
+    }
+
+    if (productType === "wealth" && !cashReceivingLike) {
+      const requestedCashAccountId = cashAccountIdFormData || (entry.accountId !== investAcc?.id ? entry.accountId : "");
+      investAcc = await resolveOrCreateWealthAccount(tx, {
+        householdId,
+        cashAccountId: requestedCashAccountId,
+        requestedAccountId: investAcc?.id ?? (accountIdFormData || null),
+      });
     }
 
     if (!investAcc) throw new Error("请选择投资账户");
@@ -1611,7 +1774,7 @@ export async function PUT(req: Request) {
     const fundNameInput = String(body.fundName ?? "").trim();
     const wealthProduct = productType === "wealth"
       ? (wealthProductIdInput
-          ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+          ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
           : fundNameInput
             ? await tx.wealthProduct.findFirst({
                 where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
@@ -1714,9 +1877,7 @@ export async function PUT(req: Request) {
             metalUnitPrice: isMetalProduct ? metalUnitPriceInput : null,
             metalFee: isMetalProduct ? (metalFeeInput ?? (hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.metalFee != null ? toNumber(entry.metalFee) : null)) : null,
             insuranceProductId,
-            insuranceAction: isInsuranceEdit
-              ? (redeemLike ? "refund" : "premium")
-              : entry.insuranceAction,
+            insuranceAction: insuranceActionForEdit ?? entry.insuranceAction,
             insuranceProductName: isInsuranceEdit
               ? (resolvedInsuranceProductName ?? entry.insuranceProductName ?? entry.fundName)
               : entry.insuranceProductName,
@@ -1796,13 +1957,66 @@ if (!isInsuranceEdit || isInsuranceAccount(investAcc)) {
 return;
       }
 
+      if (type === "advance") {
+        const accountId = String(body.accountId ?? "").trim();
+        const categoryId = String(body.categoryId ?? "").trim();
+        if (!accountId) throw new Error("请选择资金账户");
+        if (!counterpartyInstitutionId) throw new Error("请选择往来对象");
+        const [acc, cat] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId } }),
+          resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
+        ]);
+        if (!acc) throw new Error("账户不存在");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
+          householdId,
+          cashAccountId: acc.id,
+          debtObjectId: counterpartyInstitutionId,
+        });
+        advanceAccountId = resolvedAdvance.account.id;
+        const statementMonth =
+          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
+            ? toStatementMonth(date, acc.billingDay)
+            : null;
+        await tx.txRecord.update({
+          where: { id: entryId },
+          data: {
+            amount: -amountAbs,
+            accountId: acc.id,
+            accountName: acc.name,
+            toAccountId: resolvedAdvance.account.id,
+            toAccountName: resolvedAdvance.account.name,
+            categoryId: cat?.id ?? null,
+            categoryName: cat?.name ?? null,
+            counterpartyInstitutionId: resolvedAdvance.objectId,
+            counterpartyInstitutionName: resolvedAdvance.objectName,
+            statementMonth,
+            date,
+            postedAt: null,
+            type: TransactionType.transfer,
+            source: "advance",
+            note: note || "代付",
+            toNote: null,
+            fundCode: null,
+            fundProductType: null,
+            fundSubtype: null,
+          },
+        });
+        return;
+      }
+
       if (type !== "expense" && type !== "income") throw new Error("类型不正确");
 
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
       const counterpartyInstitution = counterpartyInstitutionId
-        ? await prisma.institution.findFirst({ where: { id: counterpartyInstitutionId, householdId } })
+        ? await tx.institution.findFirst({
+            where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
+          })
         : null;
+      if (counterpartyInstitutionId && !counterpartyInstitution) {
+        throw new Error("收支机构只能选择银行或第三方支付机构");
+      }
       const keepFundDetail = body.keepFundDetail === true;
 
       const [acc, cat] = await Promise.all([
@@ -1879,7 +2093,7 @@ return;
           note: note || null,
         },
       });
-    });
+    }, TX_EDIT_TRANSACTION_OPTIONS);
 
     if (changedInvestment) {
       await syncFundTransactionsFromTxRecords([entryId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
@@ -1899,6 +2113,10 @@ return;
       if (investmentAccId) accountsToRecalc.add(investmentAccId);
       const cashId = String(body.cashAccountId ?? "").trim();
       if (cashId) accountsToRecalc.add(cashId);
+    } else if (type === "advance") {
+      const accountId = String(body.accountId ?? "").trim();
+      if (accountId) accountsToRecalc.add(accountId);
+      if (advanceAccountId) accountsToRecalc.add(advanceAccountId);
     } else if (type === "expense" || type === "income") {
       const accountId = String(body.accountId ?? "").trim();
       if (accountId) accountsToRecalc.add(accountId);

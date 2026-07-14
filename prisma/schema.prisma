@@ -167,6 +167,7 @@ model Category {
   other_Category Category[] @relation("CategoryToCategory")
   transactions   TxRecord[]
 
+  @@unique([householdId, name])
   @@index([householdId, type, name])
 }
 
@@ -198,25 +199,28 @@ model CreditCardCycle {
 }
 
 model CreditCardInstallmentPlan {
-  id                   String                        @id @default(cuid())
+  id                   String                          @id @default(cuid())
   householdId          String
   accountId            String
-  sourceEntryId        String                        @unique
-  originalAmount       Decimal                       @db.Decimal(18, 2)
-  installmentPrincipal Decimal                       @db.Decimal(18, 2)
+  sourceType           CreditCardInstallmentSourceType @default(transaction)
+  sourceEntryId        String?                         @unique
+  sourceStatementMonth String?                         @db.VarChar(7)
+  originalAmount       Decimal                         @db.Decimal(18, 2)
+  installmentPrincipal Decimal                         @db.Decimal(18, 2)
   totalRuns            Int
   rateType             CreditCardInstallmentRateType
-  rate                 Decimal                       @default(0) @db.Decimal(10, 6)
-  firstStatementMonth  String                        @db.VarChar(7)
-  status               CreditCardInstallmentStatus   @default(active)
-  createdAt            DateTime                      @default(now())
-  updatedAt            DateTime                      @default(now()) @updatedAt
-  Account              Account                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  Household            Household                     @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  SourceEntry          TxRecord                      @relation("CreditCardInstallmentSource", fields: [sourceEntryId], references: [id], onDelete: Cascade)
-  Entries              TxRecord[]                    @relation("CreditCardInstallmentEntries")
+  rate                 Decimal                         @default(0) @db.Decimal(10, 6)
+  firstStatementMonth  String                          @db.VarChar(7)
+  status               CreditCardInstallmentStatus     @default(active)
+  createdAt            DateTime                        @default(now())
+  updatedAt            DateTime                        @default(now()) @updatedAt
+  Account              Account                         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household            Household                       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  SourceEntry          TxRecord?                       @relation("CreditCardInstallmentSource", fields: [sourceEntryId], references: [id], onDelete: Cascade)
+  Entries              TxRecord[]                      @relation("CreditCardInstallmentEntries")
 
   @@index([householdId, accountId, status])
+  @@index([householdId, accountId, sourceType, sourceStatementMonth, status])
   @@index([firstStatementMonth])
 }
 
@@ -1082,6 +1086,11 @@ enum TransactionType {
 enum CreditCardInstallmentRateType {
   annual_interest
   period_fee
+}
+
+enum CreditCardInstallmentSourceType {
+  transaction
+  statement
 }
 
 enum CreditCardInstallmentStatus {

@@ -9,7 +9,6 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 import { kindLabel } from "@/lib/account-kinds";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -214,7 +213,6 @@ export function InvestmentFormModal({
   hideTrigger?: boolean;
   fundUnitsDecimals?: number | null;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 3);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
@@ -1463,11 +1461,16 @@ export function InvestmentFormModal({
   }
 
   useEffect(() => {
-    if (mode !== "create" || !openSignal) return;
+    if (!openSignal) return;
+    if (mode === "edit" && entry) {
+      setOpen(true);
+      return;
+    }
+    if (mode !== "create") return;
     resetForCreate(false, { preferDefaults: true });
     setOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openSignal]);
+  }, [entry, mode, openSignal]);
 
   async function handleFundCodeBlur() {
     if (!open) return;
@@ -1760,14 +1763,12 @@ export function InvestmentFormModal({
         }
         requestAnimationFrame(() => {
           dispatchFinanceDataChanged({ reason: "investment-save" });
-          setTimeout(() => router.refresh(), 120);
         });
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
         requestAnimationFrame(() => {
           dispatchFinanceDataChanged({ reason: "investment-save" });
-          setTimeout(() => router.refresh(), 120);
         });
       }
     } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
@@ -1788,7 +1789,6 @@ export function InvestmentFormModal({
       if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "investment-delete", deletedEntryIds: [entry.id] });
-        setTimeout(() => router.refresh(), 120);
       });
     } catch {
       window.alert("删除失败");

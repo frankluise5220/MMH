@@ -1,4 +1,4 @@
-export type InsuranceAction = "premium" | "refund";
+export type InsuranceAction = "premium" | "additional_premium" | "refund";
 
 type InsuranceEntryLike = {
   readonly source?: string | null;
@@ -14,10 +14,19 @@ export function isInsuranceEntry(entry: InsuranceEntryLike) {
 
 export function getInsuranceAction(entry: InsuranceEntryLike): InsuranceAction {
   if (entry.insuranceAction === "refund") return "refund";
+  if (entry.insuranceAction === "additional_premium") return "additional_premium";
   if (entry.insuranceAction === "premium") return "premium";
   return entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out"
     ? "refund"
     : "premium";
+}
+
+export function normalizeInsuranceAction(value: unknown, fallback: InsuranceAction = "premium"): InsuranceAction {
+  const raw = String(value ?? "").trim();
+  if (raw === "refund") return "refund";
+  if (raw === "additional_premium") return "additional_premium";
+  if (raw === "premium") return "premium";
+  return fallback;
 }
 
 export function isInsuranceRefund(entry: InsuranceEntryLike) {

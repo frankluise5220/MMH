@@ -4,6 +4,7 @@ import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 export type MonthlySummaryRow = {
   month: string;
@@ -34,6 +35,7 @@ export async function getMonthlySummary(
   });
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
+  const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
 
   const accountFilter = accountIds
     ? { OR: [{ accountId: { in: accountIds } }, { toAccountId: { in: accountIds } }] }
@@ -51,6 +53,8 @@ export async function getMonthlySummary(
       date: true,
       type: true,
       amount: true,
+      source: true,
+      insuranceAction: true,
       fundSubtype: true,
       fundProductType: true,
       realizedProfit: true,
@@ -82,9 +86,20 @@ export async function getMonthlySummary(
     } else if (e.type === TransactionType.expense) {
       row.expense += getIncomeExpenseStatisticAmount(e.type, amount);
     } else if (e.type === TransactionType.transfer) {
+      if (isCreditCardRepaymentTransfer({
+        type: e.type,
+        accountKind: accountKindById.get(e.accountId),
+        toAccountKind: accountKindById.get(e.toAccountId ?? ""),
+      })) continue;
       if (isToSelf && !isFromSelf) row.income += Math.abs(amount);
       else if (isFromSelf && !isToSelf) row.expense += Math.abs(amount);
     } else if (e.type === TransactionType.investment) {
+      if (e.source === "insurance") {
+        const value = Math.abs(amount);
+        if (e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out") row.income += value;
+        else row.expense += value;
+        continue;
+      }
       for (const item of getInvestmentStatisticItems(e)) {
         row.investPnL += item.type === "income" ? item.amount : -item.amount;
       }

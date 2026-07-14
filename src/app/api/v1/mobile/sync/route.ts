@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
+import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 
 export const runtime = "nodejs";
 
@@ -175,6 +180,7 @@ export async function GET(req: Request) {
           installmentPrincipal: true,
           installmentInterest: true,
           installmentRole: true,
+          CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
           source: true,
           deletedAt: true,
           updatedAt: true,
@@ -346,6 +352,37 @@ export async function GET(req: Request) {
       fundFeeRates.length > limit ||
       regularInvestPlans.length > limit ||
       fundNav.length > limit;
+    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+      computeInvestBalances(scope),
+      computeAccountDisplayBalances(
+        accountBatch
+          .filter((account) => !isPureInvestmentAccount(account))
+          .map((account) => ({
+            id: account.id,
+            kind: account.kind,
+            investProductType: account.investProductType,
+            billingDay: account.billingDay,
+          })),
+        scope.hidFilter,
+      ),
+      prisma.creditCardCycle.findMany({
+        where: {
+          accountId: { in: accountBatch.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+          isCurrentCycle: true,
+        },
+        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+      }),
+      computeInsuranceAccountDisplayBalances(
+        accountBatch.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
+        scope.hidFilter,
+      ),
+    ]);
+    const currentCreditBalanceByAccountId = new Map(
+      currentCreditCycles.map((cycle) => [
+        cycle.accountId,
+        toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+      ]),
+    );
 
     return NextResponse.json(
       {
@@ -355,7 +392,13 @@ export async function GET(req: Request) {
         accounts: accountBatch.map((account) => ({
           id: account.id,
           name: account.name,
-          balance: toNumber(account.balance),
+          balance: isPureInvestmentAccount(account)
+            ? investBalByAccountId.get(account.id)?.marketValue ?? 0
+            : account.kind === AccountKind.insurance
+              ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
+              : account.kind === AccountKind.bank_credit && account.billingDay
+                ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
+                : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
           kind: account.kind,
           debtDirection: account.debtDirection,
           currency: account.currency,
@@ -412,6 +455,8 @@ export async function GET(req: Request) {
             installmentPrincipal: tx.installmentPrincipal == null ? null : toNumber(tx.installmentPrincipal),
             installmentInterest: tx.installmentInterest == null ? null : toNumber(tx.installmentInterest),
             installmentRole: tx.installmentRole,
+            installmentSourceType: tx.CreditCardInstallmentPlan?.sourceType ?? null,
+            installmentSourceStatementMonth: tx.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
             source: tx.source,
             updatedAt: tx.updatedAt.toISOString(),
           })),

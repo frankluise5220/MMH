@@ -1,7 +1,7 @@
 import { TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
+import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
@@ -230,7 +230,10 @@ export async function getIncomeExpenseReport(
       where: {
         ...hidFilter,
         deletedAt: null,
-        type: { in: [TransactionType.income, TransactionType.expense] },
+        OR: [
+          { type: { in: [TransactionType.income, TransactionType.expense] } },
+          { type: TransactionType.investment, source: "insurance" },
+        ],
         date: { gte: rangeStart, lt: endExclusive },
         ...accountFilter,
       },
@@ -239,6 +242,9 @@ export async function getIncomeExpenseReport(
         date: true,
         type: true,
         amount: true,
+        source: true,
+        insuranceAction: true,
+        fundSubtype: true,
         categoryId: true,
         categoryName: true,
         accountId: true,
@@ -368,16 +374,23 @@ export async function getIncomeExpenseReport(
   }
 
   const statisticRecords: ReportStatisticRecord[] = records.map((record) => {
-    const type: ReportCategoryType = record.type === TransactionType.income ? "income" : "expense";
+    const isInsurance = record.source === "insurance";
+    const insuranceType: ReportCategoryType =
+      record.insuranceAction === "refund" || record.fundSubtype === "redeem" || record.fundSubtype === "switch_out"
+        ? "income"
+        : "expense";
+    const type: ReportCategoryType = isInsurance
+      ? insuranceType
+      : record.type === TransactionType.income ? "income" : "expense";
     return {
       id: record.id,
       entryId: record.id,
       canEdit: true,
       date: record.date,
       type,
-      amount: getIncomeExpenseStatisticAmount(record.type, record.amount),
-      categoryId: record.categoryId,
-      categoryName: record.categoryName?.trim() || null,
+      amount: isInsurance ? Math.abs(toNumber(record.amount)) : getIncomeExpenseStatisticAmount(record.type, record.amount),
+      categoryId: isInsurance ? null : record.categoryId,
+      categoryName: isInsurance ? (type === "income" ? "保险回款" : "保险支出") : record.categoryName?.trim() || null,
       accountId: record.accountId,
       accountName: record.accountName,
       counterpartyName: record.counterpartyInstitutionName,

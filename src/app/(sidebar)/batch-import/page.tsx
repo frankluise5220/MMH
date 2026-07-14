@@ -15,6 +15,7 @@ import {
   normalizeImportAccountMatchKey,
 } from "@/lib/account-import-match";
 import { kindLabel } from "@/lib/account-kinds";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
@@ -127,6 +128,12 @@ type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counte
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
 type FundImportKind = "normal" | "fund" | null;
+type ImportCompletionState = {
+  count: number;
+  href: string | null;
+  accountIds: string[];
+  kind: "normal" | "fund";
+};
 type ServerImportProgress = {
   total: number;
   processed: number;
@@ -836,7 +843,7 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       : explicitCounterAccount || ((sourceAccount || paymentAccount) && creditAccount ? creditAccount : "");
     const remark = readAny(row, ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途"]);
     const category = readAny(row, ["分类", "category"]);
-    const institution = readAny(row, ["收支机构", "机构", "商户", "merchant", "institution"]);
+    const institution = readAny(row, ["收支机构", "机构", "institution"]);
     const tags = readAny(row, ["标签", "tags"]);
     const majorTypeText = readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]);
     const majorType = parseMajorType(majorTypeText);
@@ -1105,6 +1112,7 @@ export default function BatchImportPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [uploadDebug, setUploadDebug] = useState<string | null>(null);
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([]);
+  const [importCompletion, setImportCompletion] = useState<ImportCompletionState | null>(null);
   const [editingCell, setEditingCell] = useState<{ idx: number; field: EditableCell } | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<FilterColumn | null>(null);
   const [columnFilters, setColumnFilters] = useState<Partial<Record<FilterColumn, string[]>>>({});
@@ -1328,6 +1336,12 @@ export default function BatchImportPage() {
     const account = matchedId ? accountById.get(matchedId) : undefined;
     return account && accountMatchesPickerRole(account, role) ? accountDisplayLabel(account) : current;
   }, [accountById, accountDisplayLabel, accountMatchesPickerRole, findMatchedAccountId]);
+
+  const accountHref = useCallback((accountId: string) => {
+    const account = accountById.get(accountId);
+    const view = account?.kind === "bank_credit" ? "bill" : "detail";
+    return `/?accountId=${encodeURIComponent(accountId)}&view=${view}`;
+  }, [accountById]);
 
   const accountCellTitle = useCallback((value: string, role: AccountPickerRole = "any") => {
     const current = value.trim();
@@ -1747,6 +1761,21 @@ export default function BatchImportPage() {
     }
     return "";
   }, [activeBillMode, getItem, items.length]);
+
+  const importCompletionTargetForRows = useCallback((indexes: number[]) => {
+    const accountIds = new Set<string>();
+    for (const idx of indexes) {
+      const item = getItem(idx);
+      const primaryAccount = previewAccountValuesForItem(item).account;
+      const accountId = findMatchedAccountId(primaryAccount);
+      if (accountId) accountIds.add(accountId);
+    }
+    const ids = Array.from(accountIds);
+    return {
+      accountIds: ids,
+      href: ids.length === 1 ? accountHref(ids[0]) : null,
+    };
+  }, [accountHref, findMatchedAccountId, getItem, previewAccountValuesForItem]);
 
   const updateCreditStatementAccount = useCallback((value: string) => {
     setDrafts((prev) => {
@@ -2214,6 +2243,7 @@ export default function BatchImportPage() {
     }
     const selectedIndexes = importTargetIndexes;
     const selectedItems = selectedIndexes.map((idx) => normalizeAccountFieldsForImport(normalizeForStorage(getItem(idx))));
+    const completionTarget = importCompletionTargetForRows(selectedIndexes);
     const missingCounterAccountCount = selectedItems.filter((item) => item.type === "transfer" && (!item.fromAccount?.trim() || !item.toAccount?.trim())).length;
     if (importErrorIssues.length > 0) {
       postImportDebugLog(importTraceIdRef.current, "validation_blocked", {
@@ -2242,6 +2272,7 @@ export default function BatchImportPage() {
     }
     setImporting(true);
     setImportedCount(0);
+    setImportCompletion(null);
     setMessage(formatText("batchImport.importingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
     setImportProgress({
@@ -2332,6 +2363,12 @@ export default function BatchImportPage() {
           : "",
         redirectNote: "",
       }));
+      setImportCompletion({
+        count: success,
+        href: completionTarget.href,
+        accountIds: completionTarget.accountIds,
+        kind: "normal",
+      });
       sessionStorage.removeItem("batchImportItems");
     } catch (error) {
       postImportDebugLog(importTraceIdRef.current, "import_failed", {
@@ -2351,7 +2388,7 @@ export default function BatchImportPage() {
     } finally {
       progressController.abort();
     }
-  }, [activeBillMode, formatText, getItem, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, items.length, normalizeAccountFieldsForImport, previewValidationProgress, previewValidationRunning, t]);
+  }, [activeBillMode, formatText, getItem, importCompletionTargetForRows, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, items.length, normalizeAccountFieldsForImport, previewValidationProgress, previewValidationRunning, t]);
 
   const handleFundImport = useCallback(async () => {
     if (importing) return;
@@ -2386,6 +2423,7 @@ export default function BatchImportPage() {
     }
 
     setImporting(true);
+    setImportCompletion(null);
     setMessage(formatText("batchImport.fundImportingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
 
@@ -2409,23 +2447,20 @@ export default function BatchImportPage() {
       const success = data.createdCount ?? selectedItems.length;
       setMessage(formatText("batchImport.fundImportSuccess", {
         count: success,
-        redirectNote: t("batchImport.openingInvestmentList"),
+        redirectNote: "",
       }));
-      setTimeout(() => {
-        setFundUploadItems([]);
-        setFundPreviewItems([]);
-        setFundRuleRows([]);
-        setFundRulesDirty(false);
-        setFundSelected(new Set());
-        setActiveImportKind(null);
-        router.push("/invest");
-      }, 1500);
+      setImportCompletion({
+        count: success,
+        href: "/invest",
+        accountIds: selectedItems.map((item) => item.fundAccountId).filter((id): id is string => Boolean(id)),
+        kind: "fund",
+      });
     } catch (error) {
       setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
       setImporting(false);
     }
-  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, formatText, t, router]);
+  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, formatText, t]);
 
   const handleCancel = useCallback(() => {
     sessionStorage.removeItem("batchImportItems");
@@ -2448,7 +2483,23 @@ export default function BatchImportPage() {
     setMessage(null);
     setUploadDebug(null);
     setImportProgress(null);
+    setImportCompletion(null);
   }, []);
+
+  const handleImportCompletionConfirm = useCallback(() => {
+    const completion = importCompletion;
+    if (!completion) return;
+    dispatchFinanceDataChanged({
+      reason: completion.kind === "fund" ? "fund-batch-import" : "batch-import",
+      accountIds: completion.accountIds.length > 0 ? completion.accountIds : undefined,
+    });
+    const href = completion.href;
+    handleCancel();
+    if (href) {
+      router.push(href);
+    }
+    router.refresh();
+  }, [handleCancel, importCompletion, router]);
 
   const renderColumnFilter = (column: FilterColumn, label: string) => {
     const selectedValues = columnFilters[column] ?? [];
@@ -2521,16 +2572,16 @@ export default function BatchImportPage() {
         <div className="flex items-center gap-2">
           {items.length > 0 && (
             <button
-              onClick={handleCancel}
+              onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
               className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
             >
-              {t("batchImport.clear")}
+              {importCompletion ? t("common.ok") : t("batchImport.clear")}
             </button>
           )}
           {items.length > 0 && (
             <button
               onClick={handleImport}
-              disabled={importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
+              disabled={Boolean(importCompletion) || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
               className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
@@ -2570,9 +2621,19 @@ export default function BatchImportPage() {
         </div>
       )}
 
-      {importedCount > 0 && (
-        <div className="mx-4 mt-4 p-3 bg-green-50 border border-green-200 rounded-md text-green-700 text-sm">
-          {formatText("batchImport.importSuccessRedirect", { count: importedCount })}
+      {importCompletion && (
+        <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+          <div>
+            <div>{formatText("batchImport.importSuccessRedirect", { count: importCompletion.count })}</div>
+            <div className="mt-0.5 text-xs text-green-600">{t("batchImport.importCompleteConfirmHint")}</div>
+          </div>
+          <button
+            type="button"
+            onClick={handleImportCompletionConfirm}
+            className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700"
+          >
+            {importCompletion.href ? t("batchImport.importCompleteOpenAccount") : t("batchImport.importCompleteBackToStart")}
+          </button>
         </div>
       )}
 
@@ -2686,14 +2747,14 @@ export default function BatchImportPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handleCancel}
+                  onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
                   className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
                 >
-                  {t("common.cancel")}
+                  {importCompletion ? t("common.ok") : t("common.cancel")}
                 </button>
                 <button
                   onClick={handleImport}
-                  disabled={uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
+                  disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
                   className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
@@ -3135,14 +3196,14 @@ export default function BatchImportPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handleCancel}
+                  onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
                   className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
                 >
-                  {t("common.cancel")}
+                  {importCompletion ? t("common.ok") : t("common.cancel")}
                 </button>
                 <button
                   onClick={handleFundImport}
-                  disabled={uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
+                  disabled={Boolean(importCompletion) || uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
                   className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundSelected.size })}

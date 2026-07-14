@@ -4,6 +4,7 @@ import { buildAccountDisplayOption, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
@@ -188,6 +189,15 @@ export async function computeOverviewSummary(
     ...legacyDepositAccounts.map((account) => ({ ...account, summaryKind: "deposit" })),
   ];
   const dailyAccountIds = dailyAccounts.map((account) => account.id);
+  const dailyAndDebtDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+    [...dailyAccounts, ...debtAccounts].map((account) => ({
+      id: account.id,
+      kind: account.kind,
+      investProductType: account.investProductType,
+      billingDay: account.billingDay,
+    })),
+    hidFilter,
+  );
 
   let monthIncome = 0;
   let monthExpense = 0;
@@ -238,7 +248,7 @@ export async function computeOverviewSummary(
       id: account.id,
       name: display.label,
       kind: account.summaryKind,
-      balance: toNumber(account.balance),
+      balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
       institutionName: display.institutionName,
     };
@@ -281,7 +291,7 @@ export async function computeOverviewSummary(
     creditIds.length > 0
       ? await prisma.creditCardCycle.findMany({
           where: { accountId: { in: creditIds }, isCurrentCycle: true },
-          select: { accountId: true, effectiveBill: true, paid: true, cumulativeRemain: true, dueDate: true },
+          select: { accountId: true, effectiveBill: true, paid: true, cumulativeRemain: true, cumulativeOverpaid: true, dueDate: true },
         })
       : [];
   const cycleByAccountId = new Map(currentCycles.map((cycle) => [cycle.accountId, cycle]));
@@ -299,9 +309,11 @@ export async function computeOverviewSummary(
       },
       creditCardLabelTemplate,
     );
-    const balance = toNumber(account.balance);
     const creditLimit = toNumber(account.creditLimit);
     const cycle = cycleByAccountId.get(creditStorageIdByAccountId.get(account.id) ?? account.id);
+    const balance = cycle
+      ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
+      : toNumber(account.balance);
 
     return {
       id: account.id,
@@ -339,7 +351,7 @@ export async function computeOverviewSummary(
       id: account.id,
       name: display.label,
       kind: account.kind,
-      balance: toNumber(account.balance),
+      balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
       institutionName: display.institutionName,
     };

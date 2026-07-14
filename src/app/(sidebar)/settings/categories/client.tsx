@@ -14,12 +14,12 @@ type Category = {
 };
 
 const typeLabel = (t: string) =>
-  t === "expense" ? "支出" : t === "income" ? "收入" : t === "advance" ? "代付" : t === "investment" ? "投资" : t;
+  t === "expense" ? "支出" : t === "income" ? "收入" : t === "advance" ? "代付" : t === "transfer" ? "转账" : t === "investment" ? "投资" : t;
 
 const typeColor = (t: string) =>
   t === "expense" ? "text-red-600" : t === "income" ? "text-emerald-600" : t === "advance" ? "text-amber-600" : "text-blue-600";
 
-const TYPE_ORDER = ["expense", "income", "advance"] as const;
+const TYPE_ORDER = ["expense", "income", "advance", "transfer", "investment"] as const;
 
 export default function SettingsCategoriesClient({
   categories: initialCategories,
@@ -425,33 +425,38 @@ export default function SettingsCategoriesClient({
           {TYPE_ORDER.map(type => {
             const typeKey = `type:${type}`;
             const typeRoots = roots.filter(c => c.type === type);
+            const systemTypeRoot = typeRoots.find(root => root.isSystem && root.name === typeLabel(type));
+            const visibleRoots = systemTypeRoot ? getChildren(systemTypeRoot.id) : typeRoots;
+            const addParentId = systemTypeRoot?.id ?? "__root__";
             const isExpanded = expanded.has(typeKey);
 
             return (
               <div key={type} className="mb-0.5">
                 <div
                   onClick={() => {
-                    if (typeRoots.length > 0) toggleExpand(typeKey);
-                    else openAdd("__root__", type);
+                    if (visibleRoots.length > 0 || systemTypeRoot) toggleExpand(typeKey);
+                    else openAdd(addParentId, type);
                   }}
                   className="flex items-center gap-1 px-3 py-1.5 cursor-pointer hover:bg-slate-50 rounded">
-                  {typeRoots.length > 0 ? (
+                  {visibleRoots.length > 0 || systemTypeRoot ? (
                     isExpanded ? <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" /> : <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
                   ) : <span className="w-3" />}
                   <span className={`text-xs font-semibold ${typeColor(type)} flex-1`}>{typeLabel(type)}</span>
-                  <span className="text-[10px] text-slate-400">{typeRoots.length}</span>
-                  <button onClick={(e) => { e.stopPropagation(); openAdd("__root__", type); }}
+                  <span className="text-[10px] text-slate-400">{visibleRoots.length}</span>
+                  <button onClick={(e) => { e.stopPropagation(); openAdd(addParentId, type); }}
                     className="h-5 w-5 flex items-center justify-center rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 shrink-0"
                     title="创建一级分类">
                     <Plus className="w-3 h-3" />
                   </button>
                 </div>
 
-                {addingUnder === "__root__" && addingType === type && (
+                {addingUnder === addParentId && addingType === type && (
                   <div className="px-3 py-1">
                     <EntityCreateForm
                       mode="full" layout="inline" entityType="category"
+                      defaultParentId={systemTypeRoot?.id}
                       defaultType={type}
+                      parentCategories={parentCategoryOptions}
                       extraFields={{ type }}
                       hiddenFields={["type", "parentId"]}
                       onCreated={handleCategoryCreated}
@@ -460,7 +465,7 @@ export default function SettingsCategoriesClient({
                   </div>
                 )}
 
-                {isExpanded && typeRoots.map(root => renderCategory(root, 1))}
+                {isExpanded && visibleRoots.map(root => renderCategory(root, 1))}
               </div>
             );
           })}

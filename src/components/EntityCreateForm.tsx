@@ -128,6 +128,8 @@ const CATEGORY_TYPES = [
   { value: "expense", label: "支出" },
   { value: "income", label: "收入" },
   { value: "advance", label: "代付" },
+  { value: "transfer", label: "转账" },
+  { value: "investment", label: "投资" },
 ];
 
 /* ---- Cost basis method options ---- */

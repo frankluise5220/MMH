@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
-import { compareDetailEntriesAsc } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 
 type AccountBalanceLike = {
@@ -11,6 +11,13 @@ type AccountBalanceLike = {
   billingDay?: number | null;
 };
 
+function localDateKey(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export async function computeAccountDisplayBalances(
   accounts: AccountBalanceLike[],
   hidFilter?: { householdId?: string },
@@ -18,6 +25,8 @@ export async function computeAccountDisplayBalances(
   const accountIds = accounts.map((account) => account.id).filter(Boolean);
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
+  const todayKey = localDateKey(new Date());
+  const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
   const depositAccountIds = accounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
     .map((account) => account.id);
@@ -40,6 +49,7 @@ export async function computeAccountDisplayBalances(
       },
       select: {
         id: true,
+        date: true,
         accountId: true,
         toAccountId: true,
         amount: true,
@@ -52,6 +62,7 @@ export async function computeAccountDisplayBalances(
 
     const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
     for (const entry of depositEntries) {
+      if (!isOnOrBeforeToday(entry.date)) continue;
       const isRedeem = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
       const depositAccountId = isRedeem ? entry.accountId : entry.toAccountId;
       if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
@@ -94,6 +105,7 @@ export async function computeAccountDisplayBalances(
         id: true,
         date: true,
         createdAt: true,
+        dayOrder: true,
         type: true,
         amount: true,
         accountId: true,
@@ -121,16 +133,16 @@ export async function computeAccountDisplayBalances(
     }
 
     for (const account of nonDepositAccounts) {
-      const isBill =
-        (account.kind === AccountKind.bank_credit || account.kind === AccountKind.loan) &&
-        !!account.billingDay;
-      if (isBill) {
+      const isCreditBill = account.kind === AccountKind.bank_credit && !!account.billingDay;
+      if (isCreditBill) {
         result.set(account.id, 0);
         continue;
       }
 
       const rows = txByAccountId.get(account.id) ?? [];
-      const orderedRows = [...rows].sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+      const orderedRows = rows
+        .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
+        .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
       let runningBalance = 0;
       for (const entry of orderedRows) {
         if (account.kind === AccountKind.loan && entry.type !== TransactionType.transfer) continue;

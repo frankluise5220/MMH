@@ -9,8 +9,13 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { AccountKind } from "@prisma/client";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { toNumber } from "@/lib/date-utils";
+import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 
 export const runtime = "nodejs";
 
@@ -27,7 +32,8 @@ export async function GET(req: Request) {
   }
 
   try {
-    const { hidFilter } = await getHouseholdScope();
+    const ctx = await getHouseholdScope();
+    const { hidFilter } = ctx;
 
     const accounts = await prisma.account.findMany({
       where: {
@@ -38,14 +44,52 @@ export async function GET(req: Request) {
         id: true,
         balance: true,
         kind: true,
+        investProductType: true,
+        billingDay: true,
       },
     });
 
-    // 投资账户余额通过 computeInvestBalances 计算，但这里简化处理
-    // 只返回 account.balance 字段
+    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+      computeInvestBalances(ctx),
+      computeAccountDisplayBalances(
+        accounts
+          .filter((account) => !isPureInvestmentAccount(account))
+          .map((account) => ({
+            id: account.id,
+            kind: account.kind,
+            investProductType: account.investProductType,
+            billingDay: account.billingDay,
+          })),
+        hidFilter,
+      ),
+      prisma.creditCardCycle.findMany({
+        where: {
+          accountId: { in: accounts.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+          isCurrentCycle: true,
+        },
+        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+      }),
+      computeInsuranceAccountDisplayBalances(
+        accounts.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
+        hidFilter,
+      ),
+    ]);
+    const currentCreditBalanceByAccountId = new Map(
+      currentCreditCycles.map((cycle) => [
+        cycle.accountId,
+        toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+      ]),
+    );
+
     const data = accounts.map((a) => ({
       id: a.id,
-      balance: toNumber(a.balance),
+      balance: isPureInvestmentAccount(a)
+        ? investBalByAccountId.get(a.id)?.marketValue ?? 0
+        : a.kind === AccountKind.insurance
+          ? insuranceDisplayBalanceByAccountId.get(a.id) ?? 0
+          : a.kind === AccountKind.bank_credit && a.billingDay
+            ? currentCreditBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
+            : displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance),
       kind: a.kind,
     }));
 

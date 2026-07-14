@@ -25,16 +25,19 @@ import {
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
+  CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
   isCreditCardRepaymentBusinessType,
   isCreditCardRepaymentImportSourceAccountKind,
   isCreditCardRepaymentTargetAccountKind,
+  isCreditCardRepaymentTransfer,
 } from "@/lib/transaction-semantics";
+import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 
 /**
  * POST /api/v1/record/ingest
  * Body: { items?: ParsedItem[], text?: string, import?: boolean, defaultAccountName?: string, traceId?: string }
- * `businessType="credit_card_repayment"` keeps transfer storage semantics while
- * requiring a debit-card/e-wallet source and a credit-card target.
+ * `businessType="credit_card_repayment"` stores a transfer categorized as
+ * "信用卡还款" while requiring a debit-card/e-wallet source and credit-card target.
  * Response: { ok: true, items, imported, createdCount?, ids? } or { ok: false, error }.
  */
 export const runtime = "nodejs";
@@ -448,8 +451,8 @@ async function buildImportContext(): Promise<ImportContext> {
       select: { id: true, name: true },
     }),
     prisma.institution.findMany({
-      where: { householdId },
-      select: { id: true, name: true, shortName: true },
+      where: { householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
+      select: { id: true, name: true, shortName: true, type: true },
     }),
     prisma.category.findMany({
       where: {
@@ -504,7 +507,7 @@ async function buildImportContext(): Promise<ImportContext> {
 async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: ParsedItem, defaultAccountName?: string) {
   const date = parseDate(item.date);
   const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
-  const counterpartyInstitutionName = String(item.institution ?? "").trim() || null;
+  const counterpartyInstitutionName = counterpartyInstitutionId ? String(item.institution ?? "").trim() || null : null;
   const rawSecondNote = String(item.secondRemark ?? "").trim();
   const primaryNote = String(item.remark ?? item.rawText ?? "").trim();
   const transferDisplayNote = rawSecondNote || primaryNote || null;
@@ -546,6 +549,16 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         throw new Error("信用卡还款的对手账户必须是信用卡账户");
       }
     }
+    const repaymentCategory = isCreditCardRepaymentTransfer({
+      type: item.type,
+      accountKind: fromAccountMeta?.kind,
+      toAccountKind: toAccountMeta?.kind,
+    })
+      ? resolveCategorySnapshotFromContext(ctx, {
+          categoryName: CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
+          type: "transfer",
+        })
+      : null;
     assertImportAccountIdentity(ctx, sourceAccountId, item.importSourceFromAccount, "转出账户");
     assertImportAccountIdentity(ctx, toAccountId, item.importSourceToAccount, "转入账户");
     const transactionCurrency = item.type === "transfer" && fromAccountMeta && toAccountMeta
@@ -576,6 +589,8 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         accountName: sourceAccountName,
         toAccountId,
         toAccountName: targetAccountName,
+        categoryId: repaymentCategory?.id ?? null,
+        categoryName: repaymentCategory?.name ?? null,
         note: item.remark ?? item.rawText,
         toNote: transferDisplayNote,
         counterpartyInstitutionId,
@@ -749,7 +764,7 @@ export async function POST(req: Request) {
     "输出必须严格符合给定的 JSON Schema。",
     "amount 始终为正数（绝对值）。",
     "type=transfer 时，必须给出 fromAccount 和 toAccount（尽量从文本推断）。",
-    "信用卡还款输出 type=transfer、businessType=credit_card_repayment，并把付款账户放在 fromAccount、信用卡放在 toAccount。",
+    "信用卡还款输出 type=transfer、businessType=credit_card_repayment、category=信用卡还款，并把付款账户放在 fromAccount、信用卡放在 toAccount。",
     "type=investment 时，如果能识别资金从哪个账户流出、流入到哪个投资账户，尽量给出 fromAccount 和 toAccount。",
     "type=expense|income 时，尽量给出 account。",
     "date 尽量输出 YYYY-MM-DD；如果文本没有日期，可以省略。",

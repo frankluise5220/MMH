@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 
 type InsurancePolicyEditValue = {
   id: string;
+  policyNo: string;
+  effectiveDate: string;
   policyholderPersonId: string;
   insuredPersonId: string;
   paymentTermYears: string;
@@ -72,6 +74,32 @@ export function InsurancePolicyEditModal({
             </div>
 
             <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <div className="form-label">保单号</div>
+                <input
+                  value={draft.policyNo}
+                  onChange={(event) => {
+                    const next = { ...draft, policyNo: event.target.value };
+                    setDraft(next);
+                    onChange?.(next);
+                  }}
+                  className="form-input"
+                  placeholder="可选"
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="form-label">生效日期</div>
+                <input
+                  type="date"
+                  value={draft.effectiveDate}
+                  onChange={(event) => {
+                    const next = { ...draft, effectiveDate: event.target.value };
+                    setDraft(next);
+                    onChange?.(next);
+                  }}
+                  className="form-input"
+                />
+              </div>
               <div className="space-y-1">
                 <div className="form-label">投保人</div>
                 <select

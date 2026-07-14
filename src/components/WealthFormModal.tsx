@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
@@ -13,6 +12,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
 
 type Entry = {
   id?: string;
@@ -36,8 +36,10 @@ type AccountOption = {
   icon?: string;
   subLabel?: string;
   kind?: string;
+  groupId?: string | null;
   investProductType?: string | null;
   institutionId?: string | null;
+  institutionType?: string | null;
   currency?: string | null;
 };
 type WealthProductOption = {
@@ -109,6 +111,8 @@ export function WealthFormModal({
   mode = "create",
   accountId: defaultAccountId,
   entry,
+  listenForEditEvents,
+  openSignal,
   cashAccounts = [],
   investmentAccounts = [],
   cashAccountSSOptions,
@@ -121,6 +125,8 @@ export function WealthFormModal({
   mode?: "create" | "edit";
   accountId: string;
   entry?: Entry;
+  listenForEditEvents?: boolean;
+  openSignal?: number;
   cashAccounts?: AccountOption[];
   investmentAccounts?: AccountOption[];
   /** Hierarchical SmartSelect options for cash account dropdown (grouped by AccountGroup) */
@@ -133,7 +139,6 @@ export function WealthFormModal({
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsDividend = mode === "edit" && entry?.fundSubtype === "dividend_cash";
@@ -193,18 +198,40 @@ export function WealthFormModal({
   // Mutable SS options — onCreated appends new account to these too
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
-  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | null>(null);
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
 
   const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
+  const isRedeem = subtype === "redeem";
+  const isDividend = subtype === "dividend_cash";
+  const isHoldingAction = isRedeem || isDividend;
+  const selectedCashAccount = useMemo(
+    () => cashAccountList.find((account) => account.id === cashAccountId) ?? null,
+    [cashAccountId, cashAccountList],
+  );
   const wealthAccountList = useMemo(
     () => investmentAccountList.filter((account) => account.investProductType === "wealth"),
     [investmentAccountList],
   );
   const wealthAccountIds = useMemo(() => new Set(wealthAccountList.map((account) => account.id)), [wealthAccountList]);
+  const selectableWealthAccountList = useMemo(() => {
+    if (isHoldingAction) return wealthAccountList;
+    if (!selectedCashAccount?.groupId) return [];
+    return wealthAccountList.filter((account) => isWealthAccountAllowedForCashAccount({
+      cashGroupId: selectedCashAccount.groupId ?? "",
+      cashInstitutionId: selectedCashAccount.institutionId,
+      wealthGroupId: account.groupId ?? "",
+      wealthInstitutionId: account.institutionId,
+      wealthInstitutionType: account.institutionType,
+    }));
+  }, [isHoldingAction, selectedCashAccount, wealthAccountList]);
+  const selectableWealthAccountIds = useMemo(
+    () => new Set(selectableWealthAccountList.map((account) => account.id)),
+    [selectableWealthAccountList],
+  );
   const localWealthSSOpts = useMemo(
-    () => (localInvestSSOpts ?? []).filter((option) => option.isHeader || wealthAccountIds.has(option.id)),
-    [localInvestSSOpts, wealthAccountIds],
+    () => (localInvestSSOpts ?? []).filter((option) => option.isHeader || selectableWealthAccountIds.has(option.id)),
+    [localInvestSSOpts, selectableWealthAccountIds],
   );
   const { ownerFilterLabel: wealthOwnerLabel, cycleOwnerFilter: cycleWealthOwner, filteredOptions: wealthFiltered } = useAccountSSFilter(localWealthSSOpts);
   const cashAccountOptions = useMemo<SmartSelectOption[]>(
@@ -212,8 +239,8 @@ export function WealthFormModal({
     [cashAccountList],
   );
   const wealthAccountOptions = useMemo<SmartSelectOption[]>(
-    () => wealthAccountList.map((account) => ({ ...account, kind: account.kind ?? null })),
-    [wealthAccountList],
+    () => selectableWealthAccountList.map((account) => ({ ...account, kind: account.kind ?? null })),
+    [selectableWealthAccountList],
   );
   const cashSelectOptions = cashFiltered ?? cashAccountOptions;
   const wealthSelectOptions = wealthFiltered ?? wealthAccountOptions;
@@ -221,9 +248,7 @@ export function WealthFormModal({
     () => wealthAccountList.find((account) => account.id === toAccountId) ?? null,
     [toAccountId, wealthAccountList],
   );
-  const isRedeem = subtype === "redeem";
-  const isDividend = subtype === "dividend_cash";
-  const isHoldingAction = isRedeem || isDividend;
+  const productInstitutionId = selectedWealthAccount?.institutionId ?? selectedCashAccount?.institutionId ?? null;
   const selectedWealthInstitutionId = selectedWealthAccount?.institutionId ?? null;
   const redeemCashOptions = useMemo(
     () =>
@@ -273,21 +298,32 @@ export function WealthFormModal({
     [wealthProducts],
   );
   const resolveWealthAccountForCashAccount = useCallback((cashId: string, explicitWealthId?: string | null) => {
-    if (explicitWealthId && wealthAccountIds.has(explicitWealthId)) return explicitWealthId;
     const cashAccount = cashAccountList.find((account) => account.id === cashId);
-    if (cashAccount?.institutionId) {
-      const sameInstitutionWealthAccount = wealthAccountList.find((account) => account.institutionId === cashAccount.institutionId);
-      if (sameInstitutionWealthAccount) return sameInstitutionWealthAccount.id;
-    }
-    if (wealthAccountIds.has(defaultAccountId)) return defaultAccountId;
-    return wealthAccountList[0]?.id ?? "";
-  }, [cashAccountList, defaultAccountId, wealthAccountIds, wealthAccountList]);
+    if (!cashAccount?.groupId) return "";
+    const allowedAccounts = wealthAccountList.filter((account) => isWealthAccountAllowedForCashAccount({
+      cashGroupId: cashAccount.groupId ?? "",
+      cashInstitutionId: cashAccount.institutionId,
+      wealthGroupId: account.groupId ?? "",
+      wealthInstitutionId: account.institutionId,
+      wealthInstitutionType: account.institutionType,
+    }));
+    if (explicitWealthId && allowedAccounts.some((account) => account.id === explicitWealthId)) return explicitWealthId;
+    const sameInstitution = allowedAccounts.find((account) => account.institutionId === cashAccount.institutionId);
+    if (sameInstitution) return sameInstitution.id;
+    if (allowedAccounts.some((account) => account.id === defaultAccountId)) return defaultAccountId;
+    return "";
+  }, [cashAccountList, defaultAccountId, wealthAccountList]);
 
   useEffect(() => { setCashAccountList(cashAccounts); }, [cashAccounts]);
   useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
   useEffect(() => { setLocalCashSSOpts(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestSSOpts(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
   const recentAccountIds = useRecentAccountIds();
+  const shouldListenForEditEvents = listenForEditEvents ?? (mode === "edit" && !entry);
+
+  useEffect(() => {
+    if (mode === "edit" && entry && openSignal) setOpen(true);
+  }, [entry, mode, openSignal]);
 
   useEffect(() => {
     if (!isHoldingAction) {
@@ -314,7 +350,7 @@ export function WealthFormModal({
     setInterestEdited(false);
     setArrivalEdited(false);
     setCashAccountId("");
-    setToAccountId(wealthAccountIds.has(defaultAccountId) ? defaultAccountId : (wealthAccountList[0]?.id ?? ""));
+    setToAccountId("");
     setSelectedHoldingId("");
     setMemo("");
     setRequestId(null);
@@ -322,6 +358,8 @@ export function WealthFormModal({
 
   // Listen for edit event
   useEffect(() => {
+    if (!shouldListenForEditEvents) return;
+
     function onEdit(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId: string; entryId: string;
@@ -359,7 +397,7 @@ export function WealthFormModal({
     }
     window.addEventListener("mmh:wealth:edit", onEdit as EventListener);
     return () => window.removeEventListener("mmh:wealth:edit", onEdit as EventListener);
-  }, [defaultAccountId, today, wealthAccountIds, wealthAccountList, wealthHoldingOptions]);
+  }, [defaultAccountId, mode, shouldListenForEditEvents, today, wealthAccountIds, wealthAccountList, wealthHoldingOptions]);
 
   // Listen for create event
   useEffect(() => {
@@ -390,8 +428,8 @@ export function WealthFormModal({
 
   useEffect(() => {
     if (!open || mode !== "create" || !cashAccountId || subtype !== "buy") return;
-    const nextWealthAccountId = resolveWealthAccountForCashAccount(cashAccountId);
-    if (nextWealthAccountId && nextWealthAccountId !== toAccountId) setToAccountId(nextWealthAccountId);
+    const nextWealthAccountId = resolveWealthAccountForCashAccount(cashAccountId, toAccountId);
+    if (nextWealthAccountId !== toAccountId) setToAccountId(nextWealthAccountId);
   }, [cashAccountId, mode, open, resolveWealthAccountForCashAccount, subtype, toAccountId]);
 
   const amountNumber = parseNumber(amount);
@@ -453,7 +491,7 @@ export function WealthFormModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const institutionId = selectedWealthAccount?.institutionId ?? "";
+    const institutionId = productInstitutionId ?? "";
     const url = institutionId
       ? `/api/v1/wealth-products?institutionId=${encodeURIComponent(institutionId)}`
       : "/api/v1/wealth-products";
@@ -462,10 +500,16 @@ export function WealthFormModal({
       .then((data) => {
         if (cancelled || !data?.ok) return;
         const products = (data.products ?? []) as WealthProductOption[];
+        if (wealthProductId && institutionId && !products.some((product) => product.id === wealthProductId)) {
+          setWealthProductId("");
+          setFundName("");
+        }
         setWealthProducts((prev) => {
           const selectedLocalProducts = prev.filter((product) =>
-            product.id === wealthProductId ||
-            (!!fundName && (product.name === fundName || product.shortName === fundName)),
+            (!institutionId || product.institutionId === institutionId) && (
+              product.id === wealthProductId ||
+              (!!fundName && (product.name === fundName || product.shortName === fundName))
+            ),
           );
           return mergeWealthProducts(products, selectedLocalProducts);
         });
@@ -476,7 +520,7 @@ export function WealthFormModal({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [fundName, open, selectedWealthAccount?.institutionId, wealthProductId]);
+  }, [fundName, open, productInstitutionId, wealthProductId]);
 
   function openWealthProductModal() {
     setProductDraft({
@@ -486,15 +530,15 @@ export function WealthFormModal({
       termDays,
       note: "",
     });
-    setProductError(selectedWealthAccount ? "" : "请先选择理财账户，再新增产品");
+    setProductError(selectedCashAccount ? "" : "请先选择资金来源账户");
     setProductModalOpen(true);
   }
 
   async function saveWealthProduct() {
     const name = productDraft.name.trim();
     setProductError("");
-    if (!selectedWealthAccount) {
-      setProductError("请先选择理财账户");
+    if (!selectedCashAccount) {
+      setProductError("请先选择资金来源账户");
       return;
     }
     if (!name) {
@@ -509,18 +553,56 @@ export function WealthFormModal({
         body: JSON.stringify({
           name,
           shortName: productDraft.shortName.trim() || undefined,
-          institutionId: selectedWealthAccount?.institutionId ?? null,
-          currency: selectedWealthAccount?.currency ?? "CNY",
+          cashAccountId: selectedCashAccount.id,
+          wealthAccountId: selectedWealthAccount?.id ?? undefined,
+          currency: selectedWealthAccount?.currency ?? selectedCashAccount.currency ?? "CNY",
           annualRate: productDraft.annualRate || undefined,
           termDays: productDraft.termDays || undefined,
           note: productDraft.note.trim() || undefined,
         }),
       });
       const data = await res.json().catch(() => null);
-      if (!data?.ok || !data.product) {
+      if (!data?.ok || !data.product || !data.wealthAccount) {
         throw new Error(data?.error ?? "创建理财产品失败");
       }
       const product = data.product as WealthProductOption;
+      const account = data.wealthAccount as {
+        id: string;
+        name: string;
+        kind: string;
+        investProductType?: string | null;
+        groupId?: string | null;
+        groupName?: string | null;
+        institutionId?: string | null;
+        institutionName?: string | null;
+        institutionShortName?: string | null;
+        institutionType?: string | null;
+        currency?: string | null;
+      };
+      const institutionLabel = account.institutionShortName?.trim() || account.institutionName?.trim() || "";
+      const accountLabel = [institutionLabel, account.name].filter(Boolean).join("·");
+      const accountOption: AccountOption = {
+        id: account.id,
+        label: accountLabel || account.name,
+        subLabel: [account.groupName, "理财账户"].filter(Boolean).join(" · "),
+        kind: account.kind,
+        groupId: account.groupId ?? null,
+        investProductType: account.investProductType ?? "wealth",
+        institutionId: account.institutionId ?? null,
+        institutionType: account.institutionType ?? null,
+        currency: account.currency ?? "CNY",
+      };
+      setInvestmentAccountList((prev) => [
+        ...prev.filter((item) => item.id !== account.id),
+        accountOption,
+      ]);
+      setLocalInvestSSOpts((prev) => prev
+        ? [
+            ...prev.filter((item) => item.id !== account.id),
+            { ...accountOption, kind: accountOption.kind ?? null },
+          ]
+        : prev);
+      setToAccountId(account.id);
       setWealthProducts((prev) => prev.some((item) => item.id === product.id) ? prev : [...prev, product]);
       setWealthProductId(product.id);
       setFundName(product.name);
@@ -542,7 +624,13 @@ export function WealthFormModal({
     const selectedProduct = wealthProducts.find((product) => product.id === wealthProductId);
     const resolvedFundName = selectedHolding?.fundName || selectedProduct?.name || fundName.trim();
     if (!resolvedFundName) { window.alert("请选择或新增产品名称"); return; }
-    if (!toAccountId || !wealthAccountIds.has(toAccountId)) { window.alert("请选择理财账户"); return; }
+    if (!cashAccountId) { window.alert(isHoldingAction ? "请选择到账账户" : "请选择资金来源账户"); return; }
+    if (toAccountId && !wealthAccountIds.has(toAccountId)) { window.alert("请选择理财账户"); return; }
+    if (!isHoldingAction && toAccountId && !selectableWealthAccountIds.has(toAccountId)) {
+      window.alert("理财账户只能选择资金来源同机构或第三方支付机构的账户");
+      return;
+    }
+    if (isHoldingAction && !toAccountId) { window.alert("请选择理财账户"); return; }
     if (isHoldingAction && !selectedHoldingId) { window.alert("请选择持仓理财产品"); return; }
     if (isHoldingAction && !cashAccountId) { window.alert("请选择到账账户"); return; }
     setSubmitting(true);
@@ -558,8 +646,10 @@ export function WealthFormModal({
       if (resolvedWealthProductId) fd.set("wealthProductId", resolvedWealthProductId);
       fd.set("note", memo);
       fd.set("memo", memo);
-      fd.set("accountId", toAccountId);
-      fd.set("toAccountId", toAccountId);
+      if (toAccountId) {
+        fd.set("accountId", toAccountId);
+        fd.set("toAccountId", toAccountId);
+      }
       fd.set("cashAccountId", cashAccountId);
       const rateValue = parseNumber(annualRate);
       if (rateValue > 0) fd.set("depositAnnualRate", String(rateValue));
@@ -584,7 +674,6 @@ export function WealthFormModal({
       if (mode === "create") reset();
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "wealth-save" });
-        setTimeout(() => router.refresh(), 120);
       });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "保存失败");
@@ -679,8 +768,6 @@ export function WealthFormModal({
                         onChange={setToAccountId}
                         options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
                         placeholder="选择理财账户"
-                        onCreateClick={() => setNestedEntityType("invest-account")}
-                        createLabel="新增账户"
                         onCycleOwnerFilter={cycleWealthOwner}
                         ownerFilterLabel={wealthOwnerLabel}
                       />
@@ -786,6 +873,35 @@ export function WealthFormModal({
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">资金来源账户</div>
+                      <SmartSelect
+                        mode="single"
+                        value={cashAccountId}
+                        onChange={setCashAccountId}
+                        options={sortOptionsByRecent(cashSelectOptions, recentAccountIds)}
+                        placeholder="选择账户"
+                        onCreateClick={() => setNestedEntityType("cash-account")}
+                        createLabel="新增账户"
+                        onCycleOwnerFilter={cfCycle}
+                        ownerFilterLabel={cfLabel}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">理财账户</div>
+                      <SmartSelect
+                        mode="single"
+                        value={toAccountId}
+                        onChange={setToAccountId}
+                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
+                        placeholder={wealthSelectOptions.length > 0 ? "选择同机构或第三方支付账户" : "新增产品后自动建立"}
+                        onCycleOwnerFilter={cycleWealthOwner}
+                        ownerFilterLabel={wealthOwnerLabel}
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-1">
                     <div className="form-label">产品名称</div>
                     <SmartSelect
@@ -820,11 +936,8 @@ export function WealthFormModal({
                     <div className="space-y-1">
                       <div className="form-label">期限天数</div>
                       <select
-                        value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : "__custom__"}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          if (value !== "__custom__") setTermDays(value);
-                        }}
+                        value={termDays}
+                        onChange={(e) => setTermDays(e.target.value)}
                         className="form-input"
                       >
                         <option value="">请选择常见期限</option>
@@ -833,46 +946,10 @@ export function WealthFormModal({
                             {preset.label}
                           </option>
                         ))}
-                        <option value="__custom__">自定义天数</option>
+                        {termDays && !TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? (
+                          <option value={termDays}>{termDays}天</option>
+                        ) : null}
                       </select>
-                      <input
-                        inputMode="numeric"
-                        value={termDays}
-                        onChange={(e) => setTermDays(e.target.value)}
-                        placeholder="可手填，如：30"
-                        className="form-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">资金来源账户</div>
-                      <SmartSelect
-                        mode="single"
-                        value={cashAccountId}
-                        onChange={setCashAccountId}
-                        options={sortOptionsByRecent(cashSelectOptions, recentAccountIds)}
-                        placeholder="选择账户"
-                        onCreateClick={() => setNestedEntityType("cash-account")}
-                        createLabel="新增账户"
-                        onCycleOwnerFilter={cfCycle}
-                        ownerFilterLabel={cfLabel}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="form-label">理财账户</div>
-                      <SmartSelect
-                        mode="single"
-                        value={toAccountId}
-                        onChange={setToAccountId}
-                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
-                        placeholder="选择理财账户"
-                        onCreateClick={() => setNestedEntityType("invest-account")}
-                        createLabel="新增账户"
-                        onCycleOwnerFilter={cycleWealthOwner}
-                        ownerFilterLabel={wealthOwnerLabel}
-                      />
                     </div>
                   </div>
                 </>
@@ -908,33 +985,24 @@ export function WealthFormModal({
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name, extra) => {
-            const kind = extra?.kind || (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
+            const kind = extra?.kind || "bank_debit";
             const option = {
               id,
               label: name,
               subLabel: kindLabel(kind),
+              parentId: extra?.groupId ? `group:${extra.groupId}` : undefined,
               kind,
-              investProductType: nestedEntityType === "invest-account" ? "wealth" : undefined,
+              groupId: extra?.groupId ?? null,
               institutionId: extra?.institutionId ?? null,
+              institutionType: nestedFieldData?.institutionId?.find((item) => item.id === extra?.institutionId)?.type ?? null,
               currency: extra?.currency ?? "CNY",
             };
-            if (nestedEntityType === "cash-account") {
-              setCashAccountList((prev) => [...prev, option]);
-              setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
-              setCashAccountId(id);
-            } else {
-              setInvestmentAccountList((prev) => [...prev, option]);
-              setLocalInvestSSOpts((prev) => (prev ? [...prev, option] : prev));
-              setToAccountId(id);
-            }
+            setCashAccountList((prev) => [...prev, option]);
+            setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
+            setCashAccountId(id);
             setNestedEntityType(null);
           }}
-          defaultType={nestedEntityType === "cash-account" ? "bank_debit" : "investment"}
-          extraFields={nestedEntityType === "invest-account" ? {
-            kind: "investment",
-            investProductType: "wealth",
-          } : undefined}
-          hiddenFields={nestedEntityType === "invest-account" ? ["kind"] : undefined}
+          defaultType="bank_debit"
           nestedFieldData={nestedFieldData}
         />
       ) : null}
@@ -945,7 +1013,7 @@ export function WealthFormModal({
               <div>
                 <div className="text-sm font-semibold text-slate-800">新增理财产品</div>
                 <div className="mt-0.5 text-xs text-slate-500">
-                  {selectedWealthAccount?.label ? `归属账户：${selectedWealthAccount.label}` : "先选择理财账户后新增"}
+                  {selectedWealthAccount?.label || selectedCashAccount?.label || "请选择资金来源账户"}
                 </div>
               </div>
               <button

@@ -4,11 +4,11 @@ import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
-type EditPayload = {
+export type EditPayload = {
   requestId?: string;
   entryId: string;
   targetEntryId?: string;
-  type: "expense" | "income" | "transfer" | "investment";
+  type: "expense" | "income" | "advance" | "transfer" | "investment";
   date: string;
   postedAt?: string | null;
   amount: number;
@@ -32,7 +32,7 @@ type EditPayload = {
   metalUnitPrice?: number | null;
   metalFee?: number | null;
   insuranceProductId?: string | null;
-  insuranceAction?: "premium" | "refund";
+  insuranceAction?: "premium" | "additional_premium" | "refund";
   insuranceProductName?: string;
   fundSubtype?: string;
   fundUnits?: number;
@@ -63,6 +63,38 @@ type EditPayload = {
   tagIds?: string[];
 };
 
+export function dispatchEntryEdit({
+  entryId,
+  edit,
+  customEditEvent,
+}: {
+  entryId: string;
+  edit?: Omit<EditPayload, "entryId">;
+  customEditEvent?: { name: string; detail: Record<string, unknown> };
+}) {
+  if (customEditEvent) {
+    window.dispatchEvent(new CustomEvent(customEditEvent.name, { detail: customEditEvent.detail }));
+    return;
+  }
+  if (!edit) return;
+  const editEntryId = edit.targetEntryId || entryId;
+  const requestId = `edit-${editEntryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const detail = { requestId, entryId: editEntryId, ...edit } satisfies EditPayload;
+
+  const pt = edit.fundProductType;
+  if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
+    window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
+  } else if (edit.type === "investment" && pt === "wealth") {
+    window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
+  } else if (edit.type === "investment" && pt === "deposit") {
+    window.dispatchEvent(new CustomEvent("mmh:deposit:edit", { detail }));
+  } else if (edit.type === "investment") {
+    window.dispatchEvent(new CustomEvent("mmh:investment:edit", { detail }));
+  } else {
+    window.dispatchEvent(new CustomEvent("mmh:transaction:edit", { detail }));
+  }
+}
+
 export function EntryRowActions({
   entryId,
   edit,
@@ -76,27 +108,7 @@ export function EntryRowActions({
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
-    if (customEditEvent) {
-      window.dispatchEvent(new CustomEvent(customEditEvent.name, { detail: customEditEvent.detail }));
-      return;
-    }
-    if (!edit) return;
-    const editEntryId = edit.targetEntryId || entryId;
-    const requestId = `edit-${editEntryId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const detail = { requestId, entryId: editEntryId, ...edit } satisfies EditPayload;
-
-    const pt = edit.fundProductType;
-    if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
-      window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
-    } else if (edit.type === "investment" && pt === "wealth") {
-      window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
-    } else if (edit.type === "investment" && pt === "deposit") {
-      window.dispatchEvent(new CustomEvent("mmh:deposit:edit", { detail }));
-    } else if (edit.type === "investment") {
-      window.dispatchEvent(new CustomEvent("mmh:investment:edit", { detail }));
-    } else {
-      window.dispatchEvent(new CustomEvent("mmh:transaction:edit", { detail }));
-    }
+    dispatchEntryEdit({ entryId, edit, customEditEvent });
   }
 
   async function onDelete() {

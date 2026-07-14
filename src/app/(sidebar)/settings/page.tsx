@@ -18,7 +18,7 @@ const quickSettings = [
   { href: "/settings/institutions", label: "机构", desc: "银行、保险、券商和支付机构", icon: Building2 },
   { href: "/settings/counterparties", label: "往来对象", desc: "往来人员和往来组织", icon: Handshake },
   { href: "/settings/family-members", label: "家庭成员", desc: "投保人、被保险人等家庭资料", icon: HeartHandshake },
-  { href: "/settings/categories", label: "收支类别", desc: "收入、支出、代付分类", icon: Tag },
+  { href: "/settings/categories", label: "分类管理", desc: "收入、支出、代付、转账和投资分类", icon: Tag },
   { href: "/settings/email", label: "邮箱账户", desc: "账单读取和发件账户", icon: Mail },
   { href: "/settings/password-recovery", label: "密码找回", desc: "找回密码开关和发件设置", icon: Shield },
   { href: "/settings/display", label: "显示", desc: "颜色、时间和界面偏好", icon: Palette },

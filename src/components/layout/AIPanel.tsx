@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
+import { TableColumnFilter } from "@/components/TableColumnFilter";
 import {
   APP_PREFS_EVENT,
   getAiPanelCollapsedPreference,
@@ -56,15 +58,36 @@ type UpdatePreview = {
   scopeFields: Array<{ label: string; value: string }>;
 };
 
+type ConfirmTarget = {
+  id?: string;
+  transactionId?: string;
+  date: string;
+  accountName: string;
+  amount: number;
+  remark: string;
+  type?: string;
+};
+
 type ConfirmDialog = {
   kind: "delete" | "restore" | "update";
   count: number;
   label: string;
   payload: Record<string, unknown>;
   tip: string;
-  targets?: Array<{ id?: string; transactionId?: string; date: string; accountName: string; amount: number; remark: string; type?: string }>;
+  targets?: ConfirmTarget[];
   preview?: UpdatePreview;
+  selectedTargetIds?: Set<string>;
+  selectAll?: boolean;
 };
+
+type DeletePreviewFilters = {
+  text: string;
+  accountName: string;
+  type: "all" | "expense" | "income" | "transfer" | "investment";
+  selection: "all" | "selected" | "unselected";
+};
+
+type DeletePreviewColumn = "selection" | "date" | "type" | "account" | "amount" | "remark";
 
 type ImportConfirmDialog = {
   items: ImportConfirmItem[];
@@ -168,6 +191,7 @@ export function AIPanel({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const modelsLoadedRef = useRef(false);
 
@@ -182,6 +206,9 @@ export function AIPanel({
   const [collapsed, setCollapsedState] = useState(() => initialCollapsed || getAiPanelCollapsedPreference());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [importConfirmDialog, setImportConfirmDialog] = useState<ImportConfirmDialog | null>(null);
+  const [deletePreviewFilters, setDeletePreviewFilters] = useState<DeletePreviewFilters>({ text: "", accountName: "", type: "all", selection: "all" });
+  const [deletePreviewColumnFilters, setDeletePreviewColumnFilters] = useState<Partial<Record<DeletePreviewColumn, string[]>>>({});
+  const [activeDeletePreviewFilterColumn, setActiveDeletePreviewFilterColumn] = useState<DeletePreviewColumn | null>(null);
 
   const [activeModel, setActiveModel] = useState(() => {
     try { return localStorage.getItem("mmh_ai_active_model") ?? ""; } catch { return ""; }
@@ -307,14 +334,23 @@ export function AIPanel({
     } catch { return null; }
   }
 
+  function getViewAccountContext() {
+    const accountId = searchParams.get("accountId")?.trim() || undefined;
+    const accountName = searchParams.get("account")?.trim() || defaultAccountName?.trim() || undefined;
+    return { accountId, accountName };
+  }
+
   async function parseStatement(payload: { text?: string; imageDataUrl?: string; accountName?: string }) {
     const cfg = modelConfigs[activeModel];
     const fundContext = getFundContext();
+    const viewAccount = getViewAccountContext();
     const res = await fetch("/api/v1/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...payload,
+        accountId: payload.accountName ? undefined : viewAccount.accountId,
+        accountName: payload.accountName ?? viewAccount.accountName,
         baseUrl: cfg?.baseUrl?.trim() || undefined,
         apiKey: cfg?.apiKey?.trim() || undefined,
         modelName: cfg?.model || undefined,
@@ -352,7 +388,23 @@ export function AIPanel({
 
       if ("operation" in parsed && parsed.operation === "delete") {
         if (parsed.stage === "confirm") {
-          setConfirmDialog({ kind: "delete", label: "确认删除记录", count: parsed.deletedCount, payload: { sourceText: text }, tip: `将删除 ${parsed.deletedCount} 条记录`, targets: parsed.targets ?? [] });
+          const targets = parsed.targets ?? [];
+          const targetIds = targets
+            .map((target: { id?: string; transactionId?: string }) => target.transactionId ?? target.id)
+            .filter((id: unknown): id is string => typeof id === "string" && id.length > 0);
+          setConfirmDialog({
+            kind: "delete",
+            label: "删除预览",
+            count: parsed.deletedCount,
+            payload: { sourceText: text },
+            tip: `将删除 ${parsed.deletedCount} 条记录`,
+            targets,
+            selectedTargetIds: new Set(targetIds),
+            selectAll: targetIds.length > 0 && targetIds.length === targets.length,
+          });
+          setDeletePreviewFilters({ text: "", accountName: "", type: "all", selection: "all" });
+          setDeletePreviewColumnFilters({});
+          setActiveDeletePreviewFilterColumn(null);
           setMessages((m) => [...m, { role: "assistant", text: `命中 ${parsed.deletedCount} 条记录，请确认。`, trace: parsed.trace }]);
           return;
         }
@@ -457,6 +509,24 @@ export function AIPanel({
     if (!confirmDialog || loading) return;
     setLoading(true);
     try {
+      if (confirmDialog.kind === "delete") {
+        const entryIds = Array.from(confirmDialog.selectedTargetIds ?? new Set<string>());
+        if (entryIds.length === 0) {
+          setMessages((m) => [...m, { role: "assistant", text: "请至少选择一条要删除的记录。" }]);
+          return;
+        }
+        const res = await fetch("/api/v1/entries/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entryIds }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) throw new Error(data?.error || "删除失败");
+        setMessages((m) => [...m, { role: "assistant", text: data.message || `已删除 ${entryIds.length} 条记录。` }]);
+        setConfirmDialog(null);
+        setTimeout(() => router.refresh(), 500);
+        return;
+      }
       const src = String(confirmDialog.payload.sourceText ?? "").trim();
       const parsed = await parseStatement({ text: `${src}，确认执行` });
       if (parsed.ok) {
@@ -504,6 +574,102 @@ export function AIPanel({
       ? new Set(importConfirmDialog.items.map(it => it.key))
       : new Set<string>();
     setImportConfirmDialog({ ...importConfirmDialog, selectedKeys: nextKeys, selectAll: nextSelectAll });
+  }
+
+  function targetIdOf(target: { id?: string; transactionId?: string }) {
+    return target.transactionId ?? target.id ?? "";
+  }
+
+  function targetTypeLabel(type?: string) {
+    return type === "transfer" ? "转账" : type === "income" ? "收入" : type === "investment" ? "投资" : "支出";
+  }
+
+  function getFilteredConfirmTargets(dialog = confirmDialog) {
+    if (!dialog || dialog.kind !== "delete") return [] as ConfirmTarget[];
+    const keyword = deletePreviewFilters.text.trim().toLowerCase();
+    const selectedIds = dialog.selectedTargetIds ?? new Set<string>();
+    return (dialog.targets ?? []).filter((target) => {
+      const id = targetIdOf(target);
+      if (deletePreviewFilters.accountName && target.accountName !== deletePreviewFilters.accountName) return false;
+      if (deletePreviewFilters.type !== "all" && target.type !== deletePreviewFilters.type) return false;
+      if (deletePreviewFilters.selection === "selected" && !selectedIds.has(id)) return false;
+      if (deletePreviewFilters.selection === "unselected" && selectedIds.has(id)) return false;
+      const haystack = `${target.date} ${target.accountName} ${target.remark} ${targetTypeLabel(target.type)} ${target.amount}`.toLowerCase();
+      if (keyword && !haystack.includes(keyword)) return false;
+      return (Object.entries(deletePreviewColumnFilters) as Array<[DeletePreviewColumn, string[] | undefined]>).every(([column, values]) => {
+        if (!values || values.length === 0) return true;
+        return values.includes(getDeletePreviewColumnValue(target, column, selectedIds));
+      });
+    });
+  }
+
+  function getDeletePreviewColumnValue(target: ConfirmTarget, column: DeletePreviewColumn, selectedIds = confirmDialog?.selectedTargetIds ?? new Set<string>()) {
+    if (column === "selection") return selectedIds.has(targetIdOf(target)) ? "已选" : "未选";
+    if (column === "date") return target.date || "-";
+    if (column === "type") return targetTypeLabel(target.type);
+    if (column === "account") return target.accountName || "-";
+    if (column === "amount") return `${target.amount < 0 ? "-" : "+"}${formatMoney(Math.abs(target.amount || 0))}`;
+    return target.remark || "无备注";
+  }
+
+  function deletePreviewColumnOptions(column: DeletePreviewColumn, dialog = confirmDialog) {
+    if (!dialog || dialog.kind !== "delete") return [];
+    const selectedIds = dialog.selectedTargetIds ?? new Set<string>();
+    return Array.from(new Set((dialog.targets ?? []).map((target) => getDeletePreviewColumnValue(target, column, selectedIds))))
+      .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }
+
+  function renderDeletePreviewColumnFilter(column: DeletePreviewColumn, label: string) {
+    const selectedValues = deletePreviewColumnFilters[column] ?? [];
+    const isOpen = activeDeletePreviewFilterColumn === column;
+    return (
+      <TableColumnFilter
+        label={label}
+        options={isOpen ? deletePreviewColumnOptions(column, deletePreviewDialog) : []}
+        selectedValues={selectedValues}
+        open={isOpen}
+        onToggleOpen={() => setActiveDeletePreviewFilterColumn((current) => current === column ? null : column)}
+        onClose={() => setActiveDeletePreviewFilterColumn(null)}
+        onChange={(values) => setDeletePreviewColumnFilters((current) => ({ ...current, [column]: values }))}
+      />
+    );
+  }
+
+  function deletePreviewAccountOptions(dialog = confirmDialog) {
+    const names = new Set<string>();
+    if (dialog?.kind === "delete") {
+      for (const target of dialog.targets ?? []) {
+        if (target.accountName) names.add(target.accountName);
+      }
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }
+
+  function updateConfirmDialogSelection(nextIds: Set<string>) {
+    if (!confirmDialog) return;
+    const filteredIds = getFilteredConfirmTargets(confirmDialog).map((target) => targetIdOf(target)).filter(Boolean);
+    const selectAll = filteredIds.length > 0 && filteredIds.every((id) => nextIds.has(id));
+    setConfirmDialog({ ...confirmDialog, selectedTargetIds: nextIds, selectAll });
+  }
+
+  function toggleConfirmTarget(id: string) {
+    if (!confirmDialog || !id) return;
+    const nextIds = new Set(confirmDialog.selectedTargetIds ?? []);
+    if (nextIds.has(id)) nextIds.delete(id); else nextIds.add(id);
+    updateConfirmDialogSelection(nextIds);
+  }
+
+  function toggleConfirmAllTargets() {
+    if (!confirmDialog) return;
+    const filteredIds = getFilteredConfirmTargets(confirmDialog).map((target) => targetIdOf(target)).filter(Boolean);
+    if (filteredIds.length === 0) return;
+    const nextIds = new Set(confirmDialog.selectedTargetIds ?? []);
+    const allFilteredSelected = filteredIds.every((id) => nextIds.has(id));
+    for (const id of filteredIds) {
+      if (allFilteredSelected) nextIds.delete(id);
+      else nextIds.add(id);
+    }
+    updateConfirmDialogSelection(nextIds);
   }
 
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -773,8 +939,143 @@ export function AIPanel({
   /* ---- Main Panel (Roo Code style) ---- */
 
   const activeModelDisplay = activeModel || "选择模型";
+  const deletePreviewDialog = confirmDialog?.kind === "delete" ? confirmDialog : null;
+
+  function renderDeletePreviewModal() {
+    if (!deletePreviewDialog || typeof document === "undefined") return null;
+    const filteredTargets = getFilteredConfirmTargets(deletePreviewDialog);
+    const filteredIds = filteredTargets.map((target) => targetIdOf(target)).filter(Boolean);
+    const selectedIds = deletePreviewDialog.selectedTargetIds ?? new Set<string>();
+    const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+    const accountOptions = deletePreviewAccountOptions(deletePreviewDialog);
+
+    return createPortal(
+      <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-[2px]">
+        <div className="flex h-[min(82vh,760px)] w-[min(1120px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-5 py-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-slate-900">删除预览</h2>
+                <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">不可编辑</span>
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                删除模式只允许筛选和勾选，确认后会进入回收/撤销链路。
+              </div>
+            </div>
+            <button
+              onClick={() => setConfirmDialog(null)}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              title="关闭"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="shrink-0 border-b border-slate-200 bg-white px-5 py-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <button
+                onClick={toggleConfirmAllTargets}
+                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                <span className={`flex h-4 w-4 items-center justify-center rounded border-2 ${
+                  allFilteredSelected ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-300"
+                }`}>
+                  {allFilteredSelected && <span className="text-[10px]">✓</span>}
+                </span>
+                {allFilteredSelected ? "取消筛选结果" : "全选筛选结果"}
+              </button>
+              <div className="text-xs text-slate-500">
+                筛选 <span className="font-semibold text-slate-800">{filteredTargets.length}</span> / {deletePreviewDialog.targets?.length ?? 0}
+                <span className="mx-2 text-slate-300">|</span>
+                已选 <span className="font-semibold text-slate-800">{selectedIds.size}</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs text-slate-500">按表头下拉筛选后，可对筛选结果批量勾选或取消。</div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeletePreviewColumnFilters({});
+                  setActiveDeletePreviewFilterColumn(null);
+                }}
+                className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+              >
+                清空筛选
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto bg-white">
+            <table className="min-w-full border-separate border-spacing-0 text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-semibold text-slate-500">
+                <tr>
+                  <th className="w-10 border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("selection", "选")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("date", "日期")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("type", "类型")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("account", "账户")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right">{renderDeletePreviewColumnFilter("amount", "金额")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("remark", "备注")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTargets.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">当前筛选条件下没有记录</td>
+                  </tr>
+                ) : filteredTargets.map((target, index) => {
+                  const id = targetIdOf(target);
+                  const selected = !!id && selectedIds.has(id);
+                  return (
+                    <tr key={id || index} className={selected ? "bg-white hover:bg-emerald-50/30" : "bg-slate-50/50 text-slate-400 hover:bg-slate-100/60"}>
+                      <td className="border-b border-slate-100 px-3 py-2">
+                        <button
+                          onClick={() => toggleConfirmTarget(id)}
+                          disabled={!id}
+                          className={`flex h-4 w-4 items-center justify-center rounded border-2 disabled:opacity-30 ${
+                            selected ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-300 bg-white"
+                          }`}
+                        >
+                          {selected && <span className="text-[10px]">✓</span>}
+                        </button>
+                      </td>
+                      <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 font-mono text-xs text-slate-600">{target.date}</td>
+                      <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-600">{targetTypeLabel(target.type)}</td>
+                      <td className="max-w-[260px] truncate border-b border-slate-100 px-3 py-2 text-slate-800" title={target.accountName}>{target.accountName}</td>
+                      <td className={`whitespace-nowrap border-b border-slate-100 px-3 py-2 text-right font-semibold ${target.amount < 0 ? "text-red-500" : "text-emerald-600"}`}>
+                        {target.amount < 0 ? "-" : "+"}¥{formatMoney(Math.abs(target.amount || 0))}
+                      </td>
+                      <td className="max-w-[360px] truncate border-b border-slate-100 px-3 py-2 text-slate-600" title={target.remark}>{target.remark || "无备注"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4">
+            <button
+              onClick={() => setConfirmDialog(null)}
+              className="h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-600 hover:bg-slate-100"
+            >
+              取消
+            </button>
+            <button
+              onClick={onConfirmBatchAction}
+              disabled={loading || selectedIds.size === 0}
+              className="h-10 rounded-lg bg-slate-900 px-5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-30"
+            >
+              {loading ? "删除中..." : `确认删除 ${selectedIds.size} 条`}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return (
+    <>
+    {renderDeletePreviewModal()}
     <aside className="w-80 ai-panel-glass shrink-0 flex flex-col h-screen overflow-hidden transition-all duration-300 relative border-l border-foreground/5">
 
       {/* 头部：标题 + 模型选择 + 操作按钮 */}
@@ -1207,7 +1508,7 @@ export function AIPanel({
       </div>
 
       {/* 确认对话框覆盖层 */}
-      {(confirmDialog || importConfirmDialog) && (
+      {((confirmDialog && confirmDialog.kind !== "delete") || importConfirmDialog) && (
         <div className="absolute inset-0 z-40 bg-background/95 backdrop-blur-md p-6 flex flex-col animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-6">
             <h6 className="font-heading text-lg text-foreground">{confirmDialog?.label ?? "确认导入"}</h6>
@@ -1268,8 +1569,116 @@ export function AIPanel({
               </>
             )}
 
-            {/* 删除/恢复确认 */}
-            {confirmDialog?.kind !== "update" && confirmDialog?.targets && (
+            {/* 删除预览 - 勾选列表 */}
+            {confirmDialog?.kind === "delete" && confirmDialog.targets && (
+              (() => {
+                const filteredTargets = getFilteredConfirmTargets(confirmDialog);
+                const filteredIds = filteredTargets.map((target) => targetIdOf(target)).filter(Boolean);
+                const selectedIds = confirmDialog.selectedTargetIds ?? new Set<string>();
+                const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+                const accountOptions = deletePreviewAccountOptions(confirmDialog);
+                return (
+                  <>
+                    <div className="sticky top-0 z-10 space-y-2 rounded-xl border border-foreground/10 bg-background/95 p-3 backdrop-blur">
+                      <div className="flex items-center justify-between gap-2">
+                        <button onClick={toggleConfirmAllTargets} className="flex items-center gap-2 text-[11px] font-bold text-foreground/60 hover:text-foreground transition-colors">
+                          <span className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                            allFilteredSelected ? "bg-accent-green border-accent-green text-background" : "border-foreground/20"
+                          }`}>
+                            {allFilteredSelected && <span className="text-[9px]">✓</span>}
+                          </span>
+                          {allFilteredSelected ? "取消筛选结果" : "全选筛选结果"}
+                        </button>
+                        <span className="text-[10px] text-foreground/40">
+                          筛选 {filteredTargets.length}/{confirmDialog.targets?.length ?? 0} · 已选 {selectedIds.size}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          value={deletePreviewFilters.text}
+                          onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, text: e.target.value })}
+                          placeholder="搜索日期/账户/备注/金额"
+                          className="col-span-2 h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
+                        />
+                        <select
+                          value={deletePreviewFilters.accountName}
+                          onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, accountName: e.target.value })}
+                          className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
+                        >
+                          <option value="">全部账户</option>
+                          {accountOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                        </select>
+                        <select
+                          value={deletePreviewFilters.type}
+                          onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, type: e.target.value as DeletePreviewFilters["type"] })}
+                          className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
+                        >
+                          <option value="all">全部类型</option>
+                          <option value="expense">支出</option>
+                          <option value="income">收入</option>
+                          <option value="transfer">转账</option>
+                          <option value="investment">投资</option>
+                        </select>
+                        <select
+                          value={deletePreviewFilters.selection}
+                          onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, selection: e.target.value as DeletePreviewFilters["selection"] })}
+                          className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
+                        >
+                          <option value="all">全部选择状态</option>
+                          <option value="selected">仅看已选</option>
+                          <option value="unselected">仅看未选</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => setDeletePreviewFilters({ text: "", accountName: "", type: "all", selection: "all" })}
+                          className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] font-bold text-foreground/50 hover:text-foreground"
+                        >
+                          清空筛选
+                        </button>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-red-200/60 bg-red-50/80 p-3 text-[10px] text-red-600">
+                      删除模式只允许筛选和勾选，不能编辑记录。确认后会进入回收/撤销链路。
+                    </div>
+                    {filteredTargets.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-foreground/10 p-6 text-center text-[11px] text-foreground/35">
+                        当前筛选条件下没有记录
+                      </div>
+                    ) : filteredTargets.map((t, i) => {
+                      const id = targetIdOf(t);
+                      const selected = !!id && selectedIds.has(id);
+                      return (
+                        <div key={id || i} className={`p-3 rounded-lg border text-[11px] flex items-start gap-3 transition-all ${
+                          selected ? "bg-surface-white border-foreground/10 text-foreground" : "bg-background/50 border-foreground/5 text-foreground/40"
+                        }`}>
+                          <button onClick={() => toggleConfirmTarget(id)} disabled={!id} className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-all disabled:opacity-30 ${
+                            selected ? "bg-accent-green border-accent-green text-background" : "border-foreground/20"
+                          }`}>
+                            {selected && <span className="text-[9px]">✓</span>}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-foreground/60">{t.date}</span>
+                              <span className={`font-bold shrink-0 ${t.amount < 0 ? "text-red-500" : "text-accent-green"}`}>
+                                {t.amount < 0 ? "-" : "+"}¥{formatMoney(Math.abs(t.amount || 0))}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate font-bold" title={t.accountName}>{t.accountName}</div>
+                            <div className="mt-0.5 flex items-center justify-between gap-2 text-foreground/50">
+                              <span>{targetTypeLabel(t.type)}</span>
+                              <span className="truncate" title={t.remark}>{t.remark || "无备注"}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()
+            )}
+
+            {/* 恢复确认 */}
+            {confirmDialog?.kind === "restore" && confirmDialog.targets && (
               confirmDialog.targets.map((t, i) => (
                 <div key={i} className="p-3 bg-surface-white rounded-lg border border-foreground/5 text-[11px] flex justify-between text-foreground">
                   <span>{t.date}</span>
@@ -1332,10 +1741,15 @@ export function AIPanel({
             </button>
             <button
               onClick={confirmDialog ? onConfirmBatchAction : onConfirmBatchImport}
-              disabled={!!importConfirmDialog && importConfirmDialog.selectedKeys.size === 0}
+              disabled={
+                (!!importConfirmDialog && importConfirmDialog.selectedKeys.size === 0) ||
+                (confirmDialog?.kind === "delete" && (confirmDialog.selectedTargetIds?.size ?? 0) === 0)
+              }
               className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-xl active:scale-95 transition-transform disabled:opacity-30"
             >
-              确认执行
+              {confirmDialog?.kind === "delete"
+                ? `确认删除 ${confirmDialog.selectedTargetIds?.size ?? 0} 条`
+                : "确认执行"}
             </button>
           </div>
         </div>
@@ -1382,5 +1796,6 @@ export function AIPanel({
       </>
       )}
     </aside>
+    </>
   );
 }

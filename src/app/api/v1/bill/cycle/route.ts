@@ -185,6 +185,22 @@ export async function PATCH(req: Request) {
 
     const overrides = await prisma.billOverride.findMany({ where: { accountId: storageAccountId } });
     const overrideByMonth = new Map(overrides.map((override) => [override.statementMonth, toNumber(override.amount)]));
+    const statementInstallments = await prisma.creditCardInstallmentPlan.findMany({
+      where: {
+        householdId,
+        accountId: { in: billAccountIds },
+        sourceType: "statement",
+        sourceStatementMonth: { not: null },
+        status: "active",
+      },
+      select: { sourceStatementMonth: true, installmentPrincipal: true },
+    });
+    const statementInstallmentByMonth = new Map(
+      statementInstallments.map((plan) => [
+        plan.sourceStatementMonth ?? "",
+        toNumber(plan.installmentPrincipal),
+      ]),
+    );
 
     const recalculated: typeof adjustedCycles = [];
     for (const cycle of adjustedCycles) {
@@ -253,7 +269,9 @@ export async function PATCH(req: Request) {
     let previousBalance = 0;
     for (const cycle of recalculated) {
       const override = overrideByMonth.get(cycle.statementMonth);
-      const effectiveBill = override !== undefined ? override : Math.max(0, previousBalance + cycle.rawBill);
+      const effectiveBill = override !== undefined
+        ? Math.max(0, override - (statementInstallmentByMonth.get(cycle.statementMonth) ?? 0))
+        : Math.max(0, previousBalance + cycle.rawBill);
       const afterPaid = effectiveBill - cycle.paid;
       previousBalance = afterPaid;
       cycle.effectiveBill = effectiveBill;

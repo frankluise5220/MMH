@@ -13,12 +13,14 @@ export default function EditBillAmount({
   currentAmount,
   hasOverride,
   displayMultiplier = 1,
+  postOverrideAdjustment = 0,
 }: {
   accountId: string;
   statementMonth: string;
   currentAmount: number;
   hasOverride: boolean;
   displayMultiplier?: 1 | -1;
+  postOverrideAdjustment?: number;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -92,7 +94,7 @@ export default function EditBillAmount({
       const res = await fetch("/api/v1/bill/override", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, statementMonth, amount }),
+        body: JSON.stringify({ accountId, statementMonth, amount: amount + postOverrideAdjustment }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -119,7 +121,7 @@ export default function EditBillAmount({
       setErrMsg("网络错误");
     }
     setSaving(false);
-  }, [accountId, statementMonth]);
+  }, [accountId, postOverrideAdjustment, router, statementMonth]);
 
   const reset = useCallback(async () => {
     if (!accountId || !statementMonth) return;

@@ -65,6 +65,7 @@ type DebtEntry = {
     defaultPenalty?: number;
     defaultRecalculateStartDate?: string | null;
     defaultPrepayStrategy?: string;
+    defaultLoanFundingMode?: "cash_disbursement" | "financed_purchase";
   };
   edit?: {
     type: "expense" | "income" | "transfer" | "investment";

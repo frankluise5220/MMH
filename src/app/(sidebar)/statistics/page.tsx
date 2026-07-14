@@ -10,6 +10,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
 
@@ -78,6 +79,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   });
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
+  const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
 
   const accountFilter = selectedAccountIds
     ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
@@ -157,6 +159,11 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
       }
     } else if (e.type === TransactionType.transfer) {
+      if (isCreditCardRepaymentTransfer({
+        type: e.type,
+        accountKind: accountKindById.get(e.accountId),
+        toAccountKind: accountKindById.get(e.toAccountId ?? ""),
+      })) continue;
       if (isToSelf && !isFromSelf) {
         row.income += Math.abs(amount);
         addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));

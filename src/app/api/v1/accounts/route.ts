@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -16,6 +17,10 @@ import {
   syncCreditCardInstitutionSettings,
 } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 
 export const runtime = "nodejs";
 
@@ -372,12 +377,49 @@ export async function GET(req: Request) {
     },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
+  const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+    computeInvestBalances(scope),
+    computeAccountDisplayBalances(
+      rows
+        .filter((account) => !isPureInvestmentAccount(account))
+        .map((account) => ({
+          id: account.id,
+          kind: account.kind,
+          investProductType: account.investProductType,
+          billingDay: account.billingDay,
+        })),
+      scope.hidFilter,
+    ),
+    prisma.creditCardCycle.findMany({
+      where: {
+        accountId: { in: rows.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+        isCurrentCycle: true,
+      },
+      select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+    }),
+    computeInsuranceAccountDisplayBalances(
+      rows.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
+      scope.hidFilter,
+    ),
+  ]);
+  const currentCreditBalanceByAccountId = new Map(
+    currentCreditCycles.map((cycle) => [
+      cycle.accountId,
+      toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+    ]),
+  );
 
   const accounts = rows
     .map((account) => ({
       id: account.id,
       name: account.name,
-      balance: toNumber(account.balance),
+      balance: isPureInvestmentAccount(account)
+        ? investBalByAccountId.get(account.id)?.marketValue ?? 0
+        : account.kind === AccountKind.insurance
+          ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
+          : account.kind === AccountKind.bank_credit && account.billingDay
+            ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
+            : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       count: 0,
       kind: account.kind,
       debtDirection: account.debtDirection,

@@ -223,6 +223,7 @@ export function FundShell(props: Props) {
   const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
+  const [detailEditSignal, setDetailEditSignal] = useState<{ id: string; value: number } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
   const summaryTableViewportRef = useRef<HTMLDivElement>(null);
   const detailTableViewportRef = useRef<HTMLDivElement>(null);
@@ -2684,6 +2685,8 @@ export function FundShell(props: Props) {
 
                     })}
 
+                    onDoubleClick={() => setDetailEditSignal({ id: e.id, value: Date.now() })}
+
                   >
 
                     <td className="w-10 align-middle px-2 py-1 border-b border-slate-100 text-xs">
@@ -2697,6 +2700,8 @@ export function FundShell(props: Props) {
                           checked={selectedIds.has(e.id)}
 
                           onClick={(ev) => ev.stopPropagation()}
+
+                          onDoubleClick={(ev) => ev.stopPropagation()}
 
                           onChange={() => setSelectedIds((prev) => {
 
@@ -2824,7 +2829,11 @@ export function FundShell(props: Props) {
 
                     <td className="w-[112px] align-middle px-2 py-1 border-b border-slate-100">
 
-                      <div className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1" onClick={(ev) => ev.stopPropagation()}>
+                      <div
+                        className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1"
+                        onClick={(ev) => ev.stopPropagation()}
+                        onDoubleClick={(ev) => ev.stopPropagation()}
+                      >
 
                         {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
 
@@ -2857,6 +2866,8 @@ export function FundShell(props: Props) {
                               toAccountName: e.toAccountName ?? null,
 
                             }}
+
+                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
 
                             cashAccounts={cashAccounts}
 
@@ -2901,6 +2912,8 @@ export function FundShell(props: Props) {
                               toAccountName: e.toAccountName ?? null,
 
                             }}
+
+                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
 
                             cashAccounts={cashAccounts}
 
@@ -2961,6 +2974,8 @@ export function FundShell(props: Props) {
                               realizedProfit: editableInvestmentEntry.realizedProfit != null ? toNumber(editableInvestmentEntry.realizedProfit) : null,
 
                             }}
+
+                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
 
                             accountId={selectedAccount?.id ?? ""}
 

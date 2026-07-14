@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Download, Upload } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
@@ -9,6 +9,13 @@ import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileB
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import {
+  DETAIL_PAGE_SIZE_OPTIONS,
+  decodeDetailPaginationPreference,
+  detailPaginationCookieName,
+  encodeDetailPaginationPreference,
+  normalizeDetailPageSize,
+} from "@/lib/detail-pagination-preference";
 
 type BasicDetailPanelProps = {
   accountId: string;
@@ -30,10 +37,21 @@ type BasicDetailPanelProps = {
   currentBalance?: number;
 };
 
-const PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
-
 function clampPage(page: number, totalPages: number) {
   return Math.min(Math.max(1, Math.floor(page) || 1), totalPages);
+}
+
+function readStoredDetailPreference(accountId: string) {
+  if (typeof window === "undefined") return null;
+  return decodeDetailPaginationPreference(window.sessionStorage.getItem(detailPaginationCookieName(accountId)));
+}
+
+function writeStoredDetailPreference(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
+  if (typeof window === "undefined") return;
+  const cookieName = detailPaginationCookieName(accountId);
+  const value = encodeDetailPaginationPreference({ pageSize, detailAll, detailPage });
+  window.sessionStorage.setItem(cookieName, value);
+  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
 }
 
 export function BasicDetailPanel({
@@ -55,9 +73,7 @@ export function BasicDetailPanel({
   accountLabel = "",
   currentBalance = 0,
 }: BasicDetailPanelProps) {
-  const normalizedInitialPageSize = PAGE_SIZE_OPTIONS.includes(initialPageSize as (typeof PAGE_SIZE_OPTIONS)[number])
-    ? initialPageSize
-    : 20;
+  const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
   const [localOriginalCount, setLocalOriginalCount] = useState(originalCount);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
@@ -66,14 +82,23 @@ export function BasicDetailPanel({
   const totalPages = Math.max(1, Math.ceil(localEntries.length / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
   const safePage = detailAll ? 1 : clampPage(page, totalPages);
+  const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
+  const lastAccountScopeKeyRef = useRef(accountScopeKey);
 
   useEffect(() => {
     setLocalEntries(entries);
     setLocalOriginalCount(originalCount);
-    setPageSize(normalizedInitialPageSize);
-    setDetailAll(initialDetailAll);
-    setPage(initialDetailAll ? 1 : clampPage(initialPage, Math.max(1, Math.ceil(entries.length / normalizedInitialPageSize))));
-  }, [entries, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount]);
+    if (lastAccountScopeKeyRef.current !== accountScopeKey) {
+      lastAccountScopeKeyRef.current = accountScopeKey;
+      const storedPreference = readStoredDetailPreference(accountId);
+      const nextPageSize = storedPreference?.pageSize ?? normalizedInitialPageSize;
+      const nextDetailAll = storedPreference?.detailAll ?? initialDetailAll;
+      const nextTotalPages = Math.max(1, Math.ceil(entries.length / nextPageSize));
+      setPageSize(nextPageSize);
+      setDetailAll(nextDetailAll);
+      setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
+    }
+  }, [accountId, accountScopeKey, entries, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -114,7 +139,8 @@ export function BasicDetailPanel({
       url.searchParams.set("detailPage", String(safePage));
     }
     window.history.replaceState(window.history.state, "", url);
-  }, [detailAll, pageSize, safePage]);
+    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage);
+  }, [accountId, detailAll, pageSize, safePage]);
 
   const pageEntries = useMemo(() => {
     if (detailAll) return localEntries;
@@ -139,7 +165,8 @@ export function BasicDetailPanel({
 
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
-  const selectionResetKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
+  const selectionResetKey = accountScopeKey;
+  const tableResetKey = `${selectionResetKey}:${detailAll ? "all" : safePage}:${pageSize}`;
 
   return (
     <BasicDetailSelectionProvider resetKey={selectionResetKey}>
@@ -153,6 +180,7 @@ export function BasicDetailPanel({
           categoryOptions={categoryOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
+          resetKey={tableResetKey}
           toolbarMode="custom"
           toolbarTitle="资金明细"
           toolbarRightContent={
@@ -175,7 +203,7 @@ export function BasicDetailPanel({
               <span className="text-slate-400">|</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}
-                pageSizeOptions={PAGE_SIZE_OPTIONS}
+                pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
                 detailAll={detailAll}
                 safePage={safePage}
                 totalPages={totalPages}

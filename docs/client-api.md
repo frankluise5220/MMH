@@ -149,6 +149,7 @@
 
 补充约定：
 
+- `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
 - `POST /api/v1/accounts` 与 `PUT /api/v1/accounts` 在这类账户上接受 `tradingCalendar`；当账户类型不支持该字段时，服务端会自动清空。
 
@@ -156,8 +157,9 @@
 
 - 普通转账只接受普通资金或信用卡目标账户。目标账户如果是基金/投资、存款或往来款，应按对应业务类型提交投资、存款或往来款交易，不能保存为普通转账。
 - 普通转账只支持同币种账户，并会把账户币种写入交易 `currency`。跨币种转账必须走后续专用的换汇/跨币种流程，不能用一个金额同时代表两边账户。
-- 现金、借记卡或电子钱包账户转入信用卡账户时，存储层仍为 `type = "transfer"`；客户端显示和筛选应按 `accountKind` + `toAccountKind` 识别为信用卡还款。
-- `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端仍以转账记录落库。
+- 现金、借记卡或电子钱包账户转入信用卡账户时，存储和显示类型均为 `type = "transfer"`，分类为“信用卡还款”；客户端可用 `accountKind` + `toAccountKind` 校验和补充该分类，不得计入收入或支出。
+- 信用卡与借记卡都支持 `expense | income | advance | transfer` 四种业务输入。`advance` 保存为转向应收往来账户的内部 `transfer`，并写入 `source = "advance"`、往来对象快照和信用卡账期；普通还款仍按上一条的“信用卡还款”转账规则处理。
+- `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端以转账记录落库并写入“信用卡还款”分类。
 - `/api/v1/record/ingest` 批量导入失败时返回 `{ ok:false, error, failedRow?, trace? }`。`failedRow` 包含 0 基 rowIndex、类型、账户、转出/转入、分类和错误原因，客户端应在预览界面直接显示到用户，而不是只提示整批回滚。
 - `/api/v1/record/ingest/progress?traceId=...` 返回 `{ ok:true, progress }`，用于长时间批量导入的写库进度。`progress.phase` 包含 `preparing | writing | recalculating | done | failed`，`processed/total` 表示服务端写库进度。事务超时导致的行号表示执行到该行附近，不代表预览校验漏掉了该行脏数据。
 - `/api/v1/record/ingest` 同一账簿同一时间只允许一批批量导入写库。已有导入未完成时，新的导入请求返回 409 和 `{ ok:false, error }`，客户端应提示用户等待当前导入完成，不能叠加第二批写入。
@@ -179,7 +181,7 @@
 
 范围：
 
-- 收入、支出、转账。
+- 收入、支出、代付、转账。
 - 交易详情。
 - 批量编辑。
 - 删除和清理。
@@ -255,10 +257,10 @@
 
 - Method: `POST`
 - Path: `/api/v1/wealth-products`
-- Body: `{ name, shortName?, institutionId?, currency?, annualRate?, termDays?, note? }`
-- Success: `{ ok: true, product }`
+- Body: `{ name, cashAccountId, wealthAccountId?, shortName?, currency?, annualRate?, termDays?, note? }`
+- Success: `{ ok: true, product, wealthAccount }`
 
-银行理财交易应保存 `wealthProductId` 作为产品身份，`fundName` 只作为兼容展示文本。理财买入/赎回入口的投资账户只能选择 `investProductType = "wealth"` 的账户。
+银行理财交易应保存 `wealthProductId` 作为产品身份，`fundName` 只作为兼容展示文本。买入时理财账户只能与资金来源同机构，或属于同一所有人名下的第三方支付/钱包机构；未传 `wealthAccountId` 时接口会按资金来源自动复用或创建同机构理财账户。
 
 #### 贵金属字典
 
@@ -418,6 +420,7 @@ Notes:
 - 保险产品列表、创建和更新。
 - 按保险产品名称查询公开参考资料。
 - 保险投保、赎回记录仍通过交易明细接口保存，并关联 `insuranceProductId`。
+- 通过交易明细接口选择 `insuranceProductMasterId` 创建新保单时，可传 `policyNo`；`policyNo` 和 `effectiveDate` 属于实际保单/持仓，不属于保险产品主数据。保单编辑接口也应回写这两个字段。
 - Web 设置页 `/settings/insurance-products` 用于维护保险产品库；保险持仓页只显示有交易记录的持仓。
 
 相关路径示例：
@@ -550,9 +553,15 @@ Notes:
 
 移动端聚合接口可以减少请求次数，但不应复制 Web 的业务计算逻辑。聚合数据应来自同一套服务模块或统一查询口径。
 
-交易同步项包含 `accountKind` 和 `toAccountKind`。移动端应使用这两个字段识别信用卡还款等账户目标语义，不要依赖账户名称或备注文本猜测。
+贷款初始记录有两种资金语义：`source = debt_borrow_in` 表示贷款资金实际进入 `toAccountId`；`source = debt_financed_purchase` 表示车贷等消费融资，只在 `accountId` 对应的贷款账户建立负债，`toAccountId` 为 `null`。后者选择的还款账户属于还款计划，不代表收到贷款资金。客户端不得把消费融资本金显示为资金账户收入。
+
+交易同步项包含 `accountKind`、`toAccountKind`、`categoryId` 和 `categoryName`。信用卡还款应显示为“类型：转账、分类：信用卡还款”；移动端使用账户类型校验该语义，不要依赖账户名称或备注文本猜测。
+
+投资交易保持 `type = "investment"`，并使用基金投资、理财投资、存款投资、贵金属投资或其他投资分类。客户端应优先显示保存的 `categoryId` / `categoryName`，买入、赎回、定投和分红仍是投资动作，不是收入或支出类型。`source = "insurance"` 的记录不归入投资分类：保费显示为保险支出，理赔、退保和满期领取显示为保险回款。
 
 账户同步项包含 `creditBillMode`，值为 `separate` 或 `consolidated`。合并账单按同一账簿、同一机构下标记为 `consolidated` 的有效信用卡归组；交易的 `accountId` / `toAccountId` 仍指向具体信用卡，不改写为代表账户。
+
+账户同步项的 `balance` 与 Web 一致，表示截至当前日期的展示余额；移动端不得把未来日期的计划还款、分期、保费或未来流水自行累加到账户余额。
 
 ### 撤销最近一次明细操作
 
@@ -567,8 +576,19 @@ Notes:
 - `installmentNo` / `installmentTotal`: 当前期次与总期数；冲抵行的 `installmentNo` 为 `null`。
 - `installmentPrincipal` / `installmentInterest`: 本行本金与手续费/利息。
 - `installmentRole`: `adjustment` 表示原账期本金冲抵，`payment` 表示某一期应还。
+- `installmentSourceType`: `transaction` 表示消费时创建的消费分期，`statement` 表示已出账后创建的账单分期。
+- `installmentSourceStatementMonth`: 账单分期的来源账单月份（`YYYY-MM`）；消费分期为 `null`。
 
-分期计划支持仅对原支出的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、冲抵分期本金、逐期加入本金与费用”。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
+消费分期支持仅对原支出的部分金额分期；账单分期支持对已出账且未结清账单的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、在来源账单冲抵分期本金、从首期账单开始逐期加入本金与费用”。账单分期的首期从来源账单的下一个账单月开始。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
+
+### 创建账单分期
+
+- Method: `POST`
+- Path: `/api/v1/bill/installment`
+- Auth: required
+- Body: `accountId`, `statementMonth`（`YYYY-MM`）, `amount`, `totalRuns`, `rateType`, `rate`
+- 仅允许已出账且尚有未还金额的信用卡账单；同一合并/独立账单月份只能有一个有效账单分期计划。
+- 返回 `planId`, `sourceType`, `sourceStatementMonth`, `installmentPrincipal`, `firstStatementMonth`, `totalRuns`。
 
 ## 接口详情模板
 

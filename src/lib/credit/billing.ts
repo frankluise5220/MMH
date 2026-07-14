@@ -121,8 +121,9 @@ export function computeCreditBillCascade(params: {
   monthsForCascade: string[];
   summaryByMonth: Map<string, Pick<CreditBillSummary, "bill" | "paid" | "expenseAbs" | "income">>;
   overrides: CreditBillOverrideInput[];
+  postOverrideAdjustmentByMonth?: ReadonlyMap<string, number>;
 }) {
-  const { monthsForCascade, summaryByMonth, overrides } = params;
+  const { monthsForCascade, summaryByMonth, overrides, postOverrideAdjustmentByMonth } = params;
 
   const overrideByMonth = new Map<string, number>(
     overrides
@@ -146,7 +147,9 @@ export function computeCreditBillCascade(params: {
   let previousBill = 0;
   for (const row of allMonthsForCascade) {
     const override = overrideByMonth.get(row.month);
-    const effective = override !== undefined ? override : previousBill + (row.billDelta ?? row.bill);
+    const effective = override !== undefined
+      ? override - (postOverrideAdjustmentByMonth?.get(row.month) ?? 0)
+      : previousBill + (row.billDelta ?? row.bill);
     effectiveBillByMonth.set(row.month, effective);
     previousBill = effective;
   }

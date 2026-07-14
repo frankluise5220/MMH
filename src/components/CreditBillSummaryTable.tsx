@@ -3,11 +3,17 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { CalendarClock, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import EditBillAmount from "@/components/EditBillAmount";
 import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
 import { formatMoney } from "@/lib/format";
+import {
+  addStatementMonths,
+  buildCreditCardInstallmentSchedule,
+  summarizeCreditCardInstallments,
+  type CreditCardInstallmentRateType,
+} from "@/lib/credit/installment";
 import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
@@ -29,6 +35,7 @@ export type CreditBillSummaryRow = {
   effectiveBill: number;
   isCurrentCycle: boolean;
   hasOverride: boolean;
+  statementInstallmentPrincipal: number | null;
 };
 
 type CreditBillSummaryTableProps = {
@@ -88,6 +95,15 @@ export function CreditBillSummaryTable({
   const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
   const [cycleSaving, setCycleSaving] = useState(false);
   const [cycleError, setCycleError] = useState("");
+  const [installmentCycle, setInstallmentCycle] = useState<CreditBillSummaryRow | null>(null);
+  const [installmentForm, setInstallmentForm] = useState({
+    amount: "",
+    totalRuns: "12",
+    rateType: "period_fee" as CreditCardInstallmentRateType,
+    rate: "0",
+  });
+  const [installmentSaving, setInstallmentSaving] = useState(false);
+  const [installmentError, setInstallmentError] = useState("");
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const [page, setPage] = useState(() => clampPage(initialPage, totalPages));
   const safePage = clampPage(page, totalPages);
@@ -156,6 +172,67 @@ export function CreditBillSummaryTable({
     setCycleError("");
   }
 
+  function openStatementInstallment(row: CreditBillSummaryRow) {
+    const available = Math.max(0, row.effectiveBill - row.paid);
+    setInstallmentCycle(row);
+    setInstallmentForm({
+      amount: available.toFixed(2),
+      totalRuns: "12",
+      rateType: "period_fee",
+      rate: "0",
+    });
+    setInstallmentError("");
+  }
+
+  const installmentPreview = useMemo(() => {
+    if (!installmentCycle) return null;
+    try {
+      return summarizeCreditCardInstallments(buildCreditCardInstallmentSchedule({
+        principal: Number(installmentForm.amount),
+        totalRuns: Number(installmentForm.totalRuns),
+        rateType: installmentForm.rateType,
+        rate: Number(installmentForm.rate),
+        firstStatementMonth: addStatementMonths(installmentCycle.month, 1),
+        firstDate: new Date(`${installmentCycle.periodEnd}T00:00:00.000Z`),
+      }));
+    } catch {
+      return null;
+    }
+  }, [installmentCycle, installmentForm]);
+
+  async function saveStatementInstallment() {
+    if (!installmentCycle || installmentSaving) return;
+    setInstallmentSaving(true);
+    setInstallmentError("");
+    try {
+      const res = await fetch("/api/v1/bill/installment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId,
+          statementMonth: installmentCycle.month,
+          amount: Number(installmentForm.amount),
+          totalRuns: Number(installmentForm.totalRuns),
+          rateType: installmentForm.rateType,
+          rate: Number(installmentForm.rate),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!data?.ok) throw new Error(data?.error ?? "创建账单分期失败");
+      setInstallmentCycle(null);
+      dispatchFinanceDataChanged({
+        reason: "statement-installment",
+        accountIds: [accountId],
+        statementMonth: installmentCycle.month,
+      });
+      router.refresh();
+    } catch (error) {
+      setInstallmentError(error instanceof Error ? error.message : "创建账单分期失败");
+    } finally {
+      setInstallmentSaving(false);
+    }
+  }
+
   async function saveCycle() {
     if (!editingCycle || cycleSaving) return;
     setCycleSaving(true);
@@ -216,7 +293,7 @@ export function CreditBillSummaryTable({
 
   const canPrev = safePage > 1;
   const canNext = safePage < totalPages;
-  const billColumns = useMemo<AdvancedDataTableColumn<CreditBillSummaryRow>[]>(() => [
+  const billColumns: AdvancedDataTableColumn<CreditBillSummaryRow>[] = [
     {
       key: "month",
       label: t("creditBill.bill"),
@@ -302,6 +379,7 @@ export function CreditBillSummaryTable({
             currentAmount={row.effectiveBill}
             hasOverride={row.hasOverride}
             displayMultiplier={-1}
+            postOverrideAdjustment={row.statementInstallmentPrincipal ?? 0}
           />
         </span>
       ),
@@ -337,7 +415,44 @@ export function CreditBillSummaryTable({
         return <span className="text-xs text-slate-300">-</span>;
       },
     },
-  ], [accountId, hideSettledBills, hideZeroBills, safePage, selectedBillMonth, settledBillMonth, showRecentBillCycles, t]);
+    {
+      key: "actions",
+      label: "操作",
+      width: 76,
+      minWidth: 68,
+      align: "center",
+      hideable: false,
+      render: (row) => {
+        const available = Math.max(0, row.effectiveBill - row.paid);
+        if (row.isCurrentCycle || available <= 0) return <span className="text-xs text-slate-300">-</span>;
+        if (row.statementInstallmentPrincipal != null) {
+          return (
+            <span
+              className="whitespace-nowrap text-xs tabular-nums text-slate-500"
+              title={`已将 ${formatMoney(row.statementInstallmentPrincipal)} 转为账单分期`}
+            >
+              已分期
+            </span>
+          );
+        }
+        return (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openStatementInstallment(row);
+            }}
+            className="inline-flex h-[22px] items-center gap-0.5 rounded border border-slate-200 bg-white px-1.5 text-[11px] leading-none text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+            title="将这期账单的部分未还金额转为分期"
+          >
+            <CalendarClock className="h-3 w-3" />
+            分期
+          </button>
+        );
+      },
+    },
+  ];
 
   return (
     <div className={["panel-surface overflow-hidden", fillHeight ? "flex h-full min-h-0 flex-col" : "", className ?? ""].filter(Boolean).join(" ")}>
@@ -367,6 +482,7 @@ export function CreditBillSummaryTable({
         </div>
         <div className="flex items-center gap-2">
           <CreditBillMailImportButton
+            accountId={accountId}
             accountName={accountName}
           />
           <button
@@ -446,6 +562,100 @@ export function CreditBillSummaryTable({
           emptyText="暂无账单"
         />
       </div>
+      {installmentCycle ? (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/25 px-4">
+          <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between border-b border-slate-100 px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">账单分期 · {installmentCycle.month}</div>
+                <div className="mt-1 text-xs tabular-nums text-slate-500">
+                  当前未还 {formatMoney(Math.max(0, installmentCycle.effectiveBill - installmentCycle.paid))}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInstallmentCycle(null)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                title="关闭"
+                disabled={installmentSaving}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 px-4 py-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="form-label">分期金额</span>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={installmentForm.amount}
+                    onChange={(event) => setInstallmentForm((prev) => ({ ...prev, amount: event.target.value }))}
+                    className="form-input tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="form-label">期数</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={120}
+                    step={1}
+                    value={installmentForm.totalRuns}
+                    onChange={(event) => setInstallmentForm((prev) => ({ ...prev, totalRuns: event.target.value }))}
+                    className="form-input tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="form-label">{installmentForm.rateType === "annual_interest" ? "年利率 (%)" : "每期费率 (%)"}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.0001"
+                    value={installmentForm.rate}
+                    onChange={(event) => setInstallmentForm((prev) => ({ ...prev, rate: event.target.value }))}
+                    className="form-input tabular-nums"
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="inline-flex h-8 overflow-hidden rounded border border-slate-200 bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setInstallmentForm((prev) => ({ ...prev, rateType: "period_fee" }))}
+                    className={`px-3 text-xs ${installmentForm.rateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    每期手续费
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInstallmentForm((prev) => ({ ...prev, rateType: "annual_interest" }))}
+                    className={`border-l border-slate-200 px-3 text-xs ${installmentForm.rateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    年利率
+                  </button>
+                </div>
+                {installmentPreview ? (
+                  <div className="text-xs tabular-nums text-slate-500">
+                    首期 {formatMoney(installmentPreview.firstPayment)} · 费用 {formatMoney(installmentPreview.totalInterest)} · 合计 {formatMoney(installmentPreview.totalPayment)}
+                  </div>
+                ) : null}
+              </div>
+              {installmentError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{installmentError}</div> : null}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
+              <button type="button" onClick={() => setInstallmentCycle(null)} className="secondary-button h-8 px-3 text-xs" disabled={installmentSaving}>
+                取消
+              </button>
+              <button type="button" onClick={saveStatementInstallment} className="primary-button h-8 px-3 text-xs" disabled={installmentSaving || !installmentPreview}>
+                {installmentSaving ? "保存中..." : "创建账单分期"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {editingCycle ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/20 px-4">
           <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">

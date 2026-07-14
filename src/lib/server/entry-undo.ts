@@ -36,7 +36,6 @@ export async function prepareEntryUndo(
     where: { id: { in: ids }, OR: [{ householdId }, { householdId: null }] },
   });
   if (initial.length === 0) return null;
-  if (initial.some((record) => record.source === "debt_borrow_in")) return null;
 
   const relatedIds = new Set(initial.map((record) => record.id));
   for (const record of initial) {

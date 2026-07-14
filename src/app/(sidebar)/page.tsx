@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
-import { AccountKind, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
+import { AccountKind, CreditCardInstallmentSourceType, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
@@ -60,6 +60,9 @@ import { debtActionLabel } from "@/lib/debt";
 import { getInvestmentAccountView, isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getAccountFundUnitsDecimals, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
+import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
 import {
   listLoanRateAdjustmentsByAccountIds,
@@ -75,7 +78,15 @@ import {
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import {
+  decodeDetailPaginationPreference,
+  detailPaginationCookieName,
+  normalizeDetailPage,
+  normalizeDetailPageSize,
+} from "@/lib/detail-pagination-preference";
 import {
   calcLoanScheduledAmountForPeriodStart,
   calcLoanRunPartsWithRateAdjustments,
@@ -97,7 +108,7 @@ import {
   fillMissingCreditBillSummaries,
   mergeCreditBillSummariesWithCascade,
 } from "@/lib/credit/billing";
-import { buildCreditCardInstallmentSchedule, type CreditCardInstallmentRateType } from "@/lib/credit/installment";
+import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 
 export const dynamic = "force-dynamic";
 
@@ -268,54 +279,6 @@ function debtPaymentTotal(
   const fee = Math.abs(toNumber(entry.debtFeeAmount));
   if (!hasStructuredSplit) return principal + fallbackInterest + fallbackFee;
   return Math.abs(toNumber(entry.amount)) || principal + interest + fee;
-}
-
-async function resolveOrCreateAdvanceAccount(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  householdId: string,
-  institutionId: string,
-) {
-  const institution = await tx.institution.findFirst({
-    where: {
-      id: institutionId,
-      householdId,
-      type: { in: ["person", "organization"] },
-    },
-    select: { id: true, name: true, shortName: true },
-  });
-  if (!institution) throw new Error("请选择往来对象");
-
-  const existing = await tx.account.findFirst({
-    where: {
-      householdId,
-      institutionId: institution.id,
-      kind: AccountKind.loan,
-      debtDirection: "receivable",
-      isPlaceholder: { not: true },
-    },
-    orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-    select: { id: true, name: true },
-  });
-  if (existing) return existing;
-
-  const group =
-    (await tx.accountGroup.findFirst({ where: { householdId, name: { in: ["往来款", "借入/借出", "负债"] } }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] })) ??
-    (await tx.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }));
-  if (!group) throw new Error("缺少账户分组，无法创建往来款账户");
-
-  return tx.account.create({
-    data: {
-      name: institution.shortName?.trim() || institution.name,
-      kind: AccountKind.loan,
-      debtDirection: "receivable",
-      currency: "CNY",
-      groupId: group.id,
-      institutionId: institution.id,
-      householdId,
-      isActive: true,
-    },
-    select: { id: true, name: true },
-  });
 }
 
 async function resolveOrCreateDebtAccount(
@@ -843,6 +806,13 @@ async function createTransaction(formData: FormData) {
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
+        const repaymentCategory = isCreditCardRepaymentTransfer({
+          type: TransactionType.transfer,
+          accountKind: fromAcc.kind,
+          toAccountKind: toAcc.kind,
+        })
+          ? await resolveCreditCardRepaymentCategory(tx, householdId)
+          : null;
 
         const created = await tx.txRecord.create({
           data: {accountId: fromAcc.id,
@@ -852,6 +822,8 @@ async function createTransaction(formData: FormData) {
             amount: -amountAbs,
             type: TransactionType.transfer,
             date,
+            categoryId: repaymentCategory?.id ?? null,
+            categoryName: repaymentCategory?.name ?? null,
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
@@ -906,75 +878,24 @@ async function createTransaction(formData: FormData) {
 
         if (createInstallment) {
           if (!statementMonth) throw new Error("信用卡账户缺少账单日，无法计算分期账期");
-          const schedule = buildCreditCardInstallmentSchedule({
+          await createCreditCardInstallmentPlan(tx, {
+            householdId,
+            account: { id: acc.id, name: acc.name },
+            sourceType: CreditCardInstallmentSourceType.transaction,
+            sourceEntryId: created.id,
+            originalAmount: amountAbs,
             principal: installmentAmount,
             totalRuns: installmentTotal,
             rateType: installmentRateType,
             rate: installmentRate,
-            firstStatementMonth: statementMonth,
-            firstDate: date,
+            adjustmentDate: date,
+            adjustmentStatementMonth: statementMonth,
+            firstPaymentDate: date,
+            firstPaymentStatementMonth: statementMonth,
+            category: cat ? { id: cat.id, name: cat.name } : null,
+            label: note || cat?.name || "信用卡支出",
+            tagIds,
           });
-          const plan = await tx.creditCardInstallmentPlan.create({
-            data: {
-              householdId,
-              accountId: acc.id,
-              sourceEntryId: created.id,
-              originalAmount: amountAbs,
-              installmentPrincipal: installmentAmount,
-              totalRuns: installmentTotal,
-              rateType: installmentRateType,
-              rate: installmentRate,
-              firstStatementMonth: statementMonth,
-            },
-          });
-
-          await tx.txRecord.create({
-            data: {
-              householdId,
-              accountId: acc.id,
-              accountName: acc.name,
-              categoryId: cat?.id ?? null,
-              categoryName: cat?.name ?? null,
-              amount: installmentAmount,
-              type: TransactionType.expense,
-              date,
-              postedAt,
-              statementMonth,
-              source: "credit_card_installment",
-              creditCardInstallmentPlanId: plan.id,
-              installmentTotal,
-              installmentPrincipal: installmentAmount,
-              installmentInterest: 0,
-              installmentRole: "adjustment",
-              note: `分期冲抵：${note || cat?.name || "信用卡支出"}`,
-            },
-          });
-
-          for (const row of schedule) {
-            const installmentEntry = await tx.txRecord.create({
-              data: {
-                householdId,
-                accountId: acc.id,
-                accountName: acc.name,
-                categoryId: cat?.id ?? null,
-                categoryName: cat?.name ?? null,
-                amount: -row.payment,
-                type: TransactionType.expense,
-                date: row.date,
-                postedAt: row.date,
-                statementMonth: row.statementMonth,
-                source: "credit_card_installment",
-                creditCardInstallmentPlanId: plan.id,
-                installmentNo: row.installmentNo,
-                installmentTotal,
-                installmentPrincipal: row.principal,
-                installmentInterest: row.interest,
-                installmentRole: "payment",
-                note: `${note || cat?.name || "信用卡支出"}（分期 ${row.installmentNo}/${installmentTotal}）`,
-              },
-            });
-            await attachEntryTags({ tx, entryId: installmentEntry.id, householdId, tagIds });
-          }
         }
       });
 
@@ -994,9 +915,18 @@ async function createTransaction(formData: FormData) {
         ]);
         if (!acc) throw new Error("账户不存在");
         if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
-        const advanceAccount = await resolveOrCreateAdvanceAccount(tx, householdId, counterpartyInstitutionId);
+        const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
+          householdId,
+          cashAccountId: acc.id,
+          debtObjectId: counterpartyInstitutionId,
+        });
+        const advanceAccount = resolvedAdvance.account;
         if (advanceAccount.id === acc.id) throw new Error("资金账户不能和往来款账户相同");
         advanceAccountId = advanceAccount.id;
+        const statementMonth =
+          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
+            ? toStatementMonth(date, acc.billingDay)
+            : null;
 
         const created = await tx.txRecord.create({
           data: {
@@ -1006,9 +936,13 @@ async function createTransaction(formData: FormData) {
             toAccountName: advanceAccount.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
+            counterpartyInstitutionId: resolvedAdvance.objectId,
+            counterpartyInstitutionName: resolvedAdvance.objectName,
             amount: -amountAbs,
             type: TransactionType.transfer,
             date,
+            statementMonth,
+            source: "advance",
             note: note || "代付",
             toNote: null,
             householdId,
@@ -1099,7 +1033,7 @@ async function createTransaction(formData: FormData) {
       const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
       const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
       const metalUnitIdInput = String(formData.get("metalUnitId") ?? "").trim();
-      const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : "");
+      const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : fundProductType === "wealth" ? "__auto_wealth__" : "");
       if (!effectiveAccountId) return { ok: false as const, error: "请选择账户" };
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
@@ -1130,7 +1064,13 @@ async function createTransaction(formData: FormData) {
                 fundName: fundNameInput || note || null,
                 currency: recordCurrency,
               })
-            : await tx.account.findUnique({ where: { id: accountId } });
+            : fundProductType === "wealth" && finalFundSubtype === FundSubtype.buy
+              ? await resolveOrCreateWealthAccount(tx, {
+                  householdId,
+                  cashAccountId: cashAccountIdInput ?? "",
+                  requestedAccountId: accountId || null,
+                })
+              : await tx.account.findUnique({ where: { id: accountId } });
         if (!investAcc) throw new Error("账户不存在");
         if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error("请选择投资/存款账户");
         finalInvestmentAccId = investAcc.id;
@@ -1168,7 +1108,7 @@ async function createTransaction(formData: FormData) {
 
         const wealthProduct = fundProductType === "wealth"
           ? (wealthProductIdInput
-              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
               : fundNameInput
                 ? await tx.wealthProduct.findFirst({
                     where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
@@ -1363,6 +1303,7 @@ async function createDebtTransaction(formData: FormData) {
   "use server";
 
   const mode = String(formData.get("mode") ?? "").trim();
+  const loanFundingMode = String(formData.get("loanFundingMode") ?? "cash_disbursement").trim();
   const editEntryId = String(formData.get("editEntryId") ?? "").trim();
   const debtAccountId = String(formData.get("debtAccountId") ?? "").trim();
   const debtObjectId = String(formData.get("debtObjectId") ?? formData.get("debtInstitutionId") ?? "").trim();
@@ -1390,6 +1331,7 @@ async function createDebtTransaction(formData: FormData) {
   const note = String(formData.get("note") ?? "").trim();
   const { householdId } = await getHouseholdScope();
   let recalculateAfterSave: { accountId: string; startDate: string } | null = null;
+  const isFinancedPurchase = mode === "borrow_in" && loanFundingMode === "financed_purchase";
 
   if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
     return { ok: false as const, error: "操作类型不正确" };
@@ -1586,8 +1528,9 @@ async function createDebtTransaction(formData: FormData) {
 
         const isDebtAccountFromSide = mode === "borrow_in" || mode === "collect_in";
         const transferFromAccount = isDebtAccountFromSide ? debtAccount : cashAccount;
-        const transferToAccount = isDebtAccountFromSide ? cashAccount : debtAccount;
+        const transferToAccount = isFinancedPurchase ? null : isDebtAccountFromSide ? cashAccount : debtAccount;
         const transferStatementMonth =
+          transferToAccount &&
           (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
           transferToAccount.billingDay
             ? toStatementMonth(date, transferToAccount.billingDay)
@@ -1597,8 +1540,8 @@ async function createDebtTransaction(formData: FormData) {
           data: {
             accountId: transferFromAccount.id,
             accountName: transferFromAccount.name,
-            toAccountId: transferToAccount.id,
-            toAccountName: transferToAccount.name,
+            toAccountId: transferToAccount?.id ?? null,
+            toAccountName: transferToAccount?.name ?? null,
             amount: mode === "repay_out" || mode === "prepay_out"
               ? -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0))
               : mode === "collect_in"
@@ -1611,10 +1554,10 @@ async function createDebtTransaction(formData: FormData) {
             note: note || null,
             toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : original.toNote,
             statementMonth: transferStatementMonth,
-            source: `debt_${mode}`,
+            source: isFinancedPurchase ? "debt_financed_purchase" : `debt_${mode}`,
           },
         });
-        if (mode === "prepay_out" && transferToAccount.id) {
+        if (mode === "prepay_out" && transferToAccount?.id) {
           recalculateAfterSave = {
             accountId: transferToAccount.id,
             startDate: formatDateUtc(date),
@@ -1657,8 +1600,9 @@ async function createDebtTransaction(formData: FormData) {
         loanTotalRuns > 0;
 
       const transferFromAccount = mode === "borrow_in" || mode === "collect_in" ? debtAccount : cashAccount;
-      const transferToAccount = mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
+      const transferToAccount = isFinancedPurchase ? null : mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
       const transferStatementMonth =
+        transferToAccount &&
         (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
         transferToAccount.billingDay
           ? toStatementMonth(date, transferToAccount.billingDay)
@@ -1668,8 +1612,8 @@ async function createDebtTransaction(formData: FormData) {
         data: {
           accountId: transferFromAccount.id,
           accountName: transferFromAccount.name,
-          toAccountId: transferToAccount.id,
-          toAccountName: transferToAccount.name,
+          toAccountId: transferToAccount?.id ?? null,
+          toAccountName: transferToAccount?.name ?? null,
           amount: mode === "repay_out" || mode === "prepay_out"
             ? -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0))
             : mode === "collect_in"
@@ -1682,7 +1626,7 @@ async function createDebtTransaction(formData: FormData) {
           date,
           note: mode === "borrow_in"
             ? [
-                note || (isInstitutionBorrow ? "机构借入" : "借入"),
+                note || (isFinancedPurchase ? "消费分期" : isInstitutionBorrow ? "机构借入" : "借入"),
                 `还款方式：${repaymentMethod}`,
                 isFixedRepaymentMethod && Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
                   ? `周期：每${repaymentIntervalMonths === 1 ? "月" : `${repaymentIntervalMonths}个月`}`
@@ -1694,7 +1638,7 @@ async function createDebtTransaction(formData: FormData) {
             : note || null,
           toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : null,
           statementMonth: transferStatementMonth,
-          source: `debt_${mode}`,
+          source: isFinancedPurchase ? "debt_financed_purchase" : `debt_${mode}`,
           householdId,
         },
       });
@@ -1995,15 +1939,24 @@ async function editInvestment(formData: FormData) {
     const newToAccountId = hasNewToAccountId && newToAccountIdStr ? newToAccountIdStr : null;
 
     await prisma.$transaction(async (tx) => {
+      const requestedInvestmentAccountId = newToAccountId ?? oldInvestmentAccId;
+      const requestedCashAccountId = cashAccountId ?? oldCashAccId;
+      const resolvedWealthAccount = fundProductType === "wealth" && !redeemLike
+        ? await resolveOrCreateWealthAccount(tx, {
+            householdId,
+            cashAccountId: requestedCashAccountId,
+            requestedAccountId: requestedInvestmentAccountId || null,
+          })
+        : null;
       // 先查询资金账户信息（如果需要）
-      const cashAccountInfo = cashAccountId
-        ? await tx.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true } })
+      const cashAccountInfo = requestedCashAccountId
+        ? await tx.account.findUnique({ where: { id: requestedCashAccountId }, select: { id: true, name: true } })
         : null;
 
       // 查询新基金账户信息（如果需要）
-      const newInvestmentAccountInfo = newToAccountId
+      const newInvestmentAccountInfo = resolvedWealthAccount ?? (newToAccountId
         ? await tx.account.findUnique({ where: { id: newToAccountId }, select: { id: true, name: true, fundUnitsDecimals: true, institutionId: true, currency: true } })
-        : null;
+        : null);
       const existingInvestmentAccountInfo = !newInvestmentAccountInfo && oldInvestmentAccId
         ? await tx.account.findUnique({ where: { id: oldInvestmentAccId }, select: { id: true, name: true, fundUnitsDecimals: true, institutionId: true, currency: true } })
         : null;
@@ -2039,7 +1992,7 @@ async function editInvestment(formData: FormData) {
       if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
       const wealthProduct = fundProductType === "wealth"
         ? (wealthProductIdInput
-            ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, isActive: true } })
+            ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: finalInvestmentAccountInfo?.institutionId, isActive: true } })
             : fundName
               ? await tx.wealthProduct.findFirst({
                   where: { householdId, institutionId: finalInvestmentAccountInfo?.institutionId ?? null, name: fundName, isActive: true },
@@ -2601,7 +2554,7 @@ async function regularInvestAction(formData: FormData) {
       return { ok: false as const, error: "未知操作类型" };
     }
 
-    // Client-side handles page refresh via router.refresh() + mmh:fund:refresh
+    // Client-side handles page refresh via mmh finance refresh events.
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : "操作失败" };
@@ -2917,6 +2870,13 @@ async function updateTransactionFromDialog(formData: FormData) {
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
+        const repaymentCategory = isCreditCardRepaymentTransfer({
+          type: TransactionType.transfer,
+          accountKind: fromAcc.kind,
+          toAccountKind: toAcc.kind,
+        })
+          ? await resolveCreditCardRepaymentCategory(tx, ctx.householdId)
+          : null;
 
         await tx.txRecord.update({
           where: { id: entryId },
@@ -2926,8 +2886,8 @@ async function updateTransactionFromDialog(formData: FormData) {
             accountName: fromAcc.name,
             toAccountId: toAcc.id,
             toAccountName: toAcc.name,
-            categoryId: null,
-            categoryName: null,
+            categoryId: repaymentCategory?.id ?? null,
+            categoryName: repaymentCategory?.name ?? null,
             statementMonth: transferStatementMonth,
             date,
             type: TransactionType.transfer,
@@ -3027,6 +2987,56 @@ async function updateTransactionFromDialog(formData: FormData) {
 
         investRecalcAccountId = investAcc.id;
         investRecalcFundCode = fundCode || null;
+        return;
+      }
+
+      if (type === "advance") {
+        const accountId = String(formData.get("accountId") ?? "").trim();
+        const categoryId = String(formData.get("categoryId") ?? "").trim();
+        const debtObjectId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
+        if (!accountId) throw new Error("请选择资金账户");
+        if (!debtObjectId) throw new Error("请选择往来对象");
+        const [acc, cat] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId } }),
+          categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+        ]);
+        if (!acc) throw new Error("账户不存在");
+        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
+          householdId: ctx.householdId,
+          cashAccountId: acc.id,
+          debtObjectId,
+        });
+        const statementMonth =
+          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
+            ? toStatementMonth(date, acc.billingDay)
+            : null;
+        touchedAccountIds.add(acc.id);
+        touchedAccountIds.add(resolvedAdvance.account.id);
+        await tx.txRecord.update({
+          where: { id: entryId },
+          data: {
+            amount: -amountAbs,
+            accountId: acc.id,
+            accountName: acc.name,
+            toAccountId: resolvedAdvance.account.id,
+            toAccountName: resolvedAdvance.account.name,
+            categoryId: cat?.id ?? null,
+            categoryName: cat?.name ?? null,
+            counterpartyInstitutionId: resolvedAdvance.objectId,
+            counterpartyInstitutionName: resolvedAdvance.objectName,
+            statementMonth,
+            date,
+            postedAt: null,
+            type: TransactionType.transfer,
+            source: "advance",
+            note: note || "代付",
+            toNote: null,
+            fundCode: null,
+            fundProductType: null,
+            fundSubtype: null,
+          },
+        });
         return;
       }
 
@@ -3218,11 +3228,25 @@ export default async function Home({
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
   const billPage = Number.isFinite(billPageParam) && billPageParam >= 1 ? billPageParam : 1;
-  const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 20;
-  const pageSize = [10, 20, 40].includes(pageSizeParam) ? pageSizeParam : 20;
-  const detailPageParam = typeof params?.detailPage === "string" ? parseInt(params.detailPage, 10) : 1;
-  const detailPage = Number.isFinite(detailPageParam) && detailPageParam >= 1 ? detailPageParam : 1;
-  const detailAll = params?.detailAll === "1";
+
+  // 读取 cookie 偏好。分页 cookie 用于保存编辑刷新后的明细表上下文。
+  const cookieStore = await cookies();
+  const detailPaginationPref = decodeDetailPaginationPreference(
+    cookieStore.get(detailPaginationCookieName(accountId))?.value,
+  );
+  const pageSizeParam = typeof params?.pageSize === "string"
+    ? parseInt(params.pageSize, 10)
+    : detailPaginationPref?.pageSize ?? 20;
+  const pageSize = normalizeDetailPageSize(pageSizeParam);
+  const detailPageParam = typeof params?.detailPage === "string"
+    ? parseInt(params.detailPage, 10)
+    : detailPaginationPref?.detailPage ?? 1;
+  const detailPage = normalizeDetailPage(detailPageParam);
+  const detailAll = params?.detailAll === "1"
+    ? true
+    : typeof params?.detailAll === "string"
+      ? false
+      : detailPaginationPref?.detailAll ?? false;
   const detailDateFrom = typeof params?.detailDateFrom === "string" ? params.detailDateFrom.trim() : "";
   const detailDateTo = typeof params?.detailDateTo === "string" ? params.detailDateTo.trim() : "";
   const detailInFrom = typeof params?.detailInFrom === "string" ? params.detailInFrom.trim() : "";
@@ -3250,7 +3274,6 @@ export default async function Home({
   const showCleared = params?.showCleared === "1";
 
   // 读取涨跌颜色方案
-  const cookieStore = await cookies();
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -3442,11 +3465,19 @@ export default async function Home({
     if (column === "type" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return "初始";
     if (column === "type" && e.source === BALANCE_RECONCILE_SOURCE) return "校准";
     if (column === "type") {
-      if (isCreditCardRepaymentTransfer(e)) return "信用卡还款";
+      if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
+      if (e.source === "advance") return "代付";
       if (e.type === "investment" && e.fundProductType === "deposit") return "存款";
       return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
     }
-    if (column === "category") return (isCreditCardRepaymentTransfer(e) ? "还款" : getInsuranceDetailCategoryName(e)) || DETAIL_EMPTY_VALUE;
+    if (column === "category") {
+      if (isCreditCardRepaymentTransfer(e)) return "信用卡还款";
+      if (e.type === TransactionType.investment) {
+        if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
+        return e.categoryName || getInvestmentCategoryName(e) || DETAIL_EMPTY_VALUE;
+      }
+      return getInsuranceDetailCategoryName(e) || DETAIL_EMPTY_VALUE;
+    }
     if (column === "related") {
       const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
       return related.trim() || DETAIL_EMPTY_VALUE;
@@ -3530,7 +3561,7 @@ export default async function Home({
         : "";
       rows.push([
         entryDisplayDate(e).toISOString().slice(0, 10),
-        formatType(e.type),
+        e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(e.type),
         outflow,
         inflow,
         accountLabel,
@@ -3561,8 +3592,10 @@ export default async function Home({
       expense: "支出分类",
       income: "收入分类",
       advance: "代付分类",
+      transfer: "转账分类",
+      investment: "投资分类",
     };
-    const typeOrder = ["expense", "income", "advance"];
+    const typeOrder = ["expense", "income", "advance", "transfer", "investment"];
     const options: Array<{
       value: string;
       label: string;
@@ -3882,7 +3915,9 @@ export default async function Home({
       id: a.id,
       name: a.name,
       kind: a.kind,
+      groupId: a.groupId ?? "",
       institutionId: a.institutionId || null,
+      institutionType: a.institutionType || null,
       label: a.label,
       title: a.hoverTitle,
       hoverTitle: a.hoverTitle,
@@ -3895,7 +3930,9 @@ export default async function Home({
       id: a.id,
       name: a.name,
       kind: a.kind,
+      groupId: a.groupId ?? "",
       institutionId: a.institutionId || null,
+      institutionType: a.institutionType || null,
       investProductType: a.investProductType ?? null,
       label: a.label,
       title: a.hoverTitle,
@@ -3952,7 +3989,7 @@ export default async function Home({
           where: {
             deletedAt: null,
             ...hid,
-            source: "debt_borrow_in",
+            source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
             accountId: { in: debtAccounts.map((account) => account.id) },
           },
           select: { accountId: true, note: true, toNote: true },
@@ -4530,7 +4567,7 @@ export default async function Home({
         ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
       const inferredDirection = relatedDebtDirection ?? ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
       const debtEditMode =
-        entry.source === "debt_borrow_in"
+        entry.source === "debt_borrow_in" || entry.source === "debt_financed_purchase"
           ? ("borrow_in" as const)
           : entry.source === "debt_lend_out"
             ? ("lend_out" as const)
@@ -4544,8 +4581,8 @@ export default async function Home({
                     ? (inferredDirection === "receivable" ? ("lend_out" as const) : ("repay_out" as const))
                     : (inferredDirection === "receivable" ? ("collect_in" as const) : ("borrow_in" as const));
       const transferActionLabel =
-        entry.source === "debt_borrow_in"
-          ? "借入"
+        entry.source === "debt_borrow_in" || entry.source === "debt_financed_purchase"
+          ? (entry.source === "debt_financed_purchase" ? "消费分期" : "借入")
           : entry.source === "debt_repay_out"
             ? "还款"
             : entry.source === "debt_prepay_out"
@@ -4600,7 +4637,10 @@ export default async function Home({
                 editEntryId: entry.id,
                 mode: debtEditMode,
                 defaultDebtAccountId: isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
-                defaultCashAccountId: isToDebtAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
+                defaultCashAccountId: entry.source === "debt_financed_purchase"
+                  ? (selectedRepaymentPlan?.cashAccountId ?? "")
+                  : isToDebtAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
+                defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
                 defaultDate: entryDateKey,
                 defaultPrincipal: Math.abs(displayAmount),
                 defaultInterest: interestAmount,
@@ -4727,12 +4767,40 @@ export default async function Home({
   const creditBillNow = new Date();
   const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
   const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 6, 12, 13, 0, 0));
+  const currentStatementMonth = (() => {
+    if (!isBillAccount || !selectedAccount?.billingDay) return "";
+    const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
+    if (!base) return "";
+    return toStatementMonth(base.end, selectedAccount.billingDay ?? 1);
+  })();
+  const isDisplayableBillMonth = (month: string) => !currentStatementMonth || month <= currentStatementMonth;
   const persistedCyclesInitial = isBillAccount && selectedAccount
     ? await prisma.creditCardCycle.findMany({
-        where: { accountId: billStorageAccountId },
+        where: {
+          accountId: billStorageAccountId,
+          ...(currentStatementMonth ? { statementMonth: { lte: currentStatementMonth } } : {}),
+        },
         orderBy: { statementMonth: "desc" },
       })
     : [];
+  const activeStatementInstallments = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit
+    ? await prisma.creditCardInstallmentPlan.findMany({
+        where: {
+          householdId,
+          accountId: { in: billAccountIds },
+          sourceType: CreditCardInstallmentSourceType.statement,
+          sourceStatementMonth: { not: null },
+          status: "active",
+        },
+        select: { sourceStatementMonth: true, installmentPrincipal: true },
+      })
+    : [];
+  const statementInstallmentPrincipalByMonth = new Map(
+    activeStatementInstallments.map((plan) => [
+      plan.sourceStatementMonth ?? "",
+      toNumber(plan.installmentPrincipal),
+    ]),
+  );
   const billOverrides = isBillAccount && selectedAccount
     ? await prisma.billOverride.findMany({
         where: { accountId: billStorageAccountId },
@@ -4788,7 +4856,7 @@ export default async function Home({
   const availableBillMonths =
     isBillAccount && selectedAccount
       ? (!creditCycleCacheStale && persistedCyclesInitial.length > 0
-          ? persistedCyclesInitial.map((cycle) => cycle.statementMonth)
+          ? persistedCyclesInitial.map((cycle) => cycle.statementMonth).filter(isDisplayableBillMonth)
           : await prisma.txRecord
           .groupBy({
             by: ["statementMonth"],
@@ -4800,11 +4868,14 @@ export default async function Home({
             _count: { _all: true },
             orderBy: { statementMonth: "desc" },
           })
-          .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m)))
+          .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m && isDisplayableBillMonth(m))))
       : [];
 
   const showAllCreditBillDetails = billMonthParam === "all";
-  const selectedBillMonth = !showAllCreditBillDetails && /^(\d{4})-(\d{2})$/.test(billMonthParam) ? billMonthParam : "";
+  const selectedBillMonth =
+    !showAllCreditBillDetails && /^(\d{4})-(\d{2})$/.test(billMonthParam) && isDisplayableBillMonth(billMonthParam)
+      ? billMonthParam
+      : "";
 
   const creditCardBill =
     isBillAccount && selectedAccount?.billingDay
@@ -4924,13 +4995,6 @@ export default async function Home({
           return { start, end, due, repayEnd, bill, paid, remain, overpaid, income, statementMonth, isCurrentCycle };
         })()
       : null;
-
-  const currentStatementMonth = (() => {
-    if (!isBillAccount || !selectedAccount?.billingDay) return "";
-    const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
-    if (!base) return "";
-    return toStatementMonth(base.end, selectedAccount.billingDay ?? 1);
-  })();
 
   const settledBillMonth = (() => {
     if (!currentStatementMonth) return "";
@@ -5296,13 +5360,14 @@ export default async function Home({
         effectiveBillByMonth: cachedEffectiveBillByMonth,
         cumulativeByMonth: cachedCumulativeByMonth,
       }
-    : computeCreditBillCascade({
+      : computeCreditBillCascade({
         monthsForCascade: billMonthsForCumulative,
         summaryByMonth: billSummaryByMonth,
         overrides: billOverrides.map((override) => ({
           statementMonth: override.statementMonth,
           amount: Number(override.amount),
         })),
+        postOverrideAdjustmentByMonth: statementInstallmentPrincipalByMonth,
       });
   const {
     overrideByMonth,
@@ -5377,6 +5442,7 @@ export default async function Home({
     effectiveBill: s.effectiveBill,
     isCurrentCycle: s.isCurrentCycle,
     hasOverride: billOverrides.some((o) => o.statementMonth === s.month),
+    statementInstallmentPrincipal: statementInstallmentPrincipalByMonth.get(s.month) ?? null,
   }));
 
   const creditBillMonth = creditCardBill?.statementMonth ?? "";
@@ -5445,7 +5511,7 @@ export default async function Home({
                   ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
                   : e.categoryName ?? "未分类"
                 : isCreditCardRepaymentTransfer(e)
-                  ? "还款"
+                  ? "信用卡还款"
                   : e.categoryName,
             accountId: e.accountId,
             accountName: e.accountName,
@@ -5798,6 +5864,7 @@ export default async function Home({
           return {
             id: product.id,
             label: product.name,
+            policyNo: product.policyNo ?? null,
             startDate: sortedEntries[0]?.date ?? product.startDate?.toISOString().slice(0, 10) ?? null,
             ownerName: product.PolicyholderPerson?.name ?? product.OwnerGroup?.name ?? "",
             policyholderPersonId: product.policyholderPersonId ?? null,
@@ -6277,7 +6344,7 @@ export default async function Home({
                           : isInsuranceView
                             ? "insurance"
                             : isBillAccount
-                              ? "transfer"
+                              ? "transaction"
                               : "transaction"
                 }
                 context={{
