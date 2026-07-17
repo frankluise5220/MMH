@@ -39,7 +39,7 @@ export function SettingsInstitutionsClient({
   mode = "institution",
 }: {
   institutions: Institution[];
-  updateAction: (formData: FormData) => void | Promise<void>;
+  updateAction: (formData: FormData) => void | { ok?: boolean; error?: string } | Promise<void | { ok?: boolean; error?: string }>;
   mode?: InstitutionSettingMode;
 }) {
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
@@ -61,7 +61,10 @@ export function SettingsInstitutionsClient({
     () => institutions.filter((item) => allowedTypes.includes((item.type ?? "other") as never)),
     [allowedTypes, institutions],
   );
-  const createExistingNames = visibleInstitutions.map((item) => item.name);
+  const createExistingNames = visibleInstitutions.flatMap((item) => [
+    item.name,
+    item.shortName?.trim() || "",
+  ]).filter(Boolean);
 
   const refreshList = useCallback(async (options?: { force?: boolean }) => {
     const data = await fetchSettingsAccountData(options).catch(() => null);

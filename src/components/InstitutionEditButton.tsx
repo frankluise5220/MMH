@@ -26,7 +26,7 @@ export function InstitutionEditButton({
   allowedTypes,
 }: {
   institution: { id: string; name: string; shortName?: string | null; type: string | null };
-  action: (formData: FormData) => void | Promise<void>;
+  action: (formData: FormData) => void | { ok?: boolean; error?: string } | Promise<void | { ok?: boolean; error?: string }>;
   title?: string;
   nameLabel?: string;
   allowedTypes?: string[];
@@ -37,6 +37,7 @@ export function InstitutionEditButton({
   const [shortName, setShortName] = useState(institution.shortName ?? "");
   const [type, setType] = useState<InstitutionType>((institution.type as InstitutionType) ?? "other");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -48,9 +49,16 @@ export function InstitutionEditButton({
     fd.set("shortName", shortName.trim());
     fd.set("type", type);
     try {
-      await action(fd);
+      setError("");
+      const result = await action(fd);
+      if (typeof result === "object" && result && result.ok === false) {
+        setError(result.error ?? "保存失败");
+        return;
+      }
       setOpen(false);
       router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
     }
@@ -65,6 +73,7 @@ export function InstitutionEditButton({
           setShortName(institution.shortName ?? "");
           const initialType = (institution.type as InstitutionType) ?? "other";
           setType((allowedTypes?.includes(initialType) ? initialType : allowedTypes?.[0] ?? "other") as InstitutionType);
+          setError("");
           setOpen(true);
         }}
         className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-blue-600 hover:border-blue-200"
@@ -114,6 +123,7 @@ export function InstitutionEditButton({
                   ))}
                 </select>
               </div>
+              {error && <div className="text-xs text-red-600">{error}</div>}
               <div className="flex justify-end">
                 <button type="submit" disabled={saving}
                   className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">

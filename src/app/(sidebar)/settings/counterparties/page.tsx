@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { SettingsInstitutionsClient } from "../institutions/client";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import { isInstitutionNameUniqueError } from "@/lib/server/institution-name-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const dynamic = "force-dynamic";
@@ -15,22 +16,28 @@ async function updateCounterpartyRow(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
-  if (!counterpartyId || !name) return;
+  if (!counterpartyId || !name) return { ok: false, error: "缺少必填字段" };
 
   const safeType = ["person", "organization"].includes(type) ? type : "person";
   const existing = await prisma.counterparty.findFirst({ where: { id: counterpartyId, householdId } });
-  if (!existing) return;
+  if (!existing) return { ok: false, error: "往来对象不存在" };
 
-  await prisma.$transaction(async (tx) => {
-    const updated = await tx.counterparty.update({
-      where: { id: counterpartyId },
-      data: { name, shortName: shortName || null, type: safeType },
+  try {
+    await prisma.$transaction(async (tx) => {
+      const updated = await tx.counterparty.update({
+        where: { id: counterpartyId },
+        data: { name, shortName: shortName || null, type: safeType },
+      });
+      await ensureInstitutionForCounterparty(tx, updated);
     });
-    await ensureInstitutionForCounterparty(tx, updated);
-  }).catch(() => null);
+  } catch (error) {
+    if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };
+    return { ok: false, error: error instanceof Error ? error.message : "保存失败" };
+  }
 
   revalidateAfterSettingsChange();
   revalidatePath("/settings/counterparties");
+  return { ok: true };
 }
 
 export default async function SettingsCounterpartiesPage() {

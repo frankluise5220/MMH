@@ -3,6 +3,7 @@
 import { Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 
@@ -23,7 +24,7 @@ const fieldLabels: Record<BatchReplaceField, string> = {
   date: "日期",
   type: "类型",
   account: "来源账户",
-  toAccount: "去向账户",
+  toAccount: "对向账户",
   categoryId: "分类",
   remark: "备注",
 };
@@ -131,11 +132,13 @@ export function BasicDetailBatchReplaceButton({
   categoryOptions = [],
   fields = defaultBatchReplaceFields,
   targetLabel = "已选",
+  contextAccountId,
 }: {
   accountOptions: AccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
   fields?: BatchReplaceField[];
   targetLabel?: string;
+  contextAccountId?: string | null;
 }) {
   const { selectedIds, clear } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
@@ -190,7 +193,7 @@ export function BasicDetailBatchReplaceButton({
 
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);
-    const result = await batchReplaceEntries({ ids: entryIds, field, value });
+    const result = await batchReplaceEntries({ ids: entryIds, field, value, contextAccountId });
     if (!result.ok) throw new Error(result.error ?? "批量替换失败");
     clear();
     dispatchFinanceDataChanged({ reason: "entry-batch-replace", entryIds });
@@ -217,24 +220,23 @@ export function BasicDetailBatchDeleteButton({ recordLabel = "资金明细" }: {
   async function applyDelete() {
     if (disabled) return;
     const entryIds = Array.from(selectedIds);
-    if (!window.confirm(`确认删除已选 ${entryIds.length} 条${recordLabel}？删除后会进入回收站。`)) return;
 
     setSubmitting(true);
     setDeleteMessage("");
     try {
-      const res = await fetch("/api/v1/entries/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entryIds }),
+      const data = await deleteEntriesWithLinkedPrompt({
+        entryIds,
+        confirmMessage: `确认删除已选 ${entryIds.length} 条${recordLabel}？删除后会进入回收站。`,
       });
-      const data = await res.json().catch(() => ({ ok: false, error: "批量删除失败" }));
-      if (!res.ok || !data.ok) {
+      if (!data.ok) {
+        if (data.error === "已取消删除") return;
         setDeleteMessage(data.error ?? "批量删除失败");
         return;
       }
       setDeleteMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
       clear();
-      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: entryIds, entryIds });
+      const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
       setDeleteMessage("批量删除失败");
     } finally {

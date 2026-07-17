@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   useCallback,
@@ -12,6 +12,7 @@ import {
 } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, GripVertical, SlidersHorizontal } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
@@ -34,7 +35,7 @@ export type AdvancedDataTableColumn<T> = {
   headerClassName?: string;
   filterText?: (row: T) => string;
   sortValue?: (row: T) => string | number | null | undefined;
-  filterKind?: "multi" | "dateRange";
+  filterKind?: "multi" | "dateRange";  filterTitle?: (row: T) => string;  filterSearchText?: (row: T) => string;
   render: (row: T, index: number) => ReactNode;
 };
 
@@ -98,7 +99,7 @@ export type AdvancedDataTableProps<T> = {
   toolbarMode?: "default" | "custom" | "none";
   toolbarLeftContent?: ReactNode;
   toolbarRightContent?: ReactNode;
-  showColumnVisibilityButton?: boolean;
+  showColumnVisibilityButton?: boolean;  sortable?: boolean;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   resetKey?: string;
@@ -184,7 +185,7 @@ export function AdvancedDataTable<T>({
   toolbarMode = "default",
   toolbarLeftContent,
   toolbarRightContent,
-  showColumnVisibilityButton = true,
+  showColumnVisibilityButton = true,  sortable = true,
   columnVisibilityTriggerId,
   summaryRow,
   resetKey,
@@ -207,6 +208,7 @@ export function AdvancedDataTable<T>({
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
+  const rowHeight = compactRows ? 30 : 38;
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
@@ -403,6 +405,9 @@ export function AdvancedDataTable<T>({
     if (!draggedRowKey || !dragTarget) return rowItems;
     return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
   }, [dragTarget, draggedRowKey, rowItems]);
+
+  const virtualizer = useVirtualizer({ count: displayRowItems.length, getScrollElement: () => viewportRef.current, estimateSize: () => rowHeight, overscan: 10 });
+  const vItems = virtualizer.getVirtualItems();
 
   const layout = useMemo(() => {
     const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
@@ -741,6 +746,17 @@ export function AdvancedDataTable<T>({
               {visibleColumns.map((column) => (
                 <th key={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
                   <div className="flex items-center justify-center gap-1">
+                    {(column.sortValue || column.filterText) && sortable ? (
+                      <span
+                        className={`cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                        onClick={() => toggleSort(column.key)}
+                        title={sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序" : "降序排列，点击取消") : "点击排序"}
+                      >
+                        {labelText(column.label, column.key)}
+                      </span>
+                    ) : (
+                      <span className="text-xs font-semibold text-slate-600">{labelText(column.label, column.key)}</span>
+                    )}
                     {showFilters && column.filterText ? (
                       column.filterKind === "dateRange" ? (
                         <DateRangeColumnFilter
@@ -748,6 +764,7 @@ export function AdvancedDataTable<T>({
                           from={filters[column.key]?.[0] ?? ""}
                           to={filters[column.key]?.[1] ?? ""}
                           open={activeFilterColumn === column.key}
+                          labelClassName="hidden"
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={({ from, to }) =>
@@ -767,6 +784,7 @@ export function AdvancedDataTable<T>({
                           options={filterOptions[column.key] ?? []}
                           selectedValues={filters[column.key] ?? []}
                           open={activeFilterColumn === column.key}
+                          showLabel={false}
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={(values) =>
@@ -781,24 +799,8 @@ export function AdvancedDataTable<T>({
                           }
                         />
                       )
-                    ) : (
-                      <span className="block truncate text-center">{column.label}</span>
-                    )}
-                    {column.sortValue || column.filterText ? (
-                      <button
-                        type="button"
-                        onClick={() => toggleSort(column.key)}
-                        className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded ${sortState?.key === column.key ? "text-blue-600" : "text-slate-300 hover:text-slate-500"}`}
-                        title={sortState?.key === column.key ? (sortState.direction === "asc" ? "当前升序，点击改为降序" : "当前降序，点击取消排序") : "排序"}
-                        aria-label={`${labelText(column.label, column.key)}排序`}
-                      >
-                        {sortState?.key === column.key
-                          ? sortState.direction === "asc" ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />
-                          : <ChevronsUpDown className="h-3.5 w-3.5" />}
-                      </button>
                     ) : null}
                   </div>
-                  <span role="separator" aria-orientation="vertical" onMouseDown={(event) => beginResize(event, column)} className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40" title={t("table.resizeColumn")} />
                 </th>
               ))}
             </tr>

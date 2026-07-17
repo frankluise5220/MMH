@@ -6,6 +6,7 @@ import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
 const PRODUCT_TYPES = new Set<InsuranceProductType>([
   "savings",
@@ -131,10 +132,14 @@ async function ensureFamilyMemberInstitution(input: {
     where: {
       householdId: input.householdId,
       type: "family_member",
-      name: normalizedName,
+      OR: [{ name: normalizedName }, { shortName: normalizedName }],
     },
   });
   if (matched) return matched;
+  await assertInstitutionDisplayNamesUnique(prisma, {
+    householdId: input.householdId,
+    name: normalizedName,
+  });
   return prisma.institution.create({
     data: {
       householdId: input.householdId,
@@ -284,6 +289,10 @@ export async function GET(req: NextRequest) {
           toAccountName: repairedAccount.name,
         },
       });
+      await prisma.insuranceTransaction.updateMany({
+        where: { insuranceProductId: item.id },
+        data: { accountId: repairedAccount.id },
+      });
     }
   }
 
@@ -304,17 +313,15 @@ export async function GET(req: NextRequest) {
   const productIds = refreshedProducts.map((item) => item.id);
   const [latestPremiumRows, activePremiumPlans] = await Promise.all([
     productIds.length > 0
-      ? prisma.txRecord.groupBy({
+      ? prisma.insuranceTransaction.groupBy({
           by: ["insuranceProductId"],
           where: {
             householdId: hidFilter.householdId ?? undefined,
             insuranceProductId: { in: productIds },
-            source: "insurance",
-            type: "investment",
-            ...insurancePremiumEntryFilter(),
+            action: { in: ["premium", "additional_premium"] },
             deletedAt: null,
           },
-          _max: { date: true },
+          _max: { tradeDate: true },
         })
       : Promise.resolve([]),
     productIds.length > 0
@@ -332,8 +339,8 @@ export async function GET(req: NextRequest) {
 
   const latestPremiumDateByProductId = new Map(
     latestPremiumRows
-      .filter((item) => item.insuranceProductId && item._max?.date)
-      .map((item) => [item.insuranceProductId as string, item._max!.date!.toISOString().slice(0, 10)]),
+      .filter((item) => item.insuranceProductId && item._max?.tradeDate)
+      .map((item) => [item.insuranceProductId as string, item._max!.tradeDate!.toISOString().slice(0, 10)]),
   );
   const nextPlannedPremiumDateByProductId = new Map<string, string>();
   for (const plan of activePremiumPlans) {
@@ -753,6 +760,10 @@ export async function PUT(req: NextRequest) {
       });
 
       if (existingPolicy.accountId !== account.id) {
+        await prisma.insuranceTransaction.updateMany({
+          where: { householdId, insuranceProductId: id },
+          data: { accountId: account.id },
+        });
         await prisma.txRecord.updateMany({
           where: {
             householdId,
@@ -977,6 +988,10 @@ export async function PUT(req: NextRequest) {
     });
 
     if (existing.accountId !== account.id) {
+      await prisma.insuranceTransaction.updateMany({
+        where: { householdId, insuranceProductId: id },
+        data: { accountId: account.id },
+      });
       await prisma.txRecord.updateMany({
         where: {
           householdId,
@@ -1110,9 +1125,16 @@ export async function DELETE(req: NextRequest) {
         select: { id: true },
       });
       const linkedPolicyIds = linkedPolicies.map((item) => item.id);
-      const [txCount, planCount] = linkedPolicyIds.length
+      const [txCount, businessTxCount, planCount] = linkedPolicyIds.length
         ? await Promise.all([
             prisma.txRecord.count({
+              where: {
+                householdId,
+                insuranceProductId: { in: linkedPolicyIds },
+                deletedAt: null,
+              },
+            }),
+            prisma.insuranceTransaction.count({
               where: {
                 householdId,
                 insuranceProductId: { in: linkedPolicyIds },
@@ -1126,12 +1148,13 @@ export async function DELETE(req: NextRequest) {
               },
             }),
           ])
-        : [0, 0];
+        : [0, 0, 0];
+      const linkedTxCount = Math.max(txCount, businessTxCount);
 
-      if ((linkedPolicyIds.length > 0 || txCount > 0 || planCount > 0) && !cascade) {
+      if ((linkedPolicyIds.length > 0 || linkedTxCount > 0 || planCount > 0) && !cascade) {
         return NextResponse.json({
           ok: false,
-          error: `该保险产品已关联${linkedPolicyIds.length}个保单、${txCount}条记录、${planCount}个计划任务，请勾选“同时删除关联数据”后再确认`,
+          error: `该保险产品已关联${linkedPolicyIds.length}个保单、${linkedTxCount}条记录、${planCount}个计划任务，请勾选“同时删除关联数据”后再确认`,
         }, { status: 409 });
       }
 
@@ -1144,6 +1167,12 @@ export async function DELETE(req: NextRequest) {
             },
           });
           await tx.txRecord.deleteMany({
+            where: {
+              householdId,
+              insuranceProductId: { in: linkedPolicyIds },
+            },
+          });
+          await tx.insuranceTransaction.deleteMany({
             where: {
               householdId,
               insuranceProductId: { in: linkedPolicyIds },
@@ -1170,8 +1199,15 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
     }
 
-    const [txCount, planCount] = await Promise.all([
+    const [txCount, businessTxCount, planCount] = await Promise.all([
       prisma.txRecord.count({
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          insuranceProductId: id,
+          deletedAt: null,
+        },
+      }),
+      prisma.insuranceTransaction.count({
         where: {
           householdId: hidFilter.householdId ?? undefined,
           insuranceProductId: id,
@@ -1185,8 +1221,9 @@ export async function DELETE(req: NextRequest) {
         },
       }),
     ]);
+    const linkedTxCount = Math.max(txCount, businessTxCount);
 
-    const hasLinkedPayments = txCount > 0;
+    const hasLinkedPayments = linkedTxCount > 0;
     if (!hasLinkedPayments) {
       await prisma.$transaction(async (tx) => {
         if (planCount > 0) {
@@ -1214,7 +1251,7 @@ export async function DELETE(req: NextRequest) {
     if (!password) {
       return NextResponse.json({
         ok: false,
-        error: `该保单已有${txCount}条缴费记录，需输入密码并确认删除全部记录`,
+        error: `该保单已有${linkedTxCount}条缴费记录，需输入密码并确认删除全部记录`,
         needPassword: true,
       }, { status: 409 });
     }
@@ -1257,6 +1294,12 @@ export async function DELETE(req: NextRequest) {
         });
       }
       await tx.txRecord.deleteMany({
+        where: {
+          householdId: hidFilter.householdId ?? undefined,
+          insuranceProductId: id,
+        },
+      });
+      await tx.insuranceTransaction.deleteMany({
         where: {
           householdId: hidFilter.householdId ?? undefined,
           insuranceProductId: id,

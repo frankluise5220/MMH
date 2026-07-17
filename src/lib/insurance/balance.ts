@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
-import { isInsuranceRefund } from "@/lib/insurance/transaction";
 
 function localDateKey(date: Date) {
   const y = date.getFullYear();
@@ -42,21 +41,17 @@ export async function computeInsuranceAccountDisplayBalances(
   );
   if (balanceProductIds.size === 0) return result;
 
-  const entries = await prisma.txRecord.findMany({
+  const entries = await prisma.insuranceTransaction.findMany({
     where: {
       ...(hidFilter ?? {}),
       deletedAt: null,
-      type: "investment",
-      source: "insurance",
       insuranceProductId: { in: Array.from(balanceProductIds) },
     },
     select: {
-      date: true,
       accountId: true,
-      toAccountId: true,
+      tradeDate: true,
       amount: true,
-      insuranceAction: true,
-      fundSubtype: true,
+      action: true,
       insuranceProductId: true,
     },
   });
@@ -64,12 +59,12 @@ export async function computeInsuranceAccountDisplayBalances(
   const todayKey = localDateKey(new Date());
   const productAccountIdById = new Map(products.map((product) => [product.id, product.accountId]));
   for (const entry of entries) {
-    if (localDateKey(entry.date) > todayKey) continue;
+    if (localDateKey(entry.tradeDate) > todayKey) continue;
     const productId = entry.insuranceProductId ?? "";
     const accountId = productAccountIdById.get(productId);
     if (!accountId) continue;
     const amount = Math.abs(toNumber(entry.amount));
-    const delta = isInsuranceRefund(entry) ? -amount : amount;
+    const delta = entry.action === "refund" ? -amount : amount;
     result.set(accountId, (result.get(accountId) ?? 0) + delta);
   }
 

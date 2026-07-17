@@ -13,6 +13,7 @@ import { kindLabel } from "@/lib/account-kinds";
 type InsuranceEntryEditValue = {
   id: string;
   date: string;
+  arrivalDate?: string;
   amount: string;
   cashAccountId: string;
   coverageAmount: string;
@@ -87,7 +88,7 @@ export function InsuranceEntryEditModal({
       return;
     }
     if (!currentDraft.cashAccountId) {
-      window.alert("请选择资金来源");
+      window.alert(currentDraft.insuranceAction === "refund" ? "请选择到账账户" : "请选择资金来源");
       return;
     }
 
@@ -101,6 +102,7 @@ export function InsuranceEntryEditModal({
           id: isCreating ? undefined : currentDraft.id,
           type: "investment",
           date: currentDraft.date,
+          fundArrivalDate: isRefund ? (currentDraft.arrivalDate || currentDraft.date) : undefined,
           amount: amountValue,
           cashAccountId: currentDraft.cashAccountId,
           fundSubtype: isRefund ? "redeem" : "buy",
@@ -181,7 +183,7 @@ export function InsuranceEntryEditModal({
             </div>
 
             {/* 日期 + 金额 */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className={`grid gap-3 ${draft.insuranceAction === "refund" ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
               <div className="space-y-1">
                 <div className="form-label">日期</div>
                 <DateStepper
@@ -189,6 +191,15 @@ export function InsuranceEntryEditModal({
                   onChange={(next) => setDraft({ ...draft, date: next })}
                 />
               </div>
+              {draft.insuranceAction === "refund" ? (
+                <div className="space-y-1">
+                  <div className="form-label">到账日期</div>
+                  <DateStepper
+                    value={draft.arrivalDate || draft.date}
+                    onChange={(next) => setDraft({ ...draft, arrivalDate: next })}
+                  />
+                </div>
+              ) : null}
               <div className="space-y-1">
                 <div className="form-label">{amountLabel}</div>
                 <CalcInput
@@ -203,7 +214,7 @@ export function InsuranceEntryEditModal({
 
             {/* 资金来源 */}
             <div className="space-y-1">
-              <div className="form-label">资金来源</div>
+              <div className="form-label">{draft.insuranceAction === "refund" ? "到账账户" : "资金来源"}</div>
               <SmartSelect
                 mode="single"
                 value={draft.cashAccountId}

@@ -6,6 +6,7 @@ import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
@@ -179,6 +180,11 @@ async function recalculateRestoredEntries(records: TxRecord[]) {
   await syncFundTransactionsFromTxRecords(records.map((record) => record.id)).catch((error) => {
     console.error("[entry-undo] failed to sync fund transactions", error);
   });
+  for (const record of records) {
+    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: record.id }).catch((error) => {
+      console.error("[entry-undo] failed to sync independent business transaction", { entryId: record.id, error });
+    });
+  }
   for (const [accountId, codes] of fundAccounts) {
     await recalcFundPositions(accountId, Array.from(codes)).catch((error) => {
       console.error("[entry-undo] failed to recalculate fund position", { accountId, error });

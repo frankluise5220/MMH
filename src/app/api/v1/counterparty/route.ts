@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import { isInstitutionNameUniqueError } from "@/lib/server/institution-name-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export async function POST(req: NextRequest) {
@@ -31,21 +32,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: `往来对象“${name}”已存在` }, { status: 409 });
   }
 
-  const created = await prisma.$transaction(async (tx) => {
-    const counterparty = await tx.counterparty.create({
-      data: {
-        name,
-        shortName: shortName || null,
-        type: safeType,
-        householdId,
-      },
+  let created: { id: string; name: string; shortName: string | null; type: string | null };
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      const counterparty = await tx.counterparty.create({
+        data: {
+          name,
+          shortName: shortName || null,
+          type: safeType,
+          householdId,
+        },
+      });
+      const institution = await ensureInstitutionForCounterparty(tx, counterparty);
+      return {
+        ...counterparty,
+        sourceInstitutionId: institution?.id ?? counterparty.sourceInstitutionId,
+      };
     });
-    const institution = await ensureInstitutionForCounterparty(tx, counterparty);
-    return {
-      ...counterparty,
-      sourceInstitutionId: institution?.id ?? counterparty.sourceInstitutionId,
-    };
-  });
+  } catch (error) {
+    if (isInstitutionNameUniqueError(error)) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
+    return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
+  }
 
   revalidateAfterSettingsChange();
 

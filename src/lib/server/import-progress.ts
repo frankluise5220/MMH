@@ -13,6 +13,7 @@ export type ImportProgressSnapshot = {
   ok: boolean | null;
   error: string | null;
   failedRow: number | null;
+  cancelled?: boolean;
 };
 
 const STORE_KEY = "__mmhImportProgressStore";
@@ -113,6 +114,21 @@ export function updateImportProgress(
     updatedAt: nowIso(),
   });
   touchActiveImportLock(key);
+}
+
+export function cancelImportProgress(traceId: string | null | undefined) {
+  const key = String(traceId ?? "").trim();
+  if (!key) return;
+  const store = getStore();
+  const current = store.get(key);
+  if (!current) return;
+  store.set(key, { ...current, cancelled: true, updatedAt: nowIso() });
+}
+
+export function isImportCancelled(traceId: string | null | undefined): boolean {
+  const key = String(traceId ?? "").trim();
+  if (!key) return false;
+  return getStore().get(key)?.cancelled === true;
 }
 
 export function finishImportProgress(

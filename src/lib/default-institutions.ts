@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { findInstitutionDisplayNameConflict } from "@/lib/server/institution-name-unique";
 
 export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
 
@@ -41,6 +42,11 @@ export const defaultInstitutionTemplates: DefaultInstitutionTemplate[] = [
 
 export async function createDefaultInstitutionsForHousehold(writer: InstitutionWriter, householdId: string) {
   for (const institution of defaultInstitutionTemplates) {
+    const conflict = await findInstitutionDisplayNameConflict(writer, {
+      householdId,
+      name: institution.name,
+    });
+    if (conflict) continue;
     await writer.institution.create({
       data: {
         name: institution.name,

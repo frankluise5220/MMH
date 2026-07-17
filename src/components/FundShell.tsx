@@ -13,6 +13,8 @@ import { startTransition } from "react";
 import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 
@@ -55,6 +57,46 @@ function isGenericFundName(name: string, code: string) {
   return ["红利转投", "红利再投", "红利再投资", "现金红利", "分红", "买入", "申购", "赎回", "定投"].includes(value);
 }
 
+function LinkHeaderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
+      <path
+        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function LinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
+  return (
+    <span
+      title={title}
+      className={[
+        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
+        active
+          ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
+          : "border-slate-200 bg-transparent text-slate-300",
+      ].join(" ")}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
+        <path
+          d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+      </svg>
+    </span>
+  );
+}
+
 
 
 type Props = any;
@@ -92,6 +134,7 @@ const CLEARED_COLS = [
 
 const DETAIL_COLS = [
   ["select", 44],
+  ["link", 38],
   ["date", 92],
   ["arrivalDate", 92],
   ["cashAccount", 132],
@@ -110,6 +153,7 @@ type DetailColumnKey = typeof DETAIL_COLS[number][0];
 const FIXED_DETAIL_COLUMNS = new Set<DetailColumnKey>(["select", "actions"]);
 const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
   select: "选择",
+  link: "关联",
   date: "申请日期",
   arrivalDate: "到账日期",
   cashAccount: "资金账户",
@@ -542,6 +586,16 @@ export function FundShell(props: Props) {
     return code || "-";
   }, [fetchedFundNames, fundNameByCode, isMetalAccount]);
 
+  const entryBusinessLinkInfo = useCallback((entry: any) => {
+    const countFromSummary = Number(entry?.businessLinkCount ?? 0);
+    const cashLinks = Array.isArray(entry?.EntryBusinessLinkCash) ? entry.EntryBusinessLinkCash : [];
+    const businessLinks = Array.isArray(entry?.EntryBusinessLinkBusiness) ? entry.EntryBusinessLinkBusiness : [];
+    const fundLinks = Array.isArray(entry?.EntryBusinessLink) ? entry.EntryBusinessLink : [];
+    const count = countFromSummary || cashLinks.length + businessLinks.length + fundLinks.length;
+    const labels = Array.isArray(entry?.businessLinkLabels) ? entry.businessLinkLabels.filter(Boolean) : [];
+    return { active: count > 0, labels };
+  }, []);
+
 
 
   function exportCSV(scope?: "current" | "all") {
@@ -814,7 +868,7 @@ export function FundShell(props: Props) {
 
     window.history.replaceState(null, "", `/?${q.toString()}`);
 
-    const nextCode = on && d.clearedPositions.length > 0 ? d.clearedPositions[0].fundCode : d.positions.length > 0 ? d.positions[0].fundCode : "";
+    const nextCode = isWealthAccount ? "" : on && d.clearedPositions.length > 0 ? d.clearedPositions[0].fundCode : d.positions.length > 0 ? d.positions[0].fundCode : "";
 
     setFundCode(nextCode);
 
@@ -988,9 +1042,10 @@ export function FundShell(props: Props) {
   }, [d.allEntries, refundLinkAllocation]);
 
   const filtered = useMemo(() => {
-    if (!fundCode) return [];
-    return d.allEntries
-      .filter((e: any) => entryAssetKey(e) === fundCode)
+    const source = fundCode
+      ? d.allEntries.filter((e: any) => entryAssetKey(e) === fundCode)
+      : d.allEntries ?? [];
+    return [...source]
       .sort((a: any, b: any) => {
         const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
         if (byApplyDate !== 0) return byApplyDate;
@@ -1060,7 +1115,7 @@ export function FundShell(props: Props) {
       }
       setRegularPlanMenu(null);
       await loadRegularPlans();
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "regular-invest-plan-status" });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : `${actionLabel}失败`);
     } finally {
@@ -1135,6 +1190,16 @@ export function FundShell(props: Props) {
 
 
 
+    if (isWealthAccount) {
+      if (fundCode && !available.includes(fundCode)) {
+        setFundCode("");
+        setFundPage(1);
+        q.delete("fundCode");
+        window.history.replaceState(null, "", `/?${q.toString()}`);
+      }
+      return;
+    }
+
     if (!fundCode || !available.includes(fundCode)) {
 
       const next = available[0]!;
@@ -1149,7 +1214,7 @@ export function FundShell(props: Props) {
 
     }
 
-  }, [baseQuery, view, showCleared, fundCode, sortedPositions, sortedClearedPositions]);
+  }, [baseQuery, view, showCleared, fundCode, sortedPositions, sortedClearedPositions, isWealthAccount]);
 
 
 
@@ -1518,30 +1583,20 @@ export function FundShell(props: Props) {
 
     if (ids.length === 0 || batchDeleting) return;
 
-    if (!window.confirm(`确认删除已勾选 ${ids.length} 条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`)) return;
-
-
-
     setBatchDeleting(true);
 
     setBatchDeleteMessage("");
 
     try {
 
-      const res = await fetch("/api/v1/entries/delete", {
-
-        method: "POST",
-
-        headers: { "Content-Type": "application/json" },
-
-        body: JSON.stringify({ entryIds: ids }),
-
+      const data = await deleteEntriesWithLinkedPrompt({
+        entryIds: ids,
+        confirmMessage: `确认删除已勾选 ${ids.length} 条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`,
       });
 
-      const data = await res.json().catch(() => ({ ok: false, error: "批量删除失败" }));
+      if (!data.ok) {
 
-      if (!res.ok || !data.ok) {
-
+        if (data.error === "已取消删除") return;
         setBatchDeleteMessage(data.error ?? "批量删除失败");
 
         return;
@@ -1560,7 +1615,8 @@ export function FundShell(props: Props) {
 
       });
 
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      const refreshEntryIds = getDeleteRefreshEntryIds(data, ids);
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch {
 
@@ -2091,7 +2147,7 @@ export function FundShell(props: Props) {
 
             交易明细{fundCode && <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>{fundCode}</span>}
 
-            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
+            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
 
           </div>
 
@@ -2373,6 +2429,13 @@ export function FundShell(props: Props) {
                   <ResizeGrip table="details" colKey="select" width={colWidth("details", "select", 44)} minWidth={36} />
 
                 </th>
+
+                {isDetailColumnVisible("link") ? (
+                <th className="relative select-none text-center text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
+                  <LinkHeaderIcon />
+                  <ResizeGrip table="details" colKey="link" width={colWidth("details", "link", 38)} minWidth={34} />
+                </th>
+                ) : null}
 
                 {isDetailColumnVisible("date") ? (
                 <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">
@@ -2725,6 +2788,18 @@ export function FundShell(props: Props) {
 
                     </td>
 
+                    {isDetailColumnVisible("link") ? (
+                    <td className="px-2 py-1 border-b border-slate-100 text-center text-xs">
+                      {(() => {
+                        const linkInfo = entryBusinessLinkInfo(e);
+                        const title = linkInfo.active
+                          ? `已关联${linkInfo.labels.length ? `：${linkInfo.labels.join("、")}` : ""}`
+                          : "未关联";
+                        return <LinkStatusIcon active={linkInfo.active} title={title} />;
+                      })()}
+                    </td>
+                    ) : null}
+
                     {isDetailColumnVisible("date") ? (
                     <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{fundApplyDateOf(e)}</td>
                     ) : null}
@@ -3019,7 +3094,7 @@ export function FundShell(props: Props) {
 
                 );
 
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode ? "暂无交易记录" : chooseHoldingText}</td></tr>)}
+              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}</td></tr>)}
 
             </tbody>
 

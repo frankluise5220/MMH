@@ -10,6 +10,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { kindLabel } from "@/lib/account-kinds";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -820,10 +821,12 @@ export function InvestmentFormModal({
       } else if (isRedeem) {
         setSubtype("redeem");
         setApplyDate(aiDate);
+        setArrivalDate(aiDate);
       } else {
         setSubtype("buy");
         setApplyDate(aiDate);
       }
+      arrivalDateEditedRef.current = false;
 
       if (fundCodeFromAi) {
         setFundCode(fundCodeFromAi);
@@ -1108,6 +1111,9 @@ export function InvestmentFormModal({
       setFeeRate("0");
       setFeeRateEdited(false);
       amountEditedRef.current = false;
+      if (mode === "create" && !arrivalDateEditedRef.current) {
+        setArrivalDate(applyDate || today);
+      }
       const h = effectiveHoldings?.find(p => p.fundCode === fundCode);
       if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
       else if (defaults?.fundUnits && defaults.fundUnits > 0) setUnits(formatUnits(Number(defaults.fundUnits)));
@@ -1127,7 +1133,7 @@ export function InvestmentFormModal({
       setArrivalAmount("");
     }
     if (isDividend(nextSubtype)) {
-      if (!arrivalDate) setArrivalDate(today);
+      if (!arrivalDateEditedRef.current) setArrivalDate(applyDate || today);
       if (!cashAccountId && cashAccounts && cashAccounts.length > 0) {
         setCashAccountId(cashAccounts[0].id);
       }
@@ -1333,7 +1339,9 @@ export function InvestmentFormModal({
       const nextConfirmDate = confirmDays > 0 ? addDays(applyDate, confirmDays) : applyDate;
       setConfirmDate(nextConfirmDate);
       // 到账天数已知且未手动改过到账日时，自动推导到账日期。
-      if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
+      if (mode === "create" && isRedeemLike(subtype) && !arrivalDateEditedRef.current) {
+        setArrivalDate(applyDate);
+      } else if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
         setArrivalDate(addDays(nextConfirmDate, arrivalDays));
       }
     }
@@ -1777,18 +1785,19 @@ export function InvestmentFormModal({
 
   async function onDelete() {
     if (deleting || mode !== "edit" || !entry) return;
-    if (!window.confirm("确认删除这条基金记录吗？")) return;
     setDeleting(true);
     try {
-      const res = await fetch("/api/v1/entries/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entryIds: [entry.id] }),
+      const data = await deleteEntriesWithLinkedPrompt({
+        entryIds: [entry.id],
+        confirmMessage: "确认删除这条基金记录吗？",
       });
-      const data = await res.json();
-      if (!data.ok) { window.alert(data.error ?? "删除失败"); return; }
+      if (!data.ok) {
+        if (data.error !== "已取消删除") window.alert(data.error ?? "删除失败");
+        return;
+      }
       requestAnimationFrame(() => {
-        dispatchFinanceDataChanged({ reason: "investment-delete", deletedEntryIds: [entry.id] });
+        const refreshEntryIds = getDeleteRefreshEntryIds(data, [entry.id]);
+        dispatchFinanceDataChanged({ reason: "investment-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       });
     } catch {
       window.alert("删除失败");
@@ -1884,7 +1893,7 @@ export function InvestmentFormModal({
                   {subtype === "dividend_reinvest" && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">到账日期</div>
-                      <DateStepper value={arrivalDate} onChange={setArrivalDate} />
+                      <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
                     </div>
                   )}
 
@@ -1892,7 +1901,7 @@ export function InvestmentFormModal({
                     <>
                       <div className="space-y-1">
                           <div className="text-xs font-medium text-slate-600">到账日期</div>
-                        <DateStepper value={arrivalDate} onChange={setArrivalDate} />
+                        <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
                       </div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {investmentAccounts && investmentAccounts.length > 0 && (

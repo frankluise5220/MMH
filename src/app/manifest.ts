@@ -1,0 +1,65 @@
+import type { MetadataRoute } from "next";
+
+export default function manifest(): MetadataRoute.Manifest {
+  return {
+    id: "/",
+    name: "MoneyMoneyHome",
+    short_name: "MMH",
+    description: "Local-first family finance system",
+    lang: "zh-CN",
+    start_url: "/overview",
+    scope: "/",
+    display: "standalone",
+    display_override: ["standalone", "minimal-ui"],
+    background_color: "#f4f7fb",
+    theme_color: "#f4f7fb",
+    orientation: "portrait",
+    categories: ["finance", "productivity"],
+    icons: [
+      {
+        src: "/branding/mmh-logo-mark.svg",
+        sizes: "any",
+        type: "image/svg+xml",
+        purpose: "any",
+      },
+      {
+        src: "/branding/mmh-logo-mark.preview.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/branding/mmh-logo-mark.preview.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "maskable",
+      },
+    ],
+    shortcuts: [
+      {
+        name: "概览",
+        short_name: "概览",
+        url: "/overview",
+        icons: [
+          {
+            src: "/branding/mmh-logo-mark.preview.png",
+            sizes: "512x512",
+            type: "image/png",
+          },
+        ],
+      },
+      {
+        name: "记一笔",
+        short_name: "记一笔",
+        url: "/",
+        icons: [
+          {
+            src: "/branding/mmh-logo-mark.preview.png",
+            sizes: "512x512",
+            type: "image/png",
+          },
+        ],
+      },
+    ],
+  };
+}

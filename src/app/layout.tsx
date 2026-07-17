@@ -1,16 +1,36 @@
 import "./globals.css";
 import Script from "next/script";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { ModalDragController } from "@/components/ModalDragController";
+import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
 
 export const metadata: Metadata = {
+  applicationName: "MoneyMoneyHome",
   title: "MoneyMoneyHome",
   description: "Local-first family finance system",
+  manifest: "/manifest.webmanifest",
   icons: {
     icon: "/branding/mmh-logo-mark.svg",
     shortcut: "/branding/mmh-logo-mark.svg",
-    apple: "/branding/mmh-logo-mark.svg",
+    apple: "/branding/mmh-logo-mark.preview.png",
   },
+  appleWebApp: {
+    capable: true,
+    title: "MoneyMoneyHome",
+    statusBarStyle: "default",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
+  themeColor: "#f4f7fb",
+  colorScheme: "light",
 };
 
 export default function RootLayout({
@@ -26,6 +46,7 @@ export default function RootLayout({
       >
         {children}
         <ModalDragController />
+        <PwaServiceWorkerRegistration />
         <Script
           id="performance-measure-guard"
           strategy="beforeInteractive"

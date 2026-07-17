@@ -221,8 +221,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     orderBy: [{ confirmDate: "asc" }, { applyDate: "asc" }, { createdAt: "asc" }],
   });
 
-  const rawEntries: any[] = fundTransactions.length > 0
-    ? fundTransactions.flatMap((entry) => {
+  const rawEntries: any[] = fundTransactions.flatMap((entry) => {
         const cashReceipt = entry.fundSubtype === FundSubtype.redeem ||
           entry.fundSubtype === FundSubtype.switch_out ||
           entry.fundSubtype === FundSubtype.dividend_cash;
@@ -231,6 +230,8 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
           : Math.abs(toNum(entry.arrivalAmount ?? entry.grossAmount));
         const main = {
           id: entry.cashEntryId ?? entry.id,
+          fundTransactionId: entry.id,
+          cashEntryId: entry.cashEntryId,
           fundCode: entry.fundCode,
           fundName: entry.fundName,
           toAccountName: null,
@@ -272,22 +273,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
             realizedProfit: null,
           }));
         return [main, ...refundRows];
-      })
-    : await prisma.txRecord.findMany({
-    where: {
-      OR: [{ toAccountId: accountId }, { accountId: accountId }],
-      fundCode: { not: null },
-      deletedAt: null,
-    },
-    select: {
-      id: true, fundCode: true, fundName: true, toAccountName: true,
-      amount: true, fundFee: true, fundArrivalAmount: true,
-      fundUnits: true, fundSubtype: true, fundConfirmDate: true, fundArrivalDate: true,
-      source: true, date: true, createdAt: true,
-      accountId: true, toAccountId: true, fundSourceEntryId: true,
-    },
-    orderBy: [{ fundConfirmDate: "asc" }, { date: "asc" }, { createdAt: "asc" }],
-  });
+      });
 
   const { refundAmountByBuyId } = allocateBuyFailedRefunds(rawEntries.map(e => ({
     id: e.id,
@@ -341,7 +327,13 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     if (e.fundSubtype !== "redeem") continue;
     if (fundCodes && e.fundCode && !fundCodes.includes(e.fundCode)) continue;
     const realizedProfit = calcResult.realizedProfitByEntryId.get(e.id) ?? null;
-    await prisma.txRecord.update({ where: { id: e.id }, data: { realizedProfit } });
+    if (e.fundTransactionId) {
+      await prisma.fundTransaction.update({ where: { id: e.fundTransactionId }, data: { realizedProfit } });
+    }
+    const cashEntryId = e.cashEntryId ?? (e.fundTransactionId && e.id !== e.fundTransactionId ? e.id : null);
+    if (cashEntryId) {
+      await prisma.txRecord.update({ where: { id: cashEntryId }, data: { realizedProfit } });
+    }
   }
 
   const navCaches = await prisma.fundNavCache.findMany({

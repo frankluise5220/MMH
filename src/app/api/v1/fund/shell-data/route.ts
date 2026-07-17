@@ -3,6 +3,10 @@ import { prisma } from "@/lib/db/prisma";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
+import {
+  loadPreciousMetalTransactionEntryLike,
+  loadWealthTransactionEntryLike,
+} from "@/lib/server/business-transaction-entries";
 
 export async function GET(req: Request) {
   try {
@@ -29,32 +33,37 @@ export async function GET(req: Request) {
     // Compute positions
     const positionDisplay = await computePositionDisplay(ctx, accountId);
 
-    const selectedFundCode = fundCodeParam || (positionDisplay.positions.length > 0
-      ? [...positionDisplay.positions].sort((a, b) => b.marketValue - a.marketValue)[0]?.fundCode
-      : (positionDisplay.clearedPositions.length > 0
-        ? [...positionDisplay.clearedPositions].sort((a, b) => b.clearedDate.localeCompare(a.clearedDate))[0]?.fundCode
-        : ""));
+    const selectedFundCode =
+      account.investProductType === "wealth"
+        ? (fundCodeParam || "")
+        : fundCodeParam || (positionDisplay.positions.length > 0
+          ? [...positionDisplay.positions].sort((a, b) => b.marketValue - a.marketValue)[0]?.fundCode
+          : (positionDisplay.clearedPositions.length > 0
+            ? [...positionDisplay.clearedPositions].sort((a, b) => b.clearedDate.localeCompare(a.clearedDate))[0]?.fundCode
+            : ""));
 
     // Do not limit here: the client paginates details locally.
     // entryScope=account is used when the client needs a complete local cache for fast fund switching.
-    const fundTransactionEntries = await loadFundTransactionEntryLike({
-      accountId,
-      householdId: ctx.householdId,
-      fundCode: selectedFundCode || undefined,
-      entryScope,
-    });
-
-    const legacyFundEntries = fundTransactionEntries.length > 0 ? [] : await prisma.txRecord.findMany({
-      where: {
-        deletedAt: null,
-        ...(entryScope === "account"
-          ? { fundCode: { not: null } }
-          : { fundCode: selectedFundCode || undefined }),
-        OR: [{ toAccountId: accountId }, { accountId: accountId }],
-      },
-      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    });
-    const fundEntries = fundTransactionEntries.length > 0 ? fundTransactionEntries : legacyFundEntries;
+    const allIndependentEntries =
+      account.investProductType === "wealth"
+        ? await loadWealthTransactionEntryLike({
+            accountIds: [accountId],
+            householdId: ctx.householdId,
+          })
+        : account.investProductType === "metal"
+          ? await loadPreciousMetalTransactionEntryLike({
+              accountIds: [accountId],
+              householdId: ctx.householdId,
+            })
+          : await loadFundTransactionEntryLike({
+              accountId,
+              householdId: ctx.householdId,
+              fundCode: selectedFundCode || undefined,
+              entryScope,
+            });
+    const fundEntries = entryScope === "account" || (account.investProductType === "wealth" && !selectedFundCode)
+      ? allIndependentEntries
+      : allIndependentEntries.filter((entry: any) => entry.fundCode === selectedFundCode);
 
     // Fee rates
     const feeRateRecords = await prisma.fundFeeRate.findMany({

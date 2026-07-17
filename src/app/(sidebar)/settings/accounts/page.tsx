@@ -66,8 +66,10 @@ export default function SettingsAccountsPage() {
   const [selectedGroup, setSelectedGroup] = useState<string>("");
   const [selectedInstitution, setSelectedInstitution] = useState<string>("");
   const [selectedKinds, setSelectedKinds] = useState<string[]>([]);
+  const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
 
@@ -156,6 +158,7 @@ export default function SettingsAccountsPage() {
   function openEdit(a: Account) {
     const normalizedKind = normalizedAccountKind(a);
     setEditingId(a.id);
+    setEditError("");
     setEditForm({
       name: a.name,
       kind: normalizedKind,
@@ -175,11 +178,17 @@ export default function SettingsAccountsPage() {
 
   async function saveEdit() {
     if (!editingId) return;
-    await fetch("/api/v1/accounts", {
+    setEditError("");
+    const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: editingId, ...editForm }),
     });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.ok === false) {
+      setEditError(data?.error ?? "保存失败");
+      return;
+    }
     setEditingId(null);
     invalidateSettingsAccountData();
     loadAll({ force: true });
@@ -220,10 +229,28 @@ export default function SettingsAccountsPage() {
     return institutionLabel ? `${institutionLabel}·${account.name}` : account.name;
   };
 
+  const normalizeSearchText = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";
+  const accountMatchesNameQuery = (account: Account, query: string) => {
+    const tokens = normalizeSearchText(query).split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return true;
+    const haystack = [
+      account.name,
+      accountDisplayName(account),
+      account.numberMasked,
+      account.AccountGroup?.name,
+      account.Institution?.name,
+      account.Institution?.shortName,
+      accountKindLabel(normalizedAccountKind(account)),
+      investmentLabel(account.investProductType),
+    ].map(normalizeSearchText).join(" ");
+    return tokens.every((token) => haystack.includes(token));
+  };
+
   const filteredAccounts = accounts.filter(a => {
     if (selectedGroup && a.groupId !== selectedGroup) return false;
     if (selectedInstitution && a.institutionId !== selectedInstitution) return false;
     if (selectedKinds.length > 0 && !selectedKinds.includes(normalizedAccountKind(a))) return false;
+    if (!accountMatchesNameQuery(a, accountNameQuery)) return false;
     return true;
   });
 
@@ -271,6 +298,14 @@ export default function SettingsAccountsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <div className="w-64 max-w-full">
+            <input
+              value={accountNameQuery}
+              onChange={(event) => setAccountNameQuery(event.target.value)}
+              placeholder="按账户名称/机构/尾号筛选"
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
           <div className="w-52 max-w-full">
             <SmartSelect
               mode="single"
@@ -333,6 +368,7 @@ export default function SettingsAccountsPage() {
                       const editInvestProductType = editForm.investProductType || "fund";
                       const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
                       const isBillLikeKind = editKind === "bank_credit";
+                      const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
                       const filteredInstitutions = institutions.filter((institution) =>
                         editKind === "loan" ? institution.type === "debt" : institution.type !== "debt",
                       );
@@ -439,44 +475,51 @@ export default function SettingsAccountsPage() {
                       </div>
                     )}
 
-                    {isBillLikeKind && (
+                    {supportsLastFour && (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
-                          <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
-                          <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
-                          <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
-                        </div>
+                        {isBillLikeKind && (
+                          <>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
+                              <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
+                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
+                              <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
+                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
+                              <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
+                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                            </div>
+                          </>
+                        )}
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.lastFourLabel")}</label>
                           <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
                         </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">账单模式</label>
-                          <select
-                            value={editForm.creditBillMode || "separate"}
-                            onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                          >
-                            <option value="separate">独立账单</option>
-                            <option value="consolidated">同机构合并账单</option>
-                          </select>
-                        </div>
+                        {isBillLikeKind && (
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">账单模式</label>
+                            <select
+                              value={editForm.creditBillMode || "separate"}
+                              onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
+                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                            >
+                              <option value="separate">独立账单</option>
+                              <option value="consolidated">同机构合并账单</option>
+                            </select>
+                          </div>
+                        )}
                       </div>
                     )}
 
                     <div className="flex justify-end gap-2 mt-3">
-                      <button onClick={() => setEditingId(null)}
+                      {editError && <div className="text-xs text-red-600">{editError}</div>}
+                      <button onClick={() => { setEditingId(null); setEditError(""); }}
                         className="h-7 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
                       <button onClick={saveEdit}
                         className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
@@ -514,13 +557,13 @@ export default function SettingsAccountsPage() {
                           {tradingCalendarLabel(a.tradingCalendar ?? "cn_fund")}
                         </span>
                       )}
-                      {normalizedAccountKind(a) === "bank_credit" && (
+                      {(normalizedAccountKind(a) === "bank_credit" || normalizedAccountKind(a) === "bank_debit") && (
                         <>
-                          {a.billingDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.billingDay", { day: a.billingDay })}</span>}
-                          {a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
-                          {a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.billingDay", { day: a.billingDay })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
-                          <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? "合并账单" : "独立账单"}</span>
+                          {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? "合并账单" : "独立账单"}</span>}
                         </>
                       )}
                     </div>

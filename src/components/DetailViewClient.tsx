@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { toNumber } from "@/lib/date-utils";
@@ -26,6 +26,7 @@ import {
   normalizeDetailPage,
   normalizeDetailPageSize,
 } from "@/lib/detail-pagination-preference";
+import { parseImportAccountId } from "@/lib/account-import-match";
 
 /* Types */
 
@@ -86,6 +87,8 @@ export type DetailEntry = {
   fundArrivalDate: string | null;
   fundSourceEntryId?: string | null;
   fundArrivalAmount: number | null;
+  businessLinkCount?: number;
+  businessLinkLabels?: string[];
   entryTags: Array<{
     tagId: string;
     Tag: { name: string; color: string } | null;
@@ -119,6 +122,50 @@ type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect
 type DetailAccountOption = { id: string; label: string; title?: string | null; kind?: string | null; debtDirection?: string | null };
 
 /* Helpers */
+
+function BusinessLinkHeaderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
+      <path
+        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function BusinessLinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
+  return (
+    <span
+      title={title}
+      className={[
+        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
+        active
+          ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
+          : "border-slate-200 bg-transparent text-slate-300",
+      ].join(" ")}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
+        <path
+          d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function shouldShowBusinessLinkStatus(entry: DetailEntry) {
+  return entry.type === "investment";
+}
 
 function subtypeLabelInfo(
   subtype: string | null | undefined,
@@ -342,11 +389,34 @@ function investmentCategoryLabel(
 ): string {
   if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
   if (entry.categoryName) return entry.categoryName;
-  return getInvestmentCategoryName({
-    fundProductType: entryFundProductType,
-    source: entry.source,
-    insuranceProductId: entry.insuranceProductId,
-  }) ?? "";
+  const subtype = String(entry.fundSubtype ?? "");
+  const source = String(entry.source ?? "");
+  const productType = entryFundProductType ?? null;
+  if (productType === "deposit") {
+    if (subtype === "redeem") return "存款取出";
+    if (subtype === "buy") return "存款存入";
+  }
+  if (productType === "wealth") {
+    if (subtype === "redeem") return "理财赎回";
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
+    if (subtype === "buy_failed") return "买入失败";
+    if (subtype === "buy") return "理财买入";
+  }
+  if (productType === "metal") {
+    if (subtype === "redeem") return "贵金属卖出";
+    if (subtype === "buy") return "贵金属买入";
+  }
+  if (productType === "fund" || productType === "money" || !productType) {
+    if (subtype === "buy" && source === "regular_invest") return "基金定投";
+    if (subtype === "buy" && source === "dividend") return "红利转投";
+    if (subtype === "redeem") return "基金赎回";
+    if (subtype === "dividend_cash") return "现金分红";
+    if (subtype === "dividend_reinvest") return "分红再投资";
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
+    if (subtype === "buy_failed") return "买入失败";
+    if (subtype === "buy") return "基金买入";
+  }
+  return "";
 }
 
 function investmentActionLabel(
@@ -438,6 +508,17 @@ export function DetailViewClient({
     () => new Map(accountOptions.map((option) => [option.id, option])),
     [accountOptions],
   );
+  const accountDisplayFallback = useCallback((accountId?: string | null, fallback?: string | null) => {
+    const byId = accountId ? accountOptionById.get(accountId) : undefined;
+    if (byId) return { label: byId.label, title: byId.title ?? byId.label };
+    const raw = String(fallback ?? "").trim();
+    if (!raw) return { label: "", title: "" };
+    const encodedId = parseImportAccountId(raw);
+    const directId = encodedId || (/^cm[a-z0-9]{8,}$/i.test(raw) ? raw : "");
+    const byFallbackId = directId ? accountOptionById.get(directId) : undefined;
+    if (byFallbackId) return { label: byFallbackId.label, title: byFallbackId.title ?? byFallbackId.label };
+    return { label: raw, title: raw };
+  }, [accountOptionById]);
   const tf = (key: string, values: Record<string, string | number>) => {
     let text: string = t(key);
     for (const [name, value] of Object.entries(values)) {
@@ -642,7 +723,7 @@ export function DetailViewClient({
     },
     {
       key: "type",
-      label: t("detail.column.activityType"),
+      label: "收支大类",
       width: 96,
       minWidth: 74,
       filterText: (e) => {
@@ -654,7 +735,7 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const debtLabel = debtActivityLabel(e);
         if (debtLabel) return debtLabel;
-        if (e.type === "investment") return investmentActionLabel(e, entryFundProductType, t);
+        if (e.type === "investment") return "投资";
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
@@ -668,7 +749,7 @@ export function DetailViewClient({
         const balanceTarget = getBalanceReconcileTarget(e);
         const debtLabel = debtActivityLabel(e);
         const actLabel = e.type === "investment"
-          ? investmentActionLabel(e, entryFundProductType, t)
+          ? "投资"
           : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
@@ -727,11 +808,16 @@ export function DetailViewClient({
       label: "账户",
       width: 160,
       minWidth: 110,
-      filterText: (e: DetailEntry) => accountOptionById.get(e.accountId ?? "")?.label ?? e.accountName ?? "",
+      filterText: (e: DetailEntry) => accountDisplayFallback(e.accountId, e.accountName).label,
+      filterTitle: (e: DetailEntry) => accountDisplayFallback(e.accountId, e.accountName).title,
+      filterSearchText: (e: DetailEntry) => {
+        const option = accountDisplayFallback(e.accountId, e.accountName);
+        return [option.label, option.title, e.accountName].filter(Boolean).join(" ");
+      },
       render: (e: DetailEntry) => {
-        const option = accountOptionById.get(e.accountId ?? "");
-        const text = option?.label ?? e.accountName ?? "";
-        const title = option?.title ?? text;
+        const option = accountDisplayFallback(e.accountId, e.accountName);
+        const text = option.label;
+        const title = option.title;
         return <span className="block truncate text-slate-600" title={title}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
@@ -752,20 +838,35 @@ export function DetailViewClient({
       minWidth: 100,
       filterText: (e) => {
         const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccountLabel = accountOptionById.get(e.accountId ?? "")?.label ?? e.accountName;
-        const targetAccountLabel = e.toAccountId ? accountOptionById.get(e.toAccountId)?.label ?? e.toAccountName : null;
-        return isToAccount ? sourceAccountLabel ?? "" : targetAccountLabel ?? "";
+        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
+        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
+        return isToAccount ? sourceAccount.label : targetAccount?.label ?? "";
+      },
+      filterTitle: (e) => {
+        const isToAccount = !!accountId && e.toAccountId === accountId;
+        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
+        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
+        return isToAccount ? sourceAccount.title : targetAccount?.title ?? "";
+      },
+      filterSearchText: (e) => {
+        const isToAccount = !!accountId && e.toAccountId === accountId;
+        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
+        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
+        const selected = isToAccount ? sourceAccount : targetAccount;
+        return [
+          selected?.label,
+          selected?.title,
+          isToAccount ? e.accountName : e.toAccountName,
+        ].filter(Boolean).join(" ");
       },
       render: (e) => {
         const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccount = accountOptionById.get(e.accountId ?? "");
-        const targetAccount = e.toAccountId ? accountOptionById.get(e.toAccountId) : undefined;
-        const sourceAccountLabel = sourceAccount?.label ?? e.accountName;
-        const targetAccountLabel = e.toAccountId ? targetAccount?.label ?? e.toAccountName : null;
+        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
+        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
+        const sourceAccountLabel = sourceAccount.label;
+        const targetAccountLabel = targetAccount?.label ?? null;
         const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
-        const relatedAccountTitle = isToAccount
-          ? (sourceAccount?.title ?? sourceAccountLabel ?? "")
-          : (targetAccount?.title ?? targetAccountLabel ?? "");
+        const relatedAccountTitle = isToAccount ? sourceAccount.title : targetAccount?.title ?? "";
         return <span className="block truncate text-slate-500" title={relatedAccountTitle}>{relatedAccountLabel ?? <span className="text-slate-300">-</span>}</span>;
       },
     },
@@ -775,7 +876,6 @@ export function DetailViewClient({
       width: 110,
       minWidth: 82,
       align: "right" as const,
-      sortValue: (e: DetailEntry) => e.runningBalance,
       render: (e: DetailEntry) => <span className="text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatMoney(toNumber(e.runningBalance)) : ""}</span>,
     } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
     {
@@ -818,8 +918,8 @@ export function DetailViewClient({
     {
       key: "actions",
       label: t("detail.column.actions"),
-      width: 76,
-      minWidth: 64,
+      width: 110,
+      minWidth: 90,
       align: "right",
       render: (e) => {
         const dateStr = (e.date ?? "").slice(0, 10);
@@ -923,7 +1023,8 @@ export function DetailViewClient({
             : undefined;
 
         return (
-          <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
+          <div className="flex justify-end items-center gap-1" onClick={(event) => event.stopPropagation()}>
+            {(shouldShowBusinessLinkStatus(e)) ? (() => { const linkLabels = e.businessLinkLabels ?? []; const hasBusinessLink = (e.businessLinkCount ?? 0) > 0; const title = hasBusinessLink ? `已关联：${linkLabels.join("、") || "业务记录"}` : "未关联业务记录"; return <BusinessLinkStatusIcon active={hasBusinessLink} title={title} />; })() : null}
             <EntryRowActions
               entryId={e.id}
               edit={(balanceReconcileEditEvent || debtEditEvent) ? undefined : (e.type !== "investment" ? otherEditPayload : editPayload) as any}
@@ -933,13 +1034,13 @@ export function DetailViewClient({
         );
       },
     },
-  ], [accountId, accountOptionById, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
+  ], [accountDisplayFallback, accountId, accountOptionById, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
       {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
       {selectedCount > 0 ? <span className="text-xs text-slate-500">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
     </div>
   ) : undefined;
@@ -971,7 +1072,7 @@ export function DetailViewClient({
       onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} />
+          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

@@ -57,6 +57,15 @@ import { resolveSameCurrencyTransfer } from "@/lib/currency";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
+import {
+  buildEntryBusinessLinkSummary,
+  entryBusinessLinkSummaryInclude,
+  upsertEntryBusinessCashFlowLink,
+  upsertLegacyCombinedEntryBusinessLinks,
+  type EntryBusinessType,
+} from "@/lib/server/entry-business-link";
+import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
 export const runtime = "nodejs";
 const DETAIL_LIST_MAX_PAGE_SIZE = 5000;
@@ -260,6 +269,7 @@ async function ensureFamilyMemberInstitutionInTx(input: {
   tx: {
     institution: {
       findFirst: typeof prisma.institution.findFirst;
+      findMany: typeof prisma.institution.findMany;
       create: typeof prisma.institution.create;
     };
   };
@@ -283,10 +293,14 @@ async function ensureFamilyMemberInstitutionInTx(input: {
     where: {
       householdId: input.householdId,
       type: "family_member",
-      name: normalizedName,
+      OR: [{ name: normalizedName }, { shortName: normalizedName }],
     },
   });
   if (matched) return matched;
+  await assertInstitutionDisplayNamesUnique(input.tx, {
+    householdId: input.householdId,
+    name: normalizedName,
+  });
   return input.tx.institution.create({
     data: {
       householdId: input.householdId,
@@ -444,6 +458,7 @@ export async function GET(req: Request) {
       const record = await prisma.txRecord.findUnique({
         where: { id: entryId },
         include: {
+          ...entryBusinessLinkSummaryInclude,
           EntryTag: { include: { Tag: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
@@ -513,6 +528,7 @@ export async function GET(req: Request) {
         installmentSourceType: record.CreditCardInstallmentPlan?.sourceType ?? null,
         installmentSourceStatementMonth: record.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
         source: record.source,
+        ...buildEntryBusinessLinkSummary(record),
         entryTags: mapEntryTags(record),
         linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
       };
@@ -539,6 +555,7 @@ export async function GET(req: Request) {
           ...hidFilter,
         },
         include: {
+          ...entryBusinessLinkSummaryInclude,
           EntryTag: { include: { Tag: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
@@ -625,6 +642,7 @@ export async function GET(req: Request) {
       installmentSourceType: e.CreditCardInstallmentPlan?.sourceType ?? null,
       installmentSourceStatementMonth: e.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
       source: e.source,
+      ...buildEntryBusinessLinkSummary(e),
       entryTags: mapEntryTags(e),
     }));
 
@@ -710,6 +728,7 @@ export async function POST(req: Request) {
     }
 
     let createdId: string | undefined;
+    let createdCashEntryId: string | undefined;
     let createdPlanId: string | undefined;
     let changedInvestment = false;
 
@@ -1139,7 +1158,7 @@ export async function POST(req: Request) {
         const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
         const cashAcc = cashAccountIdInput
-          ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true } })
+          ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true, currency: true } })
           : null;
 
         const metalType = fundProductType === "metal" && metalTypeIdInput
@@ -1299,36 +1318,24 @@ export async function POST(req: Request) {
           return;
         }
 
-        let recordAccountId: string;
-        let recordAccountName: string;
-        let recordToAccountId: string;
-        let recordToAccountName: string;
+        let cashFlowAmount: number;
+        let cashFlowDate = date;
         let signedAmount: number;
 
         if (redeemLike) {
-          recordAccountId = investAcc.id;
-          recordAccountName = investAcc.name;
-          recordToAccountId = cashAcc?.id ?? investAcc.id;
-          recordToAccountName = cashAcc?.name ?? investAcc.name;
           signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0));
+          cashFlowAmount = signedAmount;
+          cashFlowDate = fundArrivalDate ?? date;
         } else if (isDividendReinvest) {
-          recordAccountId = investAcc.id;
-          recordAccountName = investAcc.name;
-          recordToAccountId = investAcc.id;
-          recordToAccountName = investAcc.name;
           signedAmount = -amountAbs;
+          cashFlowAmount = 0;
         } else if (isDividendCash && cashAcc) {
-          recordAccountId = investAcc.id;
-          recordAccountName = investAcc.name;
-          recordToAccountId = cashAcc.id;
-          recordToAccountName = cashAcc.name;
           signedAmount = amountAbs;
+          cashFlowAmount = signedAmount;
+          cashFlowDate = fundArrivalDate ?? date;
         } else {
-          recordAccountId = cashAcc?.id ?? investAcc.id;
-          recordAccountName = cashAcc?.name ?? investAcc.name;
-          recordToAccountId = investAcc.id;
-          recordToAccountName = investAcc.name;
           signedAmount = -amountAbs;
+          cashFlowAmount = signedAmount;
         }
 
         const applyDateStr = date.toISOString().slice(0, 10);
@@ -1352,10 +1359,10 @@ export async function POST(req: Request) {
           data: {
             date,
             type: TransactionType.investment,
-            accountId: recordAccountId,
-            accountName: recordAccountName,
-            toAccountId: recordToAccountId,
-            toAccountName: recordToAccountName,
+            accountId: investAcc.id,
+            accountName: investAcc.name,
+            toAccountId: null,
+            toAccountName: null,
             amount: signedAmount,
             fundCode: entryFundCode,
             fundName: entryFundName,
@@ -1391,6 +1398,53 @@ export async function POST(req: Request) {
         createdId = created.id;
 
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+        const shouldCreateCashEntry = !!cashAcc && cashAcc.id !== investAcc.id && cashFlowAmount !== 0;
+        if (shouldCreateCashEntry && cashAcc) {
+          const cashEntry = await tx.txRecord.create({
+            data: {
+              date: cashFlowDate,
+              type: TransactionType.investment,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              toAccountId: null,
+              toAccountName: null,
+              amount: cashFlowAmount,
+              currency: cashAcc.currency ?? investAcc.currency ?? "CNY",
+              source: `${sourceValue || "manual"}_cash_flow`,
+              note: note || entryFundName || undefined,
+              householdId,
+            },
+          });
+          createdCashEntryId = cashEntry.id;
+          const businessType: EntryBusinessType = isInsurance
+            ? "insurance"
+            : fundProductType === "wealth"
+              ? "wealth"
+              : fundProductType === "deposit"
+                ? "deposit"
+                : fundProductType === "metal"
+                  ? "metal"
+                  : "fund";
+          if (businessType === "fund") {
+            await upsertEntryBusinessCashFlowLink(tx, {
+              householdId,
+              cashEntryId: cashEntry.id,
+              businessEntryId: created.id,
+              businessType,
+              cashFlowDirection: cashFlowAmount < 0 ? "outflow" : "inflow",
+              source: sourceValue,
+              note: "Split cash flow from business detail",
+              metadata: {
+                splitRecord: true,
+                cashDate: cashFlowDate.toISOString(),
+              },
+            });
+          }
+        }
+        await syncIndependentBusinessTransactionFromTxRecord(tx, {
+          businessEntryId: created.id,
+          cashEntryId: createdCashEntryId,
+        });
         if (
           finalFundSubtype === FundSubtype.buy &&
           sourceValue !== "insurance" &&
@@ -1454,14 +1508,17 @@ export async function POST(req: Request) {
 
     if (changedInvestment && createdId) {
       await syncFundTransactionsFromTxRecords([createdId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: createdId }).catch(
+        logger.catchLog("sync independent business transaction", "route.ts"),
+      );
     }
     if (createdId) {
-      const createdAccounts = await prisma.txRecord.findUnique({
-        where: { id: createdId },
+      const createdAccounts = await prisma.txRecord.findMany({
+        where: { id: { in: [createdId, createdCashEntryId].filter((id): id is string => !!id) } },
         select: { accountId: true, toAccountId: true },
       });
-      if (createdAccounts) {
-        await invalidateCreditCardCycleCacheForAccountIds([createdAccounts.accountId, createdAccounts.toAccountId]).catch(
+      if (createdAccounts.length > 0) {
+        await invalidateCreditCardCycleCacheForAccountIds(createdAccounts.flatMap((row) => [row.accountId, row.toAccountId])).catch(
           logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
         );
       }
@@ -1474,6 +1531,7 @@ export async function POST(req: Request) {
       const created = await prisma.txRecord.findUnique({
         where: { id: createdId },
         include: {
+          ...entryBusinessLinkSummaryInclude,
           EntryTag: { include: { Tag: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
@@ -1518,6 +1576,7 @@ export async function POST(req: Request) {
             fundArrivalDate: created.fundArrivalDate ? formatDateLocal(created.fundArrivalDate) : null,
             fundArrivalAmount: created.fundArrivalAmount ? toNumber(created.fundArrivalAmount) : null,
             source: created.source,
+            ...buildEntryBusinessLinkSummary(created),
             entryTags: mapEntryTags(created),
           },
         });
@@ -2096,7 +2155,11 @@ return;
     }, TX_EDIT_TRANSACTION_OPTIONS);
 
     if (changedInvestment) {
+      await upsertLegacyCombinedEntryBusinessLinks([entryId]).catch(logger.catchLog("sync entry business link", "route.ts"));
       await syncFundTransactionsFromTxRecords([entryId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch(
+        logger.catchLog("sync independent business transaction", "route.ts"),
+      );
     }
 
     // 重算余额：所有涉及的旧/新账户
@@ -2135,6 +2198,7 @@ return;
     const updated = await prisma.txRecord.findUnique({
       where: { id: entryId },
       include: {
+        ...entryBusinessLinkSummaryInclude,
         EntryTag: { include: { Tag: true } },
         account: { include: { Institution: { select: { name: true } } } },
         toAccount: { include: { Institution: { select: { name: true } } } },
@@ -2193,6 +2257,7 @@ return;
         fundArrivalDate: updated.fundArrivalDate ? formatDateLocal(updated.fundArrivalDate) : null,
         fundArrivalAmount: updated.fundArrivalAmount ? toNumber(updated.fundArrivalAmount) : null,
         source: updated.source,
+        ...buildEntryBusinessLinkSummary(updated),
         entryTags: mapEntryTags(updated),
       },
     });

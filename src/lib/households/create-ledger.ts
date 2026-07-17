@@ -4,6 +4,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 import { getDefaultTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
 type LedgerWriter = typeof prisma | Prisma.TransactionClient;
 
@@ -38,6 +39,10 @@ export async function createLedgerWithDefaults(
     select: { id: true },
   });
   if (!existingFamilyMember) {
+    await assertInstitutionDisplayNamesUnique(writer, {
+      householdId: household.id,
+      name: input.adminName,
+    });
     await writer.institution.create({
       data: {
         householdId: household.id,

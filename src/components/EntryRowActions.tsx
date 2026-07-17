@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export type EditPayload = {
@@ -113,27 +114,19 @@ export function EntryRowActions({
 
   async function onDelete() {
     if (deleting) return;
-    if (!window.confirm("确认删除这条记录吗？删除后可使用左侧栏的撤销按钮恢复。")) return;
 
     setDeleting(true);
     try {
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 20000);
-      const res = await fetch(
-        "/api/v1/entries/delete",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entryIds: [entryId] }),
-          signal: controller.signal,
-        },
-      ).finally(() => window.clearTimeout(timeoutId));
-
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      const data = await deleteEntriesWithLinkedPrompt({
+        entryIds: [entryId],
+        confirmMessage: "确认删除这条记录吗？删除后可使用左侧栏的撤销按钮恢复。",
+      });
       if (!data?.ok) {
-        throw new Error(data?.error ?? `删除失败（HTTP ${res.status}）`);
+        if (data?.error === "已取消删除") return;
+        throw new Error(data?.error ?? "删除失败");
       }
-      dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: [entryId], entryIds: [entryId] });
+      const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
+      dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch (e) {
       const msg =

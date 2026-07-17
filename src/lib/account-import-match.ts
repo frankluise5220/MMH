@@ -37,6 +37,14 @@ export function encodeImportAccountId(accountId: string) {
   return `${IMPORT_ACCOUNT_ID_PREFIX}${accountId}`;
 }
 
+
+const DEBT_ACCOUNT_NAME_RE = /^(.+?)的往来款$/;
+
+/** Extract counterparty name from "XX的往来款". Returns null on no match. */
+function parseDebtAccountName(v: string): string | null {
+  const m = v.trim().match(DEBT_ACCOUNT_NAME_RE);
+  return m?.[1]?.trim() ?? null;
+}
 export function parseImportAccountId(value?: string) {
   const text = String(value ?? "").trim();
   return text.startsWith(IMPORT_ACCOUNT_ID_PREFIX) ? text.slice(IMPORT_ACCOUNT_ID_PREFIX.length).trim() : "";
@@ -61,9 +69,13 @@ const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: "农商银行", aliases: ["农村商业银行", "农村信用社", "农信社", "农信", "江苏农信", "江苏农商", "省农信"] },
 ];
 
-const CARD_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }> = [
+const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }> = [
   { kind: "bank_credit", aliases: ["信用卡", "贷记卡"] },
   { kind: "bank_debit", aliases: ["储蓄卡", "借记卡", "银行卡"] },
+  { kind: "ewallet", aliases: ["电子钱包", "钱包", "零钱账户"] },
+  { kind: "cash", aliases: ["现金", "现金账户"] },
+  { kind: "investment", aliases: ["投资账户", "投资"] },
+  { kind: "loan", aliases: ["往来款"] },
 ];
 
 export function normalizeImportAccountMatchKey(value?: string) {
@@ -186,6 +198,7 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
   const ownerNames = accountOwnerNames(account);
   const accountNames = [account.name.trim(), ...accountKindNames(account.kind)];
   const last4 = accountLast4(account);
+  const kindNames = accountKindNames(account.kind);
 
   for (const name of accountNames) {
     candidates.add(name);
@@ -201,10 +214,18 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
     for (const institutionName of institutionNames) {
       candidates.add(`${institutionName}${name}`);
       candidates.add(`${institutionName}·${name}`);
+      for (const kindName of kindNames) {
+        candidates.add(`${institutionName}${name}${kindName}`);
+        candidates.add(`${institutionName}·${name}·${kindName}`);
+      }
       if (last4) {
         candidates.add(`${institutionName}${name}${last4}`);
         candidates.add(`${institutionName}${name}(${last4})`);
         candidates.add(`${institutionName}·${name}·${last4}`);
+        for (const kindName of kindNames) {
+          candidates.add(`${institutionName}${name}${last4}${kindName}`);
+          candidates.add(`${institutionName}·${name}·${last4}·${kindName}`);
+        }
       }
       for (const expandedInstitution of expandBankName(institutionName)) {
         candidates.add(`${expandedInstitution}${name}`);
@@ -215,10 +236,20 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
         candidates.add(`${ownerName}·${institutionName}·${name}`);
         candidates.add(`${ownerName}${institutionName}·${name}`);
         candidates.add(`${ownerName}·${institutionName}${name}`);
+        for (const kindName of kindNames) {
+          candidates.add(`${ownerName}${institutionName}${name}${kindName}`);
+          candidates.add(`${ownerName}·${institutionName}·${name}·${kindName}`);
+          candidates.add(`${ownerName}${institutionName}·${name}·${kindName}`);
+          candidates.add(`${ownerName}·${institutionName}${name}${kindName}`);
+        }
         if (last4) {
           candidates.add(`${ownerName}${institutionName}${name}${last4}`);
           candidates.add(`${ownerName}${institutionName}${name}(${last4})`);
           candidates.add(`${ownerName}·${institutionName}·${name}·${last4}`);
+          for (const kindName of kindNames) {
+            candidates.add(`${ownerName}${institutionName}${name}${last4}${kindName}`);
+            candidates.add(`${ownerName}·${institutionName}·${name}·${last4}·${kindName}`);
+          }
         }
         for (const expandedInstitution of expandBankName(institutionName)) {
           candidates.add(`${ownerName}${expandedInstitution}${name}`);
@@ -330,6 +361,23 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
           return result(exactMatches[0].account, [], { targetKind, targetBankNames });
         }
         if (!targetKind && exactMatches.length > 1) return result(null, exactMatches, { targetKind, targetBankNames });
+
+    // "XX的往来款" pattern: try to match extracted counterparty name directly
+    // against loan account names, bypassing kind-alias partial matching.
+    if (targetKind === "loan") {
+      const counterpartyName = parseDebtAccountName(raw);
+      if (counterpartyName) {
+        const cKey = normalizeImportAccountMatchKey(counterpartyName);
+        if (cKey) {
+          const loanMatches = indexed.filter(
+            (item) => item.account.kind === "loan" && item.keys.includes(cKey),
+          );
+          if (loanMatches.length === 1) {
+            return result(loanMatches[0].account, [], { targetKind, targetBankNames });
+          }
+        }
+      }
+    }
       }
     }
 
@@ -385,12 +433,16 @@ export function resolveImportAccountFromList<T extends ImportAccountMatchSource>
 function accountKindNames(kind?: ImportAccountKind | null) {
   if (kind === "bank_credit") return ["信用卡"];
   if (kind === "bank_debit") return ["储蓄卡", "借记卡"];
+  if (kind === "ewallet") return ["电子钱包", "钱包"];
+  if (kind === "cash") return ["现金"];
+  if (kind === "investment") return ["投资账户", "投资"];
+  if (kind === "loan") return [];
   return [];
 }
 
 function inferAccountKind(value: string): ImportAccountKind | null {
   const key = normalizeImportAccountMatchKey(value);
-  for (const item of CARD_KIND_ALIASES) {
+  for (const item of ACCOUNT_KIND_ALIASES) {
     if (item.aliases.some((alias) => key.includes(normalizeImportAccountMatchKey(alias)))) return item.kind;
   }
   return null;
@@ -435,6 +487,26 @@ function expandImportAccountName(value: string) {
   if (kind === "bank_debit") {
     kinds.add("储蓄卡");
     kinds.add("借记卡");
+  }
+  if (kind === "ewallet") {
+    kinds.add("电子钱包");
+    kinds.add("钱包");
+  }
+  if (kind === "cash") kinds.add("现金");
+  if (kind === "investment") kinds.add("投资账户");
+  if (kind === "loan") {}
+
+  for (const kindName of kinds) {
+    const normalizedKindName = normalizeImportAccountMatchKey(kindName);
+    const withoutKind = Array.from(names)
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map((name) => ({ name, key: normalizeImportAccountMatchKey(name) }))
+      .filter((item) => item.key.endsWith(normalizedKindName))
+      .map((item) => item.name.slice(0, Math.max(0, item.name.length - kindName.length)).trim());
+    for (const name of withoutKind) {
+      if (name) names.add(name);
+    }
   }
 
   for (const bank of banks) {

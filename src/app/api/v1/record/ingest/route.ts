@@ -21,6 +21,8 @@ import {
   finishImportRun,
   startImportProgress,
   updateImportProgress,
+  isImportCancelled,
+  cancelImportProgress,
 } from "@/lib/server/import-progress";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
@@ -504,6 +506,53 @@ async function buildImportContext(): Promise<ImportContext> {
   return ctx;
 }
 
+// Data-only version — no DB writes, returns flat object for createMany
+async function buildTransactionRow(ctx: ImportContext, item: ParsedItem, defaultAccountName?: string) {
+  const date = parseDate(item.date);
+  const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
+  const counterpartyInstitutionName = counterpartyInstitutionId ? String(item.institution ?? "").trim() || null : null;
+  const rawSecondNote = String(item.secondRemark ?? "").trim();
+  const primaryNote = String(item.remark ?? item.rawText ?? "").trim();
+  const transferDisplayNote = rawSecondNote || primaryNote || null;
+  const shouldUseDoubleEntry = item.type === "transfer" || (item.type === "investment" && !!item.fromAccount && !!item.toAccount);
+  if (shouldUseDoubleEntry) {
+    const fromAccountName = normalizeAccountCell(item.fromAccount);
+    const toAccountName = normalizeAccountCell(item.toAccount);
+    const fromAccountId = await resolveAccountId(ctx, prisma, fromAccountName) ?? await ensureAccountId(ctx, prisma, fromAccountName);
+    const toAccountId = await resolveAccountId(ctx, prisma, toAccountName) ?? await ensureAccountId(ctx, prisma, toAccountName);
+    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(ctx, prisma, "未指定账户") : null);
+    const fromAccountMeta = sourceAccountId ? ctx.accountMetaById.get(sourceAccountId) ?? null : null;
+    const toAccountMeta = toAccountId ? ctx.accountMetaById.get(toAccountId) ?? null : null;
+    const sourceAccountName = fromAccountName && parseImportAccountId(fromAccountName) ? fromAccountMeta?.name ?? fromAccountName : fromAccountName;
+    const targetAccountName = toAccountName && parseImportAccountId(toAccountName) ? toAccountMeta?.name ?? toAccountName : toAccountName;
+    const stmtMonth = sourceAccountId ? statementMonthForAccountMeta(ctx, sourceAccountId, date) : null;
+    const currency = normalizeCurrency(fromAccountMeta?.currency ?? toAccountMeta?.currency);
+    const amountAbs = Math.abs(item.amount);
+    return { type: "transfer", amount: -amountAbs, date, postedAt: null,
+      accountId: sourceAccountId ?? toAccountId ?? "", accountName: sourceAccountName || "未指定账户",
+      toAccountId, toAccountName: targetAccountName || null, categoryId: null, categoryName: null,
+      note: item.remark ?? item.rawText, toNote: transferDisplayNote,
+      statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
+      currency, householdId: ctx.householdId, fundCode: null, fundProductType: null, fundSubtype: null };
+  }
+  const accountName = pickAccountName(item.account, defaultAccountName);
+  const accountId = await resolveAccountId(ctx, prisma, accountName) ?? await ensureAccountId(ctx, prisma, accountName);
+  const meta = accountId ? ctx.accountMetaById.get(accountId ?? "") ?? null : null;
+  const storedAccountName = accountName && parseImportAccountId(accountName) ? meta?.name ?? accountName : accountName;
+  const sign = item.type === "income" ? 1 : -1;
+  const amount = sign * Math.abs(item.amount);
+  const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+  const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
+  const stmtMonth2 = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
+  const currency2 = normalizeCurrency(meta?.currency);
+  return { type: item.type, amount, date, postedAt,
+    accountId: accountId ?? "", accountName: storedAccountName || "未识别账户",
+    toAccountId: null, toAccountName: null, categoryId: cat?.id ?? null, categoryName: cat?.name ?? null,
+    note: item.remark ?? item.rawText, toNote: null,
+    statementMonth: stmtMonth2, counterpartyInstitutionId, counterpartyInstitutionName,
+    currency: currency2, householdId: ctx.householdId, fundCode: null, fundProductType: null, fundSubtype: null };
+}
+
 async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: ParsedItem, defaultAccountName?: string) {
   const date = parseDate(item.date);
   const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
@@ -724,6 +773,23 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
+
+function lookupAccount(ctx: ImportContext, rawName?: string, defaultAccountName?: string): string | null {
+  const name = normalizeAccountCell(rawName);
+  if (!name) return null;
+  if (name === "未指定账户" || name === "空白") return null;
+  const directId = parseImportAccountId(name);
+  if (directId && ctx.accountMetaById.has(directId)) return directId;
+  const resolved = resolveImportAccountIdFromList(name, ctx.accountLookupRows);
+  if (resolved) return resolved;
+  // Fallback: try resolveAccountId (will load from DB once, then cache)
+  return null; // pre-resolution already handled unmatched names
+}
+
+function getOrCreateDefaultAccount(ctx: ImportContext, defaultAccountName?: string): string | null {
+  return lookupAccount(ctx, defaultAccountName || "未指定账户");
+}
+
 export async function POST(req: Request) {
   const internalImport = await isInternalImportRequest(req).catch(() => false);
   if (!internalImport && !requireApiKey(req).ok) {
@@ -868,43 +934,133 @@ export async function POST(req: Request) {
         },
       });
     }
-    const created = await prisma.$transaction(async (tx) => {
-      const rows: Awaited<ReturnType<typeof createTransactionFromItem>>[] = [];
-      for (const [rowIndex, item] of items.entries()) {
-        try {
-          updateImportProgress(traceId, {
-            phase: "writing",
-            processed: rowIndex,
-            created: rows.length,
-            currentRow: rowIndex + 1,
-          });
-          rows.push(await createTransactionFromItem(ctx, tx, item, defaultAccountName));
-          if ((rowIndex + 1) % 20 === 0 || rowIndex + 1 === items.length) {
-            updateImportProgress(traceId, {
-              phase: "writing",
-              processed: rowIndex + 1,
-              created: rows.length,
-              currentRow: rowIndex + 1,
-            });
-          }
-        } catch (error) {
-          const detail = buildImportFailureDetail(rowIndex, item, error);
-          updateImportProgress(traceId, {
-            phase: "failed",
-            processed: rowIndex,
-            created: rows.length,
-            currentRow: rowIndex + 1,
-            failedRow: rowIndex + 1,
-            error: detail.error,
-          });
-          throw new ImportItemError(detail);
+// Pre-build all rows in memory, then batch-insert via createMany
+
+    // Pre-resolve all unmatched debt account names BEFORE the loop
+    // so the loop itself only does in-memory lookups
+    const unmatchedNames = new Set<string>();
+    for (const item of items) {
+      const names: string[] = [];
+      if (item.type === "transfer" || item.type === "investment") {
+        if (item.fromAccount) names.push(normalizeAccountCell(item.fromAccount));
+        if (item.toAccount) names.push(normalizeAccountCell(item.toAccount));
+      } else {
+        if (item.account) names.push(normalizeAccountCell(item.account));
+      }
+      for (const n of names) {
+        if (!n || parseImportAccountId(n)) continue;
+        if (resolveImportAccountIdFromList(n, ctx.accountLookupRows)) continue;
+        unmatchedNames.add(n);
+      }
+    }
+    if (unmatchedNames.size > 0) {
+      // Batch-resolve debt accounts
+      const counterpartyNames = [...unmatchedNames].map(name => {
+        const m = name.match(/^(.+?)的往来款$/);
+        return m?.[1]?.trim() || name.trim();
+      }).filter(Boolean);
+      const allCps = counterpartyNames.length > 0 ? await prisma.counterparty.findMany({
+        where: { householdId: ctx.householdId, OR: [{ name: { in: counterpartyNames } }, { shortName: { in: counterpartyNames } }] },
+        select: { id: true, name: true, shortName: true },
+      }) : [];
+      const cpByName = new Map<string, string>();
+      for (const cp of allCps) { if (cp.name) cpByName.set(cp.name, cp.id); if (cp.shortName) cpByName.set(cp.shortName, cp.id); }
+      // Create missing counterparties
+      for (const cn of counterpartyNames) {
+        if (!cpByName.has(cn)) {
+          try { const nc = await prisma.counterparty.create({ data: { name: cn, householdId: ctx.householdId } }); cpByName.set(cn, nc.id); } catch {}
         }
       }
-      return rows;
-    }, {
-      maxWait: 10_000,
-      timeout: transactionTimeoutMs,
-    });
+      // Find or create loan accounts
+      const cpIds = [...new Set(cpByName.values())];
+      const existingLoans = cpIds.length > 0 ? await prisma.account.findMany({
+        where: { householdId: ctx.householdId, counterpartyId: { in: cpIds }, kind: "loan", isPlaceholder: { not: true } },
+        select: { id: true, name: true, counterpartyId: true, billingDay: true, currency: true },
+      }) : [];
+      const loanByCpId = new Map<string, string>();
+      for (const l of existingLoans) { if (l.counterpartyId && !loanByCpId.has(l.counterpartyId)) loanByCpId.set(l.counterpartyId, l.id); }
+      const defaultGroup = await ensureDefaultAccountGroupId(ctx, prisma);
+      for (const name of unmatchedNames) {
+        const cn = (name.match(/^(.+?)的往来款$/) || [])[1] || name.trim();
+        const cpId = cpByName.get(cn);
+        if (!cpId) continue;
+        let loanId = loanByCpId.get(cpId);
+        if (!loanId && defaultGroup) {
+          try {
+            const nl = await prisma.account.create({ data: { name, kind: "loan", debtDirection: "receivable", currency: "CNY", groupId: defaultGroup, counterpartyId: cpId, householdId: ctx.householdId, isActive: true } });
+            loanId = nl.id; loanByCpId.set(cpId, loanId);
+          } catch {}
+        }
+        if (loanId) {
+          ctx.accountMetaById.set(loanId, { name, kind: "loan", billingDay: null, currency: "CNY" });
+          ctx.accountLookupRows.push({ id: loanId, name, kind: "loan", billingDay: null, currency: "CNY", numberMasked: null, Institution: null, AccountGroup: null, AccountAlias: null });
+        }
+      }
+    }
+    // Now the loop can resolve all accounts purely from ctx.accountLookupRows
+    
+    // Build flat data from pre-resolved IDs (0 DB queries per row)
+    const created: Array<{ accountId: string; toAccountId: string | null }> = [];
+    const BATCH = 300;
+    updateImportProgress(traceId, { phase: "writing", processed: 0, created: 0, currentRow: null });
+    for (let batchStart = 0; batchStart < items.length; batchStart += BATCH) {
+      if (isImportCancelled(traceId)) {
+        finishImportProgress(traceId, { ok: true, processed: created.length, created: created.length, error: "已取消" });
+        finishImportRun(ctx.householdId, traceId);
+        return NextResponse.json({ ok: true, imported: true, createdCount: created.length, cancelled: true, message: `已取消导入（已导入 ${created.length} 条记录）`, trace }, { headers: corsHeaders() });
+      }
+      const batchEnd = Math.min(batchStart + BATCH, items.length);
+      const batchData: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        const item = items[i];
+        const date = parseDate(item.date);
+        const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
+        const counterpartyInstitutionName = counterpartyInstitutionId ? String(item.institution ?? "").trim() || null : null;
+        const note = item.remark ?? item.rawText ?? "";
+
+        if (item.type === "transfer" || (item.type === "investment" && item.fromAccount && item.toAccount)) {
+          const fromId = lookupAccount(ctx, item.fromAccount, defaultAccountName);
+          const toId = lookupAccount(ctx, item.toAccount, defaultAccountName);
+          const sourceId = fromId || (toId ? getOrCreateDefaultAccount(ctx, defaultAccountName) : "");
+          const fromMeta = ctx.accountMetaById.get(sourceId ?? "") ?? null;
+          const toMeta = ctx.accountMetaById.get(toId ?? "") ?? null;
+          const fromName = fromId && fromMeta ? fromMeta.name : normalizeAccountCell(item.fromAccount);
+          const toName = toId && toMeta ? toMeta.name : normalizeAccountCell(item.toAccount);
+          const stmtMonth = sourceId ? statementMonthForAccountMeta(ctx, sourceId, date) : null;
+          const currency = normalizeCurrency(fromMeta?.currency ?? toMeta?.currency);
+          batchData.push({
+            type: "transfer", amount: -Math.abs(item.amount), date, postedAt: null,
+            accountId: sourceId || "", accountName: fromName || "未指定账户",
+            toAccountId: toId || "", toAccountName: toName || null, categoryId: null, categoryName: null,
+            note, toNote: String(item.secondRemark ?? "").trim() || note || null,
+            statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
+            currency, householdId: ctx.householdId, fundCode: null, fundProductType: null, fundSubtype: null,
+          });
+          created.push({ accountId: sourceId || "", toAccountId: toId });
+        } else {
+          const accountName = pickAccountName(item.account, defaultAccountName);
+          const accountId = lookupAccount(ctx, accountName, defaultAccountName);
+          const meta = ctx.accountMetaById.get(accountId ?? "") ?? null;
+          const storedName = accountId && meta ? meta.name : accountName;
+          const sign = item.type === "income" ? 1 : -1;
+          const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+          const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
+          const stmtMonth = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
+          batchData.push({
+            type: item.type, amount: sign * Math.abs(item.amount), date, postedAt,
+            accountId: accountId || "", accountName: storedName || "未识别账户",
+            toAccountId: null, toAccountName: null, categoryId: cat?.id ?? null, categoryName: cat?.name ?? null,
+            note, toNote: null,
+            statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
+            currency: normalizeCurrency(meta?.currency), householdId: ctx.householdId,
+            fundCode: null, fundProductType: null, fundSubtype: null,
+          });
+          created.push({ accountId: accountId || "", toAccountId: null });
+        }
+      }
+      await prisma.txRecord.createMany({ data: batchData });
+      updateImportProgress(traceId, { phase: "writing", processed: batchEnd, created: created.length, currentRow: batchEnd });
+    }
 
     const accountIdsToRecalc = new Set<string>();
     for (const row of created) {
@@ -957,7 +1113,7 @@ export async function POST(req: Request) {
         items,
         imported: true,
         createdCount: created.length,
-        ids: created.map((t) => t.id),
+        ids: created.map((t) => t.accountId),
         recalculatedAccountCount,
         recalcFailedAccountCount: recalcFailedAccountIds.length,
         message: recalcFailedAccountIds.length > 0

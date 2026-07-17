@@ -6,6 +6,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
+import { callDeleteEntries, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import {
   APP_PREFS_EVENT,
@@ -515,15 +517,32 @@ export function AIPanel({
           setMessages((m) => [...m, { role: "assistant", text: "请至少选择一条要删除的记录。" }]);
           return;
         }
-        const res = await fetch("/api/v1/entries/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entryIds }),
-        });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || !data?.ok) throw new Error(data?.error || "删除失败");
+        let data = await callDeleteEntries({ entryIds });
+        if (!data.ok && data.needConfirm) {
+          const deleteBusiness = window.confirm(
+            "这些记录关联了保险/基金/理财/存款等业务明细。\n\n" +
+            "选择「确定」：同时删除资金流水和业务明细。\n" +
+            "选择「取消」：不删除业务明细，下一步再确认是否仅移除资金流水。",
+          );
+          if (!deleteBusiness) {
+            const keepBusiness = window.confirm(
+              "是否只从资金账户流水中移除，并保留关联业务明细？\n\n" +
+              "选择「确定」：保留业务明细。\n" +
+              "选择「取消」：放弃本次删除。",
+            );
+            if (!keepBusiness) {
+              setMessages((m) => [...m, { role: "assistant", text: "已取消删除。" }]);
+              setConfirmDialog(null);
+              return;
+            }
+          }
+          data = await callDeleteEntries({ entryIds, linkedAction: deleteBusiness ? "deleteBusiness" : "keepBusiness" });
+        }
+        if (!data?.ok) throw new Error(data?.error || "删除失败");
         setMessages((m) => [...m, { role: "assistant", text: data.message || `已删除 ${entryIds.length} 条记录。` }]);
         setConfirmDialog(null);
+        const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+        dispatchFinanceDataChanged({ reason: "ai-entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
         setTimeout(() => router.refresh(), 500);
         return;
       }

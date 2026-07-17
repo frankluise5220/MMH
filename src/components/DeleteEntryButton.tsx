@@ -1,26 +1,24 @@
 ﻿"use client";
 
 import { useState } from "react";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export function DeleteEntryButton({ entryId, entryName }: { entryId: string; entryName?: string }) {
   const [busy, setBusy] = useState(false);
 
   const handleDelete = async () => {
-    const ok = confirm(`确认删除"${entryName || entryId}"吗？`);
-    if (!ok) return;
     setBusy(true);
     try {
-      const res = await fetch("/api/v1/entries/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entryIds: [entryId] }),
+      const data = await deleteEntriesWithLinkedPrompt({
+        entryIds: [entryId],
+        confirmMessage: `确认删除"${entryName || entryId}"吗？`,
       });
-      const data = await res.json();
       if (data.ok) {
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
-
+        const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
+        dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       } else {
-        alert(data.error ?? "删除失败");
+        if (data.error !== "已取消删除") alert(data.error ?? "删除失败");
       }
     } catch (e) {
       alert("删除失败");

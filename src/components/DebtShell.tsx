@@ -7,6 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { EntryRowActions } from "./EntryRowActions";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatMoney } from "@/lib/format";
 import {
   buildMortgageLprRateAdjustments,
@@ -201,19 +203,19 @@ export function DebtShell({
 
   async function batchDeleteEntries() {
     if (selectedEntryIds.size === 0) return;
-    if (!window.confirm(`确认删除选中的 ${selectedEntryIds.size} 条往来明细吗？`)) return;
-    const response = await fetch("/api/v1/entries/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entryIds: Array.from(selectedEntryIds) }),
+    const entryIds = Array.from(selectedEntryIds);
+    const data = await deleteEntriesWithLinkedPrompt({
+      entryIds,
+      confirmMessage: `确认删除选中的 ${selectedEntryIds.size} 条往来明细吗？`,
     });
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.ok) {
+    if (!data.ok) {
+      if (data.error === "已取消删除") return;
       window.alert(data?.error || "批量删除失败");
       return;
     }
     setSelectedEntryIds(new Set());
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
+    const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
   function openRepayment(row: DebtRow) {

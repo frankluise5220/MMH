@@ -215,7 +215,7 @@ const ENTITY_CONFIG = {
         { value: "separate", label: "独立账单" },
         { value: "consolidated", label: "同机构合并账单" },
       ], defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
-      { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" },
+      { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" || f.kind === "bank_debit" },
       { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
     ] as FieldDef[],
   },

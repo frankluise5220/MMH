@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
@@ -27,6 +27,7 @@ type Entry = {
   accountId?: string | null;
   toAccountId?: string | null;
   toAccountName?: string | null;
+  fundArrivalDate?: string | null;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -149,6 +150,7 @@ export function WealthFormModal({
     : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
+  const initArrivalDate = mode === "edit" && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate;
   const initName = mode === "edit" && entry?.fundName ? entry.fundName : "";
   const initMemo = mode === "edit" && entry?.note ? entry.note : "";
 
@@ -165,6 +167,8 @@ export function WealthFormModal({
   const [subtype, setSubtype] = useState<WealthSubtype>(initIsDividend ? "dividend_cash" : initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
   const [holdingFilterDate, setHoldingFilterDate] = useState(initDate);
+  const [arrivalDate, setArrivalDate] = useState(initArrivalDate);
+  const arrivalDateTouchedRef = useRef(mode === "edit");
   const [amount, setAmount] = useState(initAmount);
   const [wealthProductId, setWealthProductId] = useState(mode === "edit" && entry?.wealthProductId ? entry.wealthProductId : "");
   const [fundName, setFundName] = useState(initName);
@@ -340,6 +344,8 @@ export function WealthFormModal({
     setSubtype("buy");
     setDate(today);
     setHoldingFilterDate(today);
+    setArrivalDate(today);
+    arrivalDateTouchedRef.current = false;
     setAmount("");
     setWealthProductId("");
     setFundName("");
@@ -365,7 +371,7 @@ export function WealthFormModal({
         requestId: string; entryId: string;
         type: string; date: string; amount: number; note: string;
         accountId?: string; toAccountId?: string;
-        fundName?: string; wealthProductId?: string | null; fundSubtype?: string;
+        fundName?: string; wealthProductId?: string | null; fundSubtype?: string; fundArrivalDate?: string | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -374,6 +380,8 @@ export function WealthFormModal({
         detail.fundSubtype === "dividend_cash" ? "dividend_cash" : detail.fundSubtype === "redeem" ? "redeem" : "buy";
       setDate(detail.date || today);
       setHoldingFilterDate(detail.date || today);
+      setArrivalDate(detail.fundArrivalDate?.slice(0, 10) || detail.date || today);
+      arrivalDateTouchedRef.current = true;
       setAmount(detail.amount ? String(Math.abs(detail.amount)) : "");
       setWealthProductId(detail.wealthProductId ?? "");
       setFundName(detail.fundName ?? "");
@@ -418,6 +426,8 @@ export function WealthFormModal({
       setCashAccountId(nextCashAccountId);
       setDate(nextDate);
       setHoldingFilterDate(nextDate);
+      setArrivalDate(nextDate);
+      arrivalDateTouchedRef.current = false;
       if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
       setToAccountId(resolveWealthAccountForCashAccount(nextCashAccountId, detail?.defaultWealthAccountId));
       setOpen(true);
@@ -425,6 +435,30 @@ export function WealthFormModal({
     window.addEventListener("mmh:wealth:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:wealth:create", onCreate as EventListener);
   }, [mode, resolveWealthAccountForCashAccount, today]);
+
+  function changeTradeDate(nextDate: string) {
+    setDate(nextDate);
+    if (mode === "create" && isHoldingAction && !arrivalDateTouchedRef.current) {
+      setArrivalDate(nextDate);
+    }
+  }
+
+  function changeArrivalDate(nextDate: string) {
+    arrivalDateTouchedRef.current = true;
+    setArrivalDate(nextDate);
+  }
+
+  function resetAfterKeepAdding() {
+    setAmount("");
+    setInterestAmount("");
+    setArrivalAmount("");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+    setMemo("");
+    if (isHoldingAction) {
+      setSelectedHoldingId("");
+    }
+  }
 
   useEffect(() => {
     if (!open || mode !== "create" || !cashAccountId || subtype !== "buy") return;
@@ -616,8 +650,7 @@ export function WealthFormModal({
     }
   }
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
+  async function saveWealthTransaction(keepAdding: boolean) {
     if (submitting) return;
     const amt = parseNumber(amount);
     if (amt <= 0) { window.alert("请输入金额"); return; }
@@ -651,6 +684,7 @@ export function WealthFormModal({
         fd.set("toAccountId", toAccountId);
       }
       fd.set("cashAccountId", cashAccountId);
+      if (isHoldingAction) fd.set("fundArrivalDate", arrivalDate || date);
       const rateValue = parseNumber(annualRate);
       if (rateValue > 0) fd.set("depositAnnualRate", String(rateValue));
       if (isRedeem) {
@@ -670,8 +704,12 @@ export function WealthFormModal({
         const res = await createAction(fd);
         if (!res.ok) throw new Error(res.error ?? "记账失败");
       }
-      setOpen(false);
-      if (mode === "create") reset();
+      if (keepAdding && mode === "create") {
+        resetAfterKeepAdding();
+      } else {
+        setOpen(false);
+        if (mode === "create") reset();
+      }
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "wealth-save" });
       });
@@ -680,6 +718,11 @@ export function WealthFormModal({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    await saveWealthTransaction(false);
   }
   useCloseOnNavigation(open, () => {
     setOpen(false);
@@ -730,6 +773,7 @@ export function WealthFormModal({
                   onClick={() => {
                     setSubtype("redeem");
                     setAmount("");
+                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
                     setInterestEdited(false);
                     setArrivalEdited(false);
                   }}
@@ -744,6 +788,7 @@ export function WealthFormModal({
                     setAmount("");
                     setInterestAmount("");
                     setArrivalAmount("");
+                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
                     setInterestEdited(false);
                     setArrivalEdited(false);
                   }}
@@ -758,7 +803,7 @@ export function WealthFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">日期</div>
-                      <DateStepper value={date} onChange={setDate} />
+                      <DateStepper value={date} onChange={changeTradeDate} />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">理财账户</div>
@@ -816,7 +861,7 @@ export function WealthFormModal({
                       </div>
                     </div>
                   ) : null}
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
                       <div className="form-label">到账账户</div>
                       <SmartSelect
@@ -836,6 +881,10 @@ export function WealthFormModal({
                       />
                     </div>
                     <div className="space-y-1">
+                      <div className="form-label">到账日期</div>
+                      <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
                       <div className="form-label">{isDividend ? "分红金额" : "到账金额"}</div>
                       <CalcInput
                         value={isDividend ? amount : arrivalAmount}
@@ -859,7 +908,7 @@ export function WealthFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">日期</div>
-                      <DateStepper value={date} onChange={setDate} />
+                      <DateStepper value={date} onChange={changeTradeDate} />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">买入金额</div>
@@ -966,6 +1015,16 @@ export function WealthFormModal({
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
+                {mode === "create" ? (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => { void saveWealthTransaction(true); }}
+                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+                  >
+                    {submitting ? "保存中…" : "保存并再记一笔"}
+                  </button>
+                ) : null}
                 <button
                   type="submit"
                   disabled={submitting}

@@ -15,6 +15,7 @@ import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from 
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
 type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
 
@@ -272,6 +273,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
     ? await resolveCreditCardRepaymentCategory(prisma, householdId)
     : null;
   const affectedAccountIds = new Set<string>([cashAcc.id, targetAcc.id]);
+  const createdInvestmentEntryIds: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const [runIndex, runDate] of datesToProcess.entries()) {
       if (task.type === "loan_repayment") {
@@ -354,7 +356,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
         });
       } else if (task.type === "insurance_premium" && insuranceProduct) {
         affectedAccountIds.add(insuranceProduct.accountId);
-        await tx.txRecord.create({
+        const created = await tx.txRecord.create({
           data: {
             householdId,
             type: TransactionType.investment,
@@ -374,6 +376,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
             note: getTaskNote(task.type, insuranceProduct.name),
           },
         });
+        createdInvestmentEntryIds.push(created.id);
       }
     }
 
@@ -390,6 +393,11 @@ export async function executeNonFundScheduledTaskPlan(params: {
 
   for (const accountId of affectedAccountIds) {
     await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("balance", "scheduled-task-executor"));
+  }
+  for (const id of createdInvestmentEntryIds) {
+    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: id }).catch(
+      logger.catchLog("同步独立业务单失败", "scheduled-task-executor"),
+    );
   }
   if (task.type === "insurance_premium") revalidateAfterInvestChange();
   else revalidateAfterTxChange();

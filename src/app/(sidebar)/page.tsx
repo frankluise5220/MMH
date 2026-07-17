@@ -46,6 +46,12 @@ import { getFundNav } from "@/lib/fund/navCache";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
+import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import {
+  loadDepositTransactionDetailLike,
+  loadInsuranceTransactionDetailLike,
+  loadWealthTransactionEntryLike,
+} from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -612,6 +618,68 @@ function buildCategoryPathLabels(categories: Array<{ id: string; name: string; t
     labelById.set(c.id, `${prefix}${names.join(".")}`);
   }
   return labelById;
+}
+
+function buildCategoryExportLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  const memo = new Map<string, string[]>();
+  const rootLabels = new Set(["支出", "收入", "转账", "代付", "投资"]);
+
+  function pathNames(id: string): string[] {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    const c = byId.get(id);
+    if (!c) return [];
+    const seen = new Set<string>();
+    const names: string[] = [];
+    let cur: typeof c | undefined = c;
+    while (cur) {
+      if (seen.has(cur.id)) break;
+      seen.add(cur.id);
+      names.push(cur.name);
+      if (!cur.parentId) break;
+      const parent = byId.get(cur.parentId);
+      if (!parent) break;
+      if (parent.type !== cur.type) break;
+      cur = parent;
+    }
+    names.reverse();
+    memo.set(id, names);
+    return names;
+  }
+
+  const labelById = new Map<string, string>();
+  for (const c of categories) {
+    const names = pathNames(c.id);
+    const exportNames = [...names];
+    if (exportNames[0] === formatType(c.type) || rootLabels.has(exportNames[0] ?? "")) {
+      exportNames.shift();
+    }
+    labelById.set(c.id, exportNames.join("."));
+  }
+  return labelById;
+}
+
+type ExportAccountLike = {
+  name?: string | null;
+  kind?: string | null;
+  numberMasked?: string | null;
+  Institution?: { name?: string | null; shortName?: string | null } | null;
+  AccountGroup?: { name?: string | null } | null;
+} | null | undefined;
+
+function exportAccountLabel(account: ExportAccountLike, fallbackName?: string | null) {
+  const owner = account?.AccountGroup?.name?.trim() || "";
+  const institution = account?.Institution?.shortName?.trim() || account?.Institution?.name?.trim() || "";
+  const accountName = account?.name?.trim() || fallbackName?.trim() || "";
+  const tailOrName = account?.numberMasked?.trim() || accountName;
+  const accountType = account?.kind ? kindLabel(account.kind) : "";
+  return [owner, institution, tailOrName, accountType].filter(Boolean).join("·");
+}
+
+function stripExportCategoryRootLabel(value?: string | null) {
+  const text = value?.trim() ?? "";
+  return ["支出", "收入", "转账", "代付", "投资"].includes(text) ? "" : text;
 }
 
 function parseMoneyInput(value: FormDataEntryValue | null) {
@@ -3418,8 +3486,9 @@ export default async function Home({
             },
             include: {
               EntryTag: { include: { Tag: true } },
-              account: { include: { Institution: { select: { name: true } } } },
-              toAccount: { include: { Institution: { select: { name: true } } } },
+              ...entryBusinessLinkSummaryInclude,
+              account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+              toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
             },
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
             take: 5000,
@@ -3429,8 +3498,9 @@ export default async function Home({
           where,
           include: {
             EntryTag: { include: { Tag: true } },
-            account: { include: { Institution: { select: { name: true } } } },
-            toAccount: { include: { Institution: { select: { name: true } } } },
+            ...entryBusinessLinkSummaryInclude,
+            account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+            toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
           },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
           take: 5000,
@@ -3549,23 +3619,57 @@ export default async function Home({
   });
   const detailTotalPages = Math.max(1, Math.ceil(filteredEntries2.length / pageSize));
   const safeDetailPage = detailAll ? 1 : Math.min(detailPage, detailTotalPages);
+  const categoryLabels = buildCategoryPathLabels(categories);
+  const exportCategoryLabels = buildCategoryExportLabels(categories);
+  const getExportCategoryName = (e: (typeof filteredEntries2)[number]) => {
+    if (isCreditCardRepaymentTransfer(e)) return "信用卡还款";
+    if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? stripExportCategoryRootLabel(e.categoryName);
+    if (e.type === TransactionType.investment) {
+      if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
+      return stripExportCategoryRootLabel(e.categoryName) || getInvestmentCategoryName(e) || "";
+    }
+    return stripExportCategoryRootLabel(e.categoryName);
+  };
   const normalExportRows = (() => {
-    const rows = [["日期", "类型", "流出", "流入", "账户", "对向账户", "备注"]];
+    const rows = [[
+      "日期",
+      "收支大类",
+      "分类",
+      "流出",
+      "流入",
+      "账户",
+      "对向账户",
+      "收支机构",
+      "标签",
+      "备注",
+    ]];
     for (const e of filteredEntries2) {
       const effectiveAmount = effectiveAmountForAccount(e, accountId);
       const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
       const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
-      const accountLabel = accountId && e.toAccountId === accountId ? (e.toAccountName ?? "") : (e.accountName ?? "");
+      const isToSide = accountId && e.toAccountId === accountId;
+      const accountLabel = isToSide
+        ? exportAccountLabel(e.toAccount, e.toAccountName)
+        : exportAccountLabel(e.account, e.accountName);
       const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
-        ? (accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? ""))
+        ? isToSide
+          ? exportAccountLabel(e.account, e.accountName)
+          : exportAccountLabel(e.toAccount, e.toAccountName)
         : "";
+      const tagsText = (e.EntryTag || [])
+        .map((entryTag) => entryTag.Tag?.name?.trim() || "")
+        .filter(Boolean)
+        .join("、");
       rows.push([
         entryDisplayDate(e).toISOString().slice(0, 10),
         e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(e.type),
+        getExportCategoryName(e),
         outflow,
         inflow,
         accountLabel,
         counterAccountLabel,
+        e.counterpartyInstitutionName ?? "",
+        tagsText,
         getEntryDisplayNote(e),
       ]);
     }
@@ -3574,7 +3678,6 @@ export default async function Home({
   const normalExportHref = buildCsvDataUri(normalExportRows);
   const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.csv`;
 
-  const categoryLabels = buildCategoryPathLabels(categories);
   const expenseCategories = categories
     .filter((c) => c.type === "expense")
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
@@ -4307,8 +4410,9 @@ export default async function Home({
           },
           include: {
             EntryTag: { include: { Tag: true } },
-            account: { include: { Institution: { select: { name: true } } } },
-            toAccount: { include: { Institution: { select: { name: true } } } },
+            ...entryBusinessLinkSummaryInclude,
+            account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+            toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
           },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
           take: 3000,
@@ -5489,8 +5593,9 @@ export default async function Home({
             },
             include: {
               EntryTag: { include: { Tag: true } },
-              account: { include: { Institution: { select: { name: true } } } },
-              toAccount: { include: { Institution: { select: { name: true } } } },
+              ...entryBusinessLinkSummaryInclude,
+              account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+              toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
             },
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
             take: 500,
@@ -5550,6 +5655,7 @@ export default async function Home({
             fundConfirmDate: toIsoOrNull(e.fundConfirmDate),
             fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
             fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+            ...buildEntryBusinessLinkSummary(e),
             entryTags: (e.EntryTag || []).map((et: any) => ({
               tagId: et.tagId,
               Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
@@ -5753,6 +5859,7 @@ export default async function Home({
     fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
     fundSourceEntryId: e.fundSourceEntryId ?? null,
     fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+    ...buildEntryBusinessLinkSummary(e),
     entryTags: (e.EntryTag || []).map((et: any) => ({
       tagId: et.tagId,
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
@@ -5770,24 +5877,48 @@ export default async function Home({
       ? `账单明细 (${creditCardBill.statementMonth})`
       : "账单明细";
 
+  const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
+  const selectedDepositAccountIds =
+    view === "deposit" && selectedAccount
+      ? isDepositAccount(selectedAccount)
+        ? [selectedAccount.id]
+        : selectedAccount.institutionId
+          ? allDepositAccounts
+              .filter((account) => account.institutionId === selectedAccount.institutionId)
+              .map((account) => account.id)
+          : []
+      : [];
+  const currentDepositTransactionEntries =
+    view === "deposit"
+      ? await loadDepositTransactionDetailLike({
+          householdId,
+          accountIds: selectedDepositAccountIds,
+        })
+      : [];
+
   const depositEntries =
     view === "deposit"
-      ? (pagedDetailEntries || []).map((entry) => {
-          const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      ? (currentDepositTransactionEntries || []).map((entry) => {
+          const depositSubtype = String(entry.fundSubtype ?? "");
+          const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
           const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+          const entryDate = toYmdOrNull(entry.date) ?? "";
+          const arrivalDate = toYmdOrNull(entry.fundArrivalDate);
           return {
             id: entry.id,
-            date: entry.date,
+            date: entryDate,
             typeLabel: entry.fundSubtype === "redeem" ? "取出" : "存入",
             fundName: entry.fundName ?? entry.fundCode ?? "",
-            maturityDate: entry.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : null,
+            maturityDate: arrivalDate,
             cashAccountLabel,
             note: entry.note ?? "",
-            amount: entry.toAccountId === accountId ? Math.abs(entry.fundArrivalAmount ?? entry.amount) : entry.amount,
+            amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
+            businessLinkCount: entry.businessLinkCount ?? 0,
+            businessLinkLabels: entry.businessLinkLabels ?? [],
             edit: {
               type: "investment" as const,
-              date: entry.date,
-              amount: Math.abs(entry.amount),
+              date: entryDate,
+              amount: Math.abs(toNumber(entry.amount)),
               note: entry.note ?? "",
               accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
               cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
@@ -5796,13 +5927,13 @@ export default async function Home({
               depositAnnualRate:
                 entry.depositAnnualRate != null
                   ? toNumber(entry.depositAnnualRate)
-                  : entry.fundNav ?? undefined,
+                  : entry.fundNav != null ? toNumber(entry.fundNav) : undefined,
               depositInterest:
                 entry.depositInterest != null
                   ? toNumber(entry.depositInterest)
                   : undefined,
               depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
-              fundArrivalDate: entry.fundArrivalDate ?? undefined,
+              fundArrivalDate: arrivalDate ?? undefined,
               fundProductType: "deposit",
               fundSubtype: entry.fundSubtype ?? "buy",
             },
@@ -5812,28 +5943,31 @@ export default async function Home({
 
   const insuranceEntries =
     view === "insurance"
-      ? (allDetailEntries || [])
-          .filter((entry) => entry.source === "insurance")
+      ? (await loadInsuranceTransactionDetailLike({ householdId, accountId: accountId ?? "" }))
           .map((entry) => {
-            const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+            const insuranceSubtype = String(entry.fundSubtype ?? "");
+            const isRedeemEntry = insuranceSubtype === "redeem" || insuranceSubtype === "switch_out";
             const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
             const amount = isRedeemEntry ? Math.abs(toNumber(entry.amount)) : -Math.abs(toNumber(entry.amount));
+            const entryDate = toYmdOrNull(entry.date) ?? "";
             return {
               id: entry.id,
-              date: entry.date,
+              date: entryDate,
               typeLabel: isRedeemEntry ? "赎回" : "投保",
               productName: entry.fundName ?? "",
               cashAccountLabel,
               cashAccountId: isRedeemEntry ? (entry.toAccountId ?? null) : (entry.accountId ?? null),
               note: entry.note ?? "",
               amount,
+              businessLinkCount: entry.businessLinkCount ?? 0,
+              businessLinkLabels: entry.businessLinkLabels ?? [],
               coverageAmount:
                 (entry as { coverageAmount?: number | null }).coverageAmount ?? null,
               paymentTermYears:
                 (entry as { paymentTermYears?: number | null }).paymentTermYears ?? null,
               edit: {
                 type: "investment" as const,
-                date: entry.date,
+                date: entryDate,
                 amount: Math.abs(toNumber(entry.amount)),
                 note: entry.note ?? "",
                 accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
@@ -5917,46 +6051,12 @@ export default async function Home({
         })
       : [];
 
-  const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
   const allDepositAccountIds = allDepositAccounts.map((account) => account.id);
   const allDepositEntries =
     allDepositAccountIds.length > 0
-      ? await prisma.txRecord.findMany({
-          where: {
-            ...hid,
-            deletedAt: null,
-            fundProductType: "deposit",
-            OR: [
-              { accountId: { in: allDepositAccountIds } },
-              { toAccountId: { in: allDepositAccountIds } },
-            ],
-          },
-          select: {
-            id: true,
-            date: true,
-            createdAt: true,
-            deletedAt: true,
-            type: true,
-            accountId: true,
-            accountName: true,
-            toAccountId: true,
-            toAccountName: true,
-            amount: true,
-            fundCode: true,
-            fundName: true,
-            fundProductType: true,
-            fundSubtype: true,
-            fundNav: true,
-            fundConfirmDate: true,
-            fundArrivalDate: true,
-            fundArrivalAmount: true,
-            depositAnnualRate: true,
-            depositInterest: true,
-            depositSourceEntryId: true,
-            source: true,
-          },
-          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-          take: 5000,
+      ? await loadDepositTransactionDetailLike({
+          householdId,
+          accountIds: allDepositAccountIds,
         })
       : [];
 
@@ -5964,45 +6064,9 @@ export default async function Home({
   const allWealthAccountIds = allWealthAccounts.map((account) => account.id);
   const allWealthEntries =
     allWealthAccountIds.length > 0
-      ? await prisma.txRecord.findMany({
-          where: {
-            ...hid,
-            deletedAt: null,
-            fundProductType: "wealth",
-            OR: [
-              { accountId: { in: allWealthAccountIds } },
-              { toAccountId: { in: allWealthAccountIds } },
-            ],
-          },
-          select: {
-            id: true,
-            date: true,
-            createdAt: true,
-            deletedAt: true,
-            accountId: true,
-            accountName: true,
-            toAccountId: true,
-            toAccountName: true,
-            amount: true,
-            fundName: true,
-            fundProductType: true,
-            fundSubtype: true,
-            fundArrivalAmount: true,
-            depositAnnualRate: true,
-            depositInterest: true,
-            wealthProductId: true,
-            WealthProduct: {
-              select: {
-                id: true,
-                name: true,
-                shortName: true,
-                annualRate: true,
-                termDays: true,
-              },
-            },
-          },
-          orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-          take: 5000,
+      ? await loadWealthTransactionEntryLike({
+          householdId,
+          accountIds: allWealthAccountIds,
         })
       : [];
 
@@ -6239,7 +6303,7 @@ export default async function Home({
         }
       }
     }
-    for (const entry of entries) {
+    for (const entry of allDepositEntries) {
       if (entry.fundProductType !== "deposit" || entry.deletedAt) continue;
       if (entry.accountId !== selectedAccount.id && entry.toAccountId !== selectedAccount.id) continue;
       const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";

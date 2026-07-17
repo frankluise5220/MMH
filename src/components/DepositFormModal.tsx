@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { parseNumber } from "@/lib/investment-config";
@@ -173,6 +173,8 @@ export function DepositFormModal({
   const [open, setOpen] = useState(false);
   const [subtype, setSubtype] = useState<"buy" | "redeem">(initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
+  const [arrivalDate, setArrivalDate] = useState(initIsRedeem && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate);
+  const arrivalDateTouchedRef = useRef(mode === "edit");
   const [amount, setAmount] = useState(initAmount);
   const [fundName, setFundName] = useState(initName);
   const [annualRate, setAnnualRate] = useState("");
@@ -413,12 +415,14 @@ export function DepositFormModal({
     const nextDepositAccountId = resolveDefaultRedeemDepositAccount(detail?.defaultDepositAccountId);
     const nextRedeemLotId = resolveDefaultRedeemLot(nextDepositAccountId);
     setSubtype("redeem");
+    setArrivalDate(date || today);
+    arrivalDateTouchedRef.current = false;
     setDepositAccountId(nextDepositAccountId);
     setCashAccountId(resolveDefaultRedeemCashAccount(nextDepositAccountId, detail?.defaultCashAccountId));
     setSelectedRedeemLotId(nextRedeemLotId);
     setInterestEdited(false);
     setArrivalEdited(false);
-  }, [resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot]);
+  }, [date, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
 
   const amountNumber = parseNumber(amount);
   const annualRateNumber = parseNumber(annualRate);
@@ -442,6 +446,8 @@ export function DepositFormModal({
   function reset() {
     setSubtype("buy");
     setDate(today);
+    setArrivalDate(today);
+    arrivalDateTouchedRef.current = false;
     setAmount("");
     setFundName("");
     setAnnualRate("");
@@ -514,6 +520,8 @@ export function DepositFormModal({
       setSubtype(isRedeem ? "redeem" : "buy");
       setLockedSubtype(isRedeem ? "redeem" : "buy");
       setDate(detail.date || today);
+      setArrivalDate(isRedeem ? (detail.fundArrivalDate?.slice(0, 10) || detail.date || today) : detail.date || today);
+      arrivalDateTouchedRef.current = true;
       const detailInterestAmount =
         detail.depositInterest != null && Number.isFinite(detail.depositInterest)
           ? Number(detail.depositInterest)
@@ -564,8 +572,7 @@ export function DepositFormModal({
         const matchedLot = lotSearchPool.find((lot) => {
           if (detail.depositSourceEntryId && lot.id === detail.depositSourceEntryId) return true;
           if (lot.fundName !== (detail.fundName ?? "")) return false;
-          if (!detail.fundArrivalDate) return true;
-          return (lot.maturityDate ?? "") === detail.fundArrivalDate.slice(0, 10);
+          return true;
         });
         const restoredLotId = detail.depositSourceEntryId ?? matchedLot?.id ?? "";
         setEditingRedeemSource(
@@ -574,7 +581,7 @@ export function DepositFormModal({
                 id: restoredLotId,
                 fundName: detail.fundName ?? matchedLot?.fundName ?? "未命名存款",
                 startDate: matchedLot?.startDate ?? null,
-                maturityDate: detail.fundArrivalDate?.slice(0, 10) ?? matchedLot?.maturityDate ?? null,
+                maturityDate: matchedLot?.maturityDate ?? null,
                 depositAccountId: detail.accountId ?? matchedLot?.depositAccountId ?? defaultAccountId,
                 depositAccountLabel:
                   matchedLot?.depositAccountLabel ??
@@ -616,6 +623,8 @@ export function DepositFormModal({
       setSubtype(nextSubtype);
       setCashAccountId(detail?.defaultCashAccountId ?? "");
       setDate(detail?.defaultDate || today);
+      setArrivalDate(detail?.defaultDate || today);
+      arrivalDateTouchedRef.current = false;
       if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
       setLockedSubtype(null);
       if (nextSubtype === "redeem") {
@@ -633,6 +642,18 @@ export function DepositFormModal({
     window.addEventListener("mmh:deposit:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:deposit:create", onCreate as EventListener);
   }, [applyBuyDefaults, applyRedeemDefaults, mode, today]);
+
+  function changeDate(nextDate: string) {
+    setDate(nextDate);
+    if (mode === "create" && isRedeem && !arrivalDateTouchedRef.current) {
+      setArrivalDate(nextDate);
+    }
+  }
+
+  function changeArrivalDate(nextDate: string) {
+    arrivalDateTouchedRef.current = true;
+    setArrivalDate(nextDate);
+  }
 
   useEffect(() => {
     if (!isRedeem) {
@@ -852,17 +873,17 @@ export function DepositFormModal({
           fd.set("depositSourceEntryId", selectedRedeemLotId);
         }
       }
-      const parsedTermDays = Number(termDays);
-      if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
-        const maturityDate = isRedeem && selectedRedeemLot?.maturityDate
-          ? new Date(`${selectedRedeemLot.maturityDate}T00:00:00.000Z`)
-          : new Date(`${date}T00:00:00.000Z`);
-        if (!isRedeem) {
-          maturityDate.setUTCDate(maturityDate.getUTCDate() + parsedTermDays);
-        }
-        fd.set("fundArrivalDate", maturityDate.toISOString().slice(0, 10));
+      if (isRedeem) {
+        fd.set("fundArrivalDate", arrivalDate || date);
       } else {
-        fd.set("fundArrivalDate", "");
+        const parsedTermDays = Number(termDays);
+        if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
+          const maturityDate = new Date(`${date}T00:00:00.000Z`);
+          maturityDate.setUTCDate(maturityDate.getUTCDate() + parsedTermDays);
+          fd.set("fundArrivalDate", maturityDate.toISOString().slice(0, 10));
+        } else {
+          fd.set("fundArrivalDate", "");
+        }
       }
 
       if (mode === "edit" && (entry?.id || editEntryId)) {
@@ -994,7 +1015,7 @@ export function DepositFormModal({
               <div className={isRedeem ? "space-y-3" : "grid grid-cols-2 gap-3"}>
                 <div className="space-y-1">
                   <div className="form-label">日期</div>
-                  <DateStepper value={date} onChange={setDate} />
+                  <DateStepper value={date} onChange={changeDate} />
                 </div>
                 {isRedeem ? (
                   <div className="grid grid-cols-2 gap-3">
@@ -1110,19 +1131,25 @@ export function DepositFormModal({
                       />
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <div className="form-label">到账金额</div>
-                    <CalcInput
-                      value={arrivalAmount}
-                      onChange={(value) => {
-                        setArrivalEdited(true);
-                        setArrivalAmount(value);
-                      }}
-                      placeholder="0.00"
-                      label="到账金额"
-                      precision={2}
-                    />
-                    <div className="text-[11px] text-slate-400">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">到账日期</div>
+                      <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">到账金额</div>
+                      <CalcInput
+                        value={arrivalAmount}
+                        onChange={(value) => {
+                          setArrivalEdited(true);
+                          setArrivalAmount(value);
+                        }}
+                        placeholder="0.00"
+                        label="到账金额"
+                        precision={2}
+                      />
+                    </div>
+                    <div className="col-span-2 text-[11px] text-slate-400">
                       本金 {amountNumber > 0 ? amountNumber.toFixed(2) : "0.00"} + 利息 {parseNumber(interestAmount).toFixed(2)} = 到账 {(parseNumber(arrivalAmount) || 0).toFixed(2)}
                     </div>
                   </div>

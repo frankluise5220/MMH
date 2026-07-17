@@ -17,6 +17,7 @@
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
+    "@tanstack/react-virtual": "^3.14.6",
     "ai": "^6.0.188",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.10.0",

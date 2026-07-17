@@ -1,6 +1,7 @@
-import { FundCashFlowKind, FundSubtype, type Prisma } from "@prisma/client";
+import { FundCashFlowKind, FundSubtype, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 
 type Tx = Prisma.TransactionClient;
 
@@ -69,8 +70,19 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
     if (!main.householdId || !main.fundCode || isRefundRow(main)) continue;
     const fundAccountId = fundAccountIdOf(main);
     if (!fundAccountId) continue;
-    const cashAccountId = cashAccountIdOf(main);
     const fundSubtype = main.fundSubtype ?? (toNumber(main.amount) < 0 ? FundSubtype.buy : FundSubtype.redeem);
+    const linkedCashRows = await client.$queryRaw<any[]>(Prisma.sql`
+      SELECT cash.*
+      FROM "entry_business_links" link
+      JOIN "transactions" cash ON cash."id" = link."cashEntryId"
+      WHERE link."businessEntryId" = ${main.id}
+        AND link."cashEntryId" IS NOT NULL
+        AND link."deletedAt" IS NULL
+        AND cash."deletedAt" IS NULL
+      ORDER BY cash."date" ASC, cash."createdAt" ASC
+    `);
+    const primaryCashRow = linkedCashRows[0] ?? null;
+    const cashAccountId = primaryCashRow?.accountId ?? cashAccountIdOf(main);
 
     const ft = await client.fundTransaction.upsert({
       where: { cashEntryId: main.id },
@@ -122,6 +134,21 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
       },
     });
 
+    await upsertEntryBusinessCashFlowLink(client, {
+      householdId: main.householdId,
+      cashEntryId: primaryCashRow?.id ?? main.id,
+      businessEntryId: main.id,
+      fundTransactionId: ft.id,
+      businessType: "fund",
+      cashFlowDirection: toNumber(primaryCashRow?.amount ?? main.amount) < 0 ? "outflow" : "inflow",
+      source: main.source,
+      note: "Linked cash flow to fund transaction",
+      metadata: {
+        splitRecord: !!primaryCashRow,
+        independentBusinessTransaction: true,
+      },
+    });
+
     const refunds = await client.txRecord.findMany({
       where: {
         fundSourceEntryId: main.id,
@@ -131,7 +158,7 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     });
-    const cashRows = [main, ...refunds];
+    const cashRows = linkedCashRows.length > 0 ? [...linkedCashRows, ...refunds] : [main, ...refunds];
 
     await client.fundTransactionCashFlow.deleteMany({ where: { fundTransactionId: ft.id } });
     if (cashRows.length) {
@@ -140,12 +167,14 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
           id: `${isRefundRow(row) ? "cfr" : "cff"}_${row.id}`,
           fundTransactionId: ft.id,
           txRecordId: row.id,
-          kind: cashFlowKindOf(row),
+          kind: row.id === primaryCashRow?.id ? cashFlowKindOf(main) : cashFlowKindOf(row),
           amount: Math.abs(toNumber(row.fundArrivalAmount ?? row.amount)),
-          flowDate: isCashReceiptSubtype(row.fundSubtype) || isRefundRow(row)
+          flowDate: isCashReceiptSubtype(row.fundSubtype ?? main.fundSubtype) || isRefundRow(row)
             ? row.fundArrivalDate ?? row.date
             : row.date,
-          accountId: isCashReceiptSubtype(row.fundSubtype) || isRefundRow(row)
+          accountId: row.id === primaryCashRow?.id
+            ? row.accountId
+            : isCashReceiptSubtype(row.fundSubtype) || isRefundRow(row)
             ? row.toAccountId
             : row.accountId,
         })),
@@ -181,13 +210,20 @@ export async function loadFundTransactionEntryLike(params: {
       deletedAt: null,
       ...(params.entryScope === "account" ? {} : { fundCode: params.fundCode || undefined }),
     },
-    include: { cashFlows: true },
+    include: {
+      cashFlows: true,
+      EntryBusinessLink: {
+        where: { deletedAt: null },
+        select: { businessType: true },
+      },
+    },
     orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
   });
 
   const entries: any[] = [];
   for (const row of rows) {
     const mainFlow = row.cashFlows.find((flow) => flow.txRecordId === row.cashEntryId) ?? row.cashFlows[0];
+    const businessLinkLabels = Array.from(new Set(row.EntryBusinessLink.map((link) => entryBusinessTypeLabel(link.businessType))));
     entries.push({
       id: row.cashEntryId ?? row.id,
       fundTransactionId: row.id,
@@ -215,6 +251,8 @@ export async function loadFundTransactionEntryLike(params: {
       realizedProfit: row.realizedProfit,
       note: row.note,
       cashFlowId: mainFlow?.id ?? null,
+      businessLinkCount: row.EntryBusinessLink.length,
+      businessLinkLabels,
     });
 
     for (const flow of row.cashFlows) {
@@ -245,6 +283,8 @@ export async function loadFundTransactionEntryLike(params: {
         realizedProfit: null,
         note: row.note,
         fundCashFlowOnly: true,
+        businessLinkCount: row.EntryBusinessLink.length,
+        businessLinkLabels,
       });
     }
   }

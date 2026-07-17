@@ -634,10 +634,29 @@ export function TransactionFormModal({
   }
 
   function switchType(nextType: TxType) {
-    setTxType(nextType);
-    if (nextType === "expense" && editEntryOriginalType === "transfer" && editOriginalTransferAccounts?.toAccountId) {
-      setAccountId(editOriginalTransferAccounts.toAccountId);
+    const currentType = txType;
+    if (nextType === "transfer" && currentType !== "transfer") {
+      const currentAccountId = accountId || defaultAccountId || "";
+      if (currentType === "income") {
+        setToAccountId(currentAccountId);
+        if (fromAccountId === currentAccountId) setFromAccountId("");
+        setFromAccountIdEdited(false);
+      } else {
+        setFromAccountId(currentAccountId);
+        if (toAccountId === currentAccountId) setToAccountId("");
+        setFromAccountIdEdited(true);
+      }
+      setCategoryId("");
+    } else if (currentType === "transfer" && nextType !== "transfer") {
+      const transferFromAccountId = fromAccountId || editOriginalTransferAccounts?.fromAccountId || "";
+      const transferToAccountId = toAccountId || editOriginalTransferAccounts?.toAccountId || "";
+      const nextAccountId = nextType === "income"
+        ? transferToAccountId || transferFromAccountId || defaultAccountId || ""
+        : transferFromAccountId || transferToAccountId || defaultAccountId || "";
+      setAccountId(nextAccountId);
+      setFromAccountIdEdited(false);
     }
+    setTxType(nextType);
   }
 
   useEffect(() => {
@@ -997,23 +1016,7 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (txType === "transfer") return;
-                        const creditAccountId = accountId || defaultAccountId || "";
-                        const defaultAsCreditOutflow = !!editEntryId && editEntryOriginalType !== "income";
-                        setTxType("transfer");
-                        if (isCreditCardAccount) {
-                          if (defaultAsCreditOutflow) {
-                            setFromAccountId(creditAccountId);
-                            setToAccountId("");
-                            setFromAccountIdEdited(true);
-                          } else {
-                            setFromAccountIdEdited(false);
-                            setFromAccountId(lastRepayFromAccountId ?? "");
-                            setToAccountId(creditAccountId);
-                          }
-                        }
-                      }}
+                      onClick={() => switchType("transfer")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "transfer"
                           ? "segment-button-active"
@@ -1060,12 +1063,7 @@ export function TransactionFormModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setTxType("transfer");
-                        setFromAccountId(defaultAccountId ?? "");
-                        setToAccountId("");
-                        setFromAccountIdEdited(false);
-                      }}
+                      onClick={() => switchType("transfer")}
                       className={`segment-button h-9 flex-1 ${
                         txType === "transfer"
                           ? "segment-button-active"

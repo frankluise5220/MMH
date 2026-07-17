@@ -123,6 +123,7 @@ export function AccountEditModalButton({
   const filteredInstitutionList = institutionList.filter((it) =>
     kind === "loan" ? COUNTERPARTY_TYPES.has(it.type ?? "") : ACCOUNT_INSTITUTION_TYPES.has(it.type ?? ""),
   );
+  const supportsLastFour = kind === "bank_credit" || kind === "bank_debit";
 
   const institutionOptions: SmartSelectOption[] = filteredInstitutionList.map((it) => ({
     id: it.id,
@@ -308,9 +309,11 @@ export function AccountEditModalButton({
                 />
               </div>
 
-                  {kind === "bank_credit" ? (
+              {supportsLastFour ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs font-semibold text-slate-700">账单与额度</div>
+                  <div className="text-xs font-semibold text-slate-700">
+                    {kind === "bank_credit" ? "账单与额度" : "卡号信息"}
+                  </div>
                   <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <input
                       name="numberMasked"
@@ -318,35 +321,39 @@ export function AccountEditModalButton({
                       defaultValue={account.numberMasked ?? ""}
                       placeholder="编号/尾号，例如：3833"
                     />
-                    <input
-                      name="creditLimit"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      defaultValue={initialCreditLimit}
-                      placeholder="额度，例如：50000"
-                      inputMode="decimal"
-                    />
-                    <input
-                      name="billingDay"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      defaultValue={account.billingDay ?? ""}
-                      placeholder="每月账单日 1-31"
-                      inputMode="numeric"
-                    />
-                    <input
-                      name="repaymentDay"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      defaultValue={account.repaymentDay ?? ""}
-                      placeholder="每月还款日 1-31"
-                      inputMode="numeric"
-                    />
-                    <select
-                      name="creditBillMode"
-                      defaultValue={account.creditBillMode === "consolidated" ? "consolidated" : "separate"}
-                      className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    >
-                      <option value="separate">独立账单</option>
-                      <option value="consolidated">同机构合并账单</option>
-                    </select>
+                    {kind === "bank_credit" ? (
+                      <>
+                        <input
+                          name="creditLimit"
+                          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          defaultValue={initialCreditLimit}
+                          placeholder="额度，例如：50000"
+                          inputMode="decimal"
+                        />
+                        <input
+                          name="billingDay"
+                          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          defaultValue={account.billingDay ?? ""}
+                          placeholder="每月账单日 1-31"
+                          inputMode="numeric"
+                        />
+                        <input
+                          name="repaymentDay"
+                          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          defaultValue={account.repaymentDay ?? ""}
+                          placeholder="每月还款日 1-31"
+                          inputMode="numeric"
+                        />
+                        <select
+                          name="creditBillMode"
+                          defaultValue={account.creditBillMode === "consolidated" ? "consolidated" : "separate"}
+                          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        >
+                          <option value="separate">独立账单</option>
+                          <option value="consolidated">同机构合并账单</option>
+                        </select>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

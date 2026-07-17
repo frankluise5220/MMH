@@ -14,10 +14,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const entries = await prisma.txRecord.findMany({
+    const entries = await prisma.fundTransaction.findMany({
       where: {
         ...hidFilter,
-        OR: [{ toAccountId: accountId }, { accountId: accountId }],
+        fundAccountId: accountId,
         fundCode,
         source: subtype || "regular_invest",
         deletedAt: null,
@@ -25,16 +25,22 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    const result = entries.map(e => ({
-      id: e.id,
-      date: e.date.toISOString().slice(0, 10),
-      fundCode: e.fundCode,
-      fundName: e.fundName,
-      amount: String(e.amount),
-      fundNav: e.fundNav ? String(e.fundNav) : null,
-      fundUnits: e.fundUnits ? String(e.fundUnits) : null,
-      fundConfirmDate: e.fundConfirmDate ? e.fundConfirmDate.toISOString().slice(0, 10) : null,
-    }));
+    const result = entries.map((e) => {
+      const gross = Math.abs(Number(e.grossAmount));
+      const signedAmount = e.fundSubtype === "buy" || e.fundSubtype === "buy_failed" || e.fundSubtype === "switch_in"
+        ? -gross
+        : Math.abs(Number(e.arrivalAmount ?? e.grossAmount));
+      return {
+        id: e.id,
+        date: e.applyDate.toISOString().slice(0, 10),
+        fundCode: e.fundCode,
+        fundName: e.fundName,
+        amount: String(signedAmount),
+        fundNav: e.nav ? String(e.nav) : null,
+        fundUnits: e.units ? String(e.units) : null,
+        fundConfirmDate: e.confirmDate ? e.confirmDate.toISOString().slice(0, 10) : null,
+      };
+    });
 
     return NextResponse.json({ ok: true, entries: result });
   } catch (e) {

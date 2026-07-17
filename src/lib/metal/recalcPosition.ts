@@ -25,30 +25,28 @@ export async function recalcPreciousMetalPositions(accountId: string) {
   });
   if (!account || account.kind !== "investment" || account.investProductType !== "metal") return;
 
-  const rows = await prisma.txRecord.findMany({
+  const rows = await prisma.preciousMetalTransaction.findMany({
     where: {
       deletedAt: null,
-      OR: [{ accountId }, { toAccountId: accountId }],
-      metalTypeId: { not: null },
-      metalUnitId: { not: null },
+      accountId,
     },
     select: {
       id: true,
-      date: true,
+      tradeDate: true,
       createdAt: true,
       amount: true,
       accountId: true,
-      toAccountId: true,
-      fundSubtype: true,
+      action: true,
+      cashEntryId: true,
       metalTypeId: true,
       metalTypeName: true,
       metalUnitId: true,
       metalUnitName: true,
-      metalQuantity: true,
-      metalUnitPrice: true,
-      metalFee: true,
+      quantity: true,
+      unitPrice: true,
+      fee: true,
     },
-    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
   });
 
   const positions = new Map<string, MetalPosition>();
@@ -56,7 +54,7 @@ export async function recalcPreciousMetalPositions(accountId: string) {
 
   for (const row of rows) {
     if (!row.metalTypeId || !row.metalUnitId) continue;
-    const quantity = row.metalQuantity != null ? toNum(row.metalQuantity) : 0;
+    const quantity = row.quantity != null ? toNum(row.quantity) : 0;
     if (quantity <= 0) continue;
 
     const key = `${row.metalTypeId}::${row.metalUnitId}`;
@@ -68,12 +66,12 @@ export async function recalcPreciousMetalPositions(accountId: string) {
       metalTypeName: row.metalTypeName ?? row.metalTypeId,
       metalUnitName: row.metalUnitName ?? row.metalUnitId,
     };
-    const subtype = row.fundSubtype ?? (toNum(row.amount) < 0 ? "buy" : "redeem");
-    const fee = row.metalFee != null ? toNum(row.metalFee) : 0;
-    const unitPrice = row.metalUnitPrice != null ? toNum(row.metalUnitPrice) : null;
+    const subtype = row.action ?? "buy";
+    const fee = row.fee != null ? toNum(row.fee) : 0;
+    const unitPrice = row.unitPrice != null ? toNum(row.unitPrice) : null;
     if (unitPrice != null && unitPrice > 0) current.unitPrice = unitPrice;
 
-    if (subtype === "redeem" || row.accountId === accountId) {
+    if (subtype === "redeem" || subtype === "switch_out") {
       const avgCost = current.quantity > 0 ? current.cost / current.quantity : 0;
       const soldQuantity = Math.min(current.quantity, quantity);
       const costReduced = avgCost * soldQuantity;
@@ -95,10 +93,17 @@ export async function recalcPreciousMetalPositions(accountId: string) {
 
   for (const row of rows) {
     if (!realizedProfitByEntryId.has(row.id)) continue;
-    await prisma.txRecord.update({
+    const realizedProfit = realizedProfitByEntryId.get(row.id);
+    await prisma.preciousMetalTransaction.update({
       where: { id: row.id },
-      data: { realizedProfit: realizedProfitByEntryId.get(row.id) },
+      data: { realizedProfit },
     });
+    if (row.cashEntryId) {
+      await prisma.txRecord.update({
+        where: { id: row.cashEntryId },
+        data: { realizedProfit },
+      });
+    }
   }
 
   const activeKeys = new Set(positions.keys());

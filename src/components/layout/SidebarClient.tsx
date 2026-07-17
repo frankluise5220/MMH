@@ -124,6 +124,7 @@ const KIND_INLINE_LABEL = new Map<string, string>([
   ["loan", "借入/借出"],
   ["other", "其他"],
 ]);
+const SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE = 10;
 
 function normalizeSidebarItems(items: AccountItem[]) {
   const normalized = items.map(normalizeSidebarAccountItem);
@@ -458,7 +459,10 @@ export function SidebarClient({
   });
 
   const sections = useMemo(() => {
-    const sortAccountsByUsage = (accounts: AccountItem[]) => sortByAccountUsage(accounts, accountUsage);
+    const sortAccountsByUsage = (accounts: AccountItem[]) =>
+      accounts.length >= SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE
+        ? sortByAccountUsage(accounts, accountUsage)
+        : accounts;
     const compareAccountUsage = (a: AccountItem, b: AccountItem) => {
       const aStat = a.id ? accountUsage[a.id] : undefined;
       const bStat = b.id ? accountUsage[b.id] : undefined;
@@ -490,11 +494,13 @@ export function SidebarClient({
       return Array.from(map.values())
         .map((section) => ({
           ...section,
-          accounts: [...section.accounts].sort((a, b) => {
-            const kindDiff = (KIND_SORT_ORDER.get(a.kind) ?? 999) - (KIND_SORT_ORDER.get(b.kind) ?? 999);
-            if (kindDiff !== 0) return kindDiff;
-            return compareAccountUsage(a, b);
-          }),
+          accounts: section.accounts.length >= SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE
+            ? [...section.accounts].sort((a, b) => {
+                const kindDiff = (KIND_SORT_ORDER.get(a.kind) ?? 999) - (KIND_SORT_ORDER.get(b.kind) ?? 999);
+                if (kindDiff !== 0) return kindDiff;
+                return compareAccountUsage(a, b);
+              })
+            : section.accounts,
         }))
         .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
     }

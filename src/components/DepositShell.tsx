@@ -5,6 +5,8 @@ import { ArrowDownLeft, ArrowUpRight, Landmark } from "lucide-react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { EntryRowActions } from "./EntryRowActions";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatMoney } from "@/lib/format";
 
 type DepositEntry = {
@@ -16,6 +18,8 @@ type DepositEntry = {
   cashAccountLabel: string;
   note: string;
   amount: number;
+  businessLinkCount?: number;
+  businessLinkLabels?: string[];
   edit?: {
     type: "investment";
     date: string;
@@ -52,6 +56,46 @@ function amountClass(value: number) {
   return "text-slate-500";
 }
 
+function BusinessLinkHeaderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
+      <path
+        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function BusinessLinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
+  return (
+    <span
+      title={title}
+      className={[
+        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
+        active
+          ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
+          : "border-slate-200 bg-transparent text-slate-300",
+      ].join(" ")}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
+        <path
+          d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+      </svg>
+    </span>
+  );
+}
+
 function stopRowClick(event: React.MouseEvent) {
   event.stopPropagation();
 }
@@ -83,19 +127,19 @@ export function DepositShell({
 
   async function batchDeleteEntries() {
     if (selectedEntryIds.size === 0) return;
-    if (!window.confirm(`确认删除选中的 ${selectedEntryIds.size} 条明细吗？`)) return;
-    const response = await fetch("/api/v1/entries/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entryIds: Array.from(selectedEntryIds) }),
+    const entryIds = Array.from(selectedEntryIds);
+    const data = await deleteEntriesWithLinkedPrompt({
+      entryIds,
+      confirmMessage: `确认删除选中的 ${selectedEntryIds.size} 条明细吗？`,
     });
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.ok) {
+    if (!data.ok) {
+      if (data.error === "已取消删除") return;
       window.alert(data?.error || "批量删除失败");
       return;
     }
     setSelectedEntryIds(new Set());
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
+    const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
   const lotColumns = useMemo<AdvancedDataTableColumn<DepositLot>[]>(() => [
@@ -121,6 +165,22 @@ export function DepositShell({
   ], []);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DepositEntry>[]>(() => [
+    {
+      key: "businessLink",
+      label: <BusinessLinkHeaderIcon />,
+      width: 38,
+      minWidth: 34,
+      align: "center",
+      hideable: true,
+      render: (entry) => {
+        const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
+        const labels = entry.businessLinkLabels ?? [];
+        const title = hasBusinessLink
+          ? `已关联：${labels.join("、") || "业务记录"}`
+          : "未关联业务记录";
+        return <BusinessLinkStatusIcon active={hasBusinessLink} title={title} />;
+      },
+    },
     { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
     { key: "action", label: "动作", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
     { key: "product", label: "产品", width: 190, minWidth: 120, filterText: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
@@ -195,7 +255,7 @@ export function DepositShell({
             columns={entryColumns}
             rows={visibleEntries}
             rowKey={(entry) => entry.id}
-            minTableWidth={980}
+            minTableWidth={1020}
             emptyText={selectedLot ? "这笔存单暂时没有关联明细" : "请先选择上方存款持仓"}
             selectable
             selectedKeys={selectedEntryIds}

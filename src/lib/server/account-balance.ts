@@ -38,45 +38,41 @@ export async function computeAccountDisplayBalances(
   };
 
   if (depositAccountIds.length > 0) {
-    const depositEntries = await prisma.txRecord.findMany({
+    const depositEntries = await prisma.depositTransaction.findMany({
       where: {
-        ...txWhere,
-        fundProductType: "deposit",
-        OR: [
-          { accountId: { in: depositAccountIds } },
-          { toAccountId: { in: depositAccountIds } },
-        ],
+        deletedAt: null,
+        ...(hidFilter ?? {}),
+        accountId: { in: depositAccountIds },
       },
       select: {
         id: true,
-        date: true,
         accountId: true,
-        toAccountId: true,
-        amount: true,
-        fundArrivalAmount: true,
-        fundSubtype: true,
-        depositSourceEntryId: true,
+        tradeDate: true,
+        principalAmount: true,
+        arrivalAmount: true,
+        action: true,
+        sourceDepositTransactionId: true,
       },
-      orderBy: [{ date: "asc" }, { id: "asc" }],
+      orderBy: [{ tradeDate: "asc" }, { id: "asc" }],
     });
 
     const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
     for (const entry of depositEntries) {
-      if (!isOnOrBeforeToday(entry.date)) continue;
-      const isRedeem = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-      const depositAccountId = isRedeem ? entry.accountId : entry.toAccountId;
+      if (!isOnOrBeforeToday(entry.tradeDate)) continue;
+      const isRedeem = entry.action === "redeem" || entry.action === "switch_out";
+      const depositAccountId = entry.accountId;
       if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
 
       if (!isRedeem) {
         remainingByLotId.set(entry.id, {
           depositAccountId,
-          amount: Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)),
+          amount: Math.abs(toNumber(entry.arrivalAmount ?? entry.principalAmount)),
         });
         continue;
       }
 
-      if (entry.depositSourceEntryId) {
-        const lot = remainingByLotId.get(entry.depositSourceEntryId);
+      if (entry.sourceDepositTransactionId) {
+        const lot = remainingByLotId.get(entry.sourceDepositTransactionId);
         if (lot) lot.amount = 0;
       }
     }

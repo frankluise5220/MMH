@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 
 type TableColumnFilterProps = {
   label: string;
   options: string[];
+  optionTitles?: Record<string, string | undefined>;
+  optionSearchText?: Record<string, string | undefined>;
   selectedValues: string[];
   open: boolean;
   filtered?: boolean;
   showLabel?: boolean;
+  labelClassName?: string;
   onToggleOpen: () => void;
   onClose: () => void;
   onChange: (values: string[] | undefined) => void;
@@ -20,6 +23,7 @@ type DateRangeColumnFilterProps = {
   from: string;
   to: string;
   open: boolean;
+  labelClassName?: string;
   onToggleOpen: () => void;
   onClose: () => void;
   onChange: (next: { from: string; to: string }) => void;
@@ -28,10 +32,13 @@ type DateRangeColumnFilterProps = {
 export function TableColumnFilter({
   label,
   options,
+  optionTitles = {},
+  optionSearchText = {},
   selectedValues,
   open,
   filtered = selectedValues.length > 0,
   showLabel = true,
+  labelClassName = "",
   onToggleOpen,
   onClose,
   onChange,
@@ -39,6 +46,11 @@ export function TableColumnFilter({
   const { t } = useI18n();
   const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
+  const [keyword, setKeyword] = useState("");
+
+  useEffect(() => {
+    if (open) setKeyword("");
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -58,9 +70,22 @@ export function TableColumnFilter({
     };
   }, [open, onClose]);
 
+  const visibleOptions = useMemo(() => {
+    const query = keyword.trim().toLowerCase();
+    if (!query) return options;
+    return options.filter((value) => {
+      const haystack = [
+        value,
+        optionTitles[value] ?? "",
+        optionSearchText[value] ?? "",
+      ].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [keyword, optionSearchText, optionTitles, options]);
+
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
-      {showLabel ? <span>{label}</span> : null}
+      {showLabel ? <span className={labelClassName}>{label}</span> : null}
       <button
         type="button"
         onClick={(event) => {
@@ -91,12 +116,21 @@ export function TableColumnFilter({
               {t("table.clear")}
             </button>
           </div>
+          <input
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+            placeholder={t("table.filterSearchPlaceholder")}
+            className="mb-2 h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+          />
           <div className="max-h-56 space-y-1 overflow-auto pr-1">
-            {options.map((value) => {
+            {visibleOptions.map((value) => {
               const checked = selectedValues.length > 0 ? selectedValues.includes(value) : true;
+              const title = optionTitles[value] || value;
               return (
                 <div
                   key={value}
+                  title={title}
                   className={`flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs ${
                     checked ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"
                   }`}
@@ -124,12 +158,16 @@ export function TableColumnFilter({
                       onClose();
                     }}
                     className="min-w-0 flex-1 truncate text-left"
+                    title={title}
                   >
-                    <span className="truncate" title={value}>{value}</span>
+                    <span className="truncate" title={title}>{value}</span>
                   </button>
                 </div>
               );
             })}
+            {visibleOptions.length === 0 ? (
+              <div className="px-1 py-3 text-center text-xs text-slate-400">{t("table.noFilterOptions")}</div>
+            ) : null}
           </div>
         </div>
       )}
@@ -142,6 +180,7 @@ export function DateRangeColumnFilter({
   from,
   to,
   open,
+  labelClassName = "",
   onToggleOpen,
   onClose,
   onChange,
@@ -179,7 +218,7 @@ export function DateRangeColumnFilter({
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
-      <span>{label}</span>
+      <span className={labelClassName}>{label}</span>
       <button
         type="button"
         onClick={(event) => {

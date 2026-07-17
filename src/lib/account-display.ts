@@ -100,6 +100,23 @@ export function formatAccountSelectorCoreLabel(input: {
   return parts.filter(Boolean).join("·").trim() || accountName;
 }
 
+export function formatOwnerQualifiedAccountLabel(input: {
+  accountName: string;
+  kind?: string | null;
+  institution?: { name: string | null; shortName?: string | null } | null;
+  numberMasked?: string | null;
+  ownerName?: string | null;
+}) {
+  const ownerName = input.ownerName?.trim() ?? "";
+  const accountLabel = formatAccountSelectorLabel({
+    accountName: input.accountName,
+    institution: input.institution,
+    numberMasked: input.numberMasked,
+  });
+  const accountType = input.kind ? kindLabel(input.kind) : "";
+  return [ownerName, accountLabel, accountType].filter(Boolean).join("·") || accountLabel;
+}
+
 export function creditCardLabelTemplateFromMode(mode: CreditCardLabelMode = "short_last4") {
   return mode === "full_name" ? FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE : DEFAULT_CREDIT_CARD_LABEL_TEMPLATE;
 }
@@ -189,6 +206,13 @@ export function buildAccountDisplayOption(
     accountName: account.name,
     numberMasked: account.numberMasked,
   });
+  const ownerQualifiedLabel = formatOwnerQualifiedAccountLabel({
+    accountName: account.name,
+    kind: account.kind,
+    institution: account.Institution,
+    numberMasked: account.numberMasked,
+    ownerName: groupName,
+  });
 
   const subLabel = kindLabel(account.kind);
   const hoverTitle = formatAccountHoverTitle({
@@ -209,7 +233,7 @@ export function buildAccountDisplayOption(
     institutionName,
     investProductType: account.investProductType ?? null,
     subLabel,
-    fullLabel: label,
+    fullLabel: ownerQualifiedLabel,
     hoverTitle,
   };
 }

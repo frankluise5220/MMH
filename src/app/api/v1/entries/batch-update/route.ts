@@ -12,6 +12,8 @@ import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-pre
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
 /**
  * 批量更新交易记录
@@ -32,6 +34,7 @@ import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } fr
  *     amount?: string | number;// 金额（绝对值），会保持原记录的正负号
  *     accountName?: string;    // 兼容旧调用：来源账户名称
  *   }>;
+ *   contextAccountId?: string; // 当前明细页账户。批量改“对向账户”时用于保留收入/支出的资金方向。
  * }
  *   返回 { ok: true, updatedCount, changed, notFoundIds? }
  *   如果所有 ID 都未匹配到记录，返回 { ok: false, error }
@@ -80,6 +83,7 @@ export async function POST(req: NextRequest) {
     const { hidFilter } = ctx;
     const body = await req.json();
     const updates: BatchUpdateItem[] = body.updates;
+    const contextAccountId = String(body.contextAccountId ?? "").trim() || null;
 
     if (!Array.isArray(updates) || updates.length === 0) {
       return NextResponse.json({ ok: false, error: "没有更新数据" }, { status: 400 });
@@ -147,6 +151,7 @@ export async function POST(req: NextRequest) {
       if (!existing) continue;
 
       const data: Record<string, unknown> = {};
+      let skipAutoRepaymentCategory = false;
       if (existing.accountId) balanceAccountIds.add(existing.accountId);
       if (existing.toAccountId) balanceAccountIds.add(existing.toAccountId);
 
@@ -185,10 +190,50 @@ export async function POST(req: NextRequest) {
         const toAccountId = String(item.toAccount).trim();
         const account = accountById.get(toAccountId);
         if (!account) return NextResponse.json({ ok: false, error: `去向账户不存在：${toAccountId}` }, { status: 400 });
-        data.toAccountId = account.id;
-        data.toAccountName = account.name;
+        const finalTypeForAccountSide = String(data.type ?? existing.type);
+        const amountN = Number(existing.amount);
+        const amountAbs = Number.isFinite(amountN) ? Math.abs(amountN) : null;
+        const contextIsSource = !!contextAccountId && existing.accountId === contextAccountId;
+        const contextIsTarget = !!contextAccountId && existing.toAccountId === contextAccountId;
+        const currentAccountId = contextIsTarget
+          ? existing.toAccountId
+          : contextIsSource
+            ? existing.accountId
+            : existing.accountId;
+        const currentAccountName = contextIsTarget
+          ? existing.toAccountName
+          : contextIsSource
+            ? existing.accountName
+            : existing.accountName;
+        const originalCurrentSideWasInflow =
+          existing.type === TransactionType.income ||
+          (Number.isFinite(amountN) && amountN > 0);
+        const keepCurrentAccountAsTransferTarget =
+          finalTypeForAccountSide === TransactionType.transfer &&
+          item.account === undefined &&
+          (contextIsTarget || originalCurrentSideWasInflow);
+
+        if (finalTypeForAccountSide === TransactionType.transfer && item.account === undefined && keepCurrentAccountAsTransferTarget) {
+          if (!currentAccountId) return NextResponse.json({ ok: false, error: "转账需要保留当前账户" }, { status: 400 });
+          if (account.id === currentAccountId) return NextResponse.json({ ok: false, error: "对向账户不能和当前账户相同" }, { status: 400 });
+          data.accountId = account.id;
+          data.accountName = account.name;
+          data.toAccountId = currentAccountId;
+          data.toAccountName = currentAccountName ?? null;
+          if (amountAbs != null) data.amount = -amountAbs;
+          balanceAccountIds.add(currentAccountId);
+          skipAutoRepaymentCategory = originalCurrentSideWasInflow;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account.name, field: "toAccount" });
+        } else {
+          if (finalTypeForAccountSide === TransactionType.transfer && currentAccountId && account.id === currentAccountId) {
+            return NextResponse.json({ ok: false, error: "对向账户不能和当前账户相同" }, { status: 400 });
+          }
+          data.toAccountId = account.id;
+          data.toAccountName = account.name;
+          if (finalTypeForAccountSide === TransactionType.transfer && amountAbs != null) data.amount = -amountAbs;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.toAccountName ?? "-", newValue: account.name, field: "toAccount" });
+        }
         balanceAccountIds.add(account.id);
-        changed.push({ id, date: ymd(existing.date), oldValue: existing.toAccountName ?? "-", newValue: account.name, field: "toAccount" });
       }
 
       if (item.categoryId !== undefined) {
@@ -280,7 +325,9 @@ export async function POST(req: NextRequest) {
         const oldN = Number(existing.amount);
         const absNew = parseAmountUpdate(v, Math.abs(oldN));
         if (absNew == null) return NextResponse.json({ ok: false, error: "金额必须是数字或运算式，如 100、*2、+10、-5、/2" }, { status: 400 });
-        const signed = oldN < 0 ? -absNew : absNew;
+        const signed = String(data.type ?? existing.type) === TransactionType.transfer
+          ? -absNew
+          : oldN < 0 ? -absNew : absNew;
         data.amount = signed;
         changed.push({ id, date: ymd(existing.date), oldValue: String(Math.abs(oldN)), newValue: String(absNew), field: "amount" });
         amountTouchedIds.add(id);
@@ -309,13 +356,16 @@ export async function POST(req: NextRequest) {
       const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
       const finalAccount = resolveAccountMeta(finalAccountId);
       const finalToAccount = resolveAccountMeta(finalToAccountId);
-      if (isCreditCardRepaymentTransfer({
+      if (!skipAutoRepaymentCategory && isCreditCardRepaymentTransfer({
         type: finalType,
         accountKind: finalAccount?.kind,
         toAccountKind: finalToAccount?.kind,
       })) {
         data.categoryId = repaymentCategory?.id ?? null;
         data.categoryName = repaymentCategory?.name ?? CREDIT_CARD_REPAYMENT_CATEGORY_NAME;
+      } else if (skipAutoRepaymentCategory) {
+        data.categoryId = null;
+        data.categoryName = null;
       } else if (
         existing.categoryName === CREDIT_CARD_REPAYMENT_CATEGORY_NAME &&
         (item.type !== undefined || item.account !== undefined || item.toAccount !== undefined)
@@ -457,6 +507,7 @@ export async function POST(req: NextRequest) {
       for (const acctId of balanceAccountIds) {
         await recalcAndSaveAccountBalance(acctId).catch(() => {});
       }
+      await invalidateCreditCardCycleCacheForAccountIds(balanceAccountIds).catch(() => {});
 
       for (const [acctId, codes] of fundCodesByInvestAcc.entries()) {
         await recalcFundPositions(acctId, Array.from(codes)).catch(() => {});
@@ -465,6 +516,9 @@ export async function POST(req: NextRequest) {
         await recalcPreciousMetalPositions(acctId).catch(() => {});
       }
       await syncFundTransactionsFromTxRecords(Array.from(touchedRecordIds)).catch(() => {});
+      for (const id of touchedRecordIds) {
+        await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: id }).catch(() => {});
+      }
     }
 
     await saveEntryUndo(

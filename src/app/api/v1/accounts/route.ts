@@ -21,6 +21,11 @@ import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import {
+  accountSupportsNumberMasked,
+  assertAccountIdentityUnique,
+  isAccountIdentityUniqueError,
+} from "@/lib/server/account-identity-unique";
 
 export const runtime = "nodejs";
 
@@ -111,6 +116,18 @@ export async function POST(req: NextRequest) {
         ? normalizeCreditBillMode(body.creditBillMode)
         : creditDefaults?.creditBillMode ?? normalizeCreditBillMode(null)
       : normalizeCreditBillMode(null);
+    const numberMasked = accountSupportsNumberMasked(kind)
+      ? String(body.numberMasked ?? "").trim() || null
+      : null;
+
+    await assertAccountIdentityUnique(prisma, {
+      householdId,
+      groupId: ensuredGroup.id,
+      institutionId: institution?.id ?? null,
+      kind,
+      name,
+      numberMasked,
+    });
 
     const account = await prisma.account.create({
       data: {
@@ -127,7 +144,7 @@ export async function POST(req: NextRequest) {
         repaymentDay,
         creditLimit,
         creditBillMode,
-        numberMasked: isCreditLike ? String(body.numberMasked ?? "").trim() || null : null,
+        numberMasked,
         investProductType: investProductType as any,
         costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
         ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
@@ -158,6 +175,9 @@ export async function POST(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, account });
   } catch (e) {
+    if (isAccountIdentityUniqueError(e)) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+    }
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
   }
 }
@@ -201,7 +221,11 @@ export async function PUT(req: NextRequest) {
       data.billingDay = null;
       data.repaymentDay = null;
       data.creditLimit = null;
-      data.numberMasked = null;
+      data.numberMasked = accountSupportsNumberMasked(nextKind)
+        ? body.numberMasked !== undefined
+          ? String(body.numberMasked ?? "").trim() || null
+          : existing.numberMasked
+        : null;
       data.creditBillMode = normalizeCreditBillMode(null);
     }
     if (nextKind === "investment") {
@@ -220,6 +244,33 @@ export async function PUT(req: NextRequest) {
       data.tradingCalendar = null;
       data.defaultFundQueryApiId = null;
     }
+
+    const hasNextName = Object.prototype.hasOwnProperty.call(data, "name");
+    const hasNextNumberMasked = Object.prototype.hasOwnProperty.call(data, "numberMasked");
+    const nextName = hasNextName ? String(data.name ?? "").trim() : existing.name;
+    const nextNumberMasked = hasNextNumberMasked ? data.numberMasked : existing.numberMasked;
+    if (!nextName) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
+
+    const nextGroupId = data.groupId === undefined ? existing.groupId : String(data.groupId ?? "");
+    if (!nextGroupId) return NextResponse.json({ ok: false, error: "请选择所有人" }, { status: 400 });
+    const nextInstitutionId = data.institutionId === undefined ? existing.institutionId : (data.institutionId ? String(data.institutionId) : null);
+    if (nextGroupId) {
+      const group = await prisma.accountGroup.findFirst({ where: { id: nextGroupId, householdId } });
+      if (!group) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+    }
+    if (nextInstitutionId) {
+      const institution = await prisma.institution.findFirst({ where: { id: nextInstitutionId, householdId } });
+      if (!institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    }
+    await assertAccountIdentityUnique(prisma, {
+      householdId,
+      groupId: nextGroupId,
+      institutionId: nextInstitutionId,
+      kind: nextKind,
+      name: nextName,
+      numberMasked: nextNumberMasked,
+      excludeId: existing.id,
+    });
 
     const updated = await prisma.account.update({ where: { id }, data });
     if (updated.kind === "bank_credit") {
@@ -240,6 +291,9 @@ export async function PUT(req: NextRequest) {
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
+    if (isAccountIdentityUniqueError(e)) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+    }
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
   }
 }

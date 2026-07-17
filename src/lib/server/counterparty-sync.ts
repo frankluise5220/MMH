@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
 type CounterpartyStore = Pick<Prisma.TransactionClient, "counterparty" | "institution">;
 
@@ -93,6 +94,12 @@ export async function ensureInstitutionForCounterparty(
       where: { id: counterparty.sourceInstitutionId, householdId },
     });
     if (source) {
+      await assertInstitutionDisplayNamesUnique(store, {
+        householdId,
+        name,
+        shortName,
+        excludeId: source.id,
+      });
       return store.institution.update({
         where: { id: source.id },
         data: { name, shortName, type },
@@ -106,6 +113,13 @@ export async function ensureInstitutionForCounterparty(
       type: { in: ["person", "organization"] },
       OR: counterpartyNameWhere(name, shortName),
     },
+  });
+
+  await assertInstitutionDisplayNamesUnique(store, {
+    householdId,
+    name,
+    shortName,
+    excludeId: existing?.id ?? null,
   });
 
   const institution = existing

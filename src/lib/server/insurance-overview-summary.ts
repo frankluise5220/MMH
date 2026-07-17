@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
-import { isInsuranceRefund } from "@/lib/insurance/transaction";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export type InsuranceOverviewCategoryKey = "critical_illness" | "medical" | "accident" | "life_annuity" | "other";
@@ -125,19 +124,16 @@ export async function computeInsuranceOverviewSummary(
   }
 
   const productIds = products.map((product) => product.id);
-  const entries = await prisma.txRecord.findMany({
+  const entries = await prisma.insuranceTransaction.findMany({
     where: {
       ...hidFilter,
       deletedAt: null,
-      type: "investment",
-      source: "insurance",
       insuranceProductId: { in: productIds },
     },
     select: {
       insuranceProductId: true,
       amount: true,
-      insuranceAction: true,
-      fundSubtype: true,
+      action: true,
     },
   });
 
@@ -145,7 +141,7 @@ export async function computeInsuranceOverviewSummary(
   for (const entry of entries) {
     const productId = String(entry.insuranceProductId ?? "").trim();
     if (!productId) continue;
-    const premium = isInsuranceRefund(entry) ? 0 : Math.abs(toNumber(entry.amount));
+    const premium = entry.action === "refund" ? 0 : Math.abs(toNumber(entry.amount));
     entryPremiumByProductId.set(productId, (entryPremiumByProductId.get(productId) ?? 0) + premium);
   }
 

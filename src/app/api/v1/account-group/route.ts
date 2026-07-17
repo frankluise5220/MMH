@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
+import {
+  assertInstitutionDisplayNamesUnique,
+  isInstitutionNameUniqueError,
+} from "@/lib/server/institution-name-unique";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -31,19 +35,24 @@ export async function POST(req: NextRequest) {
     where: {
       householdId,
       type: "family_member",
-      name: created.name,
+      OR: [{ name: created.name }, { shortName: created.name }],
     },
     select: { id: true },
   });
   if (!existingFamilyMember) {
-    await prisma.institution.create({
-      data: {
-        householdId,
-        type: "family_member",
-        name: created.name,
-        shortName: null,
-      },
-    }).catch(() => null);
+    try {
+      await assertInstitutionDisplayNamesUnique(prisma, { householdId, name: created.name });
+      await prisma.institution.create({
+        data: {
+          householdId,
+          type: "family_member",
+          name: created.name,
+          shortName: null,
+        },
+      });
+    } catch (error) {
+      if (!isInstitutionNameUniqueError(error)) console.warn("[account-group] family member sync failed", error);
+    }
   }
 
   // Client-side handles page refresh
@@ -74,28 +83,42 @@ export async function PUT(req: NextRequest) {
     },
   });
   if (legacyFamilyMember) {
-    await prisma.institution.update({
-      where: { id: legacyFamilyMember.id },
-      data: { name },
-    }).catch(() => null);
+    try {
+      await assertInstitutionDisplayNamesUnique(prisma, {
+        householdId,
+        name,
+        excludeId: legacyFamilyMember.id,
+      });
+      await prisma.institution.update({
+        where: { id: legacyFamilyMember.id },
+        data: { name },
+      });
+    } catch (error) {
+      if (!isInstitutionNameUniqueError(error)) console.warn("[account-group] family member rename sync failed", error);
+    }
   } else {
     const existingFamilyMember = await prisma.institution.findFirst({
       where: {
         householdId,
         type: "family_member",
-        name,
+        OR: [{ name }, { shortName: name }],
       },
       select: { id: true },
     });
     if (!existingFamilyMember) {
-      await prisma.institution.create({
-        data: {
-          householdId,
-          type: "family_member",
-          name,
-          shortName: null,
-        },
-      }).catch(() => null);
+      try {
+        await assertInstitutionDisplayNamesUnique(prisma, { householdId, name });
+        await prisma.institution.create({
+          data: {
+            householdId,
+            type: "family_member",
+            name,
+            shortName: null,
+          },
+        });
+      } catch (error) {
+        if (!isInstitutionNameUniqueError(error)) console.warn("[account-group] family member create sync failed", error);
+      }
     }
   }
   // Client-side handles page refresh

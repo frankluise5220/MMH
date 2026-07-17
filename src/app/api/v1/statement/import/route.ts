@@ -9,6 +9,8 @@ import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot 
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { expandImportBankName, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
+import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-account";
 
 export const runtime = "nodejs";
 
@@ -317,10 +319,11 @@ async function ensureBankInstitutionId(tx: Db, householdId: string, institutionN
   if (!name) return null;
   const existing = await findInstitution(tx, householdId, name);
   if (existing) return existing.id;
+  await assertInstitutionDisplayNamesUnique(tx, { householdId, name });
   const created = await tx.institution.create({
     data: {
       name,
-      shortName: name,
+      shortName: null,
       type: "bank",
       householdId,
     },
@@ -533,6 +536,10 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
 async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  // When the account name matches "XX的往来款" and a Counterparty exists,
+  // resolve or create the loan account linked to that counterparty.
+  const debtAccountId = await resolveDebtAccountByCounterpartyName(tx, householdId, name);
+  if (debtAccountId) return debtAccountId;
   const inferredLast4 = inferCardLast4(name, _meta);
   const isCreditCard = !!(_meta?.cardNumberMasked || isCreditAccountText(name));
   const existingCredit = isCreditCard ? await findCreditAccount(tx, householdId, name, _meta) : null;

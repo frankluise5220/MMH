@@ -9,7 +9,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
-import { AccountKind } from "@prisma/client";
+import { AccountKind, FundSubtype, TransactionType } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -48,6 +48,14 @@ export type ClearedPositionRow = {
   totalRedeemAmount: number;
 };
 
+function isCashInSubtype(subtype: FundSubtype | string | null | undefined) {
+  return subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out || subtype === FundSubtype.dividend_cash;
+}
+
+function isDividendSubtype(subtype: FundSubtype | string | null | undefined) {
+  return subtype === FundSubtype.dividend_cash;
+}
+
 /**
  * 计算所有投资账户的余额汇总（显示层）
  *
@@ -66,13 +74,30 @@ export const computeInvestBalances = cache(
   const metalAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "metal")
     .map((account) => account.id);
-  const fundAccountIds = investIds.filter((id) => !metalAccountIds.includes(id));
+  const wealthAccountIds = accounts
+    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "wealth")
+    .map((account) => account.id);
+  const fundAccountIds = investIds.filter((id) => !metalAccountIds.includes(id) && !wealthAccountIds.includes(id));
 
   const allHoldings = await prisma.fundHolding.findMany({
     where: { accountId: { in: fundAccountIds } },
   });
   const allMetalHoldings = await prisma.preciousMetalHolding.findMany({
     where: { accountId: { in: metalAccountIds } },
+  });
+  const allWealthTransactions = await prisma.wealthTransaction.findMany({
+    where: { accountId: { in: wealthAccountIds }, deletedAt: null },
+  });
+  const allWealthTransactionIds = allWealthTransactions.map((row) => row.id);
+  const legacyWealthRows = await prisma.txRecord.findMany({
+    where: {
+      ...ctx.hidFilter,
+      deletedAt: null,
+      id: allWealthTransactionIds.length > 0 ? { notIn: allWealthTransactionIds } : undefined,
+      type: { in: [TransactionType.investment, TransactionType.transfer] },
+      OR: [{ accountId: { in: wealthAccountIds } }, { toAccountId: { in: wealthAccountIds } }],
+    },
+    select: { accountId: true, toAccountId: true, amount: true },
   });
 
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
@@ -124,6 +149,25 @@ export const computeInvestBalances = cache(
     const marketValue = holdings.reduce((sum, holding) => sum + toNumber(holding.marketValue), 0);
     const totalCost = holdings.reduce((sum, holding) => sum + toNumber(holding.cost), 0);
     result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
+  }
+
+  for (const acctId of wealthAccountIds) {
+    let principal = 0;
+    for (const row of allWealthTransactions) {
+      if (row.accountId !== acctId) continue;
+      const gross = Math.abs(toNumber(row.grossAmount));
+      const arrival = row.arrivalAmount == null ? gross : Math.abs(toNumber(row.arrivalAmount));
+      const interest = Math.max(0, toNumber(row.interest));
+      if (isDividendSubtype(row.action)) continue;
+      if (isCashInSubtype(row.action)) principal -= Math.max(0, arrival - interest);
+      else principal += gross;
+    }
+    for (const row of legacyWealthRows) {
+      if (row.accountId === acctId) principal -= Math.abs(toNumber(row.amount));
+      else if (row.toAccountId === acctId) principal += Math.abs(toNumber(row.amount));
+    }
+    const marketValue = Math.max(0, Number(principal.toFixed(2)));
+    result.set(acctId, { marketValue, totalCost: marketValue, floatingPnL: 0 });
   }
 
   return result;
@@ -188,6 +232,146 @@ export const computePositionDisplay = cache(
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
     const totalHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
     return { positions, clearedPositions: [], totalMarketValue, totalCost, totalHistoricalProfit };
+  }
+
+  if (account.investProductType === "wealth") {
+    const rows = await prisma.wealthTransaction.findMany({
+      where: { accountId, deletedAt: null },
+      include: { WealthProduct: true },
+      orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+    });
+    const existingIds = rows.map((row) => row.id);
+    const legacyRows = await prisma.txRecord.findMany({
+      where: {
+        ...ctx.hidFilter,
+        deletedAt: null,
+        id: existingIds.length > 0 ? { notIn: existingIds } : undefined,
+        type: { in: [TransactionType.investment, TransactionType.transfer] },
+        OR: [{ accountId }, { toAccountId: accountId }],
+      },
+      orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+    });
+    const buckets = new Map<string, {
+      fundCode: string;
+      name: string;
+      remaining: number;
+      historicalProfit: number;
+      totalBuyAmount: number;
+      totalRedeemAmount: number;
+      firstBuyDate: string;
+      clearedDate: string;
+    }>();
+
+    for (const row of rows) {
+      const productName = row.WealthProduct?.name ?? row.productName ?? "未命名理财";
+      const fundCode = row.wealthProductId ?? row.productName ?? productName;
+      const key = fundCode || productName;
+      const tradeDate = row.tradeDate.toISOString().slice(0, 10);
+      const gross = Math.abs(toNumber(row.grossAmount));
+      const arrival = row.arrivalAmount == null ? gross : Math.abs(toNumber(row.arrivalAmount));
+      const interest = Math.max(0, toNumber(row.interest));
+      const bucket = buckets.get(key) ?? {
+        fundCode: key,
+        name: productName,
+        remaining: 0,
+        historicalProfit: 0,
+        totalBuyAmount: 0,
+        totalRedeemAmount: 0,
+        firstBuyDate: "",
+        clearedDate: "",
+      };
+
+      if (isDividendSubtype(row.action)) {
+        bucket.historicalProfit += arrival;
+        bucket.clearedDate = tradeDate;
+      } else if (isCashInSubtype(row.action)) {
+        const principalOut = Math.max(0, arrival - interest);
+        bucket.remaining -= principalOut;
+        bucket.totalRedeemAmount += arrival;
+        bucket.historicalProfit += interest;
+        bucket.clearedDate = tradeDate;
+      } else {
+        bucket.remaining += gross;
+        bucket.totalBuyAmount += gross;
+        if (!bucket.firstBuyDate || tradeDate < bucket.firstBuyDate) bucket.firstBuyDate = tradeDate;
+      }
+
+      buckets.set(key, bucket);
+    }
+
+    for (const row of legacyRows) {
+      const isCashIn = row.accountId === accountId;
+      const productName = row.fundName || row.note || "历史理财";
+      const fundCode = row.wealthProductId || row.fundName || `legacy-wealth:${accountId}`;
+      const key = fundCode || productName;
+      const tradeDate = row.date.toISOString().slice(0, 10);
+      const amount = Math.abs(toNumber(row.amount));
+      const bucket = buckets.get(key) ?? {
+        fundCode: key,
+        name: productName,
+        remaining: 0,
+        historicalProfit: 0,
+        totalBuyAmount: 0,
+        totalRedeemAmount: 0,
+        firstBuyDate: "",
+        clearedDate: "",
+      };
+
+      if (isCashIn) {
+        bucket.remaining -= amount;
+        bucket.totalRedeemAmount += amount;
+        bucket.clearedDate = tradeDate;
+      } else {
+        bucket.remaining += amount;
+        bucket.totalBuyAmount += amount;
+        if (!bucket.firstBuyDate || tradeDate < bucket.firstBuyDate) bucket.firstBuyDate = tradeDate;
+      }
+
+      buckets.set(key, bucket);
+    }
+
+    const positions: PositionDisplayRow[] = [];
+    const clearedPositions: ClearedPositionRow[] = [];
+    for (const bucket of buckets.values()) {
+      const remaining = Number(bucket.remaining.toFixed(2));
+      if (remaining > 0.01) {
+        positions.push({
+          fundCode: bucket.fundCode,
+          name: bucket.name,
+          units: remaining,
+          avgCost: 1,
+          cost: remaining,
+          nav: 1,
+          navDate: "",
+          marketValue: remaining,
+          floatingPnL: 0,
+          floatingPnLRate: 0,
+          pendingCost: 0,
+          historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
+        });
+      } else if (bucket.totalBuyAmount > 0) {
+        clearedPositions.push({
+          fundCode: bucket.fundCode,
+          name: bucket.name,
+          historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
+          totalInvested: Number(bucket.totalBuyAmount.toFixed(2)),
+          returnRate: bucket.totalBuyAmount > 0 ? bucket.historicalProfit / bucket.totalBuyAmount : 0,
+          firstBuyDate: bucket.firstBuyDate,
+          clearedDate: bucket.clearedDate || bucket.firstBuyDate,
+          totalBuyAmount: Number(bucket.totalBuyAmount.toFixed(2)),
+          totalRedeemAmount: Number(bucket.totalRedeemAmount.toFixed(2)),
+        });
+      }
+    }
+
+    positions.sort((a, b) => b.marketValue - a.marketValue);
+    clearedPositions.sort((a, b) => b.clearedDate.localeCompare(a.clearedDate));
+    const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+    const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+    const totalHistoricalProfit =
+      positions.reduce((sum, row) => sum + row.historicalProfit, 0) +
+      clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
   }
 
   const holdings = await prisma.fundHolding.findMany({
@@ -265,85 +449,83 @@ export const computePositionDisplay = cache(
   if (clearedPositions.length > 0) {
     const clearedCodes = clearedPositions.map(c => c.fundCode);
     // 总投入金额（所有买入交易的 ABS(amount) 之和）
-    const investedRows = await prisma.txRecord.groupBy({
+    const investedRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
         ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         fundSubtype: "buy",
-        toAccountId: accountId,
+        fundAccountId: accountId,
         deletedAt: null,
       },
-      _sum: { amount: true },
+      _sum: { grossAmount: true },
     });
     const investedMap = new Map<string, number>();
     for (const row of investedRows) {
       if (row.fundCode) {
-        investedMap.set(row.fundCode, Math.abs(toNumber(row._sum.amount ?? 0)));
+        investedMap.set(row.fundCode, Math.abs(toNumber(row._sum.grossAmount ?? 0)));
       }
     }
     // 初次购买时间（最早买入交易的日期）
-    const firstBuyRows = await prisma.txRecord.groupBy({
+    const firstBuyRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
         ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         fundSubtype: "buy",
-        toAccountId: accountId,
+        fundAccountId: accountId,
         deletedAt: null,
       },
-      _min: { date: true },
+      _min: { applyDate: true },
     });
     const firstBuyMap = new Map<string, string>();
     for (const row of firstBuyRows) {
-      if (row.fundCode && row._min.date) {
-        firstBuyMap.set(row.fundCode, row._min.date.toISOString().slice(0, 10));
+      if (row.fundCode && row._min.applyDate) {
+        firstBuyMap.set(row.fundCode, row._min.applyDate.toISOString().slice(0, 10));
       }
     }
     // 清仓时间（最后赎回的日期）
-    const clearedDateRows = await prisma.txRecord.groupBy({
+    const clearedDateRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
         ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
         fundSubtype: { in: ["redeem"] },
-        accountId: accountId,
+        fundAccountId: accountId,
         deletedAt: null,
       },
-      _max: { date: true },
+      _max: { applyDate: true },
     });
     const clearedDateMap = new Map<string, string>();
     for (const row of clearedDateRows) {
-      if (row.fundCode && row._max.date) {
-        clearedDateMap.set(row.fundCode, row._max.date.toISOString().slice(0, 10));
+      if (row.fundCode && row._max.applyDate) {
+        clearedDateMap.set(row.fundCode, row._max.applyDate.toISOString().slice(0, 10));
       }
     }
     // 申购金额和回收金额：只统计清仓日期之前的交易
     // 回收金额 = 赎回到账 + 现金分红到账，和清仓收益保持同一现金流口径
-    const clearedTxRows = await prisma.txRecord.findMany({
+    const clearedTxRows = await prisma.fundTransaction.findMany({
       where: {
         ...ctx.hidFilter,
         fundCode: { in: clearedCodes },
-        OR: [
-          { toAccountId: accountId, fundSubtype: "buy" },
-          { accountId: accountId, fundSubtype: { in: ["redeem", "dividend_cash"] } },
-        ],
+        fundAccountId: accountId,
+        fundSubtype: { in: ["buy", "redeem", "dividend_cash"] },
         deletedAt: null,
       },
-      select: { fundCode: true, fundSubtype: true, amount: true, fundArrivalAmount: true, date: true },
+      select: { fundCode: true, fundSubtype: true, grossAmount: true, arrivalAmount: true, applyDate: true },
     });
     const buyAmountMap = new Map<string, number>();
     const redeemAmountMap = new Map<string, number>();
     for (const row of clearedTxRows) {
       if (!row.fundCode) continue;
       const clearedDate = clearedDateMap.get(row.fundCode);
-      const txDate = row.date.toISOString().slice(0, 10);
+      const txDate = row.applyDate.toISOString().slice(0, 10);
       if (clearedDate && txDate > clearedDate) continue;
       if (row.fundSubtype === "buy") {
-        buyAmountMap.set(row.fundCode, (buyAmountMap.get(row.fundCode) ?? 0) + Math.abs(toNumber(row.amount)));
+        buyAmountMap.set(row.fundCode, (buyAmountMap.get(row.fundCode) ?? 0) + Math.abs(toNumber(row.grossAmount)));
       } else {
-        const arrival = toNumber(row.fundArrivalAmount ?? 0);
-        const amt = Math.abs(toNumber(row.amount));
+        const arrival = toNumber(row.arrivalAmount ?? 0);
+        const amt = Math.abs(toNumber(row.grossAmount));
         redeemAmountMap.set(row.fundCode, (redeemAmountMap.get(row.fundCode) ?? 0) + (arrival > 0 ? arrival : amt));
       }
     }

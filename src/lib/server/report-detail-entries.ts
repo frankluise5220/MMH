@@ -1,6 +1,7 @@
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export async function loadReportDetailEntries(
@@ -18,6 +19,7 @@ export async function loadReportDetailEntries(
     },
     include: {
       EntryTag: { include: { Tag: true } },
+      ...entryBusinessLinkSummaryInclude,
       account: { include: { Institution: { select: { name: true } } } },
       toAccount: { include: { Institution: { select: { name: true } } } },
     },
@@ -74,6 +76,7 @@ export async function loadReportDetailEntries(
     fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
     fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
     fundArrivalAmount: record.fundArrivalAmount == null ? null : toNumber(record.fundArrivalAmount),
+    ...buildEntryBusinessLinkSummary(record),
     entryTags: record.EntryTag.map((entryTag) => ({
       tagId: entryTag.tagId,
       Tag: entryTag.Tag ? { name: entryTag.Tag.name, color: entryTag.Tag.color ?? "#3B82F6" } : null,

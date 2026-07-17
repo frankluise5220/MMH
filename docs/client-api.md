@@ -146,12 +146,17 @@
 - `/api/v1/accounts/balances`
 - `/api/v1/accounts/investment`
 - `/api/v1/account-group`
+- `/api/v1/institution`
 
 补充约定：
 
 - `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
+- `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
+- `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
 - `POST /api/v1/accounts` 与 `PUT /api/v1/accounts` 在这类账户上接受 `tradingCalendar`；当账户类型不支持该字段时，服务端会自动清空。
+- `/api/v1/business-transactions/integrity` 用于迁移期检查和修复资金流水与独立业务交易表的一致性。`GET` 返回各业务类型的 expected/existing/linked/missing 统计和问题列表；`POST { limit? }` 会复用正式同步逻辑补齐缺失的业务交易和 `EntryBusinessLink`，不直接清空 `TxRecord` 兼容字段。
+- `/api/v1/business-transactions/insurance?accountId=...` 从独立 `InsuranceTransaction` 表读取某个保险账户的业务交易明细，返回 `{ ok:true, data:{ entries } }`。保险页面保存后的刷新应使用该接口，不再通过 `/api/v1/transactions/detail` 筛选 `source=insurance` 作为业务台账来源。
 
 ### Transactions
 
@@ -217,7 +222,10 @@
 - 这组接口不是普通移动端业务契约，优先使用账户、交易、基金等业务 API。
 - 通用 DB API 必须认证，并屏蔽用户、密钥、邮箱、系统设置等敏感模型。
 - 涉及交易、基金、余额的修改后，应调用对应业务接口或服务做重算。
-- `/api/v1/entries/delete`
+- `/api/v1/entries/delete` 删除资金明细时支持 `checkOnly` 和 `linkedAction`：
+  `checkOnly=true` 只返回是否有关联业务和 `impacts`，不执行删除，客户端应先用它预检；
+  `deleteBusiness` 表示同时删除关联的保险/基金/理财/存款/贵金属业务明细；
+  `keepBusiness` 表示只移除资金流水并保留业务明细。未传 `linkedAction` 且存在关联业务时，接口返回 `{ ok:false, needConfirm:true, impacts }`，客户端必须提示用户选择。
 
 ### Fund
 

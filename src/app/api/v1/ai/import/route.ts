@@ -7,6 +7,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
 export const runtime = "nodejs";
 
@@ -323,9 +324,13 @@ export async function POST(req: NextRequest) {
     const name = instName.trim();
     if (!name) return null;
     const found = await prisma.institution.findFirst({
-      where: { name, ...hidFilter },
+      where: {
+        ...hidFilter,
+        OR: [{ name }, { shortName: name }],
+      },
     });
     if (found) return found.id;
+    await assertInstitutionDisplayNamesUnique(prisma, { householdId, name });
     const created = await prisma.institution.create({
       data: { name, householdId },
     });

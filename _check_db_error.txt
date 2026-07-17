@@ -1,0 +1,5 @@
+{
+  "message": "\nInvalid `p.counterparty.findMany()` invocation in\nE:\\fs\\wiseme\\_check_db.cjs:9:36\n\n  6 const p = new PrismaClient({ adapter: new PrismaPg(pool) });\n  7 async function main(){\n  8   try {\n→ 9     const cps=await p.counterparty.findMany(\n",
+  "code": "ECONNREFUSED",
+  "meta": "{\"modelName\":\"Counterparty\"}"
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { Repeat } from "lucide-react";
@@ -27,6 +27,7 @@ type Entry = {
   toAccountName?: string | null;
   source?: string | null;
   insuranceProductId?: string | null;
+  fundArrivalDate?: string | null;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -298,6 +299,7 @@ export function InsuranceFormModal({
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
+  const initArrivalDate = mode === "edit" && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate;
   const initMemo = mode === "edit" && entry?.note ? entry.note : "";
   const initCashAccountId =
     mode === "edit" && entry
@@ -307,6 +309,8 @@ export function InsuranceFormModal({
   const [open, setOpen] = useState(false);
   const [subtype, setSubtype] = useState<"buy" | "redeem">(initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
+  const [arrivalDate, setArrivalDate] = useState(initArrivalDate);
+  const arrivalDateTouchedRef = useRef(mode === "edit");
   const [amount, setAmount] = useState(initAmount);
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [memo, setMemo] = useState(initMemo);
@@ -611,6 +615,8 @@ export function InsuranceFormModal({
   function resetForm(defaults?: { requestId?: string | null; defaultCashAccountId?: string; defaultInsuranceAccountId?: string }) {
     setSubtype("buy");
     setDate(today);
+    setArrivalDate(today);
+    arrivalDateTouchedRef.current = false;
     setAmount("");
     setCashAccountId(defaults?.defaultCashAccountId ?? "");
     setMemo("");
@@ -636,6 +642,18 @@ export function InsuranceFormModal({
 
   useEffect(() => setCashAccountList(cashAccounts), [cashAccounts]);
   useEffect(() => setLocalCashSSOpts(cashAccountSSOptions), [cashAccountSSOptions]);
+
+  function changeDate(nextDate: string) {
+    setDate(nextDate);
+    if (mode === "create" && subtype === "redeem" && !arrivalDateTouchedRef.current) {
+      setArrivalDate(nextDate);
+    }
+  }
+
+  function changeArrivalDate(nextDate: string) {
+    arrivalDateTouchedRef.current = true;
+    setArrivalDate(nextDate);
+  }
   useEffect(() => {
     let cancelled = false;
 
@@ -800,7 +818,8 @@ export function InsuranceFormModal({
         coverageTermYears: parseOptionalNumber(coverageTermYears),
         coverageAmount: parseOptionalNumber(coverageAmount),
         cashValueEnabled: true,
-        fundSubtype: "buy",
+        fundSubtype: subtype === "redeem" ? "redeem" : "buy",
+        fundArrivalDate: subtype === "redeem" ? (arrivalDate || submitDate) : undefined,
         source: "insurance",
         createInsurancePremiumPlan: options.createPremiumPlan,
         insurancePremiumBackfillPastRecords: options.backfillPastRecords,
@@ -886,7 +905,10 @@ export function InsuranceFormModal({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSubtype("redeem")}
+                  onClick={() => {
+                    setSubtype("redeem");
+                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+                  }}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
                 >
                   退保
@@ -933,12 +955,19 @@ export function InsuranceFormModal({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="space-y-1">
                       <div className="form-label">退保日期</div>
                       <DateStepper
                         value={date}
-                        onChange={setDate}
+                        onChange={changeDate}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">到账日期</div>
+                      <DateStepper
+                        value={arrivalDate}
+                        onChange={changeArrivalDate}
                       />
                     </div>
                     <div className="space-y-1">

@@ -13,6 +13,12 @@ import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
+import { entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
+import {
+  loadPreciousMetalTransactionEntryLike,
+  loadWealthTransactionEntryLike,
+} from "@/lib/server/business-transaction-entries";
 
 // ── 类型 ──
 
@@ -92,8 +98,19 @@ async function _loadEntriesForAccount(
     where,
     include: {
       EntryTag: { include: { Tag: true } },
-      account: { include: { Institution: { select: { name: true } } } },
-      toAccount: { include: { Institution: { select: { name: true } } } },
+      ...entryBusinessLinkSummaryInclude,
+      account: {
+        include: {
+          Institution: { select: { name: true, shortName: true } },
+          AccountGroup: { select: { name: true } },
+        },
+      },
+      toAccount: {
+        include: {
+          Institution: { select: { name: true, shortName: true } },
+          AccountGroup: { select: { name: true } },
+        },
+      },
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: 5000,
@@ -186,24 +203,31 @@ async function _loadInvestAccountData(
   positionDisplay.clearedPositions = [...positionDisplay.clearedPositions].sort(clearedSortFn);
 
   const selectedFundCode =
-    params.fundCodeParam ||
-    (positionDisplay.positions.length > 0
-      ? positionDisplay.positions[0]!.fundCode
-      : positionDisplay.clearedPositions.length > 0
-        ? positionDisplay.clearedPositions[0]!.fundCode
-        : "");
+    account.investProductType === "wealth"
+      ? (params.fundCodeParam || "")
+      : params.fundCodeParam ||
+        (positionDisplay.positions.length > 0
+          ? positionDisplay.positions[0]!.fundCode
+          : positionDisplay.clearedPositions.length > 0
+            ? positionDisplay.clearedPositions[0]!.fundCode
+            : "");
 
-  const fundEntries = await prisma.txRecord.findMany({
-    where: {
-      deletedAt: null,
-      ...hidFilter,
-      ...(account.investProductType === "metal"
-        ? { metalTypeId: { not: null } }
-        : { fundCode: { not: null } }),
-      OR: [{ toAccountId: accountId }, { accountId: accountId }],
-    },
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-  });
+  const fundEntries =
+    account.investProductType === "wealth"
+      ? await loadWealthTransactionEntryLike({
+          householdId: hidFilter.householdId,
+          accountIds: [accountId],
+        })
+      : account.investProductType === "metal"
+        ? await loadPreciousMetalTransactionEntryLike({
+            householdId: hidFilter.householdId,
+            accountIds: [accountId],
+          })
+        : await loadFundTransactionEntryLike({
+            householdId: hidFilter.householdId,
+            accountId,
+            entryScope: "account",
+          });
 
   const feeRateRecords = await prisma.fundFeeRate.findMany({
     where: { accountId },

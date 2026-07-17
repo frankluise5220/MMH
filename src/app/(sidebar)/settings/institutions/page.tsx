@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import {
+  assertInstitutionDisplayNamesUnique,
+  isInstitutionNameUniqueError,
+} from "@/lib/server/institution-name-unique";
 import { SettingsInstitutionsClient } from "./client";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
@@ -13,16 +17,29 @@ async function updateInstitutionRow(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
-  if (!institutionId || !name) return;
+  if (!institutionId || !name) return { ok: false, error: "缺少必填字段" };
 
-  await prisma.institution
-    .updateMany({
-      where: { id: institutionId, householdId },
-      data: { name, shortName: shortName || null, type: type || null },
-    })
-    .catch(() => null);
+  try {
+    await prisma.$transaction(async (tx) => {
+      await assertInstitutionDisplayNamesUnique(tx, {
+        householdId,
+        name,
+        shortName,
+        excludeId: institutionId,
+      });
+      const updated = await tx.institution.updateMany({
+        where: { id: institutionId, householdId },
+        data: { name, shortName: shortName || null, type: type || null },
+      });
+      if (updated.count === 0) throw new Error("机构不存在");
+    });
+  } catch (error) {
+    if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };
+    return { ok: false, error: error instanceof Error ? error.message : "保存失败" };
+  }
 
   revalidateAfterSettingsChange();
+  return { ok: true };
 }
 
 export default async function SettingsInstitutionsPage() {

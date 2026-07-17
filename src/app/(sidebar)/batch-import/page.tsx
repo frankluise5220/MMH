@@ -6,13 +6,14 @@ import { useRouter } from "next/navigation";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
-import { formatAccountSelectorLabel } from "@/lib/account-display";
+import { formatOwnerQualifiedAccountLabel } from "@/lib/account-display";
 import {
   IMPORT_ACCOUNT_ID_PREFIX,
   createImportAccountMatcher,
   createImportAccountIdentityConflictChecker,
   encodeImportAccountId,
   normalizeImportAccountMatchKey,
+  parseImportAccountId,
 } from "@/lib/account-import-match";
 import { kindLabel } from "@/lib/account-kinds";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -523,8 +524,8 @@ function normalizeDateCell(value: string) {
 }
 
 function inferBillType(source: string, inflow: number, outflow: number, counterAccount: string): ParsedItem["type"] {
-  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|repayment|payment/i.test(source)) return "transfer";
   if (/结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|refund|credit/i.test(source)) return "income";
+  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|repayment|payment/i.test(source)) return "transfer";
   if (/installment/i.test(source)) return "expense";
   if (counterAccount) return "transfer";
   if (inflow > 0 && outflow <= 0) return "income";
@@ -598,6 +599,51 @@ function normalizeFlowFields(
     if (transferDirection === "out") return { amount: nextAmount, inflow: 0, outflow: nextAmount };
   }
   return { amount, inflow, outflow };
+}
+
+function directionalAccountValues(item: ParsedItem) {
+  const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
+  if (item.type === "transfer") {
+    return {
+      account: (direction === "in" ? item.toAccount : item.fromAccount) || item.account || "",
+      counterAccount: (direction === "in" ? item.fromAccount : item.toAccount) || "",
+      direction,
+    };
+  }
+  return {
+    account: item.account || "",
+    counterAccount: "",
+    direction,
+  };
+}
+
+function accountPatchForPreviewTypeChange(
+  item: ParsedItem,
+  nextType: ParsedItem["type"],
+  nextBusinessType: CreditCardRepaymentBusinessType | null,
+) {
+  const { account, counterAccount, direction } = directionalAccountValues(item);
+  if (nextType === "transfer") {
+    const nextDirection = nextBusinessType
+      ? "out"
+      : item.type === "income"
+        ? "in"
+        : item.type === "expense"
+          ? "out"
+          : direction;
+    return nextDirection === "in"
+      ? { transferDirection: "in" as const, toAccount: account, fromAccount: counterAccount }
+      : { transferDirection: "out" as const, fromAccount: account, toAccount: counterAccount };
+  }
+  if (item.type !== "transfer") return {};
+  return {
+    account: nextType === "income"
+      ? (item.toAccount || account)
+      : (item.fromAccount || account),
+    fromAccount: "",
+    toAccount: "",
+    transferDirection: undefined,
+  };
 }
 
 function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook, sheetName: string): string[][] {
@@ -848,6 +894,10 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     const majorTypeText = readAny(row, ["收支大类", "大类", "收支", "方向", "majorType"]);
     const majorType = parseMajorType(majorTypeText);
     const explicitType = readAny(row, ["类型", "原始类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type"]);
+    // "类型" column may carry the user's explicit classification (收入/支出/转账/投资).
+    // When it resolves to a concrete type, prefer it over the looser 收支大类 column.
+    const explicitMajorType = parseMajorType(explicitType);
+    const resolvedMajorType = explicitMajorType ?? majorType;
     const businessType = parseImportBusinessType({
       majorTypeText,
       explicitType,
@@ -858,13 +908,19 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     const source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${remark}`;
     const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
     const hasExplicitFlow = rawInflow > 0 || rawOutflow > 0 || !!rawInflowText || !!rawOutflowText;
-    const inferredType = majorType ?? inferBillType(
+    const rawInferredType = resolvedMajorType ?? inferBillType(
       source,
       rawInflow || (!hasExplicitFlow && rawAmountSigned > 0 && amountLooksIncome ? rawAmount : 0),
       rawOutflow || (!hasExplicitFlow && rawAmountSigned < 0 ? rawAmount : 0),
       counterAccount,
     );
-    const type = inferredType;
+    // If type is transfer but the category explicitly says income and there is no
+    // counter account, the "转账" keyword likely describes how money arrived rather
+    // than a true account-to-account transfer. Respect the category.
+    const type: ParsedItem["type"] =
+      rawInferredType === "transfer" && !counterAccount && /收入/.test(category)
+        ? "income"
+        : rawInferredType;
     const onlyAmountFlow = !hasExplicitFlow && rawAmount > 0
       ? normalizeFlowFields(type, rawAmount, type === "income" ? rawAmount : 0, type === "income" ? 0 : rawAmount, type === "transfer" ? "out" : undefined)
       : null;
@@ -1046,6 +1102,16 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
   };
 }
 
+
+
+
+
+const DEBT_ACCOUNT_NAME_RE = /^(.+?)的往来款$/;
+function parseDebtAccountNameFromImport(v: string): string | null {
+  const m = v.trim().match(DEBT_ACCOUNT_NAME_RE);
+  return m?.[1]?.trim() ?? null;
+}
+
 export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
@@ -1116,7 +1182,7 @@ export default function BatchImportPage() {
   const [editingCell, setEditingCell] = useState<{ idx: number; field: EditableCell } | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<FilterColumn | null>(null);
   const [columnFilters, setColumnFilters] = useState<Partial<Record<FilterColumn, string[]>>>({});
-  const [showImportErrorsOnly, setShowImportErrorsOnly] = useState(false);
+  const [showImportIssuesOnly, setShowImportIssuesOnly] = useState(false);
   const [previewCount, setPreviewCount] = useState(INITIAL_PREVIEW_COUNT);
   const [previewIssues, setPreviewIssues] = useState<ImportIssue[]>([]);
   const [previewValidationProgress, setPreviewValidationProgress] = useState<{ checked: number; total: number } | null>(null);
@@ -1165,8 +1231,9 @@ export default function BatchImportPage() {
   }, [formatText]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    return formatAccountSelectorLabel({
+    return formatOwnerQualifiedAccountLabel({
       accountName: account.name,
+      kind: account.kind,
       institution: account.Institution
         ? {
             name: account.Institution.name ?? null,
@@ -1174,6 +1241,7 @@ export default function BatchImportPage() {
           }
         : null,
       numberMasked: account.numberMasked,
+      ownerName: account.AccountGroup?.name ?? null,
     });
   }, []);
 
@@ -1186,10 +1254,10 @@ export default function BatchImportPage() {
   }, [accountOwnerLabel]);
 
   const accountHoverTitle = useCallback((account: AccountOption) => {
-    return [accountOwnerLabel(account), accountDisplayLabel(account), kindLabel(account.kind)]
+    return [accountDisplayLabel(account)]
       .filter(Boolean)
       .join(" · ");
-  }, [accountDisplayLabel, accountOwnerLabel]);
+  }, [accountDisplayLabel]);
 
   const activeAccountOptions = useMemo(
     () => accountOptions.filter((account) => account.isActive !== false),
@@ -1248,6 +1316,14 @@ export default function BatchImportPage() {
     const matchedId = findMatchedAccountId(value);
     return matchedId ? accountById.get(matchedId) : undefined;
   }, [accountById, findMatchedAccountId]);
+
+  const readableAccountText = useCallback((value: string) => {
+    const current = value.trim();
+    if (!current) return "";
+    const directId = parseImportAccountId(current) || (accountById.has(current) ? current : "");
+    const account = directId ? accountById.get(directId) : matchedAccountForText(current);
+    return account ? accountDisplayLabel(account) : current;
+  }, [accountById, accountDisplayLabel, matchedAccountForText]);
 
   const isCreditAccountText = useCallback((value: string) => {
     const current = value.trim();
@@ -1334,8 +1410,9 @@ export default function BatchImportPage() {
     if (!current) return "";
     const matchedId = findMatchedAccountId(current);
     const account = matchedId ? accountById.get(matchedId) : undefined;
-    return account && accountMatchesPickerRole(account, role) ? accountDisplayLabel(account) : current;
-  }, [accountById, accountDisplayLabel, accountMatchesPickerRole, findMatchedAccountId]);
+    if (account && accountMatchesPickerRole(account, role)) return accountDisplayLabel(account);
+    return readableAccountText(current);
+  }, [accountById, accountDisplayLabel, accountMatchesPickerRole, findMatchedAccountId, readableAccountText]);
 
   const accountHref = useCallback((accountId: string) => {
     const account = accountById.get(accountId);
@@ -1350,19 +1427,19 @@ export default function BatchImportPage() {
     const account = matchedId ? accountById.get(matchedId) : undefined;
     const display = account && accountMatchesPickerRole(account, role)
       ? accountHoverTitle(account)
-      : current;
+      : readableAccountText(current);
     return `${display}\n${t("batchImport.doubleClickToEdit")}`;
-  }, [accountById, accountHoverTitle, accountMatchesPickerRole, findMatchedAccountId, t]);
+  }, [accountById, accountHoverTitle, accountMatchesPickerRole, findMatchedAccountId, readableAccountText, t]);
 
   const accountIdentityConflictMessage = useCallback((selectedText: string, originalText?: string) => {
     const selected = getAccountMatch(selectedText).account;
     const conflict = getAccountIdentityConflict(selected, originalText);
     if (!conflict) return "";
     return formatText("batchImport.issue.accountIdentityConflict", {
-      account: selected ? accountDisplayLabel(selected) : selectedText.trim(),
-      original: conflict.originalText,
+      account: selected ? accountDisplayLabel(selected) : readableAccountText(selectedText),
+      original: readableAccountText(conflict.originalText),
     });
-  }, [accountDisplayLabel, formatText, getAccountIdentityConflict, getAccountMatch]);
+  }, [accountDisplayLabel, formatText, getAccountIdentityConflict, getAccountMatch, readableAccountText]);
 
   const accountIssueMessage = useCallback((
     value: string,
@@ -1372,12 +1449,12 @@ export default function BatchImportPage() {
     const match = getAccountMatch(current);
     if (match.ambiguousAccounts.length > 0) {
       return formatText(keys.ambiguous, {
-        account: current,
+        account: readableAccountText(current),
         count: match.ambiguousAccounts.length,
       });
     }
-    return formatText(keys.unmatched, { account: current });
-  }, [formatText, getAccountMatch]);
+    return formatText(keys.unmatched, { account: readableAccountText(current) });
+  }, [formatText, getAccountMatch, readableAccountText]);
 
   const accountStorageText = useCallback((value?: string, originalValue?: string) => {
     const current = String(value ?? "").trim();
@@ -1499,7 +1576,7 @@ export default function BatchImportPage() {
     setFundSelected(new Set());
     setColumnFilters({});
     setActiveFilterColumn(null);
-    setShowImportErrorsOnly(false);
+    setShowImportIssuesOnly(false);
     setPreviewCount(INITIAL_PREVIEW_COUNT);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
@@ -1545,7 +1622,7 @@ export default function BatchImportPage() {
         setFundPreviewItems([]);
         setFundRuleRows([]);
         setFundSelected(new Set());
-        setShowImportErrorsOnly(false);
+        setShowImportIssuesOnly(false);
         setUploadDebug(`${formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo })}\n${workbookDetail}\n${recognitionDetail}\n${traceLabel}`.trim());
         setMessage(formatText("batchImport.noRecordsRecognizedMessage", { name: file.name, headers }));
         return;
@@ -1560,7 +1637,7 @@ export default function BatchImportPage() {
       setSelected(new Set());
       setFundSelected(new Set());
       setEditingCell(null);
-      setShowImportErrorsOnly(false);
+      setShowImportIssuesOnly(false);
       setUploadDebug(null);
       setMessage(null);
     } catch (error) {
@@ -1616,7 +1693,7 @@ export default function BatchImportPage() {
     setEditingCell(null);
     setColumnFilters({});
     setActiveFilterColumn(null);
-    setShowImportErrorsOnly(false);
+    setShowImportIssuesOnly(false);
     setPreviewCount(INITIAL_PREVIEW_COUNT);
 
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -1901,14 +1978,24 @@ export default function BatchImportPage() {
     if (item.type === "transfer" && counterAccount.trim()) {
       const counterMatch = getAccountMatch(counterAccount);
       if (!counterMatch.account) {
-        issues.push({
-          idx,
-          level: "warning",
-          message: accountIssueMessage(counterAccount, {
-            unmatched: "batchImport.issue.counterAccountUnmatched",
-            ambiguous: "batchImport.issue.counterAccountAmbiguous",
-          }),
-        });
+        const counterpartyName = parseDebtAccountNameFromImport(counterAccount) || counterAccount;
+        const looksLikeCounterparty = counterpartyName && !counterMatch.targetBankNames?.length;
+        if (looksLikeCounterparty) {
+          issues.push({
+            idx,
+            level: "warning",
+            message: formatText("batchImport.issue.debtAccountWillCreate", { name: counterpartyName }),
+          });
+        } else {
+          issues.push({
+            idx,
+            level: "warning",
+            message: accountIssueMessage(counterAccount, {
+              unmatched: "batchImport.issue.counterAccountUnmatched",
+              ambiguous: "batchImport.issue.counterAccountAmbiguous",
+            }),
+          });
+        }
       }
     } else if (item.type === "transfer" && !counterAccount.trim()) {
       issues.push({ idx, level: "warning", message: t("batchImport.issue.counterAccountMissing") });
@@ -1990,10 +2077,17 @@ export default function BatchImportPage() {
     for (const issue of previewErrorIssues) set.add(issue.idx);
     return set;
   }, [previewErrorIssues]);
-  const previewWarningRowCount = useMemo(
-    () => new Set(previewWarningIssues.map((issue) => issue.idx)).size,
-    [previewWarningIssues],
-  );
+  const previewWarningRowIndexes = useMemo(() => {
+    const set = new Set<number>();
+    for (const issue of previewWarningIssues) set.add(issue.idx);
+    return set;
+  }, [previewWarningIssues]);
+  const previewIssueRowIndexes = useMemo(() => {
+    const set = new Set<number>(previewErrorRowIndexes);
+    for (const idx of previewWarningRowIndexes) set.add(idx);
+    return set;
+  }, [previewErrorRowIndexes, previewWarningRowIndexes]);
+  const previewWarningRowCount = previewWarningRowIndexes.size;
   const previewErrorRows = useMemo(() => (
     Array.from(previewErrorRowIndexes)
       .sort((a, b) => a - b)
@@ -2004,6 +2098,16 @@ export default function BatchImportPage() {
           .map((issue) => issue.message),
       }))
   ), [previewErrorRowIndexes, previewIssuesByRow]);
+  const previewWarningRows = useMemo(() => (
+    Array.from(previewWarningRowIndexes)
+      .sort((a, b) => a - b)
+      .map((idx) => ({
+        idx,
+        messages: (previewIssuesByRow.get(idx) ?? [])
+          .filter((issue) => issue.level === "warning")
+          .map((issue) => issue.message),
+      }))
+  ), [previewIssuesByRow, previewWarningRowIndexes]);
   const importErrorRows = useMemo(() => (
     Array.from(importErrorRowIndexes)
       .sort((a, b) => a - b)
@@ -2015,26 +2119,59 @@ export default function BatchImportPage() {
       }))
   ), [importErrorRowIndexes, importIssuesByRow]);
   const displayedFilteredIndexes = useMemo(() => {
-    const source = showImportErrorsOnly
-      ? filteredIndexes.filter((idx) => previewErrorRowIndexes.has(idx))
+    const source = showImportIssuesOnly
+      ? filteredIndexes.filter((idx) => previewIssueRowIndexes.has(idx))
       : filteredIndexes;
     return [...source].sort((a, b) => {
       const aError = previewErrorRowIndexes.has(a);
       const bError = previewErrorRowIndexes.has(b);
       if (aError !== bError) return aError ? -1 : 1;
+      const aWarning = previewWarningRowIndexes.has(a);
+      const bWarning = previewWarningRowIndexes.has(b);
+      if (aWarning !== bWarning) return aWarning ? -1 : 1;
       return a - b;
     });
-  }, [filteredIndexes, previewErrorRowIndexes, showImportErrorsOnly]);
+  }, [filteredIndexes, previewErrorRowIndexes, previewIssueRowIndexes, previewWarningRowIndexes, showImportIssuesOnly]);
   const displayedVisibleIndexes = useMemo(
     () => displayedFilteredIndexes.slice(0, previewCount),
     [displayedFilteredIndexes, previewCount],
   );
-  const previewErrorPreviewText = useMemo(() => (
-    previewErrorRows
-      .slice(0, 6)
-      .map((row) => `第 ${row.idx + 1} 行：${row.messages.join("；")}`)
-      .join("；")
-  ), [previewErrorRows]);
+  const previewErrorPreviewText = useMemo(() => {
+    const groups: Map<string, number[]> = new Map();
+    for (const row of previewErrorRows) {
+      const text = row.messages.join("；");
+      if (!groups.has(text)) groups.set(text, []);
+      groups.get(text)!.push(row.idx + 1);
+    }
+    const parts: string[] = [];
+    for (const [text, rowNums] of groups) {
+      const label = rowNums.length === 1
+        ? `第 ${rowNums[0]} 行：${text}`
+        : `第 ${rowNums.slice(0, 10).join("、")}${rowNums.length > 10 ? "等" + rowNums.length + "行" : ""}：${text}`;
+      if (parts.length < 6) parts.push(label);
+    }
+    return parts.join("；");
+  }, [previewErrorRows]);
+  const previewWarningGrouped = useMemo(() => {
+    const groups: Map<string, number[]> = new Map();
+    for (const row of previewWarningRows) {
+      const text = row.messages.join("；");
+      if (!groups.has(text)) groups.set(text, []);
+      groups.get(text)!.push(row.idx + 1);
+    }
+    return Array.from(groups.entries()).map(([text, rowNums]) => ({ text, rowNums }));
+  }, [previewWarningRows]);
+  const previewWarningGroupCount = previewWarningGrouped.length;
+  const previewWarningPreviewText = useMemo(() => {
+    const parts: string[] = [];
+    for (const { text, rowNums } of previewWarningGrouped) {
+      const label = rowNums.length === 1
+        ? `第 ${rowNums[0]} 行：${text}`
+        : `第 ${rowNums.slice(0, 10).join("、")}${rowNums.length > 10 ? "等" + rowNums.length + "行" : ""}：${text}`;
+      if (parts.length < 6) parts.push(label);
+    }
+    return parts.join("；");
+  }, [previewWarningGrouped]);
   const previewValidationRunning = previewValidationProgress !== null;
   const importProgressPercent = useMemo(() => {
     if (!importProgress?.total) return 0;
@@ -2142,9 +2279,14 @@ export default function BatchImportPage() {
         patch.businessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
           ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
           : null;
-        if (nextType === "transfer") {
-          patch.transferDirection = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? "out" : direction;
-        }
+        Object.assign(
+          patch,
+          accountPatchForPreviewTypeChange(
+            item,
+            nextType,
+            nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE : null,
+          ),
+        );
         const flow = normalizeFlowFields(nextType, item.amount ?? 0, item.inflow ?? 0, item.outflow ?? 0, patch.transferDirection ?? direction);
         patch.amount = flow.amount;
         patch.inflow = flow.inflow;
@@ -2479,7 +2621,7 @@ export default function BatchImportPage() {
     setEditingCell(null);
     setActiveFilterColumn(null);
     setColumnFilters({});
-    setShowImportErrorsOnly(false);
+    setShowImportIssuesOnly(false);
     setMessage(null);
     setUploadDebug(null);
     setImportProgress(null);
@@ -2801,10 +2943,10 @@ export default function BatchImportPage() {
               ) : null}
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                 <span className="font-medium text-slate-700">
-                  {hasActiveColumnFilters || showImportErrorsOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
+                  {hasActiveColumnFilters || showImportIssuesOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
                 </span>
                 <span>
-                  {hasActiveColumnFilters || showImportErrorsOnly
+                  {hasActiveColumnFilters || showImportIssuesOnly
                     ? formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })
                     : formatText("batchImport.totalCount", { total: items.length })}
                 </span>
@@ -2821,7 +2963,7 @@ export default function BatchImportPage() {
                     {t("batchImport.selectingRows")}
                   </span>
                 )}
-                {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && (
+                {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && previewWarningRows.length === 0 && (
                   <span className="rounded bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
                     {t("batchImport.previewPassed")}
                   </span>
@@ -2831,17 +2973,22 @@ export default function BatchImportPage() {
                     {formatText("batchImport.previewBlockingBadge", { count: previewErrorRows.length })}
                   </span>
                 )}
+                {previewWarningRows.length > 0 && (
+                  <span className="rounded bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
+                    {formatText("batchImport.previewWarningBadge", { count: previewWarningRows.length })}
+                  </span>
+                )}
                 <span className="text-slate-400">{t("batchImport.filterHint")}</span>
-                {previewErrorRows.length > 0 && (
+                {previewIssueRowIndexes.size > 0 && (
                   <button
                     type="button"
                     onClick={() => {
-                      setShowImportErrorsOnly((value) => !value);
+                      setShowImportIssuesOnly((value) => !value);
                       setPreviewCount(INITIAL_PREVIEW_COUNT);
                     }}
-                    className="h-8 px-2 rounded border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
+                    className="h-8 px-2 rounded border border-amber-200 bg-white text-xs font-medium text-amber-700 hover:bg-amber-50"
                   >
-                    {showImportErrorsOnly ? t("batchImport.showAllRows") : t("batchImport.showErrorRows")}
+                    {showImportIssuesOnly ? t("batchImport.showAllRows") : t("batchImport.showIssueRows")}
                   </button>
                 )}
                 <button
@@ -2849,7 +2996,7 @@ export default function BatchImportPage() {
                   onClick={() => {
                     setActiveFilterColumn(null);
                     setColumnFilters({});
-                    setShowImportErrorsOnly(false);
+                    setShowImportIssuesOnly(false);
                   }}
                   className="ml-auto h-8 px-2 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
                 >
@@ -2863,6 +3010,17 @@ export default function BatchImportPage() {
                     {previewErrorPreviewText}
                     {previewErrorRows.length > 6
                       ? formatText("batchImport.previewBlockingMore", { count: previewErrorRows.length - 6 })
+                      : ""}
+                  </div>
+                </div>
+              )}
+              {previewWarningRows.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  <div className="font-semibold">{t("batchImport.previewWarningHint")}</div>
+                  <div className="mt-1 leading-5">
+                    {previewWarningPreviewText}
+                    {previewWarningGroupCount > 6
+                      ? formatText("batchImport.previewWarningMore", { count: previewWarningGroupCount - 6 })
                       : ""}
                   </div>
                 </div>
@@ -2997,24 +3155,14 @@ export default function BatchImportPage() {
                               const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
                                 ? "transfer"
                                 : nextPreviewType;
+                              const nextBusinessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
+                                : null;
+                              const accountPatch = accountPatchForPreviewTypeChange(currentRowItem, nextType, nextBusinessType);
                               updateDraft(idx, "type", nextType);
-                              updateDraft(
-                                idx,
-                                "businessType",
-                                nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                  ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                  : null,
-                              );
-                              if (nextType === "transfer") {
-                                updateDraft(
-                                  idx,
-                                  "transferDirection",
-                                  nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                    ? "out"
-                                    : inflow > 0 && outflow <= 0
-                                      ? "in"
-                                      : "out",
-                                );
+                              updateDraft(idx, "businessType", nextBusinessType);
+                              for (const [field, value] of Object.entries(accountPatch)) {
+                                updateDraft(idx, field, value);
                               }
                             }}
                             className="h-6 w-20 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
