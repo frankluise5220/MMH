@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ArrowDownAZ, ArrowDownUp, Pause, Pencil, Play, Plus, RefreshCw, SlidersHorizontal, Square, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { DateStepper } from "@/components/DateStepper";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
@@ -442,13 +443,50 @@ export function RegularInvestClient({
     return () => window.removeEventListener("mmh:transaction:edit:success", handleEditSuccess);
   });
 
+  function enrichPlanFromApi(plan: any): RegularInvestPlanView {
+    const fundAccount = investmentAccounts.find((account) => account.id === plan.accountId);
+    const cashAccount = cashAccounts.find((account) => account.id === plan.cashAccountId);
+    return {
+      ...plan,
+      taskType: plan.taskType ?? "fund_regular_invest",
+      taskTypeLabel: plan.taskTypeLabel ?? scheduledTaskTypeLabel(plan.taskType ?? "fund_regular_invest"),
+      amount: Number(plan.amount ?? 0),
+      intervalValue: Number(plan.intervalValue ?? 1),
+      executedRuns: plan.executedRuns == null ? null : Number(plan.executedRuns),
+      totalRuns: plan.totalRuns == null ? null : Number(plan.totalRuns),
+      executionDay: plan.executionDay == null ? null : Number(plan.executionDay),
+      feeRate: plan.feeRate == null ? null : Number(plan.feeRate),
+      confirmDays: plan.confirmDays == null ? null : Number(plan.confirmDays),
+      arrivalDays: plan.arrivalDays == null ? null : Number(plan.arrivalDays),
+      executedCount: Number(plan.executedCount ?? 0),
+      executedAmount: Number(plan.executedAmount ?? 0),
+      confirmedCount: Number(plan.confirmedCount ?? 0),
+      confirmedAmount: Number(plan.confirmedAmount ?? 0),
+      accountLabel: fundAccount?.label ?? plan.accountLabel ?? plan.accountName,
+      accountFullLabel: fundAccount?.fullLabel ?? plan.accountFullLabel ?? plan.accountName,
+      accountHoverTitle: fundAccount?.hoverTitle ?? plan.accountHoverTitle ?? null,
+      accountGroupName: fundAccount?.groupName ?? plan.accountGroupName ?? "",
+      cashAccountLabel: cashAccount?.label ?? plan.cashAccountLabel ?? plan.cashAccountName,
+      cashAccountFullLabel: cashAccount?.fullLabel ?? plan.cashAccountFullLabel ?? plan.cashAccountName,
+      cashAccountHoverTitle: cashAccount?.hoverTitle ?? plan.cashAccountHoverTitle ?? null,
+      cashAccountGroupName: cashAccount?.groupName ?? plan.cashAccountGroupName ?? "",
+    };
+  }
+
   async function apiCreateAction(payload: any) {
     const res = await fetch("/api/v1/regular-invest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    return await res.json();
+    const data = await res.json();
+    if (data.ok && data.plan?.id) {
+      const createdPlan = enrichPlanFromApi(data.plan);
+      setPlans((prev) => [createdPlan, ...prev.filter((plan) => plan.id !== createdPlan.id)]);
+      setSelectedPlan(createdPlan);
+      setPlanRecords([]);
+    }
+    return data;
   }
 
   async function loadRecords(plan: RegularInvestPlanView) {
@@ -1246,11 +1284,9 @@ export function RegularInvestClient({
             <div className="space-y-3 p-4">
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">申请日期</div>
-                <input
-                  type="date"
+                <DateStepper
                   value={editingRecord.date}
-                  onChange={(e) => {
-                    const newDate = e.target.value;
+                  onChange={(newDate) => {
                     setEditingRecord((record: any) => ({ ...record, date: newDate, fundConfirmDate: addWorkdaysUtc(newDate, editingRecord.confirmDays) }));
                   }}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
@@ -1259,10 +1295,9 @@ export function RegularInvestClient({
               </div>
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">确认日期</div>
-                <input
-                  type="date"
+                <DateStepper
                   value={editingRecord.fundConfirmDate}
-                  onChange={(e) => setEditingRecord((record: any) => ({ ...record, fundConfirmDate: e.target.value }))}
+                  onChange={(value) => setEditingRecord((record: any) => ({ ...record, fundConfirmDate: value }))}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 />
                 <div className="text-xs text-slate-400">单独修改确认日期不会影响申请日期</div>

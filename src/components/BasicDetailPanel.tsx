@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Download, Upload } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -21,6 +22,7 @@ type BasicDetailPanelProps = {
   accountId: string;
   isInvestAccount: boolean;
   entries: DetailEntry[];
+  totalCount: number;
   originalCount: number;
   hasDetailFilters: boolean;
   initialPage: number;
@@ -28,7 +30,7 @@ type BasicDetailPanelProps = {
   initialDetailAll: boolean;
   normalExportHref: string;
   normalExportFilename: string;
-  accountOptions: Array<{ id: string; label: string }>;
+  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
@@ -58,6 +60,7 @@ export function BasicDetailPanel({
   accountId,
   isInvestAccount,
   entries,
+  totalCount,
   originalCount,
   hasDetailFilters,
   initialPage,
@@ -73,13 +76,15 @@ export function BasicDetailPanel({
   accountLabel = "",
   currentBalance = 0,
 }: BasicDetailPanelProps) {
+  const router = useRouter();
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
+  const [localTotalCount, setLocalTotalCount] = useState(totalCount);
   const [localOriginalCount, setLocalOriginalCount] = useState(originalCount);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
 
-  const totalPages = Math.max(1, Math.ceil(localEntries.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
   const safePage = detailAll ? 1 : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
@@ -87,18 +92,19 @@ export function BasicDetailPanel({
 
   useEffect(() => {
     setLocalEntries(entries);
+    setLocalTotalCount(totalCount);
     setLocalOriginalCount(originalCount);
     if (lastAccountScopeKeyRef.current !== accountScopeKey) {
       lastAccountScopeKeyRef.current = accountScopeKey;
       const storedPreference = readStoredDetailPreference(accountId);
       const nextPageSize = storedPreference?.pageSize ?? normalizedInitialPageSize;
       const nextDetailAll = storedPreference?.detailAll ?? initialDetailAll;
-      const nextTotalPages = Math.max(1, Math.ceil(entries.length / nextPageSize));
+      const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
       setPageSize(nextPageSize);
       setDetailAll(nextDetailAll);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, accountScopeKey, entries, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount]);
+  }, [accountId, accountScopeKey, entries, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -109,6 +115,7 @@ export function BasicDetailPanel({
         const next = current.filter((entry) => !deletedSet.has(entry.id));
         const removedCount = current.length - next.length;
         if (removedCount > 0) {
+          setLocalTotalCount((count) => Math.max(0, count - removedCount));
           setLocalOriginalCount((count) => Math.max(0, count - removedCount));
         }
         return next;
@@ -138,14 +145,15 @@ export function BasicDetailPanel({
       url.searchParams.delete("detailAll");
       url.searchParams.set("detailPage", String(safePage));
     }
-    window.history.replaceState(window.history.state, "", url);
     writeStoredDetailPreference(accountId, pageSize, detailAll, safePage);
-  }, [accountId, detailAll, pageSize, safePage]);
+    const nextHref = `${url.pathname}${url.search}${url.hash}`;
+    const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextHref !== currentHref) {
+      router.replace(nextHref, { scroll: false });
+    }
+  }, [accountId, detailAll, pageSize, router, safePage]);
 
-  const pageEntries = useMemo(() => {
-    if (detailAll) return localEntries;
-    return localEntries.slice((safePage - 1) * pageSize, safePage * pageSize);
-  }, [detailAll, localEntries, pageSize, safePage]);
+  const pageEntries = useMemo(() => localEntries, [localEntries]);
 
   const setPagedSize = (nextPageSize: number) => {
     setDetailAll(false);
@@ -185,7 +193,7 @@ export function BasicDetailPanel({
           toolbarTitle="资金明细"
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">共 {localEntries.length} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}</span>
+              <span className="text-xs text-slate-600">共 {localTotalCount} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}</span>
               <span className="text-slate-400">|</span>
               <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
                 <Upload className="w-3 h-3" />导入

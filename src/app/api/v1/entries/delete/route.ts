@@ -164,7 +164,7 @@ export async function POST(req: Request) {
           ...impacts.map((impact) => impact.businessEntryId).filter(Boolean),
         ]))
       : linkedAction === "keepBusiness" && impacts.length > 0
-        ? Array.from(new Set(impacts.map((impact) => impact.entryId).filter(Boolean)))
+        ? Array.from(new Set(impacts.map((impact) => impact.selectedEntryId || impact.entryId).filter(Boolean)))
         : entryIds;
 
     const { deletedCount, keptBusinessCount, deletedEntryIds, removedEntryIds } = await softDeleteEntriesByIds(ctx, effectiveEntryIds, undefined, { linkedAction });

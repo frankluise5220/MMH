@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { MailSearch, RefreshCw, X } from "lucide-react";
+import { DateStepper } from "./DateStepper";
 import { useI18n } from "@/lib/i18n";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
@@ -727,10 +728,9 @@ export function CreditBillMailImportButton({
                         </td>
                         <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">{item.date || "-"}</td>
                         <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">
-                          <input
-                            type="date"
+                          <DateStepper
                             value={normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(item.date)}
-                            onChange={(event) => updatePreviewItem(row.key, { postedDate: event.target.value || undefined })}
+                            onChange={(value) => updatePreviewItem(row.key, { postedDate: value || undefined })}
                             className="h-7 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400"
                           />
                         </td>

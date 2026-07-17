@@ -185,7 +185,7 @@ html {
   }
 
   .app-modal-backdrop {
-    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/28 p-2 backdrop-blur-[2px] sm:items-start sm:p-4;
+    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/20 p-2 sm:items-start sm:p-4;
   }
 
   .app-modal-panel {
@@ -232,6 +232,11 @@ html {
 
   .form-input:disabled {
     @apply cursor-not-allowed bg-slate-50 text-slate-500;
+  }
+
+  .date-stepper-input::-webkit-calendar-picker-indicator {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .form-textarea {

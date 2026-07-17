@@ -35,6 +35,8 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
+import { DateStepper } from "@/components/DateStepper";
+
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 
 
@@ -1592,6 +1594,8 @@ export function FundShell(props: Props) {
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: ids,
         confirmMessage: `确认删除已勾选 ${ids.length} 条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`,
+        selectedRecordLabel: isWealthAccount ? "理财交易" : "基金交易",
+        counterpartRecordLabel: "资金交易",
       });
 
       if (!data.ok) {
@@ -1692,6 +1696,7 @@ export function FundShell(props: Props) {
               createAction={createAction}
               openSignal={positionEntryOpenSignal}
               hideTrigger
+              listenCreateEvents={false}
               fundUnitsDecimals={fundUnitsDecimals}
             />
 
@@ -2478,13 +2483,10 @@ export function FundShell(props: Props) {
 
                             <div className="text-[10px] text-slate-500">从（≥）</div>
 
-                            <input
-
-                              type="date"
-
+                            <DateStepper
                               value={dateFrom}
 
-                              onChange={(ev) => { setFundPage(1); setDateFrom(ev.target.value); }}
+                              onChange={(value) => { setFundPage(1); setDateFrom(value); }}
 
                               onKeyDown={(ev) => {
 
@@ -2508,13 +2510,10 @@ export function FundShell(props: Props) {
 
                             <div className="text-[10px] text-slate-500">到（≤）</div>
 
-                            <input
-
-                              type="date"
-
+                            <DateStepper
                               value={dateTo}
 
-                              onChange={(ev) => { setFundPage(1); setDateTo(ev.target.value); }}
+                              onChange={(value) => { setFundPage(1); setDateTo(value); }}
 
                               onKeyDown={(ev) => {
 

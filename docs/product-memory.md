@@ -105,6 +105,12 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - SS dropdown panels should not be squeezed to the parent input width when that hides important option context. Account SS options must keep institution information visible in the dropdown, either in the main label or in the sublabel, even inside compact dialogs.
 - When `SmartSelect` is used inside popovers, modals, or batch-edit panels, its portal dropdown must remain scrollable and clickable. Parent outside-click handlers should treat the SmartSelect dropdown portal as part of the active interaction, not as an outside click.
 
+### Date Inputs
+
+- The agreed shared date input is called "步进日期框" in product discussion and `DateStepper` in code.
+- A "步进日期框" means a native `type=date` input with `min="1900-01-01"` and `max="2999-12-31"`, invalid-state styling, a right-side calendar icon that toggles the picker, and in-field up/down buttons for next/previous day.
+- New create/edit dialogs and high-frequency financial date fields should use `DateStepper` instead of a raw `input type="date"` unless a compact table filter or browser-native-only control has a specific reason to stay raw.
+
 ### Categories
 
 - 分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付、转账类型，也不区分一级、二级、三级或上级分类。二级和三级分类不能在不同父级下使用相同名称。
@@ -112,8 +118,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
 - 投资、还款、贷款等系统业务类别必须出现在分类管理中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
 - 分类管理包含真正的“转账”系统父分类，“信用卡还款”是其子分类。分类管理用“转账”类型标题代表该父节点，避免重复显示两层“转账”。
-- 分类管理包含真正的“投资”系统父分类，基金投资、理财投资、存款投资、贵金属投资、其他投资是其子分类；投资买入、赎回和定投不计为普通收支，用户自定义的投资分类优先于自动系统分类。保险不统一归为投资：保费按保险支出、理赔/退保/满期领取按保险回款处理，只有未来明确建模的投连险投资账户部分才归投资。
+- 分类管理包含真正的“投资”系统父分类，基金投资、理财投资、存款投资、贵金属投资、其他投资是其子分类；基金投资下继续分基金定投、基金买入、基金赎回、现金分红、分红再投资等具体动作分类。所有交易保存时应优先写入分类树中的 `categoryId`，即使是系统分类也不能只作为自由文本写入。投资买入、赎回和定投不计为普通收支，用户自定义的投资分类优先于自动系统分类。保险不统一归为投资：保费按保险支出、理赔/退保/满期领取按保险回款处理，只有未来明确建模的投连险投资账户部分才归投资。
 - 在往来款明细中删除任何一笔记录都只软删除所选记录。删除首笔借入/借出记录不能删除往来账户、后续明细、还款计划或利率调整；删除整个往来项目必须使用独立的项目/账户删除入口。
+- 往来款本金输入允许负数，便于修正和按用户习惯录入；现有数据模型仍以借入、借出、还款、收回等操作模式决定现金流方向，本金字段保存和计算金额大小，不用负号反转业务方向。
 - 基金、理财、存款卖出/赎回/支取收益不应额外生成一条现金收入流水。现金账户只体现真实到账金额；基金已实现收益保存在投资交易 `realizedProfit` 中，理财和存款收益按 `depositInterest - fundFee` 计算，手续费必须扣入净收益。投资买入本身属于资产转换，不应作为收支支出统计；收支报表/统计应只映射收益、亏损、分红、利息等结果项。
 - 统计项应优先挂接到收支分类树的分类 ID。普通交易使用保存的 `categoryId`，旧数据可按 `categoryName` 回挂；基金收益/亏损、理财收益/亏损、存款利息/手续费等派生统计项也必须解析到系统内置分类节点。分类名称只是显示兜底，不应成为长期统计主键。
 
@@ -278,6 +285,10 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Clicking a report amount should show the filtered records through the shared conventional transaction detail table used by account views, including the same column sizing, header filters, compact rows, selection, batch actions, and edit/delete controls. Do not maintain a separate simplified report-detail table.
 - The shared conventional transaction table is named "MMH明细表" in the UI. It should provide checkboxes, batch edit/delete, header sorting and filtering, field/column settings, persisted column widths, and pagination with page-size and show-all controls.
 - MMH明细表的筛选状态只作用于当前账户/当前表。切换账户或账单上下文时应清空筛选；列宽、隐藏列等用户偏好可以继续保留。
+- 通用表格的处理边界以传入卡片/表格组件的 `rows` 为准：当前页是 20/40 条时，表格只筛选、排序、选择和渲染这 20/40 条；用户选择“全部”时才处理全量记录。外层页面必须先完成分页/上下文筛选，再把当前卡片应显示的记录传入表格。
+- 通用表格的大数据渲染应只生成当前视图附近的行 DOM；屏幕外记录可以参与排序、筛选和统计，但不应因为一次复选、排序或单元格状态变化而全部重新渲染。表格必须保持 `table`/`colgroup`/表头/列宽结构稳定，不能为了优化牺牲表头与表体对齐。
+- 通用表格字段应遵循同一契约：`render` 只负责显示；`filterText` 是用户可理解的筛选值，不能使用 ID；`filterSearchText` 可补充别名、机构、所有人、尾号等搜索内容；`sortValue` 必须是稳定可比较的原始值，例如数字金额、ISO 日期或完整名称；余额和操作列等不适合筛选排序的列不传筛选/排序字段。
+- 账户类表格字段统一使用所有人、机构简称、账户名称/尾号、账户类型组成的展示语义，例如 `张四·招行·2758·借记卡`。如果可见文本被截断，悬浮说明或搜索文本必须保留完整账户语义。
 - All report and MMH detail-table amounts must follow the configured red-up/green-down or green-up/red-down rule. Income uses its signed amount, expense uses its economic direction (normal expense is down; an expense refund is up), and net income uses its signed result.
 - Report grouping controls such as monthly/yearly granularity should stay compact and sit directly under the income/expense report heading.
 - Clicking a report amount should show the exactly filtered transaction records below the report, including parent-category descendants and signed expense offsets.

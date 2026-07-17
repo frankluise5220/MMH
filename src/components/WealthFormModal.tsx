@@ -24,6 +24,8 @@ type Entry = {
   wealthProductId?: string | null;
   fundProductType?: string | null;
   fundSubtype?: string | null;
+  depositInterest?: number | null;
+  fundArrivalAmount?: number | null;
   accountId?: string | null;
   toAccountId?: string | null;
   toAccountName?: string | null;
@@ -63,6 +65,19 @@ type WealthHoldingOption = {
   wealthAccountId: string;
   wealthAccountLabel?: string | null;
   remainingAmount: number;
+  annualRate?: number | null;
+  termDays?: number | null;
+  movements?: Array<{ date: string; delta: number }>;
+};
+type EditingWealthRedeemSource = {
+  id: string;
+  label: string;
+  fundName: string;
+  wealthProductId?: string | null;
+  wealthAccountId: string;
+  wealthAccountLabel?: string | null;
+  restoredPrincipalAmount: number;
+  restoredRemainingAmount: number;
   annualRate?: number | null;
   termDays?: number | null;
   movements?: Array<{ date: string; delta: number }>;
@@ -181,6 +196,7 @@ export function WealthFormModal({
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [toAccountId, setToAccountId] = useState(initToAccountId);
   const [selectedHoldingId, setSelectedHoldingId] = useState("");
+  const [editingRedeemSource, setEditingRedeemSource] = useState<EditingWealthRedeemSource | null>(null);
   const [memo, setMemo] = useState(initMemo);
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -202,7 +218,7 @@ export function WealthFormModal({
   // Mutable SS options — onCreated appends new account to these too
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
-  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | null>(null);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "wealth-account" | null>(null);
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
 
   const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
@@ -263,14 +279,46 @@ export function WealthFormModal({
       ),
     [cashAccountList, isRedeem, selectedWealthInstitutionId],
   );
+  const effectiveHoldingOptions = useMemo(() => {
+    if (!editingRedeemSource || !isRedeem) return wealthHoldingOptions;
+    const restored: WealthHoldingOption = {
+      id: editingRedeemSource.id,
+      label: editingRedeemSource.label,
+      subLabel: [
+        editingRedeemSource.wealthAccountLabel,
+        `编辑前本金 ${editingRedeemSource.restoredRemainingAmount.toFixed(2)}`,
+        editingRedeemSource.annualRate != null ? `年化 ${editingRedeemSource.annualRate}%` : "",
+        editingRedeemSource.termDays ? `${editingRedeemSource.termDays}天` : "",
+      ].filter(Boolean).join(" · "),
+      fundName: editingRedeemSource.fundName,
+      wealthProductId: editingRedeemSource.wealthProductId ?? null,
+      wealthAccountId: editingRedeemSource.wealthAccountId,
+      wealthAccountLabel: editingRedeemSource.wealthAccountLabel ?? null,
+      remainingAmount: editingRedeemSource.restoredRemainingAmount,
+      annualRate: editingRedeemSource.annualRate ?? null,
+      termDays: editingRedeemSource.termDays ?? null,
+      movements: [
+        ...(editingRedeemSource.movements ?? []),
+        { date: holdingFilterDate, delta: editingRedeemSource.restoredPrincipalAmount },
+      ],
+    };
+    if (wealthHoldingOptions.some((holding) => holding.id === editingRedeemSource.id)) {
+      return wealthHoldingOptions.map((holding) =>
+        holding.id === editingRedeemSource.id
+          ? { ...holding, ...restored }
+          : holding,
+      );
+    }
+    return [restored, ...wealthHoldingOptions];
+  }, [editingRedeemSource, holdingFilterDate, isRedeem, wealthHoldingOptions]);
   const filteredHoldingOptions = useMemo(
     () =>
-      wealthHoldingOptions.filter((holding) => {
+      effectiveHoldingOptions.filter((holding) => {
         if (toAccountId && holding.wealthAccountId !== toAccountId) return false;
         if (!isHoldingAction) return true;
         return wealthHoldingAmountAt(holding, holdingFilterDate) > 0.0001;
       }),
-    [holdingFilterDate, isHoldingAction, toAccountId, wealthHoldingOptions],
+    [effectiveHoldingOptions, holdingFilterDate, isHoldingAction, toAccountId],
   );
   const holdingSelectOptions: SmartSelectOption[] = useMemo(
     () => filteredHoldingOptions.map((holding) => ({
@@ -286,8 +334,8 @@ export function WealthFormModal({
     [filteredHoldingOptions, holdingFilterDate],
   );
   const selectedHolding = useMemo(
-    () => wealthHoldingOptions.find((holding) => holding.id === selectedHoldingId) ?? null,
-    [selectedHoldingId, wealthHoldingOptions],
+    () => effectiveHoldingOptions.find((holding) => holding.id === selectedHoldingId) ?? null,
+    [effectiveHoldingOptions, selectedHoldingId],
   );
   const selectedHoldingAmountAtDate = useMemo(
     () => selectedHolding ? wealthHoldingAmountAt(selectedHolding, holdingFilterDate) : 0,
@@ -358,6 +406,7 @@ export function WealthFormModal({
     setCashAccountId("");
     setToAccountId("");
     setSelectedHoldingId("");
+    setEditingRedeemSource(null);
     setMemo("");
     setRequestId(null);
   }
@@ -372,6 +421,7 @@ export function WealthFormModal({
         type: string; date: string; amount: number; note: string;
         accountId?: string; toAccountId?: string;
         fundName?: string; wealthProductId?: string | null; fundSubtype?: string; fundArrivalDate?: string | null;
+        depositInterest?: number | null; fundArrivalAmount?: number | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -385,8 +435,12 @@ export function WealthFormModal({
       setAmount(detail.amount ? String(Math.abs(detail.amount)) : "");
       setWealthProductId(detail.wealthProductId ?? "");
       setFundName(detail.fundName ?? "");
-      setInterestAmount("");
-      setArrivalAmount(nextSubtype === "redeem" && detail.amount ? String(Math.abs(detail.amount)) : "");
+      setInterestAmount(nextSubtype === "redeem" && detail.depositInterest != null ? String(Math.max(0, detail.depositInterest)) : "");
+      setArrivalAmount(
+        nextSubtype === "redeem"
+          ? String(Math.abs(detail.fundArrivalAmount ?? detail.amount ?? 0))
+          : "",
+      );
       setInterestEdited(false);
       setArrivalEdited(mode === "edit" && nextSubtype === "redeem");
       setMemo(detail.note ?? "");
@@ -401,6 +455,34 @@ export function WealthFormModal({
         return !!detail.fundName && holding.fundName === detail.fundName;
       });
       setSelectedHoldingId(matchedHolding?.id ?? "");
+      if (nextSubtype === "redeem") {
+        const restoredPrincipalAmount = Math.max(
+          0,
+          Math.abs(detail.amount ?? 0) - Math.max(0, detail.depositInterest ?? 0),
+        );
+        const restoredHoldingId =
+          matchedHolding?.id ??
+          `${nextWealthAccountId}\u001f${detail.wealthProductId ? `product:${detail.wealthProductId}` : `name:${detail.fundName ?? "未命名理财"}`}`;
+        setEditingRedeemSource({
+          id: restoredHoldingId,
+          label: matchedHolding?.label ?? detail.fundName ?? "未命名理财",
+          fundName: detail.fundName ?? matchedHolding?.fundName ?? "未命名理财",
+          wealthProductId: detail.wealthProductId ?? matchedHolding?.wealthProductId ?? null,
+          wealthAccountId: nextWealthAccountId,
+          wealthAccountLabel:
+            matchedHolding?.wealthAccountLabel ??
+            wealthAccountList.find((account) => account.id === nextWealthAccountId)?.label ??
+            "理财账户",
+          restoredPrincipalAmount: Number(restoredPrincipalAmount.toFixed(2)),
+          restoredRemainingAmount: Number(((matchedHolding ? wealthHoldingAmountAt(matchedHolding, detail.date || today) : 0) + restoredPrincipalAmount).toFixed(2)),
+          annualRate: matchedHolding?.annualRate ?? null,
+          termDays: matchedHolding?.termDays ?? null,
+          movements: matchedHolding?.movements ?? [],
+        });
+        setSelectedHoldingId(restoredHoldingId);
+      } else {
+        setEditingRedeemSource(null);
+      }
       setOpen(true);
     }
     window.addEventListener("mmh:wealth:edit", onEdit as EventListener);
@@ -566,6 +648,24 @@ export function WealthFormModal({
     });
     setProductError(selectedCashAccount ? "" : "请先选择资金来源账户");
     setProductModalOpen(true);
+  }
+
+  function openWealthAccountModal() {
+    if (!selectedCashAccount) {
+      window.alert("请先选择资金来源账户");
+      return;
+    }
+    if (!selectedCashAccount.groupId || !selectedCashAccount.institutionId) {
+      window.alert("资金来源账户缺少所有人或机构，无法直接新增同机构理财账户");
+      return;
+    }
+    setNestedEntityType("wealth-account");
+  }
+
+  function productAccountHint() {
+    if (selectedWealthAccount) return `将归属到已选理财账户：${selectedWealthAccount.label}`;
+    if (selectedCashAccount) return `未选择理财账户，保存产品时会自动复用或新增 ${selectedCashAccount.label} 同所有人、同机构的理财账户，并自动选中。`;
+    return "请先选择资金来源账户，才能新增理财产品。";
   }
 
   async function saveWealthProduct() {
@@ -945,6 +1045,8 @@ export function WealthFormModal({
                         onChange={setToAccountId}
                         options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
                         placeholder={wealthSelectOptions.length > 0 ? "选择同机构或第三方支付账户" : "新增产品后自动建立"}
+                        onCreateClick={openWealthAccountModal}
+                        createLabel="新增理财账户"
                         onCycleOwnerFilter={cycleWealthOwner}
                         ownerFilterLabel={wealthOwnerLabel}
                       />
@@ -1045,23 +1147,53 @@ export function WealthFormModal({
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name, extra) => {
             const kind = extra?.kind || "bank_debit";
+            const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
+            const label = [institutionLabel, name].filter(Boolean).join("·") || name;
             const option = {
               id,
-              label: name,
-              subLabel: kindLabel(kind),
+              label,
+              subLabel: [
+                extra?.groupName,
+                nestedEntityType === "wealth-account" ? "理财账户" : kindLabel(kind),
+              ].filter(Boolean).join(" · "),
               parentId: extra?.groupId ? `group:${extra.groupId}` : undefined,
               kind,
               groupId: extra?.groupId ?? null,
               institutionId: extra?.institutionId ?? null,
               institutionType: nestedFieldData?.institutionId?.find((item) => item.id === extra?.institutionId)?.type ?? null,
               currency: extra?.currency ?? "CNY",
+              investProductType: nestedEntityType === "wealth-account" ? "wealth" : null,
             };
-            setCashAccountList((prev) => [...prev, option]);
-            setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
-            setCashAccountId(id);
+            if (nestedEntityType === "wealth-account") {
+              setInvestmentAccountList((prev) => [
+                ...prev.filter((item) => item.id !== id),
+                option,
+              ]);
+              setLocalInvestSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
+              setToAccountId(id);
+            } else {
+              setCashAccountList((prev) => [...prev.filter((item) => item.id !== id), option]);
+              setLocalCashSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
+              setCashAccountId(id);
+            }
             setNestedEntityType(null);
           }}
-          defaultType="bank_debit"
+          title={nestedEntityType === "wealth-account" ? "新增理财账户" : undefined}
+          nameLabel={nestedEntityType === "wealth-account" ? "理财账户名称" : undefined}
+          namePlaceholder={nestedEntityType === "wealth-account" ? "例如：理财" : undefined}
+          defaultType={nestedEntityType === "wealth-account" ? "investment" : "bank_debit"}
+          extraFields={
+            nestedEntityType === "wealth-account" && selectedCashAccount
+              ? {
+                  kind: "investment",
+                  investProductType: "wealth",
+                  ...(selectedCashAccount.groupId ? { groupId: selectedCashAccount.groupId } : {}),
+                  ...(selectedCashAccount.institutionId ? { institutionId: selectedCashAccount.institutionId } : {}),
+                  currency: selectedCashAccount.currency ?? "CNY",
+                }
+              : undefined
+          }
+          hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType", "groupId", "institutionId", "currency"] : undefined}
           nestedFieldData={nestedFieldData}
         />
       ) : null}
@@ -1093,6 +1225,9 @@ export function WealthFormModal({
                   className="form-input"
                   autoFocus
                 />
+              </div>
+              <div className="rounded-[10px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
+                {productAccountHint()}
               </div>
               {productError ? (
                 <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

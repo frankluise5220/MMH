@@ -12,10 +12,12 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { REGULAR_INVEST_CATEGORY_NAME, regularInvestBuyNote } from "@/lib/fund/regular-invest-display";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
 
 export async function POST() {
   try {
@@ -290,7 +292,12 @@ export async function POST() {
           const refund = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, fundSourceEntryId: failedBuy.id, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
           changedFundEntryIds.push(failedBuy.id, refund.id);
         } else {
-          const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金定期定额申购 ${e.plan.fundCode}` } });
+          const fundName = e.plan.fundName || e.plan.fundCode;
+          const category = await resolveCategorySnapshot(tx, householdId, {
+            categoryName: REGULAR_INVEST_CATEGORY_NAME,
+            type: "investment",
+          });
+          const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", categoryId: category?.id ?? null, categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME, fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: regularInvestBuyNote(e.plan.fundCode, fundName) } });
           changedFundEntryIds.push(rec.id);
           generatedRecords.push({
             id: rec.id,

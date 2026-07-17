@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { clearStoredApiKeySession, getStoredApiKey } from "@/lib/client/apiKeySession";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { DateStepper } from "./DateStepper";
 import { SmartSelect } from "./SmartSelect";
 
 type TxType = "expense" | "income" | "transfer" | "investment";
@@ -219,11 +220,10 @@ export function QuickAddTransaction({
               <div className="grid grid-cols-2 gap-2">
                 <SmartSelect mode="single" value={type} onChange={(id) => setType(id as TxType)}
                   options={txTypeOptions} placeholder="类型" searchable={false} />
-                <input
-                  type="date"
+                <DateStepper
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tabular-nums"
                   value={date}
-                  onChange={(e) => setDate(e.target.value)}
+                  onChange={setDate}
                 />
               </div>
 

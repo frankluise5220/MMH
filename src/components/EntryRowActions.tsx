@@ -8,9 +8,11 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 export type EditPayload = {
   requestId?: string;
   entryId: string;
+  transactionId?: string;
   targetEntryId?: string;
   type: "expense" | "income" | "advance" | "transfer" | "investment";
   date: string;
+  confirmDate?: string;
   postedAt?: string | null;
   amount: number;
   note: string;
@@ -20,6 +22,7 @@ export type EditPayload = {
   categoryId?: string;
   fromAccountId?: string;
   toAccountId?: string;
+  toAccountName?: string;
   hasFundDetail?: boolean;
   cashAccountId?: string;
   fundCode?: string;
@@ -44,6 +47,8 @@ export type EditPayload = {
   fundFee?: number;
   fundConfirmDate?: string;
   fundArrivalDate?: string | null;
+  fundSourceEntryId?: string | null;
+  fundArrivalAmount?: number | null;
   fundProductType?: string;
   source?: string | null;
   linkedCandidateEntries?: Array<{

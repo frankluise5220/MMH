@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
 import { useRouter } from "next/navigation";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { formatOwnerQualifiedAccountLabel } from "@/lib/account-display";
@@ -2764,18 +2765,20 @@ export default function BatchImportPage() {
       )}
 
       {importCompletion && (
-        <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          <div>
-            <div>{formatText("batchImport.importSuccessRedirect", { count: importCompletion.count })}</div>
-            <div className="mt-0.5 text-xs text-green-600">{t("batchImport.importCompleteConfirmHint")}</div>
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/25 px-4 py-6">
+          <div className="w-full max-w-md rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700 shadow-2xl">
+            <div className="font-medium">{formatText("batchImport.importSuccessRedirect", { count: importCompletion.count })}</div>
+            <div className="mt-1 text-xs text-green-600">{t("batchImport.importCompleteConfirmHint")}</div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={handleImportCompletionConfirm}
+                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700"
+              >
+                {importCompletion.href ? t("batchImport.importCompleteOpenAccount") : t("batchImport.importCompleteBackToStart")}
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={handleImportCompletionConfirm}
-            className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700"
-          >
-            {importCompletion.href ? t("batchImport.importCompleteOpenAccount") : t("batchImport.importCompleteBackToStart")}
-          </button>
         </div>
       )}
 
@@ -3132,13 +3135,12 @@ export default function BatchImportPage() {
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title={t("batchImport.doubleClickToEdit")}>
                         {editingField === "date" ? (
-                          <input
-                            type="date"
+                          <DateStepper
                             value={date}
                             autoFocus
                             onBlur={closeCellEdit}
                             onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => updateDraft(idx, "date", e.target.value)}
+                            onChange={(value) => updateDraft(idx, "date", value)}
                             className="h-6 w-28 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
                           />
                         ) : date}

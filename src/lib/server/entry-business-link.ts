@@ -9,8 +9,12 @@ type TxClient = Prisma.TransactionClient | typeof prisma;
 export type EntryBusinessType = "fund" | "wealth" | "deposit" | "insurance" | "metal" | "other_investment";
 export type EntryCashFlowDirection = "outflow" | "inflow" | "internal" | "none";
 export type EntryBusinessDeleteImpact = {
+  selectedEntryId: string;
+  selectedSide: "cash" | "business" | "both";
   entryId: string;
   businessEntryId: string;
+  counterpartEntryId?: string | null;
+  counterpartLabel?: string;
   businessType: EntryBusinessType;
   businessLabel: string;
   linkType: string;
@@ -313,13 +317,26 @@ export async function listEntryBusinessDeleteImpacts(
   await upsertLegacyCombinedEntryBusinessLinks(ids).catch(() => 0);
 
   const rows = await prisma.$queryRaw<Array<{
+    selectedEntryId: string;
+    selectedSide: "cash" | "business" | "both";
     entryId: string;
     businessEntryId: string;
+    counterpartEntryId: string | null;
     businessType: EntryBusinessType;
     linkType: string;
     legacyCombinedRecord: boolean;
   }>>(Prisma.sql`
     SELECT
+      CASE
+        WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."cashEntryId"
+        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."businessEntryId"
+        ELSE l."cashEntryId"
+      END AS "selectedEntryId",
+      CASE
+        WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'both'
+        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'business'
+        ELSE 'cash'
+      END AS "selectedSide",
       l."cashEntryId" AS "entryId",
       COALESCE(
         l."businessEntryId",
@@ -329,6 +346,17 @@ export async function listEntryBusinessDeleteImpacts(
         l."depositTransactionId",
         l."preciousMetalTransactionId"
       ) AS "businessEntryId",
+      CASE
+        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."cashEntryId"
+        ELSE COALESCE(
+          l."businessEntryId",
+          l."fundTransactionId",
+          l."insuranceTransactionId",
+          l."wealthTransactionId",
+          l."depositTransactionId",
+          l."preciousMetalTransactionId"
+        )
+      END AS "counterpartEntryId",
       l."businessType"::text AS "businessType",
       l."linkType"::text AS "linkType",
       (l."cashEntryId" = l."businessEntryId") AS "legacyCombinedRecord"
@@ -354,10 +382,13 @@ export async function listEntryBusinessDeleteImpacts(
 
   const unique = new Map<string, EntryBusinessDeleteImpact>();
   for (const row of rows) {
-    const key = `${row.entryId}:${row.businessEntryId}:${row.linkType}`;
+    const key = `${row.entryId}:${row.businessEntryId}:${row.businessType}`;
+    const businessLabel = entryBusinessTypeLabel(row.businessType);
+    const counterpartLabel = row.selectedSide === "business" ? "资金交易" : businessLabel;
     unique.set(key, {
       ...row,
-      businessLabel: entryBusinessTypeLabel(row.businessType),
+      businessLabel,
+      counterpartLabel,
     });
   }
   return Array.from(unique.values());

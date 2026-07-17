@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
+import { DateStepper } from "./DateStepper";
 
 type InsurancePolicyEditValue = {
   id: string;
@@ -89,11 +90,10 @@ export function InsurancePolicyEditModal({
               </div>
               <div className="space-y-1">
                 <div className="form-label">生效日期</div>
-                <input
-                  type="date"
+                <DateStepper
                   value={draft.effectiveDate}
-                  onChange={(event) => {
-                    const next = { ...draft, effectiveDate: event.target.value };
+                  onChange={(value) => {
+                    const next = { ...draft, effectiveDate: value };
                     setDraft(next);
                     onChange?.(next);
                   }}

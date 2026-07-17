@@ -218,7 +218,7 @@ export async function POST(req: NextRequest) {
     const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
     const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
 
-    await prisma.$transaction(async (tx) => {
+    const createdPlan = await prisma.$transaction(async (tx) => {
       const plan = await tx.regularInvestPlan.create({
         data: {
           householdId,
@@ -281,10 +281,35 @@ export async function POST(req: NextRequest) {
       return plan;
     });
 
-    // Client-side handles page refresh
+    // Client-side handles page refresh, but return the created row so the current
+    // list can show it immediately even before the server component refresh lands.
     return NextResponse.json({
       ok: true,
       message: "计划任务已创建，请点击执行按钮生成到期交易明细",
+      plan: {
+        ...createdPlan,
+        taskType: scheduledTaskType,
+        taskTypeLabel: scheduledTaskTypeLabel(scheduledTaskType),
+        taskTitle,
+        taskFromAccountId: cashAccountId || null,
+        taskToAccountId: effectiveAccountId,
+        taskInsuranceProductId: insuranceProductId || null,
+        taskAnnualRate: isLoanTask ? loanAnnualRate : null,
+        taskRepaymentMethod: isLoanTask ? loanRepaymentMethod : null,
+        taskRepaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
+        amount: Number(createdPlan.amount),
+        feeRate: createdPlan.feeRate == null ? null : Number(createdPlan.feeRate),
+        startDate: createdPlan.startDate?.toISOString() ?? null,
+        endDate: createdPlan.endDate?.toISOString() ?? null,
+        nextRunDate: createdPlan.nextRunDate?.toISOString() ?? null,
+        lastRunDate: createdPlan.lastRunDate?.toISOString() ?? null,
+        createdAt: createdPlan.createdAt?.toISOString() ?? null,
+        updatedAt: createdPlan.updatedAt?.toISOString() ?? null,
+        executedCount: 0,
+        executedAmount: 0,
+        confirmedCount: 0,
+        confirmedAmount: 0,
+      },
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Scale } from "lucide-react";
+import { DateStepper } from "./DateStepper";
 
 function todayYmd() {
   return new Date().toISOString().slice(0, 10);
@@ -129,12 +130,7 @@ export function DebitBalanceReconcileButton({
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
                   <span className="mb-1 block text-xs text-slate-500">校准日期</span>
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(event) => setDate(event.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  />
+                  <DateStepper value={date} onChange={setDate} className="h-9 w-full rounded-md border border-slate-200 px-2 text-sm" />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs text-slate-500">校准金额</span>

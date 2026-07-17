@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { DateStepper } from "@/components/DateStepper";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
@@ -1538,14 +1539,13 @@ export default function EmailSettingsPage() {
                         <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-700">{item.date || "-"}</td>
                         <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-500" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "postedDate" })}>
                           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "postedDate" ? (
-                            <input
+                            <DateStepper
                               autoFocus
-                              type="date"
                               className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
                               value={normalizeDateOnlyText(item.postedDate) ?? ""}
                               onBlur={() => setEditingPreviewCell(null)}
-                              onChange={(e) => {
-                                updatePreviewRow(row.key, { postedDate: e.target.value || undefined });
+                              onChange={(value) => {
+                                updatePreviewRow(row.key, { postedDate: value || undefined });
                                 setEditingPreviewCell(null);
                               }}
                             />

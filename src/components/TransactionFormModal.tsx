@@ -1228,11 +1228,10 @@ export function TransactionFormModal({
                     {txType === "expense" ? (
                       <div className="space-y-1">
                         <div className="form-label">入账日期</div>
-                        <input
-                          type="date"
+                        <DateStepper
                           value={postedAt}
-                          onChange={(event) => {
-                            setPostedAt(toDateInputValue(event.target.value));
+                          onChange={(value) => {
+                            setPostedAt(toDateInputValue(value));
                             setPostedAtEdited(true);
                           }}
                           className="form-input"

@@ -119,7 +119,7 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
 }
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-type DetailAccountOption = { id: string; label: string; title?: string | null; kind?: string | null; debtDirection?: string | null };
+type DetailAccountOption = { id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; debtDirection?: string | null };
 
 /* Helpers */
 
@@ -510,7 +510,10 @@ export function DetailViewClient({
   );
   const accountDisplayFallback = useCallback((accountId?: string | null, fallback?: string | null) => {
     const byId = accountId ? accountOptionById.get(accountId) : undefined;
-    if (byId) return { label: byId.label, title: byId.title ?? byId.label };
+    if (byId) {
+      const fullLabel = byId.fullLabel?.trim() || byId.label;
+      return { label: fullLabel, title: byId.title ?? fullLabel };
+    }
     const raw = String(fallback ?? "").trim();
     if (!raw) return { label: "", title: "" };
     const encodedId = parseImportAccountId(raw);
@@ -548,6 +551,112 @@ export function DetailViewClient({
       })),
     [entries],
   );
+  const buildEntryEditRequest = useCallback((e: DetailEntry): {
+    edit?: Omit<EditPayload, "entryId">;
+    customEditEvent?: { name: string; detail: Record<string, unknown> };
+  } => {
+    const dateStr = (e.date ?? "").slice(0, 10);
+    const amount = toNumber(e.amount);
+    const entryFundProductType =
+      e.fundProductType ??
+      (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
+      (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
+      null;
+    const isRedeemEditEntry =
+      e.fundSubtype === "redeem" ||
+      e.fundSubtype === "switch_out" ||
+      (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
+    const targetInvestmentEditEntryId =
+      e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund" && e.fundSourceEntryId
+        ? e.fundSourceEntryId
+        : e.id;
+    const investmentEditPayload =
+      e.type !== "investment" || !allowInvestmentEdit
+        ? undefined
+        : {
+            targetEntryId: targetInvestmentEditEntryId,
+            transactionId: e.id,
+            date: dateStr,
+            confirmDate: e.fundConfirmDate?.slice(0, 10),
+            type: e.type,
+            amount,
+            note: e.note ?? "",
+            fundCode: e.fundCode ?? undefined,
+            fundName: e.fundName ?? undefined,
+            wealthProductId: e.wealthProductId ?? null,
+            insuranceProductId: e.insuranceProductId ?? null,
+            insuranceAction: e.insuranceAction === "premium" || e.insuranceAction === "additional_premium" || e.insuranceAction === "refund" ? e.insuranceAction : undefined,
+            insuranceProductName: e.insuranceProductName ?? undefined,
+            fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : undefined,
+            fundNav: e.fundNav != null ? toNumber(e.fundNav) : undefined,
+            depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : undefined,
+            depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : undefined,
+            depositSourceEntryId: e.depositSourceEntryId ?? null,
+            fundFee: e.fundFee != null ? toNumber(e.fundFee) : undefined,
+            fundProductType: entryFundProductType ?? undefined,
+            metalTypeId: e.metalTypeId ?? null,
+            metalTypeName: e.metalTypeName ?? null,
+            metalUnitId: e.metalUnitId ?? null,
+            metalUnitName: e.metalUnitName ?? null,
+            metalQuantity: e.metalQuantity ?? null,
+            metalUnitPrice: e.metalUnitPrice ?? null,
+            metalFee: e.metalFee ?? null,
+            fundSubtype: e.fundSubtype ?? undefined,
+            source: e.source,
+            accountId: e.accountId ?? undefined,
+            toAccountId: e.toAccountId ?? undefined,
+            cashAccountId: (isRedeemEditEntry ? e.toAccountId : e.accountId) ?? undefined,
+            toAccountName: e.toAccountName ?? undefined,
+            fundArrivalDate: e.fundArrivalDate?.slice(0, 10),
+            fundSourceEntryId: e.fundSourceEntryId ?? null,
+            fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+            linkedCandidateEntries: linkedInvestmentCandidateEntries,
+          } satisfies Omit<EditPayload, "entryId">;
+
+    const balanceReconcileTarget = getBalanceReconcileTarget(e);
+    const balanceReconcileEditEvent = balanceReconcileTarget == null || (e.source !== BALANCE_RECONCILE_SOURCE && e.source !== BALANCE_INITIALIZATION_SOURCE) ? undefined : {
+      name: "mmh:balance-reconcile:edit",
+      detail: {
+        entryId: e.id,
+        accountId: e.accountId,
+        accountName: e.accountName,
+        date: dateStr,
+        amount: balanceReconcileTarget,
+        source: e.source,
+      },
+    };
+    const debtMode = inferDebtMode(e, accountOptionById);
+    const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
+    const debtPrincipalAmount = Math.abs(toNumber(e.debtPrincipalAmount ?? e.amount));
+    const debtInterestAmount = Math.abs(toNumber(e.debtInterestAmount ?? 0));
+    const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
+    const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
+    const debtAccountIdForEdit = isDebtAccountFromSide ? (e.accountId ?? "") : (e.toAccountId ?? "");
+    const cashAccountIdForEdit = isDebtAccountFromSide ? (e.toAccountId ?? "") : (e.accountId ?? "");
+    const debtEditEvent =
+      !balanceReconcileEditEvent && isDebtActivity && debtMode
+        ? {
+            name: "mmh:debt:create",
+            detail: {
+              editEntryId: e.id,
+              mode: debtMode,
+              defaultDebtAccountId: debtAccountIdForEdit,
+              defaultCashAccountId: cashAccountIdForEdit,
+              defaultLoanFundingMode: e.source === "debt_financed_purchase" ? "financed_purchase" : "cash_disbursement",
+              defaultDate: dateStr,
+              defaultPrincipal: debtPrincipalAmount,
+              defaultInterest: debtInterestAmount,
+              defaultPenalty: debtFeeAmount,
+              defaultPrepayStrategy: e.source === "debt_prepay_out"
+                ? parseLoanPrepayStrategy(e.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
+                : undefined,
+            },
+          }
+        : undefined;
+
+    if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent };
+    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e) };
+  }, [accountOptionById, allowInvestmentEdit, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -734,12 +843,13 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const debtLabel = debtActivityLabel(e);
-        if (debtLabel) return debtLabel;
+        if (debtLabel) return t("transaction.type.transfer");
         if (e.type === "investment") return "投资";
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
       render: (e) => {
+        const debtLabel = debtActivityLabel(e);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -747,17 +857,14 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
-        const debtLabel = debtActivityLabel(e);
-        const actLabel = e.type === "investment"
+        const actLabel = debtLabel
+          ? t("transaction.type.transfer")
+          : e.type === "investment"
           ? "投资"
           : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
-            {debtLabel ? (
-              <span className="rounded bg-cyan-50 px-1 py-0.5 text-[10px] font-medium text-cyan-700">
-                {debtLabel}
-              </span>
-            ) : balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (
+            {balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (
               <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600">
                 初始
               </span>
@@ -778,6 +885,8 @@ export function DetailViewClient({
       width: 140,
       minWidth: 90,
       filterText: (e) => {
+        const debtLabel = debtActivityLabel(e);
+        if (debtLabel) return debtLabel;
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -790,23 +899,24 @@ export function DetailViewClient({
           : getInsuranceDetailCategoryName(e);
       },
       render: (e) => {
+        const debtLabel = debtActivityLabel(e);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
           (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
           null;
-        const text = e.type === "investment"
+        const text = debtLabel ?? (e.type === "investment"
           ? investmentCategoryLabel(e, entryFundProductType)
           : isCreditCardRepaymentTransfer(e)
             ? t("transaction.category.creditCardRepayment")
-          : getInsuranceDetailCategoryName(e);
+          : getInsuranceDetailCategoryName(e));
         return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     },
     ...(showAccountColumn ? [{
       key: "account",
       label: "账户",
-      width: 160,
+      width: 190,
       minWidth: 110,
       filterText: (e: DetailEntry) => accountDisplayFallback(e.accountId, e.accountName).label,
       filterTitle: (e: DetailEntry) => accountDisplayFallback(e.accountId, e.accountName).title,
@@ -834,7 +944,7 @@ export function DetailViewClient({
     {
       key: "related",
       label: t("detail.column.relatedAccount"),
-      width: 150,
+      width: 190,
       minWidth: 100,
       filterText: (e) => {
         const isToAccount = !!accountId && e.toAccountId === accountId;
@@ -922,119 +1032,21 @@ export function DetailViewClient({
       minWidth: 90,
       align: "right",
       render: (e) => {
-        const dateStr = (e.date ?? "").slice(0, 10);
-        const amount = toNumber(e.amount);
-        const entryFundProductType =
-          e.fundProductType ??
-          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-          null;
-        const isRedeemEditEntry =
-          e.fundSubtype === "redeem" ||
-          e.fundSubtype === "switch_out" ||
-          (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
-        const targetInvestmentEditEntryId =
-          e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund" && e.fundSourceEntryId
-            ? e.fundSourceEntryId
-            : e.id;
-        const editPayload =
-          e.type !== "investment" || !allowInvestmentEdit
-            ? undefined
-            : {
-                targetEntryId: targetInvestmentEditEntryId,
-                id: e.id,
-                transactionId: e.id,
-                date: dateStr,
-                confirmDate: e.fundConfirmDate?.slice(0, 10),
-                type: e.type,
-                amount,
-                note: e.note ?? "",
-                fundCode: e.fundCode,
-                fundName: e.fundName,
-                wealthProductId: e.wealthProductId ?? null,
-                insuranceProductId: e.insuranceProductId ?? null,
-                insuranceAction: e.insuranceAction ?? null,
-                insuranceProductName: e.insuranceProductName ?? null,
-                fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
-                fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
-                depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
-                depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
-                depositSourceEntryId: e.depositSourceEntryId ?? null,
-                fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
-                fundProductType: entryFundProductType,
-                metalTypeId: e.metalTypeId ?? null,
-                metalTypeName: e.metalTypeName ?? null,
-                metalUnitId: e.metalUnitId ?? null,
-                metalUnitName: e.metalUnitName ?? null,
-                metalQuantity: e.metalQuantity ?? null,
-                metalUnitPrice: e.metalUnitPrice ?? null,
-                metalFee: e.metalFee ?? null,
-                fundSubtype: e.fundSubtype,
-                source: e.source,
-                accountId: e.accountId,
-                toAccountId: e.toAccountId,
-                cashAccountId: isRedeemEditEntry ? e.toAccountId : e.accountId,
-                toAccountName: e.toAccountName,
-                fundArrivalDate: e.fundArrivalDate?.slice(0, 10),
-                fundSourceEntryId: e.fundSourceEntryId ?? null,
-                fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
-                linkedCandidateEntries: linkedInvestmentCandidateEntries,
-              };
-        const otherEditPayload = e.type === "investment" ? undefined : buildBasicEntryEditPayload(e);
-        const balanceReconcileTarget = getBalanceReconcileTarget(e);
-        const balanceReconcileEditEvent = balanceReconcileTarget == null || (e.source !== BALANCE_RECONCILE_SOURCE && e.source !== BALANCE_INITIALIZATION_SOURCE) ? undefined : {
-          name: "mmh:balance-reconcile:edit",
-          detail: {
-            entryId: e.id,
-            accountId: e.accountId,
-            accountName: e.accountName,
-            date: dateStr,
-            amount: balanceReconcileTarget,
-            source: e.source,
-          },
-        };
-        const debtMode = inferDebtMode(e, accountOptionById);
-        const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
-        const debtPrincipalAmount = Math.abs(toNumber(e.debtPrincipalAmount ?? e.amount));
-        const debtInterestAmount = Math.abs(toNumber(e.debtInterestAmount ?? 0));
-        const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
-        const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
-        const debtAccountIdForEdit = isDebtAccountFromSide ? (e.accountId ?? "") : (e.toAccountId ?? "");
-        const cashAccountIdForEdit = isDebtAccountFromSide ? (e.toAccountId ?? "") : (e.accountId ?? "");
-        const debtEditEvent =
-          !balanceReconcileEditEvent && isDebtActivity && debtMode
-            ? {
-                name: "mmh:debt:create",
-                detail: {
-                  editEntryId: e.id,
-                  mode: debtMode,
-                  defaultDebtAccountId: debtAccountIdForEdit,
-                  defaultCashAccountId: cashAccountIdForEdit,
-                  defaultLoanFundingMode: e.source === "debt_financed_purchase" ? "financed_purchase" : "cash_disbursement",
-                  defaultDate: dateStr,
-                  defaultPrincipal: debtPrincipalAmount,
-                  defaultInterest: debtInterestAmount,
-                  defaultPenalty: debtFeeAmount,
-                  defaultPrepayStrategy: e.source === "debt_prepay_out"
-                    ? parseLoanPrepayStrategy(e.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
-                    : undefined,
-                },
-              }
-            : undefined;
+        const { edit, customEditEvent } = buildEntryEditRequest(e);
 
         return (
           <div className="flex justify-end items-center gap-1" onClick={(event) => event.stopPropagation()}>
             {(shouldShowBusinessLinkStatus(e)) ? (() => { const linkLabels = e.businessLinkLabels ?? []; const hasBusinessLink = (e.businessLinkCount ?? 0) > 0; const title = hasBusinessLink ? `已关联：${linkLabels.join("、") || "业务记录"}` : "未关联业务记录"; return <BusinessLinkStatusIcon active={hasBusinessLink} title={title} />; })() : null}
             <EntryRowActions
               entryId={e.id}
-              edit={(balanceReconcileEditEvent || debtEditEvent) ? undefined : (e.type !== "investment" ? otherEditPayload : editPayload) as any}
-              customEditEvent={balanceReconcileEditEvent ?? debtEditEvent}
+              edit={edit}
+              customEditEvent={customEditEvent}
             />
           </div>
         );
       },
     },
-  ], [accountDisplayFallback, accountId, accountOptionById, allowInvestmentEdit, inflowCls, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries, outflowCls, showAccountColumn, showRunningBalance, t]);
+  ], [accountDisplayFallback, accountId, buildEntryEditRequest, inflowCls, outflowCls, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1045,13 +1057,6 @@ export function DetailViewClient({
     </div>
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
-  const openCreditCardEntry = (entry: DetailEntry) => {
-    if (entry.accountKind !== "bank_credit" && entry.toAccountKind !== "bank_credit") return;
-    const edit = buildBasicEntryEditPayload(entry);
-    if (!["expense", "income", "advance", "transfer"].includes(edit.type)) return;
-    dispatchEntryEdit({ entryId: entry.id, edit });
-  };
-
   return (
     <AdvancedDataTable
       storageKey={storageKey}
@@ -1065,7 +1070,11 @@ export function DetailViewClient({
       selectOnRowClick
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
-      onRowDoubleClick={openCreditCardEntry}
+      onRowDoubleClick={(entry) => {
+        const { edit, customEditEvent } = buildEntryEditRequest(entry);
+        if (!edit && !customEditEvent) return;
+        dispatchEntryEdit({ entryId: entry.id, edit, customEditEvent });
+      }}
       draggableRows={draggableRows}
       rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
       rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}

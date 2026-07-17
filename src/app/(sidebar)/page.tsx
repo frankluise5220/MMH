@@ -1379,6 +1379,7 @@ async function createDebtTransaction(formData: FormData) {
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
   const principal = parseMoneyInput(formData.get("principal"));
+  const principalAbs = Math.abs(principal);
   const rawInterest = parseMoneyInput(formData.get("interest"));
   const penalty = parseMoneyInput(formData.get("penalty"));
   const prepayStrategyRaw = String(formData.get("prepayStrategy") ?? "").trim();
@@ -1410,7 +1411,7 @@ async function createDebtTransaction(formData: FormData) {
   if (debtAccountId && debtAccountId === cashAccountId) {
     return { ok: false as const, error: "往来对象账户与资金账户不能相同" };
   }
-  if (principal <= 0) {
+  if (principalAbs <= 0) {
     return { ok: false as const, error: "请输入正确的金额" };
   }
   const interest = mode === "prepay_out" ? 0 : rawInterest;
@@ -1469,7 +1470,7 @@ async function createDebtTransaction(formData: FormData) {
         : NaN;
   const isFixedRepaymentMethod = FIXED_LOAN_REPAYMENT_METHODS.has(repaymentMethod);
   const calculatedPlanAmount = calculateLoanPlanAmount({
-    principal,
+    principal: principalAbs,
     annualRate,
     totalRuns: loanTotalRuns,
     intervalMonths: repaymentIntervalMonths,
@@ -1570,10 +1571,10 @@ async function createDebtTransaction(formData: FormData) {
         });
       }
       const outstandingPrincipalBefore = Math.abs(toNumber(debtAccount.balance));
-      if (!editEntryId && mode === "prepay_out" && principal - outstandingPrincipalBefore > 0.005) {
+      if (!editEntryId && mode === "prepay_out" && principalAbs - outstandingPrincipalBefore > 0.005) {
         throw new Error(`提前还本金不能超过当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
       }
-      if (!editEntryId && mode === "prepay_out" && prepayStrategy === "settle" && Math.abs(principal - outstandingPrincipalBefore) > 0.005) {
+      if (!editEntryId && mode === "prepay_out" && prepayStrategy === "settle" && Math.abs(principalAbs - outstandingPrincipalBefore) > 0.005) {
         throw new Error(`全部结清时，提前还本金应等于当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
       }
       if (editEntryId) {
@@ -1611,11 +1612,11 @@ async function createDebtTransaction(formData: FormData) {
             toAccountId: transferToAccount?.id ?? null,
             toAccountName: transferToAccount?.name ?? null,
             amount: mode === "repay_out" || mode === "prepay_out"
-              ? -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0))
+              ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
               : mode === "collect_in"
-                ? Math.abs(principal + interest)
-                : -Math.abs(principal),
-            debtPrincipalAmount: Math.abs(principal),
+                ? Math.abs(principalAbs + interest)
+                : -principalAbs,
+            debtPrincipalAmount: principalAbs,
             debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : 0,
             debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : 0,
             date,
@@ -1683,11 +1684,11 @@ async function createDebtTransaction(formData: FormData) {
           toAccountId: transferToAccount?.id ?? null,
           toAccountName: transferToAccount?.name ?? null,
           amount: mode === "repay_out" || mode === "prepay_out"
-            ? -Math.abs(principal + interest + (mode === "prepay_out" ? penalty : 0))
+            ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
             : mode === "collect_in"
-              ? Math.abs(principal + interest)
-              : -Math.abs(principal),
-          debtPrincipalAmount: Math.abs(principal),
+              ? Math.abs(principalAbs + interest)
+              : -principalAbs,
+          debtPrincipalAmount: principalAbs,
           debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : null,
           debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : null,
           type: TransactionType.transfer,
@@ -1788,7 +1789,7 @@ async function createDebtTransaction(formData: FormData) {
             householdId,
             plan: createdPlan,
             task: decodeScheduledTaskMemo(createdPlan.memo),
-            initialLoanPrincipal: principal,
+            initialLoanPrincipal: principalAbs,
           });
         } catch (error) {
           historicalGenerationWarning = error instanceof Error ? error.message : "历史还款记录补生成失败";
@@ -3834,6 +3835,7 @@ export default async function Home({
       name: a.name,
       kind: a.kind,
       label: display.selectorLabel,
+      fullLabel: display.fullLabel,
       title: display.hoverTitle,
       hoverTitle: display.hoverTitle,
       groupId: a.groupId ?? "",
@@ -6868,7 +6870,8 @@ export default async function Home({
                 <BasicDetailPanel
                   accountId={accountId}
                   isInvestAccount={isInvestAccount}
-                  entries={allDetailEntries}
+                  entries={pagedDetailEntries}
+                  totalCount={filteredEntries2.length}
                   originalCount={entries.length}
                   hasDetailFilters={hasDetailFilters}
                   initialPage={safeDetailPage}
@@ -6876,7 +6879,7 @@ export default async function Home({
                   initialDetailAll={detailAll}
                   normalExportHref={normalExportHref}
                   normalExportFilename={normalExportFilename}
-                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, title: a.hoverTitle }))}
+                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, fullLabel: a.fullLabel, title: a.hoverTitle }))}
                   categoryOptions={categoryBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                   compactRows={selectedAccount?.kind === AccountKind.bank_debit}

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, Plus, Trash2, Database, TrendingUp } from "lucide-react";
+import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
@@ -484,7 +485,7 @@ export function InitModal({
                         <input type="number" step="0.01" placeholder="0" value={row.balance} onChange={(e) => updateBalanceRow(row.tempId, { balance: e.target.value })} className="init-modal-number h-8 w-32 text-right rounded border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400" />
                       </td>
                       <td className="px-3 py-1.5 border-b border-slate-100">
-                        <input type="date" value={row.date} onChange={(e) => updateBalanceRow(row.tempId, { date: e.target.value })} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400" />
+                        <DateStepper value={row.date} onChange={(value) => updateBalanceRow(row.tempId, { date: value })} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400" />
                       </td>
                     </tr>);
                   })}</tbody>
@@ -639,12 +640,12 @@ export function InitModal({
                                             </div>
                                           </div>
                                           <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">交易日</label>
-                                            <input type="date" value={row.riTxDate} onChange={(e) => { const txDate = e.target.value; let tPlusN = ""; let arrivalDate = row.riArrivalDate; if (txDate && row.riConfirmDate) { const diff = Math.round((new Date(row.riConfirmDate).getTime() - new Date(txDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } if (txDate && (!row.riArrivalDate || row.riArrivalDate === row.riTxDate)) { const arrival = new Date(`${txDate}T00:00:00`); arrival.setDate(arrival.getDate() + 2); arrivalDate = arrival.toISOString().slice(0, 10); } updateFundRow(row.tempId, { riTxDate: txDate, riTPlusN: tPlusN, riArrivalDate: arrivalDate }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
+                                            <DateStepper value={row.riTxDate} onChange={(txDate) => { let tPlusN = ""; let arrivalDate = row.riArrivalDate; if (txDate && row.riConfirmDate) { const diff = Math.round((new Date(row.riConfirmDate).getTime() - new Date(txDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } if (txDate && (!row.riArrivalDate || row.riArrivalDate === row.riTxDate)) { const arrival = new Date(`${txDate}T00:00:00`); arrival.setDate(arrival.getDate() + 2); arrivalDate = arrival.toISOString().slice(0, 10); } updateFundRow(row.tempId, { riTxDate: txDate, riTPlusN: tPlusN, riArrivalDate: arrivalDate }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
                                           </div>
                                           <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">确认日</label>
-                                            <input type="date" value={row.riConfirmDate} onChange={(e) => { const confirmDate = e.target.value; let tPlusN = ""; if (row.riTxDate && confirmDate) { const diff = Math.round((new Date(confirmDate).getTime() - new Date(row.riTxDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } updateFundRow(row.tempId, { riConfirmDate: confirmDate, riTPlusN: tPlusN }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
+                                            <DateStepper value={row.riConfirmDate} onChange={(confirmDate) => { let tPlusN = ""; if (row.riTxDate && confirmDate) { const diff = Math.round((new Date(confirmDate).getTime() - new Date(row.riTxDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } updateFundRow(row.tempId, { riConfirmDate: confirmDate, riTPlusN: tPlusN }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
                                           </div>
-                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">入账日</label><input type="date" value={row.riArrivalDate} onChange={(e) => updateFundRow(row.tempId, { riArrivalDate: e.target.value })} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" /></div>
+                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">入账日</label><DateStepper value={row.riArrivalDate} onChange={(value) => updateFundRow(row.tempId, { riArrivalDate: value })} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" /></div>
                                           <div className="w-[60px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">费率%</label><input type="number" step="0.01" placeholder="0" value={row.riFeeRate} onChange={(e) => updateFundRow(row.tempId, { riFeeRate: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
                                         </div>
                                       </div>

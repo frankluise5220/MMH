@@ -97,6 +97,26 @@ async function detachCashSideBusinessLinks(txRecord: TxRecord) {
   return Number(result) > 0;
 }
 
+async function detachBusinessSideBusinessLinks(txRecord: TxRecord) {
+  const result = await prisma.$executeRaw`
+    UPDATE "entry_business_links"
+    SET
+      "businessEntryId" = NULL,
+      "fundTransactionId" = NULL,
+      "insuranceTransactionId" = NULL,
+      "wealthTransactionId" = NULL,
+      "depositTransactionId" = NULL,
+      "preciousMetalTransactionId" = NULL,
+      "note" = 'Business side detached; cash detail kept',
+      "metadata" = COALESCE("metadata", '{}'::jsonb) || ${JSON.stringify({ businessDetached: true, detachedBusinessEntryId: txRecord.id })}::jsonb,
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "businessEntryId" = ${txRecord.id}
+      AND ("cashEntryId" IS DISTINCT FROM ${txRecord.id})
+      AND "deletedAt" IS NULL
+  `;
+  return Number(result) > 0;
+}
+
 export async function softDeleteEntriesByIds(
   ctx: HouseholdContext,
   entryIds: string[],
@@ -147,7 +167,9 @@ export async function softDeleteEntriesByIds(
       }
     }
     if (options.linkedAction === "keepBusiness" && keepBusinessImpacts.length > 0) {
-      await detachCashSideBusinessLinks(txRecord);
+      const selectedAsBusiness = keepBusinessImpacts.some((impact) => impact.selectedSide === "business");
+      if (selectedAsBusiness) await detachBusinessSideBusinessLinks(txRecord);
+      else await detachCashSideBusinessLinks(txRecord);
     }
 
     const installmentPlan = await prisma.creditCardInstallmentPlan.findFirst({

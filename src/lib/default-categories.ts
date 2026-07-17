@@ -2,12 +2,18 @@ import { AccountKind, Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME } from "@/lib/transaction-semantics";
 import {
+  SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
+  SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_FUND_INVESTMENT_CATEGORY,
+  SYSTEM_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_INVESTMENT_CATEGORIES,
+  SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_METAL_INVESTMENT_CATEGORY,
   SYSTEM_OTHER_INVESTMENT_CATEGORY,
+  SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_WEALTH_INVESTMENT_CATEGORY,
+  getInvestmentCategoryName,
 } from "@/lib/investment-category";
 
 export type DefaultCategoryType = "expense" | "income" | "advance" | "transfer" | "investment";
@@ -21,7 +27,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-14-system-category-roots-v6";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-17-investment-action-categories-v7";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -77,7 +83,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   ]),
   advance: new Set(),
   transfer: new Set(["转账", CREDIT_CARD_REPAYMENT_CATEGORY_NAME]),
-  investment: new Set(["投资", ...SYSTEM_INVESTMENT_CATEGORIES]),
+  investment: new Set(["投资", ...SYSTEM_INVESTMENT_CATEGORIES, ...SYSTEM_INVESTMENT_ACTION_CATEGORIES]),
 };
 
 function isSystemCategoryTemplate(type: DefaultCategoryType, name: string) {
@@ -305,7 +311,13 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "investment",
     name: "投资",
     isSystem: true,
-    children: [...SYSTEM_INVESTMENT_CATEGORIES],
+    children: [
+      { name: SYSTEM_FUND_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES] },
+      { name: SYSTEM_WEALTH_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES] },
+      { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES] },
+      { name: SYSTEM_METAL_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES] },
+      SYSTEM_OTHER_INVESTMENT_CATEGORY,
+    ],
   },
 ];
 
@@ -392,7 +404,7 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
 
 async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, householdId: string) {
   const categories = await writer.category.findMany({
-    where: { householdId, type: "investment", name: { in: [...SYSTEM_INVESTMENT_CATEGORIES] } },
+    where: { householdId, type: "investment", name: { in: [...SYSTEM_INVESTMENT_CATEGORIES, ...SYSTEM_INVESTMENT_ACTION_CATEGORIES] } },
     select: { id: true, name: true },
   });
   const categoryByName = new Map(categories.map((category) => [category.name, category]));
@@ -404,11 +416,20 @@ async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, 
   };
 
   const assignments: Array<{ name: string; where: Prisma.TxRecordWhereInput }> = [
-    { name: SYSTEM_FUND_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] } } },
-    { name: SYSTEM_WEALTH_INVESTMENT_CATEGORY, where: { fundProductType: "wealth" } },
-    { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, where: { fundProductType: "deposit" } },
-    { name: SYSTEM_METAL_INVESTMENT_CATEGORY, where: { fundProductType: "metal" } },
-    { name: SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: null } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy", source: "regular_invest" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: { in: ["buy", "regular_invest"] }, source: "regular_invest" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy_failed", source: "regular_invest_refund" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundSubtype: "buy_failed", source: "regular_invest_refund" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy_failed" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundSubtype: "buy_failed" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: { in: ["redeem", "switch_out"] } } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "dividend_cash" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: "dividend_cash" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "dividend_reinvest" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, OR: [{ fundSubtype: "dividend_reinvest" }, { fundSubtype: "buy", source: "dividend" }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", fundSubtype: { in: ["redeem", "switch_out"] } } },
+    { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "dividend_cash" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", fundSubtype: "dividend_cash" } },
+    { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "deposit", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "deposit", fundSubtype: { in: ["redeem", "switch_out"] } } },
+    { name: getInvestmentCategoryName({ fundProductType: "deposit", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "deposit", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "metal", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "metal", fundSubtype: { in: ["redeem", "switch_out"] } } },
+    { name: getInvestmentCategoryName({ fundProductType: "metal", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "metal", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
   ];
 
   for (const assignment of assignments) {

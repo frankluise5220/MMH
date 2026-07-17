@@ -11,8 +11,12 @@ export type EntriesDeleteRequest = {
 };
 
 export type EntryBusinessDeleteImpact = {
+  selectedEntryId?: string;
+  selectedSide?: "cash" | "business" | "both";
   entryId: string;
   businessEntryId: string;
+  counterpartEntryId?: string | null;
+  counterpartLabel?: string;
   businessType: string;
   businessLabel: string;
   legacyCombinedRecord?: boolean;
@@ -51,10 +55,10 @@ export function getDeleteRefreshEntryIds(data: EntriesDeleteResponse, fallbackEn
   return Array.from(new Set(ids.filter(Boolean)));
 }
 
-function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = []) {
+function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], labelOverride?: string) {
   const counts = new Map<string, number>();
   for (const impact of impacts) {
-    const label = impact.businessLabel || "业务明细";
+    const label = labelOverride || impact.counterpartLabel || impact.businessLabel || "关联记录";
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   return Array.from(counts.entries())
@@ -65,9 +69,13 @@ function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = []) {
 export async function deleteEntriesWithLinkedPrompt({
   entryIds,
   confirmMessage,
+  selectedRecordLabel,
+  counterpartRecordLabel,
 }: {
   entryIds: string[];
   confirmMessage: string;
+  selectedRecordLabel?: string;
+  counterpartRecordLabel?: string;
 }): Promise<EntriesDeleteResponse> {
   if (entryIds.length === 0) return { ok: false, error: "没有可删除的记录" };
 
@@ -76,16 +84,22 @@ export async function deleteEntriesWithLinkedPrompt({
 
   const impacts = precheck.impacts ?? [];
   if (impacts.length > 0 || precheck.needConfirm) {
-    const impactText = describeBusinessImpacts(impacts);
+    const impactText = describeBusinessImpacts(impacts, counterpartRecordLabel);
+    const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
+    const selectedLabel = allBusinessSide
+      ? (Array.from(new Set(impacts.map((impact) => impact.businessLabel || "业务记录"))).join("、") || "业务记录")
+      : "本账户记录";
+    const effectiveSelectedLabel = selectedRecordLabel || selectedLabel;
+    const counterpartLabel = counterpartRecordLabel || (allBusinessSide ? "关联资金交易" : "业务侧记录");
     const linkedAction = await showChoiceDialog<"keepBusiness" | "deleteBusiness">({
       title: entryIds.length > 1 ? "选择批量删除范围" : "选择删除范围",
       message:
         `当前选择关联了 ${impactText}。\n\n` +
         "请选择这次删除要影响的范围：\n" +
-        "只删本账户记录：只从当前资金账户流水中移除，并保留业务侧记录。\n" +
-        "两边一起删除：同时删除当前资金流水和关联业务记录。",
+        `只删${effectiveSelectedLabel}：只移除当前选择的${effectiveSelectedLabel}，并保留${counterpartLabel}。\n` +
+        `两边一起删除：同时删除当前选择的${effectiveSelectedLabel}和${counterpartLabel}。`,
       choices: [
-        { value: "keepBusiness", label: "只删本账户记录" },
+        { value: "keepBusiness", label: `只删${effectiveSelectedLabel}` },
         { value: "deleteBusiness", label: "两边一起删除", tone: "danger" },
       ],
       cancelLabel: "取消",

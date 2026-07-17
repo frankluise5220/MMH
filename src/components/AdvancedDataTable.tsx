@@ -16,6 +16,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
+const ROW_VIRTUALIZATION_THRESHOLD = 200;
 
 function isInteractiveRowTarget(target: EventTarget | null) {
   return target instanceof Element && !!target.closest(
@@ -35,7 +36,9 @@ export type AdvancedDataTableColumn<T> = {
   headerClassName?: string;
   filterText?: (row: T) => string;
   sortValue?: (row: T) => string | number | null | undefined;
-  filterKind?: "multi" | "dateRange";  filterTitle?: (row: T) => string;  filterSearchText?: (row: T) => string;
+  filterKind?: "multi" | "dateRange";
+  filterTitle?: (row: T) => string;
+  filterSearchText?: (row: T) => string;
   render: (row: T, index: number) => ReactNode;
 };
 
@@ -406,8 +409,25 @@ export function AdvancedDataTable<T>({
     return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
   }, [dragTarget, draggedRowKey, rowItems]);
 
-  const virtualizer = useVirtualizer({ count: displayRowItems.length, getScrollElement: () => viewportRef.current, estimateSize: () => rowHeight, overscan: 10 });
-  const vItems = virtualizer.getVirtualItems();
+  const shouldVirtualizeRows = displayRowItems.length > ROW_VIRTUALIZATION_THRESHOLD;
+  const rowVirtualizer = useVirtualizer({
+    count: shouldVirtualizeRows ? displayRowItems.length : 0,
+    getScrollElement: () => viewportRef.current,
+    estimateSize: () => rowHeight,
+    overscan: 12,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const renderedRowItems = shouldVirtualizeRows
+    ? virtualRows.map((virtualRow) => ({
+        item: displayRowItems[virtualRow.index],
+        displayIndex: virtualRow.index,
+        virtualRow,
+      })).filter((entry): entry is { item: RowItem<T>; displayIndex: number; virtualRow: (typeof virtualRows)[number] } => !!entry.item)
+    : displayRowItems.map((item, displayIndex) => ({ item, displayIndex, virtualRow: null }));
+  const virtualPaddingTop = shouldVirtualizeRows ? virtualRows[0]?.start ?? 0 : 0;
+  const virtualPaddingBottom = shouldVirtualizeRows
+    ? Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0))
+    : 0;
 
   const layout = useMemo(() => {
     const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
@@ -648,6 +668,7 @@ export function AdvancedDataTable<T>({
   const headerPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const cellPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const selectPaddingClass = compactRows ? "px-2 py-1.5" : "px-2 py-2";
+  const bodyColSpan = ((selectable || draggableRows) ? 1 : 0) + visibleColumns.length || 1;
   const showToolbar =
     toolbarMode !== "none" &&
     (
@@ -806,7 +827,12 @@ export function AdvancedDataTable<T>({
             </tr>
           </thead>
           <tbody className="text-sm">
-            {displayRowItems.length > 0 ? displayRowItems.map(({ row, index, key }, displayIndex) => {
+            {shouldVirtualizeRows && virtualPaddingTop > 0 ? (
+              <tr aria-hidden="true">
+                <td colSpan={bodyColSpan} style={{ height: virtualPaddingTop, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
+            {displayRowItems.length > 0 ? renderedRowItems.map(({ item: { row, index, key }, displayIndex, virtualRow }) => {
               const isSelected = effectiveSelectedKeys.has(key);
               const dragDisabled = sortState != null || (rowDragDisabled?.(row, index) ?? false);
               const isDragging = draggedRowKey != null;
@@ -822,6 +848,8 @@ export function AdvancedDataTable<T>({
               return (
                 <tr
                   key={key}
+                  data-index={virtualRow?.index}
+                  ref={shouldVirtualizeRows ? rowVirtualizer.measureElement : undefined}
                   onClick={() => {
                     if (suppressNextClickRef.current) {
                       suppressNextClickRef.current = false;
@@ -878,11 +906,16 @@ export function AdvancedDataTable<T>({
               );
             }) : (
               <tr>
-                <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={((selectable || draggableRows) ? 1 : 0) + visibleColumns.length || 1}>
+                <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={bodyColSpan}>
                   {emptyText === "暂无数据" ? t("table.empty") : emptyText}
                 </td>
               </tr>
             )}
+            {shouldVirtualizeRows && virtualPaddingBottom > 0 ? (
+              <tr aria-hidden="true">
+                <td colSpan={bodyColSpan} style={{ height: virtualPaddingBottom, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
           </tbody>
           {summaryRow ? (
             <tfoot className="sticky bottom-0 z-[1] bg-slate-50/95 backdrop-blur-sm">

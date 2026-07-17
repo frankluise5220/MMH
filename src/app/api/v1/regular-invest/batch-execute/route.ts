@@ -8,12 +8,14 @@ import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { REGULAR_INVEST_CATEGORY_NAME, regularInvestBuyNote } from "@/lib/fund/regular-invest-display";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
 
 function utcDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -354,10 +356,15 @@ export async function POST(req: NextRequest) {
         }
 
         // 构建备注：限制大额申购时记录状态提醒用户
-        let note = `基金定期定额申购 ${plan.fundCode}`;
+        let note = regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode);
         if (sgzt && (sgzt.includes("限制") || sgzt.includes("限额"))) {
           note += `（${sgzt}，请确认定投金额是否超限）`;
         }
+
+        const category = await resolveCategorySnapshot(tx, householdId, {
+          categoryName: REGULAR_INVEST_CATEGORY_NAME,
+          type: "investment",
+        });
 
         // 创建 TxRecord，直接包含所有基金字段
         const createdBuy = await tx.txRecord.create({
@@ -375,6 +382,8 @@ export async function POST(req: NextRequest) {
             fundProductType: plan.fundProductType || fundAcc.investProductType,
             fundSubtype: "buy",
             source: "regular_invest",
+            categoryId: category?.id ?? null,
+            categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
             fundFee: feeAmount,
             fundConfirmDate: confirmDate,
             fundArrivalDate: arrivalDate,

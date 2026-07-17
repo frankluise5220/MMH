@@ -1158,13 +1158,12 @@ export function InsuranceFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">初次购买日期</div>
-                      <input
-                        type="date"
+                      <DateStepper
                         value={productStartDate}
-                        onChange={(event) => {
-                          setProductStartDate(event.target.value);
+                        onChange={(value) => {
+                          setProductStartDate(value);
                           setProductStartDateTouched(true);
-                          if (!productStartDateTouched) setDate(event.target.value);
+                          if (!productStartDateTouched) setDate(value);
                         }}
                         className="form-input"
                       />

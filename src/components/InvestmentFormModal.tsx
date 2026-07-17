@@ -192,6 +192,7 @@ export function InvestmentFormModal({
   editAction,
   openSignal,
   hideTrigger,
+  listenCreateEvents = true,
   fundUnitsDecimals: fundUnitsDecimalsProp,
 }: {
   mode: "create" | "edit";
@@ -212,6 +213,7 @@ export function InvestmentFormModal({
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   openSignal?: number;
   hideTrigger?: boolean;
+  listenCreateEvents?: boolean;
   fundUnitsDecimals?: number | null;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
@@ -338,6 +340,7 @@ export function InvestmentFormModal({
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
   const dividendAmountRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef<string | null>(null);
+  const handledInvestmentEditRequestRef = useRef<string | null>(null);
   const pendingFundCodeFetchRef = useRef<string | null>(null);
   const redeemLastAppliedRef = useRef<number>(0);
   const prevSavedDateRef = useRef<string | null>(null);
@@ -349,6 +352,14 @@ export function InvestmentFormModal({
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
 
   const currentEditEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
+
+  function shouldHandleInvestmentEdit(detail: InvestmentEditDetail) {
+    if (mode !== "edit") return false;
+    if (entry?.id && entry.id !== detail.entryId && entry.transactionId !== detail.entryId) return false;
+    if (!defaultAccountId) return true;
+    const relatedAccountIds = [detail.accountId, detail.toAccountId, detail.cashAccountId].filter(Boolean);
+    return relatedAccountIds.length === 0 || relatedAccountIds.includes(defaultAccountId);
+  }
 
   // Linked buy/refund records for display in the edit modal.
   const linkedRecords = useMemo(() => {
@@ -845,6 +856,7 @@ export function InvestmentFormModal({
 
   useEffect(() => {
     if (mode !== "create") return;
+    if (!listenCreateEvents) return;
 
     function onOpenFromCreate(ev: Event) {
       const detail = (ev as CustomEvent<OpenInvestmentCreateDetail>).detail;
@@ -879,7 +891,7 @@ export function InvestmentFormModal({
 
     window.addEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
     return () => window.removeEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
-  }, [mode, today, defaults]);
+  }, [mode, today, defaults, listenCreateEvents, fixedProductType, metalTypes, metalUnits]);
 
   // Listen for edit events (dispatched by EntryRowActions for fund/money investment records).
   useEffect(() => {
@@ -1016,6 +1028,9 @@ export function InvestmentFormModal({
       const detail = (ev as CustomEvent<InvestmentEditDetail>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       if (detail.type !== "investment") return;
+      if (!shouldHandleInvestmentEdit(detail)) return;
+      if (handledInvestmentEditRequestRef.current === detail.requestId) return;
+      handledInvestmentEditRequestRef.current = detail.requestId;
 
       let currentDetail = detail;
       try {
@@ -1052,7 +1067,7 @@ export function InvestmentFormModal({
 
     window.addEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
     return () => window.removeEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
-  }, [mode, today]);
+  }, [mode, today, defaultAccountId, entry?.id, entry?.transactionId]);
 
   // Dispatch success event when create form is saved from AI panel
   function notifyAiSuccess(requestId: string) {
@@ -1220,30 +1235,55 @@ export function InvestmentFormModal({
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype]);
 
 
-  const redeemGrossAmount = useMemo(() => {
-    const navN = p(nav);
-    const unitsN = p(units);
-    return isRedeemLike(subtype) && navN > 0 && unitsN > 0 ? navN * unitsN : 0;
-  }, [nav, units, subtype]);
-
-  const confirmedBuyAmount = useMemo(() => {
-    if (!isBuyLike(subtype)) return p(amount);
-    const buyAmount = Math.max(0, p(amount));
-    const refundAmount = subtype === "buy" && buyResultStatus === "refund"
-      ? Math.min(buyAmount, Math.max(0, p(arrivalAmount)))
+  function buildInvestmentCalculation(options?: {
+    amountRaw?: string;
+    feeRaw?: string;
+    feeRateRaw?: string;
+    navRaw?: string;
+    refundRaw?: string;
+    refundEnabled?: boolean;
+  }) {
+    const amountN = Math.max(0, p(options?.amountRaw ?? amount));
+    const navN = p(options?.navRaw ?? nav);
+    const feeInputN = Math.max(0, p(options?.feeRaw ?? fee));
+    const feeRateN = Math.max(0, p(options?.feeRateRaw ?? feeRate));
+    const refundEnabled = options?.refundEnabled ?? (subtype === "buy" && buyResultStatus === "refund");
+    const refundN = subtype === "buy" && refundEnabled
+      ? Math.min(amountN, Math.max(0, p(options?.refundRaw ?? arrivalAmount)))
       : 0;
-    return Math.max(0, buyAmount - refundAmount);
-  }, [amount, arrivalAmount, buyResultStatus, subtype]);
+    const confirmedAmountN = isBuyLike(subtype) ? Math.max(0, amountN - refundN) : amountN;
+    const unitsN = Math.max(0, p(units));
+    const grossRedeemN = isRedeemLike(subtype) && navN > 0 && unitsN > 0 ? navN * unitsN : 0;
+    const feeBaseAmount = isRedeemLike(subtype) && grossRedeemN > 0 ? grossRedeemN : confirmedAmountN;
+    const calculatedFeeN = feeBaseAmount > 0 && feeRateN > 0 && showFeeFor(subtype, productType)
+      ? feeBaseAmount * feeRateN / 100
+      : 0;
+    const effectiveFeeN = feeInputN > 0 ? feeInputN : calculatedFeeN;
+    let unitsText = "";
+    if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
+      const principal = confirmedAmountN - effectiveFeeN;
+      unitsText = principal > 0 ? formatUnits(principal / navN) : "";
+    } else if (isRedeemLike(subtype) && defaults?.fundUnits && defaults.fundUnits > 0) {
+      unitsText = formatUnits(Number(defaults.fundUnits));
+    } else if (isRedeemLike(subtype) && navN > 0 && amountN > 0) {
+      unitsText = formatUnits(amountN / navN);
+    }
+    return {
+      confirmedBuyAmount: confirmedAmountN,
+      redeemGrossAmount: grossRedeemN,
+      computedFee: calculatedFeeN > 0 ? calculatedFeeN.toFixed(2) : "",
+      effectiveFee: effectiveFeeN,
+      computedUnits: unitsText,
+    };
+  }
 
-  const computedFee = useMemo(() => {
-    const amountN = p(amount);
-    const rateN = p(feeRate);
-    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0
-      ? redeemGrossAmount
-      : (subtype === "buy" && buyResultStatus === "refund" ? confirmedBuyAmount : amountN);
-    if (baseAmount > 0 && rateN > 0 && showFeeFor(subtype, productType)) return (baseAmount * rateN / 100).toFixed(2);
-    return "";
-  }, [amount, feeRate, subtype, productType, redeemGrossAmount, buyResultStatus, confirmedBuyAmount]);
+  const investmentCalculation = useMemo(
+    () => buildInvestmentCalculation(),
+    [amount, arrivalAmount, buyResultStatus, defaults?.fundUnits, fee, feeRate, nav, productType, subtype, units],
+  );
+  const redeemGrossAmount = investmentCalculation.redeemGrossAmount;
+  const confirmedBuyAmount = investmentCalculation.confirmedBuyAmount;
+  const computedFee = investmentCalculation.computedFee;
   const redeemPanelMode = isRedeemLike(subtype);
 
   useEffect(() => {
@@ -1255,23 +1295,19 @@ export function InvestmentFormModal({
     }
   }, [buyResultStatus, subtype, confirmDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
 
-  const computedUnits = useMemo(() => {
-    const navN = p(nav);
-    const amountN = p(amount);
-    const effectiveAmountN = isBuyLike(subtype) ? confirmedBuyAmount : amountN;
-    const effectiveFee = p(fee) > 0 ? p(fee) : (!suppressFeeAutoCalcRef.current && computedFee ? p(computedFee) : 0);
-    if (navN > 0 && amountN > 0 && isBuyLike(subtype)) {
-      const principal = effectiveAmountN - effectiveFee;
-      return principal > 0 ? formatUnits(principal / navN) : "";
-    }
-    if (isRedeemLike(subtype) && defaults?.fundUnits && defaults.fundUnits > 0) {
-      return formatUnits(Number(defaults.fundUnits));
-    }
-    if (navN > 0 && amountN > 0 && isRedeemLike(subtype)) {
-      return formatUnits(amountN / navN);
-    }
-    return "";
-  }, [nav, amount, confirmedBuyAmount, fee, computedFee, subtype, defaults?.fundUnits]);
+  const computedUnits = investmentCalculation.computedUnits;
+
+  useEffect(() => {
+    if (mode !== "create") return;
+    if (!showFeeFor(subtype, productType) || feeEdited) return;
+    if (fee !== computedFee) setFee(computedFee);
+  }, [computedFee, fee, feeEdited, mode, productType, subtype]);
+
+  useEffect(() => {
+    if (mode !== "create") return;
+    if (!isBuyLike(subtype) || productType === "metal" || unitsEditedRef.current) return;
+    if (units !== computedUnits) setUnits(computedUnits);
+  }, [computedUnits, mode, productType, subtype, units]);
 
   function calculateBuyUnits(
     nextAmountRaw: string,
@@ -1283,19 +1319,14 @@ export function InvestmentFormModal({
   ) {
     suppressFeeAutoCalcRef.current = false;
     if (!isBuyLike(subtype) || (!force && unitsEditedRef.current)) return;
-    const navN = p(nextNavRaw);
-    const amountN = p(nextAmountRaw);
-    const refundAmountN = refundEnabled ? Math.min(amountN, Math.max(0, p(nextRefundRaw))) : 0;
-    const effectiveAmountN = Math.max(0, amountN - refundAmountN);
-    const feeInput = p(nextFeeRaw);
-    const rateN = p(feeRate);
-    const feeN = feeInput > 0
-      ? feeInput
-      : (rateN > 0 && showFeeFor(subtype, productType) ? effectiveAmountN * rateN / 100 : 0);
-    if (navN <= 0 || amountN <= 0) return;
-    const principal = effectiveAmountN - feeN;
-    const nextUnits = principal > 0 ? formatUnits(principal / navN) : "";
-    setUnits(nextUnits);
+    const nextCalc = buildInvestmentCalculation({
+      amountRaw: nextAmountRaw,
+      feeRaw: nextFeeRaw,
+      refundRaw: nextRefundRaw,
+      navRaw: nextNavRaw,
+      refundEnabled,
+    });
+    setUnits(nextCalc.computedUnits);
   }
 
   function calculateUnitsAfterFeeChange(nextFeeRaw: string) {
@@ -1314,17 +1345,18 @@ export function InvestmentFormModal({
   function calculateFeeFromRate(nextRateRaw: string) {
     suppressFeeAutoCalcRef.current = false;
     setFeeEdited(false);
-    const rate = p(nextRateRaw) / 100;
-    const baseAmount = isRedeemLike(subtype) && redeemGrossAmount > 0
-      ? redeemGrossAmount
-      : (subtype === "buy" && buyResultStatus === "refund" ? confirmedBuyAmount : p(amount));
-    const nextFee = baseAmount > 0 && rate > 0 ? (baseAmount * rate).toFixed(2) : "";
+    unitsEditedRef.current = false;
+    const rateCalc = buildInvestmentCalculation({ feeRaw: "", feeRateRaw: nextRateRaw });
+    const nextFee = rateCalc.computedFee;
     const feeChanged = p(nextFee) !== p(fee);
     setFee(nextFee);
 
-    if (feeChanged) {
-      calculateUnitsAfterFeeChange(nextFee);
-    }
+    const nextCalc = buildInvestmentCalculation({
+      feeRaw: nextFee,
+      feeRateRaw: nextRateRaw,
+      refundEnabled: buyResultStatus === "refund",
+    });
+    setUnits(nextCalc.computedUnits);
 
     if (feeChanged && isRedeemLike(subtype) && !arrivalAmount) {
       const gross = redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
@@ -1569,7 +1601,7 @@ export function InvestmentFormModal({
         ? 0
         : (p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0));
     const finalUnits = rawFinalUnits > 0 ? roundFundUnits(rawFinalUnits, fundUnitsDecimals) : 0;
-    const finalFee = p(fee);
+    const finalFee = investmentCalculation.effectiveFee;
     const finalFeeRate = p(feeRate);
     const currentMetalType = productType === "metal" ? selectedMetalType() : null;
     const currentMetalUnit = productType === "metal" ? selectedMetalUnit() : null;
@@ -1649,12 +1681,13 @@ export function InvestmentFormModal({
           amountEditedRef.current ||
           navEditedRef.current ||
           feeEdited ||
+          feeRateEdited ||
           (subtype === "buy" && buyResultStatus === "refund");
         if (shouldSubmitFundUnits) formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
       }
       if (!isDividend(subtype)) {
         formData.set("fundNav", nav.trim() ? String(p(nav)) : "");
-        formData.set("fundFee", fee.trim() ? String(p(fee)) : "");
+        formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         formData.set("fundConfirmDate", confirmDate || "");
       }
       formData.set("accountId", toAccountId);

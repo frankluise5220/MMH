@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Plus, TrendingUp } from "lucide-react";
+import { DateStepper } from "./DateStepper";
 
 type HoldingItem = {
   fundCode: string;
@@ -131,7 +132,7 @@ export function AddNavButton({
           </div>
           <div className="space-y-1">
             <div className="text-xs font-medium text-slate-600">净值日期</div>
-            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            <DateStepper value={date} onChange={setDate}
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>
           <div className="space-y-1">

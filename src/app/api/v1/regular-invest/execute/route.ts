@@ -9,6 +9,7 @@ import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { REGULAR_INVEST_CATEGORY_NAME, regularInvestBuyNote } from "@/lib/fund/regular-invest-display";
 import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -16,6 +17,7 @@ import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
 
 export async function POST(req: NextRequest) {
   try {
@@ -405,6 +407,11 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      const category = await resolveCategorySnapshot(tx, householdId, {
+        categoryName: REGULAR_INVEST_CATEGORY_NAME,
+        type: "investment",
+      });
+
       // 创建 TxRecord，直接包含所有基金字段
       const createdBuy = await tx.txRecord.create({
         data: {
@@ -421,13 +428,15 @@ export async function POST(req: NextRequest) {
           fundProductType: plan.fundProductType || fundAcc.investProductType,
           fundSubtype: "buy",
           source: "regular_invest",
+          categoryId: category?.id ?? null,
+          categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
           fundFee: feeAmount,
           fundConfirmDate: confirmDate,
           fundArrivalDate: arrivalDate,
           fundNav: fundNav,
           fundUnits: fundUnits,
           regularInvestPlanId: planId,
-          note: `基金定期定额申购 ${plan.fundCode}`,
+          note: regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode),
         },
       });
       await syncFundTransactionsFromTxRecords([createdBuy.id], tx);

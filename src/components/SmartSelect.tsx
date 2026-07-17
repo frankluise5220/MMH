@@ -797,7 +797,7 @@ export function SmartSelect(props: SmartSelectProps) {
         top: dropdownPos.top,
         left: dropdownPos.left,
         width: dropdownPos.width,
-        zIndex: 9999,
+        zIndex: 30000,
       }}
     >
       {mode === "single" ? (

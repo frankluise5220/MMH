@@ -112,6 +112,10 @@ function parseMoneyText(value: string) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function parseAbsMoneyText(value: string) {
+  return Math.abs(parseMoneyText(value));
+}
+
 function roundMoneyValue(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -473,7 +477,7 @@ export function DebtTransactionModal({
   const prepayComputedTotal = useMemo(() => {
     if (mode !== "prepay_out") return "";
     if (!principal.trim() && !penalty.trim()) return "";
-    return roundMoneyValue(parseMoneyText(principal) + parseMoneyText(penalty)).toFixed(2);
+    return roundMoneyValue(parseAbsMoneyText(principal) + parseMoneyText(penalty)).toFixed(2);
   }, [mode, penalty, principal]);
 
   useEffect(() => {
@@ -484,7 +488,7 @@ export function DebtTransactionModal({
   function applyPrepayTotalDraft(options?: { alertOnInvalid?: boolean }) {
     if (mode !== "prepay_out" || !prepayTotal.trim()) return penalty;
     const total = roundMoneyValue(parseMoneyText(prepayTotal));
-    const principalAmount = roundMoneyValue(parseMoneyText(principal));
+    const principalAmount = roundMoneyValue(parseAbsMoneyText(principal));
     if (total + 0.005 < principalAmount) {
       if (options?.alertOnInvalid) window.alert("支出合计不能小于提前还本金");
       setPrepayTotal(prepayComputedTotal);
@@ -620,9 +624,9 @@ export function DebtTransactionModal({
       mode === "repay_out" &&
       !!debtAccountId &&
       !!editRecalculateStartDate &&
-      Math.abs(roundMoneyValue(parseMoneyText(principal)) - roundMoneyValue(parseMoneyText(originalPrincipalForEdit))) > 0.005;
+      Math.abs(roundMoneyValue(parseAbsMoneyText(principal)) - roundMoneyValue(parseAbsMoneyText(originalPrincipalForEdit))) > 0.005;
     const penaltyForSubmit = mode === "prepay_out" ? applyPrepayTotalDraft({ alertOnInvalid: true }) : penalty;
-    if (mode === "prepay_out" && prepayTotal.trim() && parseMoneyText(prepayTotal) + 0.005 < parseMoneyText(principal)) {
+    if (mode === "prepay_out" && prepayTotal.trim() && parseMoneyText(prepayTotal) + 0.005 < parseAbsMoneyText(principal)) {
       return;
     }
 
@@ -752,7 +756,7 @@ export function DebtTransactionModal({
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
-    return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
+    return (parseAbsMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
   const cashAccountLabel = mode === "borrow_in"
     ? (loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
