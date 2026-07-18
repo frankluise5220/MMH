@@ -317,12 +317,22 @@ export default function SystemUpdatePage() {
             return step;
           }),
         );
-        if (task.status === "completed") {
+        // The updater recreates itself after the app is restarted. Older updater
+        // images keep task state only in memory, so the first successful status
+        // response after reconnect can be `idle` instead of `completed`.
+        const updaterRestartedAfterApp = task.status === "idle" && lastCurrentStep === "重启服务";
+        if (task.status === "completed" || updaterRestartedAfterApp) {
+          const completedOutput = logs || (updaterRestartedAfterApp ? "服务已恢复，更新完成" : "");
           setSteps((prev) => prev.map((step) => ({ ...step, status: "completed", output: step.output || logs })));
           setUpdateDone(true);
           setUpdateOk(true);
           setUpdating(false);
           shouldContinue = false;
+          if (updaterRestartedAfterApp) {
+            setSteps((prev) => prev.map((step) => (
+              step.label === "重启服务" ? { ...step, status: "completed", output: completedOutput } : step
+            )));
+          }
           setTimeout(() => window.location.reload(), 2500);
         } else if (task.status === "failed") {
           setUpdateDone(true);

@@ -169,6 +169,7 @@ output/
 regular-invest-*.png
 .tmp*.cjs
 .tmp*.tsx
+.mmh-update-task.json
 
 # temporary plans
 plans/

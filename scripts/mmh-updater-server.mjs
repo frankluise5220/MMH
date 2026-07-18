@@ -7,6 +7,7 @@ const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
 const workdir = process.env.MMH_WORKDIR || "/workspace";
 const composeProject = process.env.MMH_COMPOSE_PROJECT || "mmh";
 const composeFile = process.env.MMH_COMPOSE_FILE || `${workdir}/docker-compose.yml`;
+const taskStateFile = `${workdir}/.mmh-update-task.json`;
 const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
 const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
 const dockerproxyImage = "ghcr.dockerproxy.net/frankluise5220/mmh:latest";
@@ -35,6 +36,22 @@ let task = {
   startedAt: null,
   updatedAt: null,
 };
+
+async function persistTask() {
+  await writeFile(taskStateFile, JSON.stringify(task), "utf8");
+}
+
+async function readRecentPersistedTask() {
+  try {
+    const saved = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const updatedAt = Date.parse(String(saved?.updatedAt || ""));
+    const isRecent = Number.isFinite(updatedAt) && Date.now() - updatedAt < 60 * 60 * 1000;
+    if (!isRecent || !["completed", "failed"].includes(saved?.status)) return null;
+    return { ...saved, running: false };
+  } catch {
+    return null;
+  }
+}
 
 function now() {
   return new Date().toISOString();
@@ -498,6 +515,7 @@ async function startUpdate() {
             task.running = false;
             task.currentStep = "完成";
             pushLog("更新完成");
+            await persistTask();
             await scheduleUpdaterRecreate(selectedImages.updaterImage);
             pushLog("更新执行器将切换到所选镜像源");
           } catch (error) {
@@ -505,6 +523,7 @@ async function startUpdate() {
             task.running = false;
             task.error = error instanceof Error ? error.message : String(error);
             pushLog(task.error);
+            await persistTask().catch(() => {});
           }
         })();
       }, 5000);
@@ -513,6 +532,7 @@ async function startUpdate() {
       task.running = false;
       task.error = error instanceof Error ? error.message : String(error);
       pushLog(task.error);
+      await persistTask().catch(() => {});
     }
   })();
 
@@ -585,7 +605,13 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/status") {
-    sendJson(res, 200, { ok: true, task });
+    if (task.status !== "idle") {
+      sendJson(res, 200, { ok: true, task });
+      return;
+    }
+    readRecentPersistedTask()
+      .then((savedTask) => sendJson(res, 200, { ok: true, task: savedTask || task }))
+      .catch(() => sendJson(res, 200, { ok: true, task }));
     return;
   }
 
