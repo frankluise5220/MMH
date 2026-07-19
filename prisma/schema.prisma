@@ -474,6 +474,8 @@ model WealthTransaction {
   arrivalDate       DateTime?
   grossAmount       Decimal             @db.Decimal(18, 2)
   arrivalAmount     Decimal?            @db.Decimal(18, 2)
+  units             Decimal?            @db.Decimal(20, 6)
+  nav               Decimal?            @db.Decimal(18, 6)
   interest          Decimal?            @db.Decimal(18, 2)
   fee               Decimal?            @db.Decimal(18, 2)
   annualRate        Decimal?            @db.Decimal(10, 6)
