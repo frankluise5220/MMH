@@ -17,6 +17,8 @@ import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules
 type Entry = {
   id?: string;
   transactionId?: string;
+  cashEntryId?: string | null;
+  businessTransactionId?: string | null;
   date: string;
   amount: number;
   note?: string | null;
@@ -24,6 +26,8 @@ type Entry = {
   wealthProductId?: string | null;
   fundProductType?: string | null;
   fundSubtype?: string | null;
+  fundUnits?: number | null;
+  fundNav?: number | null;
   depositInterest?: number | null;
   fundArrivalAmount?: number | null;
   accountId?: string | null;
@@ -65,9 +69,12 @@ type WealthHoldingOption = {
   wealthAccountId: string;
   wealthAccountLabel?: string | null;
   remainingAmount: number;
+  remainingUnits?: number | null;
+  hasUnits?: boolean;
   annualRate?: number | null;
   termDays?: number | null;
   movements?: Array<{ date: string; delta: number }>;
+  unitMovements?: Array<{ date: string; delta: number }>;
 };
 type EditingWealthRedeemSource = {
   id: string;
@@ -78,9 +85,13 @@ type EditingWealthRedeemSource = {
   wealthAccountLabel?: string | null;
   restoredPrincipalAmount: number;
   restoredRemainingAmount: number;
+  restoredUnits: number | null;
+  restoredRemainingUnits: number | null;
+  hasUnits?: boolean;
   annualRate?: number | null;
   termDays?: number | null;
   movements?: Array<{ date: string; delta: number }>;
+  unitMovements?: Array<{ date: string; delta: number }>;
 };
 type WealthSubtype = "buy" | "redeem" | "dividend_cash";
 const TERM_PRESETS = [
@@ -91,6 +102,24 @@ const TERM_PRESETS = [
   { label: "3年", days: 1095 },
   { label: "5年", days: 1825 },
 ] as const;
+
+function inferWealthRedeemPrincipalAmount(input: {
+  amount?: number | null;
+  fundArrivalAmount?: number | null;
+  depositInterest?: number | null;
+  fundSubtype?: string | null;
+}) {
+  const rawAmount = Math.abs(input.amount ?? 0);
+  const isRedeem = input.fundSubtype === "redeem" || input.fundSubtype === "switch_out";
+  if (!isRedeem) return rawAmount;
+
+  const arrivalAmount = input.fundArrivalAmount == null ? null : Math.abs(input.fundArrivalAmount);
+  const interest = input.depositInterest ?? 0;
+  if (arrivalAmount != null && Math.abs(rawAmount - arrivalAmount) < 0.005) {
+    return Math.max(0, arrivalAmount - interest);
+  }
+  return rawAmount;
+}
 
 function mergeWealthProducts(primary: WealthProductOption[], fallback: WealthProductOption[]) {
   const seen = new Set<string>();
@@ -114,6 +143,17 @@ function wealthHoldingAmountAt(holding: WealthHoldingOption, date: string) {
   );
 }
 
+function wealthHoldingUnitsAt(holding: WealthHoldingOption, date: string) {
+  const movements = holding.unitMovements ?? [];
+  if (movements.length === 0) return holding.remainingUnits ?? 0;
+  return Number(
+    movements
+      .filter((movement) => !date || movement.date <= date)
+      .reduce((sum, movement) => sum + movement.delta, 0)
+      .toFixed(6),
+  );
+}
+
 function isWealthRedeemArrivalAccount(account: AccountOption, wealthInstitutionId?: string | null) {
   if (account.kind === "bank_debit") return true;
   return account.kind === "ewallet" && !!wealthInstitutionId && account.institutionId === wealthInstitutionId;
@@ -121,6 +161,11 @@ function isWealthRedeemArrivalAccount(account: AccountOption, wealthInstitutionI
 
 function isWealthDividendArrivalAccount(account: AccountOption, wealthInstitutionId?: string | null) {
   return account.kind === "bank_debit" && (!wealthInstitutionId || account.institutionId === wealthInstitutionId);
+}
+
+function parseSignedNumber(value: string) {
+  const n = parseFloat(String(value).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : 0;
 }
 
 export function WealthFormModal({
@@ -163,11 +208,13 @@ export function WealthFormModal({
       ? entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out"
       : entry.amount > 0
     : false;
-  const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
+  const initAmount = mode === "edit" && entry ? String(inferWealthRedeemPrincipalAmount(entry)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
   const initArrivalDate = mode === "edit" && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate;
   const initName = mode === "edit" && entry?.fundName ? entry.fundName : "";
   const initMemo = mode === "edit" && entry?.note ? entry.note : "";
+  const initUnits = mode === "edit" && entry?.fundUnits != null ? String(Math.abs(entry.fundUnits)) : "";
+  const initNav = mode === "edit" && entry?.fundNav != null ? String(Math.abs(entry.fundNav)) : "";
 
   // 编辑模式确定资金/投资账户
   const initOutgoingFromWealth = initIsRedeem || initIsDividend;
@@ -185,11 +232,13 @@ export function WealthFormModal({
   const [arrivalDate, setArrivalDate] = useState(initArrivalDate);
   const arrivalDateTouchedRef = useRef(mode === "edit");
   const [amount, setAmount] = useState(initAmount);
+  const [units, setUnits] = useState(initUnits);
+  const [nav, setNav] = useState(initNav);
   const [wealthProductId, setWealthProductId] = useState(mode === "edit" && entry?.wealthProductId ? entry.wealthProductId : "");
   const [fundName, setFundName] = useState(initName);
   const [annualRate, setAnnualRate] = useState("");
   const [termDays, setTermDays] = useState("");
-  const [interestAmount, setInterestAmount] = useState("");
+  const [interestAmount, setInterestAmount] = useState(mode === "edit" && initIsRedeem && entry?.depositInterest != null ? String(entry.depositInterest) : "");
   const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "");
   const [interestEdited, setInterestEdited] = useState(false);
   const [arrivalEdited, setArrivalEdited] = useState(false);
@@ -201,6 +250,9 @@ export function WealthFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
+  const [editBusinessTransactionId, setEditBusinessTransactionId] = useState<string | null>(null);
+  const unitsEditedRef = useRef(mode === "edit");
+  const autoFilledUnitsForRef = useRef<string | null>(null);
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productSaving, setProductSaving] = useState(false);
   const [productDraft, setProductDraft] = useState({
@@ -295,11 +347,17 @@ export function WealthFormModal({
       wealthAccountId: editingRedeemSource.wealthAccountId,
       wealthAccountLabel: editingRedeemSource.wealthAccountLabel ?? null,
       remainingAmount: editingRedeemSource.restoredRemainingAmount,
+      remainingUnits: editingRedeemSource.restoredRemainingUnits,
+      hasUnits: editingRedeemSource.hasUnits,
       annualRate: editingRedeemSource.annualRate ?? null,
       termDays: editingRedeemSource.termDays ?? null,
       movements: [
         ...(editingRedeemSource.movements ?? []),
         { date: holdingFilterDate, delta: editingRedeemSource.restoredPrincipalAmount },
+      ],
+      unitMovements: [
+        ...(editingRedeemSource.unitMovements ?? []),
+        ...(editingRedeemSource.restoredUnits != null ? [{ date: holdingFilterDate, delta: editingRedeemSource.restoredUnits }] : []),
       ],
     };
     if (wealthHoldingOptions.some((holding) => holding.id === editingRedeemSource.id)) {
@@ -316,6 +374,7 @@ export function WealthFormModal({
       effectiveHoldingOptions.filter((holding) => {
         if (toAccountId && holding.wealthAccountId !== toAccountId) return false;
         if (!isHoldingAction) return true;
+        if (holding.hasUnits) return wealthHoldingUnitsAt(holding, holdingFilterDate) > 0.000001;
         return wealthHoldingAmountAt(holding, holdingFilterDate) > 0.0001;
       }),
     [effectiveHoldingOptions, holdingFilterDate, isHoldingAction, toAccountId],
@@ -326,7 +385,9 @@ export function WealthFormModal({
       label: holding.label,
       subLabel: [
         holding.wealthAccountLabel,
-        `当日本金 ${wealthHoldingAmountAt(holding, holdingFilterDate).toFixed(2)}`,
+        holding.hasUnits
+          ? `当日份额 ${wealthHoldingUnitsAt(holding, holdingFilterDate).toFixed(6)}`
+          : `当日本金 ${wealthHoldingAmountAt(holding, holdingFilterDate).toFixed(2)}`,
         holding.annualRate != null ? `年化 ${holding.annualRate}%` : "",
         holding.termDays ? `${holding.termDays}天` : "",
       ].filter(Boolean).join(" · "),
@@ -341,6 +402,19 @@ export function WealthFormModal({
     () => selectedHolding ? wealthHoldingAmountAt(selectedHolding, holdingFilterDate) : 0,
     [holdingFilterDate, selectedHolding],
   );
+  const selectedHoldingUnitsAtDate = useMemo(
+    () => selectedHolding ? wealthHoldingUnitsAt(selectedHolding, holdingFilterDate) : 0,
+    [holdingFilterDate, selectedHolding],
+  );
+  const selectedBuyProductRequiresUnits = useMemo(() => {
+    if (isHoldingAction || !toAccountId) return false;
+    const productName = wealthProducts.find((product) => product.id === wealthProductId)?.name ?? fundName.trim();
+    return wealthHoldingOptions.some((holding) => {
+      if (!holding.hasUnits || holding.wealthAccountId !== toAccountId) return false;
+      if (wealthProductId && holding.wealthProductId === wealthProductId) return true;
+      return !!productName && holding.fundName === productName;
+    });
+  }, [fundName, isHoldingAction, toAccountId, wealthHoldingOptions, wealthProductId, wealthProducts]);
   const wealthProductOptions: SmartSelectOption[] = useMemo(
     () => wealthProducts.map((product) => ({
       id: product.id,
@@ -374,8 +448,71 @@ export function WealthFormModal({
   const shouldListenForEditEvents = listenForEditEvents ?? (mode === "edit" && !entry);
 
   useEffect(() => {
-    if (mode === "edit" && entry && openSignal) setOpen(true);
-  }, [entry, mode, openSignal]);
+    if (mode !== "edit" || !entry || !openSignal) return;
+    const nextSubtype: WealthSubtype =
+      entry.fundSubtype === "dividend_cash" ? "dividend_cash" : initIsRedeem ? "redeem" : "buy";
+    setEditEntryId(entry.cashEntryId ?? entry.id ?? entry.transactionId ?? null);
+    setEditBusinessTransactionId(entry.businessTransactionId ?? null);
+    setSubtype(nextSubtype);
+    setDate(entry.date?.slice(0, 10) || today);
+    setHoldingFilterDate(entry.date?.slice(0, 10) || today);
+    setArrivalDate(entry.fundArrivalDate?.slice(0, 10) || entry.date?.slice(0, 10) || today);
+    arrivalDateTouchedRef.current = true;
+    setAmount(String(inferWealthRedeemPrincipalAmount(entry)));
+    setUnits(entry.fundUnits != null ? String(Math.abs(entry.fundUnits)) : "");
+    setNav(entry.fundNav != null ? String(Math.abs(entry.fundNav)) : "");
+    unitsEditedRef.current = nextSubtype === "redeem";
+    setWealthProductId(entry.wealthProductId ?? "");
+    setFundName(entry.fundName ?? "");
+    setInterestAmount(nextSubtype === "redeem" && entry.depositInterest != null ? String(entry.depositInterest) : "");
+    setArrivalAmount(nextSubtype === "redeem" ? String(Math.abs(entry.fundArrivalAmount ?? entry.amount ?? 0)) : "");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+    setMemo(entry.note ?? "");
+    const outgoingFromWealth = nextSubtype === "redeem" || nextSubtype === "dividend_cash";
+    setCashAccountId(outgoingFromWealth ? (entry.toAccountId ?? "") : (entry.accountId ?? ""));
+    const nextWealthAccountId = outgoingFromWealth ? (entry.accountId ?? defaultAccountId) : (entry.toAccountId ?? defaultAccountId);
+    setToAccountId(nextWealthAccountId);
+    const matchedHolding = wealthHoldingOptions.find((holding) => {
+      if (holding.wealthAccountId !== nextWealthAccountId) return false;
+      if (entry.wealthProductId && holding.wealthProductId === entry.wealthProductId) return true;
+      return !!entry.fundName && holding.fundName === entry.fundName;
+    });
+    setSelectedHoldingId(matchedHolding?.id ?? "");
+    if (nextSubtype === "redeem") {
+      const restoredPrincipalAmount = inferWealthRedeemPrincipalAmount(entry);
+      const restoredUnits = entry.fundUnits != null ? Math.abs(entry.fundUnits) : null;
+      const restoredHoldingId =
+        matchedHolding?.id ??
+        `${nextWealthAccountId}\u001f${entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${entry.fundName ?? "未命名理财"}`}`;
+      setEditingRedeemSource({
+        id: restoredHoldingId,
+        label: matchedHolding?.label ?? entry.fundName ?? "未命名理财",
+        fundName: entry.fundName ?? matchedHolding?.fundName ?? "未命名理财",
+        wealthProductId: entry.wealthProductId ?? matchedHolding?.wealthProductId ?? null,
+        wealthAccountId: nextWealthAccountId,
+        wealthAccountLabel:
+          matchedHolding?.wealthAccountLabel ??
+          wealthAccountList.find((account) => account.id === nextWealthAccountId)?.label ??
+          "理财账户",
+        restoredPrincipalAmount: Number(restoredPrincipalAmount.toFixed(2)),
+        restoredRemainingAmount: Number(((matchedHolding ? wealthHoldingAmountAt(matchedHolding, entry.date || today) : 0) + restoredPrincipalAmount).toFixed(2)),
+        restoredUnits,
+        restoredRemainingUnits: restoredUnits == null
+          ? matchedHolding?.remainingUnits ?? null
+          : Number(((matchedHolding ? wealthHoldingUnitsAt(matchedHolding, entry.date || today) : 0) + restoredUnits).toFixed(6)),
+        hasUnits: matchedHolding?.hasUnits || restoredUnits != null,
+        annualRate: matchedHolding?.annualRate ?? null,
+        termDays: matchedHolding?.termDays ?? null,
+        movements: matchedHolding?.movements ?? [],
+        unitMovements: matchedHolding?.unitMovements ?? [],
+      });
+      setSelectedHoldingId(restoredHoldingId);
+    } else {
+      setEditingRedeemSource(null);
+    }
+    setOpen(true);
+  }, [defaultAccountId, entry, initIsRedeem, mode, openSignal, today, wealthAccountList, wealthHoldingOptions]);
 
   useEffect(() => {
     if (!isHoldingAction) {
@@ -395,6 +532,10 @@ export function WealthFormModal({
     setArrivalDate(today);
     arrivalDateTouchedRef.current = false;
     setAmount("");
+    setUnits("");
+    setNav("");
+    unitsEditedRef.current = false;
+    autoFilledUnitsForRef.current = null;
     setWealthProductId("");
     setFundName("");
     setAnnualRate("");
@@ -409,6 +550,8 @@ export function WealthFormModal({
     setEditingRedeemSource(null);
     setMemo("");
     setRequestId(null);
+    setEditEntryId(null);
+    setEditBusinessTransactionId(null);
   }
 
   // Listen for edit event
@@ -418,31 +561,37 @@ export function WealthFormModal({
     function onEdit(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId: string; entryId: string;
+        cashEntryId?: string | null; businessTransactionId?: string | null;
         type: string; date: string; amount: number; note: string;
         accountId?: string; toAccountId?: string;
         fundName?: string; wealthProductId?: string | null; fundSubtype?: string; fundArrivalDate?: string | null;
-        depositInterest?: number | null; fundArrivalAmount?: number | null;
+        fundUnits?: number | null; fundNav?: number | null; depositInterest?: number | null; fundArrivalAmount?: number | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
-      setEditEntryId(detail.entryId);
+      setEditEntryId(detail.cashEntryId ?? detail.entryId);
+      setEditBusinessTransactionId(detail.businessTransactionId ?? null);
       const nextSubtype: WealthSubtype =
         detail.fundSubtype === "dividend_cash" ? "dividend_cash" : detail.fundSubtype === "redeem" ? "redeem" : "buy";
       setDate(detail.date || today);
       setHoldingFilterDate(detail.date || today);
       setArrivalDate(detail.fundArrivalDate?.slice(0, 10) || detail.date || today);
       arrivalDateTouchedRef.current = true;
-      setAmount(detail.amount ? String(Math.abs(detail.amount)) : "");
+      const detailPrincipalAmount = inferWealthRedeemPrincipalAmount(detail);
+      setAmount(detailPrincipalAmount ? String(detailPrincipalAmount) : "");
+      setUnits(detail.fundUnits != null ? String(Math.abs(detail.fundUnits)) : "");
+      setNav(detail.fundNav != null ? String(Math.abs(detail.fundNav)) : "");
+      unitsEditedRef.current = nextSubtype === "redeem";
       setWealthProductId(detail.wealthProductId ?? "");
       setFundName(detail.fundName ?? "");
-      setInterestAmount(nextSubtype === "redeem" && detail.depositInterest != null ? String(Math.max(0, detail.depositInterest)) : "");
+      setInterestAmount(nextSubtype === "redeem" && detail.depositInterest != null ? String(detail.depositInterest) : "");
       setArrivalAmount(
         nextSubtype === "redeem"
           ? String(Math.abs(detail.fundArrivalAmount ?? detail.amount ?? 0))
           : "",
       );
       setInterestEdited(false);
-      setArrivalEdited(mode === "edit" && nextSubtype === "redeem");
+      setArrivalEdited(false);
       setMemo(detail.note ?? "");
       const outgoingFromWealth = nextSubtype === "redeem" || nextSubtype === "dividend_cash";
       setSubtype(nextSubtype);
@@ -456,10 +605,8 @@ export function WealthFormModal({
       });
       setSelectedHoldingId(matchedHolding?.id ?? "");
       if (nextSubtype === "redeem") {
-        const restoredPrincipalAmount = Math.max(
-          0,
-          Math.abs(detail.amount ?? 0) - Math.max(0, detail.depositInterest ?? 0),
-        );
+        const restoredPrincipalAmount = inferWealthRedeemPrincipalAmount(detail);
+        const restoredUnits = detail.fundUnits != null ? Math.abs(detail.fundUnits) : null;
         const restoredHoldingId =
           matchedHolding?.id ??
           `${nextWealthAccountId}\u001f${detail.wealthProductId ? `product:${detail.wealthProductId}` : `name:${detail.fundName ?? "未命名理财"}`}`;
@@ -475,9 +622,15 @@ export function WealthFormModal({
             "理财账户",
           restoredPrincipalAmount: Number(restoredPrincipalAmount.toFixed(2)),
           restoredRemainingAmount: Number(((matchedHolding ? wealthHoldingAmountAt(matchedHolding, detail.date || today) : 0) + restoredPrincipalAmount).toFixed(2)),
+          restoredUnits,
+          restoredRemainingUnits: restoredUnits == null
+            ? matchedHolding?.remainingUnits ?? null
+            : Number(((matchedHolding ? wealthHoldingUnitsAt(matchedHolding, detail.date || today) : 0) + restoredUnits).toFixed(6)),
+          hasUnits: matchedHolding?.hasUnits || restoredUnits != null,
           annualRate: matchedHolding?.annualRate ?? null,
           termDays: matchedHolding?.termDays ?? null,
           movements: matchedHolding?.movements ?? [],
+          unitMovements: matchedHolding?.unitMovements ?? [],
         });
         setSelectedHoldingId(restoredHoldingId);
       } else {
@@ -532,6 +685,10 @@ export function WealthFormModal({
 
   function resetAfterKeepAdding() {
     setAmount("");
+    setUnits("");
+    setNav("");
+    unitsEditedRef.current = false;
+    autoFilledUnitsForRef.current = null;
     setInterestAmount("");
     setArrivalAmount("");
     setInterestEdited(false);
@@ -549,15 +706,21 @@ export function WealthFormModal({
   }, [cashAccountId, mode, open, resolveWealthAccountForCashAccount, subtype, toAccountId]);
 
   const amountNumber = parseNumber(amount);
-  const interestNumber = parseNumber(interestAmount);
+  const unitsNumber = parseNumber(units);
+  const navNumber = parseNumber(nav);
+  const interestNumber = parseSignedNumber(interestAmount);
+  const redeemPrincipalNumber = isRedeem && unitsNumber > 0 && navNumber > 0
+    ? Number((unitsNumber * navNumber).toFixed(2))
+    : amountNumber;
   const arrivalPreview = useMemo(() => {
-    if (!isRedeem || amountNumber <= 0) return amountNumber;
-    return Number((amountNumber + Math.max(0, interestNumber)).toFixed(2));
-  }, [amountNumber, interestNumber, isRedeem]);
+    if (!isRedeem || redeemPrincipalNumber <= 0) return amountNumber;
+    return Number(Math.max(0, redeemPrincipalNumber + interestNumber).toFixed(2));
+  }, [amountNumber, interestNumber, isRedeem, redeemPrincipalNumber]);
 
   useEffect(() => {
     if (!isHoldingAction) {
       setSelectedHoldingId("");
+      autoFilledUnitsForRef.current = null;
       return;
     }
     if (!selectedHoldingId && filteredHoldingOptions.length > 0 && !editEntryId) {
@@ -565,6 +728,7 @@ export function WealthFormModal({
       return;
     }
     if (selectedHoldingId && !filteredHoldingOptions.some((holding) => holding.id === selectedHoldingId)) {
+      autoFilledUnitsForRef.current = null;
       setSelectedHoldingId("");
     }
   }, [editEntryId, filteredHoldingOptions, isHoldingAction, selectedHoldingId]);
@@ -573,8 +737,13 @@ export function WealthFormModal({
     if (!isHoldingAction || !selectedHolding) return;
     setWealthProductId(selectedHolding.wealthProductId ?? "");
     setFundName(selectedHolding.fundName);
-    if (isRedeem) {
+    if (isRedeem && !editEntryId) {
       setAmount(selectedHoldingAmountAtDate > 0 ? selectedHoldingAmountAtDate.toFixed(2) : "");
+      const autoFillKey = `${selectedHoldingId}:${holdingFilterDate}`;
+      if (!unitsEditedRef.current && autoFilledUnitsForRef.current !== autoFillKey) {
+        setUnits(selectedHolding.hasUnits && selectedHoldingUnitsAtDate > 0 ? selectedHoldingUnitsAtDate.toFixed(6) : "");
+        autoFilledUnitsForRef.current = autoFillKey;
+      }
     }
     setAnnualRate(
       selectedHolding.annualRate != null && Number.isFinite(selectedHolding.annualRate)
@@ -589,14 +758,24 @@ export function WealthFormModal({
     if (selectedHolding.wealthAccountId && selectedHolding.wealthAccountId !== toAccountId) {
       setToAccountId(selectedHolding.wealthAccountId);
     }
-    setInterestEdited(false);
-    setArrivalEdited(false);
-  }, [isHoldingAction, isRedeem, selectedHolding, selectedHoldingAmountAtDate, toAccountId]);
+    if (!editEntryId) {
+      setInterestEdited(false);
+      setArrivalEdited(false);
+    }
+  }, [editEntryId, holdingFilterDate, isHoldingAction, isRedeem, selectedHolding, selectedHoldingAmountAtDate, selectedHoldingId, selectedHoldingUnitsAtDate, toAccountId]);
 
   useEffect(() => {
     if (!isRedeem || arrivalEdited) return;
     setArrivalAmount(arrivalPreview > 0 ? arrivalPreview.toFixed(2) : "");
   }, [arrivalEdited, arrivalPreview, isRedeem]);
+
+  useEffect(() => {
+    if (!isRedeem || !arrivalEdited || interestEdited) return;
+    const arrivalValue = parseNumber(arrivalAmount);
+    if (arrivalValue <= 0 || redeemPrincipalNumber <= 0) return;
+    const nextInterest = Number((arrivalValue - redeemPrincipalNumber).toFixed(2));
+    setInterestAmount(nextInterest !== 0 ? nextInterest.toFixed(2) : "");
+  }, [arrivalAmount, arrivalEdited, interestEdited, isRedeem, redeemPrincipalNumber]);
 
   useEffect(() => {
     if (!isHoldingAction) return;
@@ -752,7 +931,7 @@ export function WealthFormModal({
 
   async function saveWealthTransaction(keepAdding: boolean) {
     if (submitting) return;
-    const amt = parseNumber(amount);
+    const amt = isRedeem ? redeemPrincipalNumber : parseNumber(amount);
     if (amt <= 0) { window.alert("请输入金额"); return; }
     const selectedProduct = wealthProducts.find((product) => product.id === wealthProductId);
     const resolvedFundName = selectedHolding?.fundName || selectedProduct?.name || fundName.trim();
@@ -766,6 +945,11 @@ export function WealthFormModal({
     if (isHoldingAction && !toAccountId) { window.alert("请选择理财账户"); return; }
     if (isHoldingAction && !selectedHoldingId) { window.alert("请选择持仓理财产品"); return; }
     if (isHoldingAction && !cashAccountId) { window.alert("请选择到账账户"); return; }
+    const unitsValue = parseNumber(units);
+    if (!isHoldingAction && selectedBuyProductRequiresUnits && unitsValue <= 0) {
+      window.alert("该理财产品已有份额记录，继续买入时必须填写份额");
+      return;
+    }
     setSubmitting(true);
     try {
       const fd = new FormData();
@@ -785,16 +969,22 @@ export function WealthFormModal({
       }
       fd.set("cashAccountId", cashAccountId);
       if (isHoldingAction) fd.set("fundArrivalDate", arrivalDate || date);
+      if (unitsValue > 0) fd.set("fundUnits", String(unitsValue));
+      const navValue = parseNumber(nav);
+      if (isRedeem && navValue > 0) fd.set("fundNav", String(navValue));
       const rateValue = parseNumber(annualRate);
       if (rateValue > 0) fd.set("depositAnnualRate", String(rateValue));
       if (isRedeem) {
         const arrivalValue = parseNumber(arrivalAmount);
         if (arrivalValue <= 0) throw new Error("到账金额不正确");
         fd.set("fundArrivalAmount", String(arrivalValue));
-        if (interestNumber > 0) fd.set("depositInterest", String(interestNumber));
+        if (interestAmount.trim()) fd.set("depositInterest", String(interestNumber));
       }
-      if (mode === "edit" && (entry?.id || editEntryId)) {
-        fd.set("entryId", entry?.id || editEntryId || "");
+      const cashEntryIdForEdit = entry?.cashEntryId ?? entry?.id ?? editEntryId;
+      const businessTransactionIdForEdit = entry?.businessTransactionId ?? editBusinessTransactionId;
+      if (mode === "edit" && cashEntryIdForEdit) {
+        fd.set("entryId", cashEntryIdForEdit);
+        if (businessTransactionIdForEdit) fd.set("businessTransactionId", businessTransactionIdForEdit);
         fd.set("fundProductType", "wealth");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: "缺少 editAction" };
         if (!res.ok) throw new Error(res.error ?? "保存失败");
@@ -859,6 +1049,10 @@ export function WealthFormModal({
                   onClick={() => {
                     setSubtype("buy");
                     setSelectedHoldingId("");
+                    setUnits("");
+                    setNav("");
+                    unitsEditedRef.current = false;
+                    autoFilledUnitsForRef.current = null;
                     setInterestAmount("");
                     setArrivalAmount("");
                     setInterestEdited(false);
@@ -873,6 +1067,10 @@ export function WealthFormModal({
                   onClick={() => {
                     setSubtype("redeem");
                     setAmount("");
+                    setUnits("");
+                    setNav("");
+                    unitsEditedRef.current = false;
+                    autoFilledUnitsForRef.current = null;
                     if (!arrivalDateTouchedRef.current) setArrivalDate(date);
                     setInterestEdited(false);
                     setArrivalEdited(false);
@@ -886,6 +1084,10 @@ export function WealthFormModal({
                   onClick={() => {
                     setSubtype("dividend_cash");
                     setAmount("");
+                    setUnits("");
+                    setNav("");
+                    unitsEditedRef.current = false;
+                    autoFilledUnitsForRef.current = null;
                     setInterestAmount("");
                     setArrivalAmount("");
                     if (!arrivalDateTouchedRef.current) setArrivalDate(date);
@@ -923,19 +1125,60 @@ export function WealthFormModal({
                     <SmartSelect
                       mode="single"
                       value={selectedHoldingId}
-                      onChange={setSelectedHoldingId}
+                      onChange={(id) => {
+                        unitsEditedRef.current = false;
+                        autoFilledUnitsForRef.current = null;
+                        setSelectedHoldingId(id);
+                      }}
                       options={holdingSelectOptions}
                       placeholder={holdingSelectOptions.length > 0 ? (isDividend ? "选择分红的持仓产品" : "选择可赎回的理财产品") : "暂无可用持仓"}
                       searchable
                     />
                     <div className="text-[11px] text-slate-400">
                       {selectedHolding
-                        ? `当日本金 ${selectedHoldingAmountAtDate.toFixed(2)}${selectedHolding.wealthAccountLabel ? ` · ${selectedHolding.wealthAccountLabel}` : ""}`
+                        ? [
+                            `当日本金 ${selectedHoldingAmountAtDate.toFixed(2)}`,
+                            selectedHolding.hasUnits ? `当日份额 ${selectedHoldingUnitsAtDate.toFixed(6)}` : "",
+                            selectedHolding.wealthAccountLabel ?? "",
+                          ].filter(Boolean).join(" · ")
                         : "先选择理财账户，再选择该账户下的持仓产品"}
                     </div>
                   </div>
                   {isRedeem ? (
                     <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <div className="form-label">赎回本金</div>
+                        <CalcInput
+                          value={amount}
+                          onChange={setAmount}
+                          placeholder="0.00"
+                          label="赎回本金"
+                          precision={2}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">赎回份额</div>
+                        <CalcInput
+                          value={units}
+                          onChange={(value) => {
+                            unitsEditedRef.current = true;
+                            setUnits(value);
+                          }}
+                          placeholder="可选"
+                          label="赎回份额"
+                          precision={6}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">净值</div>
+                        <CalcInput
+                          value={nav}
+                          onChange={setNav}
+                          placeholder="可选"
+                          label="净值"
+                          precision={6}
+                        />
+                      </div>
                       <div className="space-y-1">
                         <div className="form-label">年化收益率（%）</div>
                         <CalcInput
@@ -1019,6 +1262,30 @@ export function WealthFormModal({
                         label="买入"
                         precision={2}
                       />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">份额{selectedBuyProductRequiresUnits ? "（必填）" : ""}</div>
+                      <CalcInput
+                        value={units}
+                        onChange={(value) => {
+                          unitsEditedRef.current = true;
+                          setUnits(value);
+                        }}
+                        placeholder={selectedBuyProductRequiresUnits ? "必填" : "可选"}
+                        label="份额"
+                        precision={6}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">均价</div>
+                      <div className="form-input flex items-center justify-end text-xs tabular-nums text-slate-500">
+                        {parseNumber(units) > 0 && parseNumber(amount) > 0
+                          ? (parseNumber(amount) / parseNumber(units)).toFixed(4)
+                          : "-"}
+                      </div>
                     </div>
                   </div>
 

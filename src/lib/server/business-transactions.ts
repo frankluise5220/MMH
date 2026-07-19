@@ -81,6 +81,9 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
   const cashEntryId = cashEntry?.id ?? entry.id;
   const absAmount = Math.abs(toNumber(entry.amount));
   const arrivalAmount = entry.fundArrivalAmount == null ? null : Math.abs(toNumber(entry.fundArrivalAmount));
+  const principalAmount = isCashInSubtype(subtype) && subtype !== FundSubtype.dividend_cash
+    ? Math.max(0, (arrivalAmount ?? absAmount) - toNumber(entry.depositInterest) + toNumber(entry.fundFee))
+    : absAmount;
   let targetId: string | null = null;
   let targetType: EntryBusinessType = businessType;
 
@@ -140,8 +143,10 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         tradeDate: entry.date,
         confirmDate: entry.fundConfirmDate,
         arrivalDate: entry.fundArrivalDate,
-        grossAmount: absAmount,
+        grossAmount: principalAmount,
         arrivalAmount,
+        units: entry.fundUnits,
+        nav: entry.fundNav,
         interest: entry.depositInterest,
         fee: entry.fundFee,
         annualRate: entry.depositAnnualRate,
@@ -160,8 +165,10 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         tradeDate: entry.date,
         confirmDate: entry.fundConfirmDate,
         arrivalDate: entry.fundArrivalDate,
-        grossAmount: absAmount,
+        grossAmount: principalAmount,
         arrivalAmount,
+        units: entry.fundUnits,
+        nav: entry.fundNav,
         interest: entry.depositInterest,
         fee: entry.fundFee,
         annualRate: entry.depositAnnualRate,

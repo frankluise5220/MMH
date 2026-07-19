@@ -32,6 +32,8 @@ import { parseImportAccountId } from "@/lib/account-import-match";
 
 export type DetailEntry = {
   id: string;
+  cashEntryId?: string | null;
+  businessTransactionId?: string | null;
   date: string;
   postedAt?: string | null;
   createdAt?: string | null;
@@ -54,6 +56,7 @@ export type DetailEntry = {
   toAccountDebtDirection?: string | null;
   toAccountInstitutionName?: string | null;
   note: string | null;
+  businessNote?: string | null;
   toNote?: string | null;
   fundSubtype: string | null;
   fundCode: string | null;
@@ -557,8 +560,19 @@ export function DetailViewClient({
   } => {
     const dateStr = (e.date ?? "").slice(0, 10);
     const amount = toNumber(e.amount);
+    const linkedBusinessLabels = e.businessLinkLabels ?? [];
+    const linkedFundProductType = linkedBusinessLabels.includes("理财交易")
+      ? "wealth"
+      : linkedBusinessLabels.includes("存款交易")
+        ? "deposit"
+        : linkedBusinessLabels.includes("贵金属交易")
+          ? "metal"
+          : linkedBusinessLabels.includes("基金交易")
+            ? "fund"
+            : null;
     const entryFundProductType =
       e.fundProductType ??
+      linkedFundProductType ??
       (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
       (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
       null;
@@ -576,11 +590,13 @@ export function DetailViewClient({
         : {
             targetEntryId: targetInvestmentEditEntryId,
             transactionId: e.id,
+            cashEntryId: e.cashEntryId ?? e.id,
+            businessTransactionId: e.businessTransactionId ?? null,
             date: dateStr,
             confirmDate: e.fundConfirmDate?.slice(0, 10),
             type: e.type,
             amount,
-            note: e.note ?? "",
+            note: entryFundProductType === "wealth" ? e.businessNote ?? "" : e.note ?? "",
             fundCode: e.fundCode ?? undefined,
             fundName: e.fundName ?? undefined,
             wealthProductId: e.wealthProductId ?? null,

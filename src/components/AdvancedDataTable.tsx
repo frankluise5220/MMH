@@ -162,6 +162,33 @@ function sortFilterValue(a: string, b: string) {
   return a.localeCompare(b, "zh-CN", { numeric: true });
 }
 
+function rowMatchesColumnFilter<T>(row: T, column: AdvancedDataTableColumn<T>, values: string[] | undefined) {
+  if (!column.filterText || (values?.length ?? 0) === 0) return true;
+  const value = column.filterText(row).trim() || "-";
+  if (column.filterKind === "dateRange") {
+    const [from = "", to = ""] = values ?? [];
+    if (from && value < from) return false;
+    if (to && value > to) return false;
+    return true;
+  }
+  return values?.includes(value) ?? true;
+}
+
+function rowMatchesFilters<T>(
+  row: T,
+  columns: AdvancedDataTableColumn<T>[],
+  filters: Partial<Record<string, string[]>>,
+  options?: { excludeKey?: string },
+) {
+  for (const [key, values] of Object.entries(filters)) {
+    if (key === options?.excludeKey || (values?.length ?? 0) === 0) continue;
+    const column = columns.find((item) => item.key === key);
+    if (!column?.filterText) continue;
+    if (!rowMatchesColumnFilter(row, column, values)) return false;
+  }
+  return true;
+}
+
 export function AdvancedDataTable<T>({
   storageKey,
   columns,
@@ -353,29 +380,47 @@ export function AdvancedDataTable<T>({
     const options: Record<string, string[]> = {};
     for (const column of columns) {
       if (!column.filterText) continue;
+      const baseRows = showFilters
+        ? rows.filter((row) => rowMatchesFilters(row, columns, filters, { excludeKey: column.key }))
+        : rows;
       options[column.key] = Array.from(
-        new Set(rows.map((row) => column.filterText?.(row).trim() || "-")),
+        new Set(baseRows.map((row) => column.filterText?.(row).trim() || "-")),
       ).sort(sortFilterValue);
     }
     return options;
-  }, [columns, rows]);
+  }, [columns, filters, rows, showFilters]);
+  const filterOptionCounts = useMemo(() => {
+    const counts: Record<string, Record<string, number>> = {};
+    for (const column of columns) {
+      if (!column.filterText) continue;
+      const columnCounts: Record<string, number> = {};
+      const baseRows = showFilters
+        ? rows.filter((row) => rowMatchesFilters(row, columns, filters, { excludeKey: column.key }))
+        : rows;
+      for (const row of baseRows) {
+        const value = column.filterText(row).trim() || "-";
+        columnCounts[value] = (columnCounts[value] ?? 0) + 1;
+      }
+      counts[column.key] = columnCounts;
+    }
+    return counts;
+  }, [columns, filters, rows, showFilters]);
   const filteredRows = useMemo(() => {
     if (!showFilters) return rows;
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
     if (activeFilters.length === 0) return rows;
-    return rows.filter((row) => activeFilters.every(([key, values]) => {
-      const column = columns.find((item) => item.key === key);
-      if (!column?.filterText) return true;
-      const value = column.filterText(row).trim() || "-";
-      if (column.filterKind === "dateRange") {
-        const [from = "", to = ""] = values ?? [];
-        if (from && value < from) return false;
-        if (to && value > to) return false;
-        return true;
-      }
-      return values?.includes(value);
-    }));
+    return rows.filter((row) => rowMatchesFilters(row, columns, filters));
   }, [columns, filters, rows, showFilters]);
+
+  useEffect(() => {
+    if (!showFilters || filteredRows.length > 0) return;
+    const activeValues = Object.values(filters).filter((values) => (values?.length ?? 0) > 0);
+    if (activeValues.length === 0) return;
+    if (activeValues.some((values) => values?.includes("__NO_MATCH__"))) return;
+    setFilters({});
+    setActiveFilterColumn(null);
+  }, [filteredRows.length, filters, rows.length, showFilters]);
+
   const orderedRows = useMemo(() => {
     if (!sortState) return filteredRows;
     const column = columns.find((item) => item.key === sortState.key);
@@ -803,6 +848,7 @@ export function AdvancedDataTable<T>({
                         <TableColumnFilter
                           label={labelText(column.label, column.key)}
                           options={filterOptions[column.key] ?? []}
+                          optionCounts={filterOptionCounts[column.key]}
                           selectedValues={filters[column.key] ?? []}
                           open={activeFilterColumn === column.key}
                           showLabel={false}
@@ -822,6 +868,11 @@ export function AdvancedDataTable<T>({
                       )
                     ) : null}
                   </div>
+                  <div
+                    aria-hidden="true"
+                    className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-blue-300/40"
+                    onMouseDown={(event) => beginResize(event, column)}
+                  />
                 </th>
               ))}
             </tr>

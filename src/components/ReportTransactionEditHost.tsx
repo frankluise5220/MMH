@@ -31,6 +31,16 @@ function formValue(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
+function numericFormValue(formData: FormData, key: string) {
+  return Number(formValue(formData, key).replace(/,/g, ""));
+}
+
+function savedTypeMatchesSubmitted(submittedType: string, savedType: string, savedSource: string) {
+  if (!submittedType || !savedType) return true;
+  if (submittedType === savedType) return true;
+  return submittedType === "advance" && savedType === "transfer" && savedSource === "advance";
+}
+
 export function ReportTransactionEditHost({
   accounts,
   accountSSOptions,
@@ -66,15 +76,16 @@ export function ReportTransactionEditHost({
       return { ok: false, error: "标签数据不正确" };
     }
 
+    const submittedType = formValue(formData, "type");
     const response = await fetch("/api/v1/transactions/detail", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: entryId,
-        type: formValue(formData, "type"),
+        type: submittedType,
         date: formValue(formData, "date"),
         postedAt: formValue(formData, "postedAt"),
-        amount: Number(formValue(formData, "amount")),
+        amount: numericFormValue(formData, "amount"),
         accountId: formValue(formData, "accountId"),
         fromAccountId: formValue(formData, "fromAccountId"),
         toAccountId: formValue(formData, "toAccountId"),
@@ -85,10 +96,20 @@ export function ReportTransactionEditHost({
         tagIds,
       }),
     });
-    const result = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-    return response.ok && result?.ok
-      ? { ok: true }
-      : { ok: false, error: result?.error || response.statusText || "保存失败" };
+    const result = await response.json().catch(() => null) as {
+      ok?: boolean;
+      error?: string;
+      data?: { type?: string | null; source?: string | null };
+    } | null;
+    if (!response.ok || !result?.ok) {
+      return { ok: false, error: result?.error || response.statusText || "保存失败" };
+    }
+    const savedType = String(result.data?.type ?? "").trim();
+    const savedSource = String(result.data?.source ?? "").trim();
+    if (!savedTypeMatchesSubmitted(submittedType, savedType, savedSource)) {
+      return { ok: false, error: `保存后类型仍为 ${savedType}，未成功改为 ${submittedType}` };
+    }
+    return { ok: true };
   }
 
   async function updateInvestment(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {

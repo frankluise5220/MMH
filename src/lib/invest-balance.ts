@@ -9,7 +9,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
-import { AccountKind, FundSubtype, TransactionType } from "@prisma/client";
+import { AccountKind, FundSubtype } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -23,8 +23,11 @@ export type InvestBalanceDetail = {
 /** 持仓明细显示行 — 从 fundHolding 表直接读取生成 */
 export type PositionDisplayRow = {
   fundCode: string;
+  wealthProductId?: string | null;
   name: string;
+  holdingDate: string;
   units: number;
+  hasUnits?: boolean;
   avgCost: number;
   cost: number;
   nav: number | null;
@@ -38,6 +41,7 @@ export type PositionDisplayRow = {
 
 export type ClearedPositionRow = {
   fundCode: string;
+  wealthProductId?: string | null;
   name: string;
   historicalProfit: number;
   totalInvested: number;
@@ -54,6 +58,36 @@ function isCashInSubtype(subtype: FundSubtype | string | null | undefined) {
 
 function isDividendSubtype(subtype: FundSubtype | string | null | undefined) {
   return subtype === FundSubtype.dividend_cash;
+}
+
+function wealthProfitFromParts(params: {
+  realizedProfit?: unknown;
+  interest?: unknown;
+  fee?: unknown;
+}) {
+  if (params.realizedProfit != null) return toNumber(params.realizedProfit);
+  return toNumber(params.interest) - toNumber(params.fee);
+}
+
+function wealthDisplayCode(productName: string, productId?: string | null) {
+  return productId || productName;
+}
+
+const WEALTH_PRINCIPAL_EPS = 0.01;
+const WEALTH_UNITS_EPS = 0.000001;
+
+export function isWealthHoldingCleared(hasUnits: boolean, principal: number, units: number) {
+  return hasUnits
+    ? principal <= WEALTH_PRINCIPAL_EPS || units <= WEALTH_UNITS_EPS
+    : principal <= WEALTH_PRINCIPAL_EPS;
+}
+
+export function resetWealthHoldingBucket(bucket: { principal?: number; units?: number; remaining?: number; remainingUnits?: number; cycleHasUnits: boolean }) {
+  if ("principal" in bucket) bucket.principal = 0;
+  if ("units" in bucket) bucket.units = 0;
+  if ("remaining" in bucket) bucket.remaining = 0;
+  if ("remainingUnits" in bucket) bucket.remainingUnits = 0;
+  bucket.cycleHasUnits = false;
 }
 
 /**
@@ -87,17 +121,6 @@ export const computeInvestBalances = cache(
   });
   const allWealthTransactions = await prisma.wealthTransaction.findMany({
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
-  });
-  const allWealthTransactionIds = allWealthTransactions.map((row) => row.id);
-  const legacyWealthRows = await prisma.txRecord.findMany({
-    where: {
-      ...ctx.hidFilter,
-      deletedAt: null,
-      id: allWealthTransactionIds.length > 0 ? { notIn: allWealthTransactionIds } : undefined,
-      type: { in: [TransactionType.investment, TransactionType.transfer] },
-      OR: [{ accountId: { in: wealthAccountIds } }, { toAccountId: { in: wealthAccountIds } }],
-    },
-    select: { accountId: true, toAccountId: true, amount: true },
   });
 
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
@@ -152,20 +175,56 @@ export const computeInvestBalances = cache(
   }
 
   for (const acctId of wealthAccountIds) {
-    let principal = 0;
+    const buckets = new Map<string, { principal: number; units: number; cycleHasUnits: boolean }>();
+    const events: Array<{
+      key: string;
+      date: string;
+      createdAt: Date;
+      action: "buy" | "cash_in" | "dividend";
+      principalDelta: number;
+      units: number | null;
+    }> = [];
+
     for (const row of allWealthTransactions) {
       if (row.accountId !== acctId) continue;
       const gross = Math.abs(toNumber(row.grossAmount));
-      const arrival = row.arrivalAmount == null ? gross : Math.abs(toNumber(row.arrivalAmount));
-      const interest = Math.max(0, toNumber(row.interest));
-      if (isDividendSubtype(row.action)) continue;
-      if (isCashInSubtype(row.action)) principal -= Math.max(0, arrival - interest);
-      else principal += gross;
+      const productKey = row.wealthProductId ?? row.productName ?? `wealth:${row.id}`;
+      events.push({
+        key: productKey,
+        date: row.tradeDate.toISOString().slice(0, 10),
+        createdAt: row.createdAt,
+        action: isDividendSubtype(row.action) ? "dividend" : isCashInSubtype(row.action) ? "cash_in" : "buy",
+        principalDelta: isCashInSubtype(row.action) ? -gross : gross,
+        units: row.units == null ? null : Math.abs(toNumber(row.units)),
+      });
     }
-    for (const row of legacyWealthRows) {
-      if (row.accountId === acctId) principal -= Math.abs(toNumber(row.amount));
-      else if (row.toAccountId === acctId) principal += Math.abs(toNumber(row.amount));
+    events.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.getTime() - b.createdAt.getTime() || a.key.localeCompare(b.key));
+    for (const event of events) {
+      if (event.action === "dividend") continue;
+      const bucket = buckets.get(event.key) ?? { principal: 0, units: 0, cycleHasUnits: false };
+      if (event.action === "cash_in") {
+        bucket.principal += event.principalDelta;
+        if (event.units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.units -= event.units;
+        }
+        const cleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.principal, bucket.units);
+        if (cleared) {
+          resetWealthHoldingBucket(bucket);
+        }
+      } else {
+        if (event.units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.units += event.units;
+        }
+        bucket.principal += event.principalDelta;
+      }
+      buckets.set(event.key, bucket);
     }
+    const principal = Array.from(buckets.values()).reduce(
+      (sum, bucket) => sum + (isWealthHoldingCleared(bucket.cycleHasUnits, bucket.principal, bucket.units) ? 0 : bucket.principal),
+      0,
+    );
     const marketValue = Math.max(0, Number(principal.toFixed(2)));
     result.set(acctId, { marketValue, totalCost: marketValue, floatingPnL: 0 });
   }
@@ -216,6 +275,7 @@ export const computePositionDisplay = cache(
         return {
           fundCode: holding.metalTypeId,
           name: `${holding.metalTypeName} · ${holding.metalUnitName}`,
+          holdingDate: "",
           units: quantity,
           avgCost: toNumber(holding.avgCost),
           cost,
@@ -240,21 +300,14 @@ export const computePositionDisplay = cache(
       include: { WealthProduct: true },
       orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
     });
-    const existingIds = rows.map((row) => row.id);
-    const legacyRows = await prisma.txRecord.findMany({
-      where: {
-        ...ctx.hidFilter,
-        deletedAt: null,
-        id: existingIds.length > 0 ? { notIn: existingIds } : undefined,
-        type: { in: [TransactionType.investment, TransactionType.transfer] },
-        OR: [{ accountId }, { toAccountId: accountId }],
-      },
-      orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-    });
     const buckets = new Map<string, {
       fundCode: string;
+      wealthProductId: string | null;
       name: string;
+      holdingDate: string;
       remaining: number;
+      remainingUnits: number;
+      cycleHasUnits: boolean;
       historicalProfit: number;
       totalBuyAmount: number;
       totalRedeemAmount: number;
@@ -262,54 +315,63 @@ export const computePositionDisplay = cache(
       clearedDate: string;
     }>();
 
+    const wealthEvents: Array<{
+      key: string;
+      wealthProductId: string | null;
+      productName: string;
+      tradeDate: string;
+      createdAt: Date;
+      action: "buy" | "cash_in" | "dividend";
+      buyAmount: number;
+      principalOut: number;
+      units: number | null;
+      arrival: number;
+      profit: number;
+    }> = [];
+
     for (const row of rows) {
       const productName = row.WealthProduct?.name ?? row.productName ?? "未命名理财";
-      const fundCode = row.wealthProductId ?? row.productName ?? productName;
+      const fundCode = wealthDisplayCode(productName, row.wealthProductId);
       const key = fundCode || productName;
       const tradeDate = row.tradeDate.toISOString().slice(0, 10);
       const gross = Math.abs(toNumber(row.grossAmount));
+      const units = row.units == null ? null : Math.abs(toNumber(row.units));
       const arrival = row.arrivalAmount == null ? gross : Math.abs(toNumber(row.arrivalAmount));
-      const interest = Math.max(0, toNumber(row.interest));
-      const bucket = buckets.get(key) ?? {
-        fundCode: key,
-        name: productName,
-        remaining: 0,
-        historicalProfit: 0,
-        totalBuyAmount: 0,
-        totalRedeemAmount: 0,
-        firstBuyDate: "",
-        clearedDate: "",
-      };
-
-      if (isDividendSubtype(row.action)) {
-        bucket.historicalProfit += arrival;
-        bucket.clearedDate = tradeDate;
-      } else if (isCashInSubtype(row.action)) {
-        const principalOut = Math.max(0, arrival - interest);
-        bucket.remaining -= principalOut;
-        bucket.totalRedeemAmount += arrival;
-        bucket.historicalProfit += interest;
-        bucket.clearedDate = tradeDate;
-      } else {
-        bucket.remaining += gross;
-        bucket.totalBuyAmount += gross;
-        if (!bucket.firstBuyDate || tradeDate < bucket.firstBuyDate) bucket.firstBuyDate = tradeDate;
-      }
-
-      buckets.set(key, bucket);
+      const profit = wealthProfitFromParts({
+        realizedProfit: row.realizedProfit,
+        interest: row.interest,
+        fee: row.fee,
+      });
+      wealthEvents.push({
+        key,
+        wealthProductId: row.wealthProductId ?? null,
+        productName,
+        tradeDate,
+        createdAt: row.createdAt,
+        action: isDividendSubtype(row.action) ? "dividend" : isCashInSubtype(row.action) ? "cash_in" : "buy",
+        buyAmount: gross,
+        principalOut: gross,
+        units,
+        arrival,
+        profit,
+      });
     }
 
-    for (const row of legacyRows) {
-      const isCashIn = row.accountId === accountId;
-      const productName = row.fundName || row.note || "历史理财";
-      const fundCode = row.wealthProductId || row.fundName || `legacy-wealth:${accountId}`;
-      const key = fundCode || productName;
-      const tradeDate = row.date.toISOString().slice(0, 10);
-      const amount = Math.abs(toNumber(row.amount));
-      const bucket = buckets.get(key) ?? {
-        fundCode: key,
-        name: productName,
+    wealthEvents.sort((a, b) =>
+      a.tradeDate.localeCompare(b.tradeDate) ||
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      a.key.localeCompare(b.key)
+    );
+
+    for (const event of wealthEvents) {
+      const bucket = buckets.get(event.key) ?? {
+        fundCode: event.key,
+        wealthProductId: event.wealthProductId,
+        name: event.productName,
+        holdingDate: "",
         remaining: 0,
+        remainingUnits: 0,
+        cycleHasUnits: false,
         historicalProfit: 0,
         totalBuyAmount: 0,
         totalRedeemAmount: 0,
@@ -317,29 +379,53 @@ export const computePositionDisplay = cache(
         clearedDate: "",
       };
 
-      if (isCashIn) {
-        bucket.remaining -= amount;
-        bucket.totalRedeemAmount += amount;
-        bucket.clearedDate = tradeDate;
+      if (event.action === "dividend") {
+        bucket.historicalProfit += event.arrival;
+        bucket.clearedDate = event.tradeDate;
+      } else if (event.action === "cash_in") {
+        if (event.units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.remainingUnits -= event.units;
+        }
+        bucket.remaining -= event.principalOut;
+        const cleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
+        if (cleared) {
+          resetWealthHoldingBucket(bucket);
+          bucket.holdingDate = "";
+        }
+        bucket.totalRedeemAmount += event.arrival;
+        bucket.historicalProfit += event.profit;
+        bucket.clearedDate = event.tradeDate;
       } else {
-        bucket.remaining += amount;
-        bucket.totalBuyAmount += amount;
-        if (!bucket.firstBuyDate || tradeDate < bucket.firstBuyDate) bucket.firstBuyDate = tradeDate;
+        const wasCleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
+        if (wasCleared) bucket.holdingDate = event.tradeDate;
+        if (event.units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.remainingUnits += event.units;
+        }
+        bucket.remaining += event.buyAmount;
+        bucket.totalBuyAmount += event.buyAmount;
+        if (!bucket.firstBuyDate || event.tradeDate < bucket.firstBuyDate) bucket.firstBuyDate = event.tradeDate;
       }
 
-      buckets.set(key, bucket);
+      buckets.set(event.key, bucket);
     }
 
     const positions: PositionDisplayRow[] = [];
     const clearedPositions: ClearedPositionRow[] = [];
     for (const bucket of buckets.values()) {
       const remaining = Number(bucket.remaining.toFixed(2));
-      if (remaining > 0.01) {
+      const remainingUnits = Number(bucket.remainingUnits.toFixed(6));
+      const hasActiveHolding = !isWealthHoldingCleared(bucket.cycleHasUnits, remaining, remainingUnits);
+      if (hasActiveHolding) {
         positions.push({
           fundCode: bucket.fundCode,
+          wealthProductId: bucket.wealthProductId,
           name: bucket.name,
-          units: remaining,
-          avgCost: 1,
+          holdingDate: bucket.holdingDate,
+          units: bucket.cycleHasUnits ? remainingUnits : 0,
+          hasUnits: bucket.cycleHasUnits,
+          avgCost: bucket.cycleHasUnits && remainingUnits > 0 ? remaining / remainingUnits : 0,
           cost: remaining,
           nav: 1,
           navDate: "",
@@ -352,6 +438,7 @@ export const computePositionDisplay = cache(
       } else if (bucket.totalBuyAmount > 0) {
         clearedPositions.push({
           fundCode: bucket.fundCode,
+          wealthProductId: bucket.wealthProductId,
           name: bucket.name,
           historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
           totalInvested: Number(bucket.totalBuyAmount.toFixed(2)),
@@ -416,6 +503,7 @@ export const computePositionDisplay = cache(
       positions.push({
         fundCode: h.fundCode,
         name: displayName,
+        holdingDate: "",
         units,
         avgCost,
         cost,

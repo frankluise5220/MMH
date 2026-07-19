@@ -649,7 +649,14 @@ export function AIPanel({
         open={isOpen}
         onToggleOpen={() => setActiveDeletePreviewFilterColumn((current) => current === column ? null : column)}
         onClose={() => setActiveDeletePreviewFilterColumn(null)}
-        onChange={(values) => setDeletePreviewColumnFilters((current) => ({ ...current, [column]: values }))}
+        onChange={(values) => setDeletePreviewColumnFilters((current) => {
+          if (!values || values.length === 0) {
+            const next = { ...current };
+            delete next[column];
+            return next;
+          }
+          return { ...current, [column]: values };
+        })}
       />
     );
   }

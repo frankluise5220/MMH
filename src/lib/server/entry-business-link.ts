@@ -330,11 +330,21 @@ export async function listEntryBusinessDeleteImpacts(
       CASE
         WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."cashEntryId"
         WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."businessEntryId"
+        WHEN l."fundTransactionId" IN (${Prisma.join(ids)}) THEN l."fundTransactionId"
+        WHEN l."insuranceTransactionId" IN (${Prisma.join(ids)}) THEN l."insuranceTransactionId"
+        WHEN l."wealthTransactionId" IN (${Prisma.join(ids)}) THEN l."wealthTransactionId"
+        WHEN l."depositTransactionId" IN (${Prisma.join(ids)}) THEN l."depositTransactionId"
+        WHEN l."preciousMetalTransactionId" IN (${Prisma.join(ids)}) THEN l."preciousMetalTransactionId"
         ELSE l."cashEntryId"
       END AS "selectedEntryId",
       CASE
         WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'both'
         WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'business'
+        WHEN l."fundTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
+        WHEN l."insuranceTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
+        WHEN l."wealthTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
+        WHEN l."depositTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
+        WHEN l."preciousMetalTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
         ELSE 'cash'
       END AS "selectedSide",
       l."cashEntryId" AS "entryId",
@@ -347,7 +357,13 @@ export async function listEntryBusinessDeleteImpacts(
         l."preciousMetalTransactionId"
       ) AS "businessEntryId",
       CASE
-        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."cashEntryId"
+        WHEN l."businessEntryId" IN (${Prisma.join(ids)})
+          OR l."fundTransactionId" IN (${Prisma.join(ids)})
+          OR l."insuranceTransactionId" IN (${Prisma.join(ids)})
+          OR l."wealthTransactionId" IN (${Prisma.join(ids)})
+          OR l."depositTransactionId" IN (${Prisma.join(ids)})
+          OR l."preciousMetalTransactionId" IN (${Prisma.join(ids)})
+        THEN l."cashEntryId"
         ELSE COALESCE(
           l."businessEntryId",
           l."fundTransactionId",
@@ -361,17 +377,25 @@ export async function listEntryBusinessDeleteImpacts(
       l."linkType"::text AS "linkType",
       (l."cashEntryId" = l."businessEntryId") AS "legacyCombinedRecord"
     FROM "entry_business_links" l
-    JOIN "transactions" cash ON cash."id" = l."cashEntryId"
+    LEFT JOIN "transactions" cash ON cash."id" = l."cashEntryId"
     LEFT JOIN "transactions" business ON business."id" = l."businessEntryId"
     LEFT JOIN "fund_transactions" fund_business ON fund_business."id" = l."fundTransactionId"
     LEFT JOIN "insurance_transactions" insurance_business ON insurance_business."id" = l."insuranceTransactionId"
     LEFT JOIN "wealth_transactions" wealth_business ON wealth_business."id" = l."wealthTransactionId"
     LEFT JOIN "deposit_transactions" deposit_business ON deposit_business."id" = l."depositTransactionId"
     LEFT JOIN "precious_metal_transactions" metal_business ON metal_business."id" = l."preciousMetalTransactionId"
-    WHERE (l."cashEntryId" IN (${Prisma.join(ids)}) OR l."businessEntryId" IN (${Prisma.join(ids)}))
+    WHERE (
+        l."cashEntryId" IN (${Prisma.join(ids)})
+        OR l."businessEntryId" IN (${Prisma.join(ids)})
+        OR l."fundTransactionId" IN (${Prisma.join(ids)})
+        OR l."insuranceTransactionId" IN (${Prisma.join(ids)})
+        OR l."wealthTransactionId" IN (${Prisma.join(ids)})
+        OR l."depositTransactionId" IN (${Prisma.join(ids)})
+        OR l."preciousMetalTransactionId" IN (${Prisma.join(ids)})
+      )
       AND l."householdId" = ${ctx.householdId}
       AND l."deletedAt" IS NULL
-      AND cash."deletedAt" IS NULL
+      AND (l."cashEntryId" IS NULL OR cash."id" IS NOT NULL)
       AND (l."businessEntryId" IS NULL OR business."deletedAt" IS NULL)
       AND (l."fundTransactionId" IS NULL OR fund_business."deletedAt" IS NULL)
       AND (l."insuranceTransactionId" IS NULL OR insurance_business."deletedAt" IS NULL)

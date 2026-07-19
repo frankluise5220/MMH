@@ -7,6 +7,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
+import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -69,13 +70,13 @@ export default async function LiabilitiesPage() {
   const currentCreditCycles = creditIds.length > 0
     ? await prisma.creditCardCycle.findMany({
         where: { accountId: { in: creditIds }, isCurrentCycle: true },
-        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+        select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
       })
     : [];
   const currentCreditBalanceByAccountId = new Map(
     currentCreditCycles.map((cycle) => [
       cycle.accountId,
-      toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+      creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
 
@@ -121,7 +122,6 @@ export default async function LiabilitiesPage() {
   const receivableTotal = rows.filter((row) => row.direction === "receivable").reduce((sum, row) => sum + row.amount, 0);
   const creditTotal = rows.filter((row) => row.kind === AccountKind.bank_credit).reduce((sum, row) => sum + row.amount, 0);
   const loanTotal = rows.filter((row) => row.kind === AccountKind.loan && row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
-  const netDebt = payableTotal - receivableTotal;
 
   const institutionRows = Array.from(
     rows.reduce((map, row) => {

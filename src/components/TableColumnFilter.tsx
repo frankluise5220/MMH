@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 
 type TableColumnFilterProps = {
   label: string;
   options: string[];
+  optionCounts?: Record<string, number | undefined>;
   optionTitles?: Record<string, string | undefined>;
   optionSearchText?: Record<string, string | undefined>;
   selectedValues: string[];
@@ -32,6 +33,7 @@ type DateRangeColumnFilterProps = {
 export function TableColumnFilter({
   label,
   options,
+  optionCounts = {},
   optionTitles = {},
   optionSearchText = {},
   selectedValues,
@@ -46,6 +48,7 @@ export function TableColumnFilter({
   const { t } = useI18n();
   const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
   const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [keyword, setKeyword] = useState("");
 
   useEffect(() => {
@@ -70,8 +73,8 @@ export function TableColumnFilter({
     };
   }, [open, onClose]);
 
-  const visibleOptions = useMemo(() => {
-    const query = keyword.trim().toLowerCase();
+  const filterOptionsByKeyword = useCallback((rawKeyword: string) => {
+    const query = rawKeyword.trim().toLowerCase();
     if (!query) return options;
     return options.filter((value) => {
       const haystack = [
@@ -81,7 +84,26 @@ export function TableColumnFilter({
       ].join(" ").toLowerCase();
       return haystack.includes(query);
     });
-  }, [keyword, optionSearchText, optionTitles, options]);
+  }, [optionSearchText, optionTitles, options]);
+
+  const visibleOptions = useMemo(() => {
+    return filterOptionsByKeyword(keyword);
+  }, [filterOptionsByKeyword, keyword]);
+
+  function applyKeywordFilter() {
+    const query = (inputRef.current?.value ?? keyword).trim();
+    if (!query) {
+      onChange([]);
+      onClose();
+      return;
+    }
+    const matchedOptions = filterOptionsByKeyword(query);
+    onChange(matchedOptions.length > 0 ? matchedOptions : ["__NO_MATCH__"]);
+    onClose();
+  }
+
+  const keywordActive = keyword.trim().length > 0;
+  const keywordMatchedCount = visibleOptions.length;
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
@@ -98,7 +120,7 @@ export function TableColumnFilter({
         ▼
       </button>
       {open && (
-        <div className="absolute left-0 top-6 z-30 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+        <div className="absolute left-0 top-6 z-30 h-96 min-h-52 w-64 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
@@ -116,17 +138,38 @@ export function TableColumnFilter({
               {t("table.clear")}
             </button>
           </div>
-          <input
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            onKeyDown={(event) => event.stopPropagation()}
-            placeholder={t("table.filterSearchPlaceholder")}
-            className="mb-2 h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-          />
-          <div className="max-h-56 space-y-1 overflow-auto pr-1">
+          <div className="mb-2 flex items-center gap-2">
+            <input
+              ref={inputRef}
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                applyKeywordFilter();
+              }}
+              placeholder={t("table.filterSearchPlaceholder")}
+              className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+            />
+            <button
+              type="button"
+              onClick={applyKeywordFilter}
+              className="h-8 shrink-0 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
+            >
+              {keywordActive ? `${t("table.confirm")} (${keywordMatchedCount})` : t("table.confirm")}
+            </button>
+          </div>
+          {keywordActive ? (
+            <div className="mb-2 rounded-md bg-blue-50 px-2 py-1 text-[11px] text-blue-700">
+              点确认将应用当前 {keywordMatchedCount} 个匹配项
+            </div>
+          ) : null}
+          <div className="max-h-[calc(100%-116px)] space-y-1 overflow-auto pr-1">
             {visibleOptions.map((value) => {
-              const checked = selectedValues.length > 0 ? selectedValues.includes(value) : true;
+              const checked = keywordActive ? true : selectedValues.length > 0 ? selectedValues.includes(value) : true;
               const title = optionTitles[value] || value;
+              const count = optionCounts[value];
               return (
                 <div
                   key={value}
@@ -157,10 +200,15 @@ export function TableColumnFilter({
                       onChange([value]);
                       onClose();
                     }}
-                    className="min-w-0 flex-1 truncate text-left"
+                    className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
                     title={title}
                   >
-                    <span className="truncate" title={title}>{value}</span>
+                    <span className="min-w-0 truncate" title={title}>{value}</span>
+                    {count != null ? (
+                      <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
+                        {count}
+                      </span>
+                    ) : null}
                   </button>
                 </div>
               );

@@ -33,6 +33,9 @@ export function parseDebtAccountName(accountName: string): string | null {
  * 3. If found, look for an existing loan-type Account linked to that Counterparty.
  * 4. If no account exists, create one (kind=loan, counterpartyId set).
  *
+ * Ordinary counterparty settlement accounts are object-owned. Do not split or
+ * rewrite them by payable/receivable direction during import.
+ *
  * Returns the account ID, or null if the name doesn't match the pattern
  * or no matching Counterparty was found.
  */
@@ -42,7 +45,7 @@ export async function resolveDebtAccountByCounterpartyName(
   accountName: string,
   direction: "payable" | "receivable" = "receivable",
 ): Promise<string | null> {
-  const cacheKey = accountName + "::" + direction;
+  const cacheKey = accountName;
   const cached = debtResolveCacheGet(householdId, cacheKey);
   if (cached !== undefined) return cached.accountId;
   // Try "XX的往来款" pattern first, then fall back to the raw name.
@@ -72,10 +75,10 @@ export async function resolveDebtAccountByCounterpartyName(
     orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
   });
   if (existing) { debtResolveCacheSet(householdId, cacheKey, { accountId: existing.id, created: false });
-    if (!existing.isActive || existing.debtDirection !== direction) {
+    if (!existing.isActive) {
       await tx.account.update({
         where: { id: existing.id },
-        data: { isActive: true, debtDirection: direction },
+        data: { isActive: true },
       });
     }
     return existing.id;

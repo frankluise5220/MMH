@@ -55,6 +55,183 @@ function businessAccountSnapshotOf(txRecord: TxRecord) {
   return { id, name };
 }
 
+type InvestmentRecalcTargets = {
+  accountsToRecalcBalance: Set<string>;
+  fundAccountsToRecalc: Map<string, string[]>;
+  metalAccountsToRecalc: Set<string>;
+};
+
+type IndependentBusinessDeleteResult = {
+  deletedCount: number;
+  deletedEntryIds: string[];
+  removedEntryIds: string[];
+  touchedInvestment: boolean;
+};
+
+function addOptionalAccountId(targets: InvestmentRecalcTargets, accountId: string | null | undefined) {
+  if (accountId) targets.accountsToRecalcBalance.add(accountId);
+}
+
+function addFundRecalcTarget(targets: InvestmentRecalcTargets, accountId: string, fundCode: string) {
+  const codes = targets.fundAccountsToRecalc.get(accountId) ?? [];
+  if (!codes.includes(fundCode)) codes.push(fundCode);
+  targets.fundAccountsToRecalc.set(accountId, codes);
+}
+
+async function softDeleteIndependentBusinessRecordsByIds(
+  ctx: HouseholdContext,
+  entryIds: string[],
+  targets: InvestmentRecalcTargets,
+): Promise<IndependentBusinessDeleteResult> {
+  const ids = Array.from(new Set(entryIds.filter(Boolean)));
+  const result: IndependentBusinessDeleteResult = {
+    deletedCount: 0,
+    deletedEntryIds: [],
+    removedEntryIds: [],
+    touchedInvestment: false,
+  };
+  if (ids.length === 0) return result;
+
+  const deletedAt = new Date();
+  const pushRemovedIds = (businessId: string, cashEntryId?: string | null) => {
+    result.deletedEntryIds.push(businessId);
+    result.removedEntryIds.push(businessId);
+    if (cashEntryId) result.removedEntryIds.push(cashEntryId);
+  };
+
+  const fundRows = await prisma.fundTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, fundAccountId: true, cashAccountId: true, fundCode: true },
+  });
+  for (const row of fundRows) {
+    const updated = await prisma.fundTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.fundAccountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+    addFundRecalcTarget(targets, row.fundAccountId, row.fundCode);
+  }
+
+  const insuranceRows = await prisma.insuranceTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+  });
+  for (const row of insuranceRows) {
+    const updated = await prisma.insuranceTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+  }
+
+  const wealthRows = await prisma.wealthTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+  });
+  for (const row of wealthRows) {
+    const updated = await prisma.wealthTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+  }
+
+  const depositRows = await prisma.depositTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+  });
+  for (const row of depositRows) {
+    const updated = await prisma.depositTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+  }
+
+  const metalRows = await prisma.preciousMetalTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+  });
+  for (const row of metalRows) {
+    const updated = await prisma.preciousMetalTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+    targets.metalAccountsToRecalc.add(row.accountId);
+  }
+
+  const independentBusinessIds = result.deletedEntryIds;
+  const removedCashEntryIds = result.removedEntryIds.filter((id) => !independentBusinessIds.includes(id));
+  if (independentBusinessIds.length > 0 || removedCashEntryIds.length > 0) {
+    await prisma.entryBusinessLink.updateMany({
+      where: {
+        householdId: ctx.householdId,
+        deletedAt: null,
+        OR: [
+          { cashEntryId: { in: removedCashEntryIds } },
+          { businessEntryId: { in: independentBusinessIds } },
+          { fundTransactionId: { in: independentBusinessIds } },
+          { insuranceTransactionId: { in: independentBusinessIds } },
+          { wealthTransactionId: { in: independentBusinessIds } },
+          { depositTransactionId: { in: independentBusinessIds } },
+          { preciousMetalTransactionId: { in: independentBusinessIds } },
+        ],
+      },
+      data: { deletedAt },
+    });
+  }
+
+  result.deletedEntryIds = Array.from(new Set(result.deletedEntryIds));
+  result.removedEntryIds = Array.from(new Set(result.removedEntryIds));
+  return result;
+}
+
 async function detachLegacyCombinedBusinessEntry(txRecord: TxRecord) {
   const businessAccount = businessAccountSnapshotOf(txRecord);
   if (!businessAccount.id) return false;
@@ -234,6 +411,18 @@ export async function softDeleteEntriesByIds(
       metalAccountsToRecalc,
     });
 
+  }
+
+  if (options.linkedAction !== "keepBusiness") {
+    const independentDelete = await softDeleteIndependentBusinessRecordsByIds(ctx, ids, {
+      accountsToRecalcBalance,
+      fundAccountsToRecalc,
+      metalAccountsToRecalc,
+    });
+    deletedCount += independentDelete.deletedCount;
+    deletedEntryIds.push(...independentDelete.deletedEntryIds);
+    removedEntryIds.push(...independentDelete.removedEntryIds);
+    if (independentDelete.touchedInvestment) touchedInvestment = true;
   }
 
   if (changedFundEntryIds.length > 0) {

@@ -6,6 +6,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 
 function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProductType?: string | null }>(account: T): T {
   if (account.kind === AccountKind.investment && account.investProductType === "deposit") {
@@ -65,13 +66,13 @@ export async function GET(request: Request) {
       creditIds.length > 0
         ? await prisma.creditCardCycle.findMany({
             where: { accountId: { in: creditIds }, isCurrentCycle: true },
-            select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+            select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
           })
         : [];
     const currentCreditBalanceByAccountId = new Map(
       currentCreditCycles.map((cycle) => [
         cycle.accountId,
-        Number(cycle.cumulativeRemain ?? 0) - Number(cycle.cumulativeOverpaid ?? 0),
+        creditCardDisplayBalanceFromCurrentCycle(cycle),
       ]),
     );
     const insuranceAccountIds = accounts

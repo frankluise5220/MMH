@@ -58,7 +58,11 @@ type AccountItem = {
   kind: string;
   groupName?: string;
   institution?: string;
+  institutionId?: string | null;
+  institutionType?: string | null;
+  counterpartyId?: string | null;
   investProductType?: string;
+  children?: AccountItem[];
 };
 
 function normalizeSidebarItemKind(item: Pick<AccountItem, "kind" | "investProductType">) {
@@ -80,7 +84,7 @@ const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
 const CREDIT_KINDS = ["bank_credit"];
 const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth"];
 const INSURANCE_KINDS = ["insurance"];
-const LIABILITY_KINDS = ["loan_summary", "loan", "other"];
+const LIABILITY_KINDS = ["loan_summary", "loan"];
 const ASSET_SUBGROUPS: Array<{ key: string; label: string; kinds: string[] }> = [
   { key: "cash_like", label: "现金", kinds: ["cash"] },
   { key: "bank_debit_like", label: "借记卡", kinds: ["bank_debit"] },
@@ -109,27 +113,23 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["loan", 71],
   ["other", 99],
 ]);
-const KIND_INLINE_LABEL = new Map<string, string>([
-  ["cash", "现金"],
-  ["bank_debit", "借记卡"],
-  ["ewallet", "电子钱包"],
-  ["deposit", "存款"],
-  ["investment", "开放式基金"],
-  ["investment_money", "货币基金"],
-  ["investment_fund", "开放式基金"],
-  ["investment_wealth", "理财"],
-  ["insurance", "保险"],
-  ["bank_credit", "信用卡"],
-  ["loan_summary", "借入/借出"],
-  ["loan", "借入/借出"],
-  ["other", "其他"],
-]);
 const SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE = 10;
+
+function isSidebarSettlementLoan(item: AccountItem) {
+  return item.kind === "loan" && (!!item.counterpartyId || item.institutionType !== "bank");
+}
 
 function normalizeSidebarItems(items: AccountItem[]) {
   const normalized = items.map(normalizeSidebarAccountItem);
-  const loanItems = normalized.filter((item) => item.kind === "loan");
-  const otherItems = normalized.filter((item) => item.kind !== "loan");
+  const loanItems = normalized
+    .filter(isSidebarSettlementLoan)
+    .map((item) => ({ ...item, children: undefined }))
+    .sort((a, b) => {
+      const groupDiff = (a.groupName || "未设置所有人").localeCompare(b.groupName || "未设置所有人", "zh-Hans-CN");
+      if (groupDiff !== 0) return groupDiff;
+      return a.label.localeCompare(b.label, "zh-Hans-CN");
+    });
+  const otherItems = normalized.filter((item) => !isSidebarSettlementLoan(item));
 
   if (loanItems.length === 0) return otherItems;
 
@@ -138,15 +138,36 @@ function normalizeSidebarItems(items: AccountItem[]) {
     ...otherItems,
     {
       id: "__debt__",
-      name: "借入/借出",
-      label: "借入/借出",
-      hoverTitle: "未设置所有人 · 借入/借出 · 借入/借出",
+      name: "借入借出",
+      label: "借入借出",
+      hoverTitle: "未设置所有人 · 借入借出 · 借入借出",
       balance: loanBalance,
       kind: "loan_summary",
       groupName: "未设置所有人",
       institution: "往来款",
+      children: loanItems,
     },
   ];
+}
+
+function getSidebarItemSignature(item: AccountItem): string {
+  const childSignature = item.children?.map(getSidebarItemSignature).join("\u0002") ?? "";
+  return [
+    item.id ?? "",
+    item.name,
+    item.label,
+    item.shortLabel ?? "",
+    item.hoverTitle ?? "",
+    item.balance,
+    item.kind,
+    item.groupName ?? "",
+    item.institution ?? "",
+    item.institutionId ?? "",
+    item.institutionType ?? "",
+    item.counterpartyId ?? "",
+    item.investProductType ?? "",
+    childSignature,
+  ].join("\u0001");
 }
 
 function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE): AccountItem {
@@ -170,6 +191,9 @@ function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_C
     kind: a.kind,
     groupName: display.groupName || "未设置所有人",
     institution: a.Institution?.name?.trim() || display.institutionName || undefined,
+    institutionId: a.institutionId ?? null,
+    institutionType: a.Institution?.type ?? a.institutionType ?? null,
+    counterpartyId: a.counterpartyId ?? null,
     investProductType: a.investProductType || undefined,
   };
 }
@@ -217,7 +241,7 @@ export function SidebarClient({
   const { t } = useI18n();
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
-    () => Array.from(new Set(items.map((item) => item.groupName || "未设置所有人")))
+    () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item]).map((child) => child.groupName || "未设置所有人"))))
       .filter((name) => name !== "未指定")
       .sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
     [items],
@@ -279,7 +303,7 @@ export function SidebarClient({
                 let changed = false;
                 const next = prev.map(p => {
                   const f = fresh.find(f => f.id === p.id);
-                  if (f && (p.balance !== f.balance || p.name !== f.name || p.groupName !== f.groupName || p.institution !== f.institution || p.label !== f.label || p.hoverTitle !== f.hoverTitle || p.kind !== f.kind)) {
+                  if (f && getSidebarItemSignature(p) !== getSidebarItemSignature(f)) {
                     changed = true;
                     return f;
                   }
@@ -410,7 +434,6 @@ export function SidebarClient({
     }`;
 
   const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
-  const liabilityCls = (n: number) => n > 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : n < 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : "text-foreground/40";
   const displayBalance = (item: AccountItem) => item.kind === "bank_credit" ? -item.balance : item.balance;
   const displaySectionTotal = (kind: string, value: number) => kind === "信用卡" ? -value : value;
   const itemBalanceCls = (item: AccountItem) => balCls(displayBalance(item));
@@ -452,11 +475,30 @@ export function SidebarClient({
     }`;
 
   // Restore and Refine Grouping logic
-  const visibleItems = items.filter((item) => {
-    if (hideZero && item.balance === 0) return false;
-    if (selectedOwnerFilter && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
-    return true;
-  });
+  const visibleItems = useMemo(() => {
+    const passesCommonVisibility = (item: AccountItem) => {
+      if (item.kind === "loan" && item.institutionType === "bank" && item.balance === 0) return false;
+      if (hideZero && item.balance === 0) return false;
+      if (selectedOwnerFilter && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
+      return true;
+    };
+    const isVisibleLeaf = (item: AccountItem) => {
+      if (isSidebarSettlementLoan(item)) return false;
+      return passesCommonVisibility(item);
+    };
+    return items.flatMap((item) => {
+      if (item.kind !== "loan_summary" || !item.children?.length) {
+        return isVisibleLeaf(item) ? [item] : [];
+      }
+      const children = item.children.filter(passesCommonVisibility);
+      if (children.length === 0) return [];
+      return [{
+        ...item,
+        children,
+        balance: children.reduce((sum, child) => sum + child.balance, 0),
+      }];
+    });
+  }, [items, hideZero, selectedOwnerFilter]);
 
   const sections = useMemo(() => {
     const sortAccountsByUsage = (accounts: AccountItem[]) =>
@@ -547,22 +589,28 @@ export function SidebarClient({
     }).filter(s => s.accounts.length > 0);
   }, [visibleItems, sidebarGroupBy, accountUsage]);
 
+  const selectedDebtPerson = (searchParams.get("debtPerson") ?? "").trim();
+  const debtPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";
+  const isDebtAccountSelected = (item: AccountItem) =>
+    pathname === "/" && selectedView === "debt" && debtPersonKeyFor(item) === selectedDebtPerson;
+
   function isAccountItemActive(item: AccountItem) {
     if (pathname !== "/") return false;
-    if (item.kind === "loan_summary") return selectedView === "debt";
+    if (item.kind === "loan_summary") {
+      return selectedView === "debt" && (!selectedDebtPerson || (item.children?.some(isDebtAccountSelected) ?? false));
+    }
+    if (item.kind === "loan") return isDebtAccountSelected(item) || (!!item.id && selectedAccountId === item.id && selectedView === "debt");
     return item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name;
   }
 
-  const activeSectionKind = useMemo(() => {
-    return sections.find((section) => section.accounts.some(isAccountItemActive))?.kind ?? sections[0]?.kind ?? "";
-  }, [sections, pathname, selectedView, selectedAccountId, selectedAccount]);
+  const activeSectionKind = sections.find((section) => section.accounts.some(isAccountItemActive))?.kind ?? sections[0]?.kind ?? "";
 
-  const activeAssetSubgroupKey = useMemo(() => {
+  const activeAssetSubgroupKey = (() => {
     if (sidebarGroupBy !== "kind") return "";
     const assetSection = sections.find((section) => section.kind === "资产");
     if (!assetSection?.subgroups?.length) return "";
     return assetSection.subgroups.find((subgroup) => subgroup.accounts.some(isAccountItemActive))?.key ?? assetSection.subgroups[0]?.key ?? "";
-  }, [sections, pathname, selectedView, selectedAccountId, selectedAccount, sidebarGroupBy]);
+  })();
 
   useEffect(() => {
     if (initializedSectionsRef.current || sections.length === 0) return;
@@ -860,13 +908,16 @@ export function SidebarClient({
                               </button>
                             ) : null}
                             {(sec.kind !== "资产" || !group.label || !collapsedAssetSubgroupKeys.has(group.key)) && group.accounts.map((it, index) => {
-                              const active = pathname === "/" && (
-                                it.kind === "loan_summary"
-                                  ? selectedView === "debt"
-                                  : (it.id ? selectedAccountId === it.id : !selectedAccountId && selectedAccount === it.name)
-                              );
+                              const active = isAccountItemActive(it);
                               const href = (() => {
                                 if (it.kind === "loan_summary") return "/?view=debt";
+                                if (it.kind === "loan") {
+                                  const q = new URLSearchParams();
+                                  q.set("view", "debt");
+                                  const debtPersonKey = debtPersonKeyFor(it);
+                                  if (debtPersonKey) q.set("debtPerson", debtPersonKey);
+                                  return `/?${q.toString()}`;
+                                }
                                 const q = new URLSearchParams();
                                 if (it.id) q.set("accountId", it.id);
                                 else q.set("account", it.name);
@@ -876,7 +927,7 @@ export function SidebarClient({
                                     ? "deposit"
                                     : it.kind === "insurance"
                                       ? "insurance"
-                                      : (it.kind === "bank_credit" || it.kind === "loan" ? "bill" : "detail");
+                                      : (it.kind === "bank_credit" ? "bill" : "detail");
                                 q.set("view", view);
                                 return `/?${q.toString()}`;
                               })();
@@ -892,7 +943,7 @@ export function SidebarClient({
                                 >
                                   <span className="min-w-0 flex-1 pr-2">
                                     <span className="text-fade-right block min-w-0" title={itemTitle}>
-                                    {sidebarGroupBy === "institution"
+                                    {sidebarGroupBy === "institution" && it.kind !== "loan_summary"
                                       ? it.kind === "insurance"
                                         ? (it.shortLabel || it.label)
                                         : `${inlineKindLabel(it.kind)}·${it.shortLabel || it.label}`

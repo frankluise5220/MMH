@@ -155,6 +155,7 @@ async function _loadInvestAccountData(
     fundPageSize: number;
     fundPage: number;
     fundCodeParam: string;
+    wealthProductIdParam?: string;
   };
 
   const ctx: HouseholdContext = {
@@ -204,7 +205,7 @@ async function _loadInvestAccountData(
 
   const selectedFundCode =
     account.investProductType === "wealth"
-      ? (params.fundCodeParam || "")
+      ? (params.wealthProductIdParam || "")
       : params.fundCodeParam ||
         (positionDisplay.positions.length > 0
           ? positionDisplay.positions[0]!.fundCode
@@ -253,7 +254,13 @@ async function _loadInvestAccountData(
   }
 
   const filtered = selectedFundCode
-    ? fundEntries.filter((e) => account.investProductType === "metal" ? e.metalTypeId === selectedFundCode : e.fundCode === selectedFundCode)
+    ? fundEntries.filter((e: any) =>
+        account.investProductType === "wealth"
+          ? e.wealthProductId === selectedFundCode
+          : account.investProductType === "metal"
+            ? e.metalTypeId === selectedFundCode
+            : e.fundCode === selectedFundCode
+      )
     : fundEntries;
   const totalEntries = filtered.length;
   const totalPages = Math.max(1, Math.ceil(totalEntries / params.fundPageSize));
@@ -271,6 +278,7 @@ async function _loadInvestAccountData(
     totalPages,
     safePage,
     selectedFundCode,
+    selectedWealthProductId: account.investProductType === "wealth" ? selectedFundCode : "",
     pendingByCode: Object.fromEntries(pendingByCode),
     feeRateMap: Object.fromEntries(feeRateMap),
     confirmDaysMap: Object.fromEntries(confirmDaysMap),

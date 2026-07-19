@@ -12,9 +12,11 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
+import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 
 type CurrentCreditCycle = {
   accountId: string;
+  effectiveBill: unknown;
   cumulativeRemain: unknown;
   cumulativeOverpaid: unknown;
 };
@@ -63,7 +65,7 @@ async function getSidebarData() {
   const currentCreditCyclesPromise: Promise<CurrentCreditCycle[]> = creditIds.length > 0
     ? prisma.creditCardCycle.findMany({
         where: { accountId: { in: creditIds }, isCurrentCycle: true },
-        select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+        select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
       })
     : Promise.resolve([]);
   const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
@@ -75,7 +77,7 @@ async function getSidebarData() {
   const currentCreditBalanceByAccountId = new Map<string, number>(
     currentCreditCycles.map((cycle) => [
       cycle.accountId,
-      Number(cycle.cumulativeRemain ?? 0) - Number(cycle.cumulativeOverpaid ?? 0),
+      creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
   const items = accounts.map((account) => {
@@ -111,6 +113,9 @@ async function getSidebarData() {
       kind: account.kind as string,
       groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
       institution: display.institutionName || undefined,
+      institutionId: account.institutionId ?? null,
+      institutionType: account.Institution?.type ?? null,
+      counterpartyId: account.counterpartyId ?? null,
       investProductType: account.investProductType || undefined,
     };
   });

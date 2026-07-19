@@ -36,6 +36,7 @@ export function ReportDetailTable({
   colorValue,
   clearHref,
   onClear,
+  onRefresh,
   resetKey,
 }: {
   accountId: string;
@@ -48,6 +49,7 @@ export function ReportDetailTable({
   colorValue: number;
   clearHref?: string;
   onClear?: () => void;
+  onRefresh?: () => void | DetailEntry[] | Promise<void | DetailEntry[]>;
   resetKey: string;
 }) {
   const router = useRouter();
@@ -57,12 +59,17 @@ export function ReportDetailTable({
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
-  const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
+  const [displayEntries, setDisplayEntries] = useState(entries);
+  const totalPages = Math.max(1, Math.ceil(displayEntries.length / pageSize));
   const safePage = showAll ? 1 : clampPage(page, totalPages);
   const pageEntries = useMemo(
-    () => showAll ? entries : entries.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [entries, pageSize, safePage, showAll],
+    () => showAll ? displayEntries : displayEntries.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [displayEntries, pageSize, safePage, showAll],
   );
+
+  useEffect(() => {
+    setDisplayEntries(entries);
+  }, [entries]);
 
   useEffect(() => {
     setPage(1);
@@ -75,18 +82,40 @@ export function ReportDetailTable({
 
   useEffect(() => {
     let timer: number | null = null;
+    let refreshSeq = 0;
     const refresh = () => {
       if (timer != null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => router.refresh(), 100);
+      timer = window.setTimeout(async () => {
+        const seq = ++refreshSeq;
+        try {
+          const refreshedEntries = await onRefresh?.();
+          if (Array.isArray(refreshedEntries) && seq === refreshSeq) {
+            setDisplayEntries(refreshedEntries);
+          }
+        } catch {
+          // A failed local detail refresh should not block the server refresh fallback.
+        }
+        if (seq !== refreshSeq) return;
+        router.refresh();
+      }, 100);
     };
+    const editSuccessEvents = [
+      "mmh:transaction:edit:success",
+      "mmh:investment:edit:success",
+      "mmh:wealth:edit:success",
+      "mmh:deposit:edit:success",
+      "mmh:insurance:edit:success",
+    ];
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
     window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
+    editSuccessEvents.forEach((eventName) => window.addEventListener(eventName, refresh));
     return () => {
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
       window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
+      editSuccessEvents.forEach((eventName) => window.removeEventListener(eventName, refresh));
     };
-  }, [router]);
+  }, [onRefresh, router]);
 
   return (
     <BasicDetailSelectionProvider resetKey={resetKey}>
@@ -110,7 +139,7 @@ export function ReportDetailTable({
           )}
           toolbarRightContent={(
             <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span>{entries.length} 条，合计 <strong className={`tabular-nums ${pnlColor(colorValue, colorScheme)}`}>{formatMoney(total)}</strong></span>
+              <span>{displayEntries.length} 条，合计 <strong className={`tabular-nums ${pnlColor(colorValue, colorScheme)}`}>{formatMoney(total)}</strong></span>
               {onClear ? (
                 <button type="button" onClick={onClear} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</button>
               ) : clearHref ? (

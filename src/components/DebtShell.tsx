@@ -21,6 +21,9 @@ import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalc
 type DebtRow = {
   key: string;
   name: string;
+  objectType: string;
+  objectName: string;
+  itemName: string;
   accountId: string;
   institutionId: string;
   counterpartyId: string;
@@ -43,6 +46,9 @@ type DebtRow = {
   receivable: number;
   net: number;
   accountCount: number;
+  parentKey?: string | null;
+  depth?: number;
+  isGroup?: boolean;
 };
 
 type DebtEntry = {
@@ -173,7 +179,7 @@ export function DebtShell({
     null;
   const net = totalReceivable - totalPayable;
   const settledCount = rows.filter(isSettledDebtRow).length;
-  const canRepaySelectedRow = !!selectedRow && selectedRow.net < -SETTLED_DEBT_EPSILON;
+  const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
   const canAdjustRateSelectedRow = canRepaySelectedRow && !!selectedRow?.accountId;
   const canRecalculateSelectedRow = canRepaySelectedRow && !!selectedRow?.accountId && !!selectedRow?.remainingRuns;
   const visibleRepaymentScheduleRows = useMemo(
@@ -181,10 +187,10 @@ export function DebtShell({
     [repaymentScheduleRows, showPaidScheduleRows],
   );
   const debtRowSummary = useMemo(() => ({
-    paidPrincipal: visibleRows.reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
-    paidInterest: visibleRows.reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
-    remainingInterest: visibleRows.reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
-    net: visibleRows.reduce((sum, row) => sum + Math.abs(row.net), 0),
+    paidPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
+    paidInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
+    remainingInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
+    net: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.net), 0),
   }), [visibleRows]);
   useEffect(() => {
     return () => {
@@ -223,7 +229,7 @@ export function DebtShell({
       window.clearTimeout(rowClickTimerRef.current);
       rowClickTimerRef.current = null;
     }
-    if (!row.accountId || row.net >= 0) return;
+    if (row.isGroup || !row.accountId || row.net >= 0) return;
     window.dispatchEvent(new CustomEvent("mmh:debt:create", {
       detail: {
         mode: "repay_out",
@@ -391,14 +397,43 @@ export function DebtShell({
 
   const rowColumns = useMemo<AdvancedDataTableColumn<DebtRow>[]>(() => [
     {
-      key: "name",
-      label: "债权人/债务人 款项",
-      width: 360,
-      minWidth: 180,
-      filterText: (row) => row.name,
+      key: "objectType",
+      label: "对象类型",
+      width: 112,
+      minWidth: 84,
+      filterText: (row) => row.objectType,
       render: (row) => (
-        <span className="block truncate text-sm font-semibold text-slate-800" title={row.name}>
-          {row.name}
+        <span className={row.net >= 0 ? "text-emerald-700" : "text-slate-700"}>
+          {row.objectType}
+        </span>
+      ),
+    },
+    {
+      key: "objectName",
+      label: "往来对象/机构",
+      width: 180,
+      minWidth: 120,
+      filterText: (row) => row.objectName,
+      render: (row) => (
+        <span
+          className={`block truncate text-sm ${row.isGroup ? "font-semibold text-slate-900" : "font-medium text-slate-800"}`}
+          style={{ paddingLeft: `${Math.max(0, row.depth ?? 0) * 18}px` }}
+          title={row.objectName || row.name}
+        >
+          {row.depth ? <span className="mr-1 text-slate-300">└</span> : null}
+          {row.objectName || "-"}
+        </span>
+      ),
+    },
+    {
+      key: "itemName",
+      label: "款项",
+      width: 190,
+      minWidth: 120,
+      filterText: (row) => row.itemName,
+      render: (row) => (
+        <span className={`block truncate ${row.isGroup ? "font-medium text-slate-800" : "text-slate-700"}`} title={row.name}>
+          {row.itemName || "-"}
         </span>
       ),
     },
@@ -599,7 +634,7 @@ export function DebtShell({
             fillHeight
             compactRows
             onRowClick={(row) => openDebtRow(row)}
-            onRowDoubleClick={(row) => openRepayment(row)}
+            onRowDoubleClick={(row) => { if (!row.isGroup) openRepayment(row); }}
             rowClassName={(row) => `cursor-pointer ${row.key === (selectedRow?.key ?? "") ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
             summaryRow={{
               rowClassName: "bg-slate-50",

@@ -151,6 +151,7 @@
 补充约定：
 
 - `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
+- 信用卡账户的 `balance` 与 Web 侧边栏一致，表示当前滚动余额：本期已出账账单金额 + 当前未出账周期支出 - 当前未出账周期收入/退款/还款；服务端取当前信用卡账期的 `effectiveBill`，不是 `cumulativeRemain - cumulativeOverpaid`。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
@@ -268,7 +269,7 @@
 - Body: `{ name, cashAccountId, wealthAccountId?, shortName?, currency?, annualRate?, termDays?, note? }`
 - Success: `{ ok: true, product, wealthAccount }`
 
-银行理财交易应保存 `wealthProductId` 作为产品身份，`fundName` 只作为兼容展示文本。买入时理财账户只能与资金来源同机构，或属于同一所有人名下的第三方支付/钱包机构；未传 `wealthAccountId` 时接口会按资金来源自动复用或创建同机构理财账户。
+银行理财交易应保存 `wealthProductId` 作为产品身份，`fundName` 只作为兼容展示文本。买入时理财账户只能与资金来源同机构，或属于同一所有人名下的第三方支付/钱包机构；未传 `wealthAccountId` 时接口会按资金来源自动复用或创建同机构理财账户。同一理财账户下同一产品已有份额记录时，继续买入必须传 `fundUnits`。`/api/v1/transactions/detail` 在 `fundProductType/productType = "wealth"` 时使用拆表语义：资金流水只保存现金流和投资动作分类，业务字段写入 `WealthTransaction`，编辑时可传 `businessTransactionId` 明确指定关联的理财业务记录。
 
 #### 贵金属字典
 

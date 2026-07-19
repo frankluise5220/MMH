@@ -10,7 +10,9 @@
     "build": "next build",
     "start": "node scripts/start-standalone.cjs",
     "lint": "eslint",
-    "check:encoding": "node scripts/check-encoding.cjs"
+    "check:encoding": "node scripts/check-encoding.cjs",
+    "codex:rg": "node scripts/codex-rg.cjs",
+    "codex:prisma": "node scripts/codex-prisma-run.cjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.64",

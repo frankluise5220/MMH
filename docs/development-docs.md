@@ -214,6 +214,8 @@
 为减少编码、引号、正则和终端乱码带来的噪音，源码检查和修改默认遵循下面规则：
 
 - 搜索优先使用 `rg` / `rg --files`。
+- 在 PowerShell 里搜索包含括号、引号、`|`、`$`、正则分组或中文的复杂内容时，优先使用 `npm run codex:rg -- <pattern> <path...>`，默认固定字符串搜索，避免 PowerShell 把参数拆坏。
+- 需要临时查询 Prisma 数据时，不要写长 `node -e`；把查询写入被 Git 忽略的 `_tmp_query.cjs` / `.tmp-query.cjs`，再运行 `npm run codex:prisma -- _tmp_query.cjs`，由脚本统一加载 `.env`、Prisma adapter 和 `$disconnect`。
 - 读取源码文件时优先显式按 UTF-8 读取。
 - 修改源码文件时优先使用 `apply_patch`。
 - 不把 PowerShell 终端输出当作中文内容是否正确的依据，中文以文件实际内容为准。

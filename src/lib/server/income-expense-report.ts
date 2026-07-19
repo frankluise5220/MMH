@@ -2,7 +2,12 @@ import { TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
-import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
+import {
+  normalizeDefaultCategoryHierarchyForHousehold,
+  SYSTEM_INSURANCE_EXPENSE_CATEGORY,
+  SYSTEM_INSURANCE_RETURN_CATEGORY,
+} from "@/lib/default-categories";
+import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 
@@ -212,7 +217,7 @@ export async function getIncomeExpenseReport(
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [categories, records, investmentRecords] = await Promise.all([
+  const [categories, records, investmentRecords, wealthStatisticRecords] = await Promise.all([
     prisma.category.findMany({
       where: {
         ...hidFilter,
@@ -290,6 +295,11 @@ export async function getIncomeExpenseReport(
         createdAt: true,
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+    }),
+    loadWealthStatisticSourceEntries(ctx, {
+      start: rangeStart,
+      endExclusive,
+      accountIds: params.accountIds,
     }),
   ]);
 
@@ -390,7 +400,9 @@ export async function getIncomeExpenseReport(
       type,
       amount: isInsurance ? Math.abs(toNumber(record.amount)) : getIncomeExpenseStatisticAmount(record.type, record.amount),
       categoryId: isInsurance ? null : record.categoryId,
-      categoryName: isInsurance ? (type === "income" ? "保险回款" : "保险支出") : record.categoryName?.trim() || null,
+      categoryName: isInsurance
+        ? (type === "income" ? SYSTEM_INSURANCE_RETURN_CATEGORY : SYSTEM_INSURANCE_EXPENSE_CATEGORY)
+        : record.categoryName?.trim() || null,
       accountId: record.accountId,
       accountName: record.accountName,
       counterpartyName: record.counterpartyInstitutionName,
@@ -398,6 +410,8 @@ export async function getIncomeExpenseReport(
       createdAt: record.createdAt,
     };
   });
+
+  const representedInvestmentEntryIds = new Set(investmentRecords.map((record) => record.id));
 
   for (const record of investmentRecords) {
     const investmentName = record.fundName?.trim() || record.fundCode?.trim() || "";
@@ -407,6 +421,29 @@ export async function getIncomeExpenseReport(
         id: `${record.id}:${item.idSuffix}`,
         entryId: record.id,
         canEdit: false,
+        date: record.date,
+        type: item.type,
+        amount: item.amount,
+        categoryId: category?.id ?? null,
+        categoryName: category?.name ?? item.categoryName,
+        accountId: record.accountId,
+        accountName: record.accountName,
+        counterpartyName: investmentName || item.label,
+        note: record.note,
+        createdAt: record.createdAt,
+      });
+    }
+  }
+
+  for (const record of wealthStatisticRecords) {
+    if (representedInvestmentEntryIds.has(record.id) || representedInvestmentEntryIds.has(record.entryId)) continue;
+    const investmentName = record.fundName?.trim() || record.fundCode?.trim() || record.counterpartyName?.trim() || "";
+    for (const item of getInvestmentStatisticItems(record)) {
+      const category = findCategoryByName(item.type, item.categoryCandidates);
+      statisticRecords.push({
+        id: `${record.id}:${item.idSuffix}`,
+        entryId: record.entryId,
+        canEdit: record.canEdit,
         date: record.date,
         type: item.type,
         amount: item.amount,

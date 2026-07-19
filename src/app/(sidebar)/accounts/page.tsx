@@ -9,6 +9,7 @@ import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -160,7 +161,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
       }, creditCardLabelTemplate);
       const cycle = cycleByAccountId.get(account.id);
       const balance = cycle
-        ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
+        ? creditCardDisplayBalanceFromCurrentCycle(cycle)
         : toNumber(account.balance);
       const creditLimit = toNumber(account.creditLimit);
       return {

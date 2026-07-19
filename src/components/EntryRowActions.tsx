@@ -9,6 +9,8 @@ export type EditPayload = {
   requestId?: string;
   entryId: string;
   transactionId?: string;
+  cashEntryId?: string | null;
+  businessTransactionId?: string | null;
   targetEntryId?: string;
   type: "expense" | "income" | "advance" | "transfer" | "investment";
   date: string;
@@ -16,6 +18,7 @@ export type EditPayload = {
   postedAt?: string | null;
   amount: number;
   note: string;
+  businessNote?: string | null;
   toNote?: string;
   accountId?: string;
   accountLabel?: string;

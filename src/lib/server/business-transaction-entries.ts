@@ -1,7 +1,8 @@
-import { FundSubtype, TransactionType } from "@prisma/client";
+import { FundSubtype } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { isWealthHoldingCleared, resetWealthHoldingBucket } from "@/lib/invest-balance";
 import { entryBusinessTypeLabel } from "@/lib/server/entry-business-link";
 
 function ymd(value: Date | string | null | undefined) {
@@ -66,6 +67,7 @@ export async function loadInsuranceTransactionDetailLike(params: {
     const businessAccountName = row.Account?.name ?? "";
     return {
       id: row.cashEntryId ?? row.id,
+      cashEntryId: row.cashEntryId,
       businessTransactionId: row.id,
       date: ymd(row.tradeDate),
       postedAt: ymd(row.postedAt),
@@ -130,6 +132,7 @@ export async function loadDepositTransactionDetailLike(params: {
     const arrivalAmount = row.arrivalAmount == null ? null : Math.abs(toNumber(row.arrivalAmount));
     return {
       id: row.cashEntryId ?? row.id,
+      cashEntryId: row.cashEntryId,
       businessTransactionId: row.id,
       date: row.tradeDate,
       createdAt: row.createdAt,
@@ -183,28 +186,50 @@ export async function loadWealthTransactionEntryLike(params: {
     },
     orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
   });
-  const existingIds = rows.map((row) => row.id);
-  const legacyRows = await prisma.txRecord.findMany({
-    where: {
-      householdId: params.householdId,
-      deletedAt: null,
-      id: existingIds.length > 0 ? { notIn: existingIds } : undefined,
-      OR: [{ accountId: { in: accountIds } }, { toAccountId: { in: accountIds } }],
-      type: { in: [TransactionType.investment, TransactionType.transfer] },
-    },
-    include: {
-      account: true,
-      toAccount: true,
-    },
-    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-  });
+  const unitBuckets = new Map<string, { principal: number; units: number; cycleHasUnits: boolean }>();
+  const remainingUnitsByTransactionId = new Map<string, number | null>();
+  for (const row of rows) {
+    const isCashIn = isCashInAction(row.action);
+    const isDividend = row.action === FundSubtype.dividend_cash;
+    const key = `${row.accountId}:${row.wealthProductId ?? row.productName ?? `wealth:${row.id}`}`;
+    const bucket = unitBuckets.get(key) ?? { principal: 0, units: 0, cycleHasUnits: false };
+    const grossAmount = Math.abs(toNumber(row.grossAmount));
+    const units = row.units == null ? null : Math.abs(toNumber(row.units));
+
+    if (!isDividend) {
+      if (isCashIn) {
+        bucket.principal -= grossAmount;
+        if (units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.units -= units;
+        }
+        if (isWealthHoldingCleared(bucket.cycleHasUnits, bucket.principal, bucket.units)) {
+          resetWealthHoldingBucket(bucket);
+        }
+      } else {
+        bucket.principal += grossAmount;
+        if (units != null) {
+          bucket.cycleHasUnits = true;
+          bucket.units += units;
+        }
+      }
+    }
+
+    unitBuckets.set(key, bucket);
+    remainingUnitsByTransactionId.set(row.id, bucket.cycleHasUnits ? Number(Math.max(0, bucket.units).toFixed(6)) : null);
+  }
 
   const projectedRows = rows.map((row) => {
     const isCashIn = isCashInAction(row.action);
+    const isDividend = row.action === FundSubtype.dividend_cash;
     const grossAmount = Math.abs(toNumber(row.grossAmount));
     const arrivalAmount = row.arrivalAmount == null ? null : Math.abs(toNumber(row.arrivalAmount));
+    const profit = row.realizedProfit == null
+      ? toNumber(row.interest) - toNumber(row.fee)
+      : toNumber(row.realizedProfit);
     return {
       id: row.cashEntryId ?? row.id,
+      cashEntryId: row.cashEntryId,
       businessTransactionId: row.id,
       date: row.tradeDate,
       createdAt: row.createdAt,
@@ -214,13 +239,18 @@ export async function loadWealthTransactionEntryLike(params: {
       toAccountId: isCashIn ? row.cashAccountId : row.accountId,
       toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
       amount: isCashIn ? arrivalAmount ?? grossAmount : -grossAmount,
-      fundCode: row.wealthProductId ?? row.productName ?? row.WealthProduct?.name ?? "",
+      wealthPrincipalAmount: grossAmount,
+      fundCode: null,
       fundName: row.WealthProduct?.name ?? row.productName ?? "",
       fundProductType: "wealth",
       fundSubtype: row.action,
+      fundUnits: row.units == null ? null : toNumber(row.units),
+      wealthRemainingUnits: remainingUnitsByTransactionId.get(row.id) ?? null,
+      fundNav: row.nav == null ? null : toNumber(row.nav),
       fundArrivalAmount: row.arrivalAmount,
       depositAnnualRate: row.annualRate ?? row.WealthProduct?.annualRate ?? null,
       depositInterest: row.interest,
+      realizedProfit: isCashIn ? profit : null,
       wealthProductId: row.wealthProductId,
       WealthProduct: row.WealthProduct,
       source: row.source,
@@ -229,40 +259,7 @@ export async function loadWealthTransactionEntryLike(params: {
     };
   });
 
-  const legacyProjectedRows = legacyRows.map((row) => {
-    const isCashIn = accountIds.includes(row.accountId);
-    const amount = toNumber(row.amount);
-    const absAmount = Math.abs(amount);
-    const productName = row.fundName || row.note || "历史理财";
-    const fundCode = row.wealthProductId || row.fundName || `legacy-wealth:${isCashIn ? row.accountId : row.toAccountId ?? accountIds[0]}`;
-    return {
-      id: row.id,
-      businessTransactionId: null,
-      date: row.date,
-      createdAt: row.createdAt,
-      deletedAt: row.deletedAt,
-      accountId: isCashIn ? row.accountId : row.accountId,
-      accountName: row.account?.name ?? "",
-      toAccountId: row.toAccountId,
-      toAccountName: row.toAccount?.name ?? "",
-      amount,
-      fundCode,
-      fundName: productName,
-      fundProductType: "wealth",
-      fundSubtype: isCashIn ? FundSubtype.redeem : FundSubtype.buy,
-      fundArrivalAmount: isCashIn ? absAmount : null,
-      depositAnnualRate: null,
-      depositInterest: null,
-      wealthProductId: row.wealthProductId,
-      WealthProduct: null,
-      source: row.source,
-      note: row.note,
-      businessLinkCount: 0,
-      businessLinkLabels: [],
-    };
-  });
-
-  return [...projectedRows, ...legacyProjectedRows].sort((a, b) => {
+  return projectedRows.sort((a, b) => {
     const dateDiff = new Date(a.date as any).getTime() - new Date(b.date as any).getTime();
     if (dateDiff !== 0) return dateDiff;
     return new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime();
@@ -298,6 +295,7 @@ export async function loadPreciousMetalTransactionEntryLike(params: {
     const amount = Math.abs(toNumber(row.amount));
     return {
       id: row.cashEntryId ?? row.id,
+      cashEntryId: row.cashEntryId,
       businessTransactionId: row.id,
       date: row.tradeDate,
       createdAt: row.createdAt,

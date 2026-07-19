@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
-import { AccountKind, CreditCardInstallmentSourceType, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
+import { AccountKind, CreditCardInstallmentSourceType, DebtDirection, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
 import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
@@ -44,9 +44,10 @@ import { formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { getFundNav } from "@/lib/fund/navCache";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
-import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import {
   loadDepositTransactionDetailLike,
   loadInsuranceTransactionDetailLike,
@@ -84,8 +85,9 @@ import {
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
-import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
+import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
   decodeDetailPaginationPreference,
@@ -293,7 +295,6 @@ async function resolveOrCreateDebtAccount(
   debtObjectId: string,
   direction: "payable" | "receivable",
   itemName?: string,
-  options?: { forceCreate?: boolean },
 ) {
   const debtObject = await resolveDebtObject(tx, householdId, debtObjectId);
 
@@ -302,14 +303,27 @@ async function resolveOrCreateDebtAccount(
   const objectWhere = debtObject.kind === "counterparty"
     ? { counterpartyId: debtObject.id, institutionId: null }
     : { institutionId: debtObject.id, counterpartyId: null };
-  if (!options?.forceCreate) {
-    const existing =
+  const requestedItemName = itemName?.trim();
+  let existing;
+  if (debtObject.kind === "counterparty") {
+    existing = await tx.account.findFirst({
+      where: {
+        householdId,
+        ...objectWhere,
+        kind: AccountKind.loan,
+        ...(requestedItemName ? { name: accountName } : {}),
+        isPlaceholder: { not: true },
+      },
+      include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
+      orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
+    });
+  } else {
+    existing =
       (await tx.account.findFirst({
         where: {
           householdId,
           ...objectWhere,
           kind: AccountKind.loan,
-          name: accountName,
           debtDirection: direction,
           isPlaceholder: { not: true },
         },
@@ -321,25 +335,25 @@ async function resolveOrCreateDebtAccount(
           householdId,
           ...objectWhere,
           kind: AccountKind.loan,
-          name: accountName,
+          debtDirection: null,
           isPlaceholder: { not: true },
         },
         include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
         orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
       }));
-    if (existing) {
-      if (!existing.isActive || existing.debtDirection !== direction) {
-        return tx.account.update({
-          where: { id: existing.id },
-          data: {
-            isActive: true,
-            debtDirection: direction,
-          },
-          include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-        });
-      }
-      return existing;
+  }
+  if (existing) {
+    if (!existing.isActive || (debtObject.kind !== "counterparty" && existing.debtDirection !== direction)) {
+      return tx.account.update({
+        where: { id: existing.id },
+        data: {
+          isActive: true,
+          ...(debtObject.kind !== "counterparty" ? { debtDirection: direction } : {}),
+        },
+        include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
+      });
     }
+    return existing;
   }
 
   const group =
@@ -690,6 +704,39 @@ function parseMoneyInput(value: FormDataEntryValue | null) {
   return n;
 }
 
+async function assertWealthUnitsWhenRequiredInTx(
+  tx: any,
+  params: {
+    householdId: string;
+    accountId: string;
+    wealthProductId?: string | null;
+    productName?: string | null;
+    units: number | null;
+  },
+) {
+  if (params.units != null && params.units > 0) return;
+  const productName = params.productName?.trim();
+  const productClauses = [
+    params.wealthProductId ? { wealthProductId: params.wealthProductId } : null,
+    productName ? { productName } : null,
+  ].filter((clause): clause is { wealthProductId: string } | { productName: string } => !!clause);
+  if (productClauses.length === 0) return;
+
+  const existingUnitRecord = await tx.wealthTransaction.findFirst({
+    where: {
+      householdId: params.householdId,
+      accountId: params.accountId,
+      deletedAt: null,
+      units: { not: null },
+      OR: productClauses,
+    },
+    select: { id: true },
+  });
+  if (existingUnitRecord) {
+    throw new Error("该理财产品已有份额记录，继续买入时必须填写份额");
+  }
+}
+
 function parseOptionalDateTimeInput(value: FormDataEntryValue | null) {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) return null;
@@ -829,6 +876,169 @@ if (tagNames.length) {
   // Client-side handles refresh via mmh:fund:refresh
 }
 
+async function createSplitWealthTransaction(formData: FormData, householdId: string) {
+  const dateStr = String(formData.get("date") ?? "").trim();
+  const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+  const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
+  const validSubtypes = Object.values(FundSubtype);
+  const subtype: FundSubtype = validSubtypes.includes(subtypeInput as FundSubtype) ? (subtypeInput as FundSubtype) : FundSubtype.buy;
+  const isRedeem = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
+  const isDividend = subtype === FundSubtype.dividend_cash;
+  const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
+  if (!amountAbs) throw new Error("金额不正确");
+
+  const requestedWealthAccountId = String(formData.get("accountId") ?? formData.get("toAccountId") ?? "").trim();
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
+  const productNameInput = String(formData.get("fundName") ?? "").trim();
+  const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
+  const note = String(formData.get("note") ?? formData.get("memo") ?? "").trim();
+  const unitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
+  const navRaw = parseFloat(String(formData.get("fundNav") ?? ""));
+  const annualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
+  const interestRaw = parseFloat(String(formData.get("depositInterest") ?? ""));
+  const feeRaw = parseFloat(String(formData.get("fundFee") ?? ""));
+  const arrivalAmountRaw = parseMoneyInput(formData.get("fundArrivalAmount") ?? null);
+  const arrivalDate = dateFromYmd(String(formData.get("fundArrivalDate") ?? "").trim()) ?? (isRedeem || isDividend ? date : null);
+  const units = Number.isFinite(unitsRaw) && unitsRaw > 0 ? unitsRaw : null;
+  const nav = Number.isFinite(navRaw) && navRaw > 0 ? navRaw : null;
+  const annualRate = Number.isFinite(annualRateRaw) && annualRateRaw > 0 ? annualRateRaw : null;
+  const fee = Number.isFinite(feeRaw) && feeRaw >= 0 ? feeRaw : null;
+  const interest = Number.isFinite(interestRaw)
+    ? interestRaw
+    : isDividend
+      ? amountAbs
+      : null;
+  const principalAmount = isRedeem && units && nav ? Number((units * nav).toFixed(2)) : amountAbs;
+  const grossAmount = (isRedeem || isDividend) && !isDividend ? principalAmount : amountAbs;
+  const arrivalAmount = isDividend
+    ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
+    : isRedeem
+      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
+      : null;
+
+  let touchedAccountIds: string[] = [];
+  await prisma.$transaction(async (tx) => {
+    const cashAcc = await tx.account.findUnique({
+      where: { id: cashAccountId },
+      select: { id: true, name: true, currency: true },
+    });
+    if (!cashAcc) throw new Error(isRedeem || isDividend ? "请选择到账账户" : "请选择资金来源账户");
+
+    const wealthAcc = isRedeem || isDividend
+      ? await tx.account.findUnique({
+          where: { id: requestedWealthAccountId },
+          select: { id: true, name: true, institutionId: true, currency: true },
+        })
+      : await resolveOrCreateWealthAccount(tx, {
+          householdId,
+          cashAccountId: cashAcc.id,
+          requestedAccountId: requestedWealthAccountId || null,
+        });
+    if (!wealthAcc) throw new Error("请选择理财账户");
+
+    const wealthProduct = wealthProductIdInput
+      ? await tx.wealthProduct.findFirst({
+          where: { id: wealthProductIdInput, householdId, institutionId: wealthAcc.institutionId, isActive: true },
+        })
+      : productNameInput
+        ? await tx.wealthProduct.findFirst({
+            where: { householdId, institutionId: wealthAcc.institutionId ?? null, name: productNameInput, isActive: true },
+          }) ?? await tx.wealthProduct.create({
+            data: {
+              householdId,
+              institutionId: wealthAcc.institutionId ?? null,
+              name: productNameInput,
+              currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
+              annualRate: annualRate ?? undefined,
+            },
+          })
+        : null;
+    if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    if (!isRedeem && !isDividend) {
+      await assertWealthUnitsWhenRequiredInTx(tx, {
+        householdId,
+        accountId: wealthAcc.id,
+        wealthProductId: wealthProduct.id,
+        productName: wealthProduct.name,
+        units,
+      });
+    }
+
+    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const investmentCategory = investmentCategoryName
+      ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
+      : null;
+    const signedCashAmount = isRedeem || isDividend ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
+    const cashNote = buildWealthCashFlowNote({
+      action: subtype,
+      productName: wealthProduct.name,
+      units,
+      userNote: note,
+    });
+    const cashEntry = await tx.txRecord.create({
+      data: {
+        householdId,
+        date,
+        type: TransactionType.investment,
+        accountId: isRedeem || isDividend ? wealthAcc.id : cashAcc.id,
+        accountName: isRedeem || isDividend ? wealthAcc.name : cashAcc.name,
+        toAccountId: isRedeem || isDividend ? cashAcc.id : wealthAcc.id,
+        toAccountName: isRedeem || isDividend ? cashAcc.name : wealthAcc.name,
+        amount: signedCashAmount,
+        categoryId: investmentCategory?.id ?? null,
+        categoryName: investmentCategory?.name ?? investmentCategoryName ?? null,
+        currency: cashAcc.currency ?? wealthAcc.currency ?? "CNY",
+        source: "manual",
+        note: cashNote,
+      },
+    });
+
+    const wealthTransaction = await tx.wealthTransaction.create({
+      data: {
+        householdId,
+        accountId: wealthAcc.id,
+        cashAccountId: cashAcc.id,
+        cashEntryId: cashEntry.id,
+        wealthProductId: wealthProduct.id,
+        productName: wealthProduct.name,
+        action: subtype,
+        source: "manual",
+        tradeDate: date,
+        confirmDate: date,
+        arrivalDate,
+        grossAmount,
+        arrivalAmount,
+        units,
+        nav,
+        interest,
+        fee,
+        annualRate,
+        realizedProfit: isRedeem || isDividend ? (interest ?? 0) - Math.max(0, fee ?? 0) : null,
+        note: note || null,
+      },
+    });
+
+    await upsertEntryBusinessCashFlowLink(tx, {
+      householdId,
+      cashEntryId: cashEntry.id,
+      businessEntryId: null,
+      wealthTransactionId: wealthTransaction.id,
+      businessType: "wealth",
+      cashFlowDirection: signedCashAmount < 0 ? "outflow" : signedCashAmount > 0 ? "inflow" : "none",
+      source: "manual",
+      note: "Linked cash flow to wealth transaction",
+      metadata: { splitRecord: true, independentBusinessTransaction: true },
+    });
+    touchedAccountIds = Array.from(new Set([cashAcc.id, wealthAcc.id].filter(Boolean)));
+  });
+
+  for (const id of touchedAccountIds) {
+    await recalcAndSaveAccountBalance(id).catch(() => {});
+  }
+  await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
+  revalidateAfterInvestChange();
+}
+
 async function createTransaction(formData: FormData) {
   "use server";
 
@@ -836,7 +1046,7 @@ async function createTransaction(formData: FormData) {
   const dateStr = String(formData.get("date") ?? "").trim();
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
-  const amountAbs = type === "expense" ? Math.abs(amountRaw) : amountRaw > 0 ? Math.abs(amountRaw) : 0;
+  const amountAbs = Math.abs(amountRaw);
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
@@ -933,7 +1143,7 @@ async function createTransaction(formData: FormData) {
             accountName: acc.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
-            amount: amountRaw < 0 ? amountAbs : -amountAbs,
+            amount: amountRaw,
             type: TransactionType.expense,
             date,
             postedAt,
@@ -1041,7 +1251,7 @@ async function createTransaction(formData: FormData) {
             accountName: acc?.name ?? "未知账户",
             categoryId: cat?.id ?? undefined,
             categoryName: cat?.name ?? undefined,
-            amount: amountAbs,
+            amount: amountRaw,
             type: TransactionType.income,
             date,
             note: note || undefined,
@@ -1054,6 +1264,10 @@ async function createTransaction(formData: FormData) {
 
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => {});
     } else if (type === "investment") {
+      if (String(formData.get("fundProductType") ?? "").trim() === "wealth") {
+        await createSplitWealthTransaction(formData, householdId);
+        return { ok: true as const };
+      }
       let createdInvestmentEntryId: string | null = null;
       const accountId = String(formData.get("accountId") ?? "").trim();
       const subtype = String(formData.get("subtype") ?? "buy").trim();
@@ -1194,7 +1408,8 @@ async function createTransaction(formData: FormData) {
         if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
 
         const isMetalProduct = fundProductType === "metal";
-        const entryFundCode = isMetalProduct ? null : fundCode || null;
+        const isWealthProduct = fundProductType === "wealth";
+        const entryFundCode = isMetalProduct || isWealthProduct ? null : fundCode || null;
         // fundName 只存基金/存款等产品名称；贵金属名称来自 metalTypeName。
         const entryFundName = isMetalProduct ? null : (wealthProduct?.name || fundNameInput || fundCode || null);
 
@@ -1246,7 +1461,7 @@ async function createTransaction(formData: FormData) {
         let computedConfirmDate: Date | null = fundConfirmDate;
         let computedArrivalDate: Date | null = fundArrivalDate;
 
-        if (!isMetalProduct && shouldComputeArrival && entryFundCode) {
+        if (!isMetalProduct && !isWealthProduct && shouldComputeArrival && entryFundCode) {
           const confirmStr = computedConfirmDate
             ? computedConfirmDate.toISOString().slice(0, 10)
             : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
@@ -1302,6 +1517,7 @@ async function createTransaction(formData: FormData) {
           finalFundSubtype === FundSubtype.buy &&
           sourceValue !== "insurance" &&
           !isMetalProduct &&
+          !isWealthProduct &&
           buyResultStatus === "refund" &&
           refundAmount &&
           refundAmount > 0 &&
@@ -1330,14 +1546,19 @@ async function createTransaction(formData: FormData) {
         }
       });
       if (createdInvestmentEntryId) {
-        await syncFundTransactionsFromTxRecords([createdInvestmentEntryId]).catch((e) => {
-          console.error("createTransaction sync fund transaction:", e);
+        if (fundProductType !== "wealth") {
+          await syncFundTransactionsFromTxRecords([createdInvestmentEntryId]).catch((e) => {
+            console.error("createTransaction sync fund transaction:", e);
+          });
+        }
+        await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: createdInvestmentEntryId }).catch((e) => {
+          console.error("createTransaction sync independent business transaction:", e);
         });
       }
 
       if (sourceValue !== "insurance" && fundProductType === "metal" && finalInvestmentAccId) {
         await recalcPreciousMetalPositions(finalInvestmentAccId).catch(() => {});
-      } else if (sourceValue !== "insurance" && fundProductType !== "deposit" && finalInvestmentAccId) {
+      } else if (sourceValue !== "insurance" && fundProductType !== "deposit" && fundProductType !== "wealth" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(() => {});
       }
       const balanceAccountId = finalInvestmentAccId;
@@ -1516,7 +1737,7 @@ async function createDebtTransaction(formData: FormData) {
       const debtDirection = mode === "borrow_in" || mode === "repay_out" || mode === "prepay_out" ? "payable" : "receivable";
       const cashAccount = await tx.account.findUnique({ where: { id: cashAccountId } });
       const debtAccount = debtObjectId
-        ? await resolveOrCreateDebtAccount(tx, householdId, debtObjectId, debtDirection, debtItemName, { forceCreate: mode === "borrow_in" || mode === "lend_out" })
+        ? await resolveOrCreateDebtAccount(tx, householdId, debtObjectId, debtDirection, debtItemName)
         : await tx.account.findUnique({
             where: { id: debtAccountId },
             include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
@@ -1528,13 +1749,14 @@ async function createDebtTransaction(formData: FormData) {
       if (!cashAccount || isPureInvestmentAccount(cashAccount) || cashAccount.kind === AccountKind.loan) {
         throw new Error("资金账户不正确");
       }
-      if ((mode === "repay_out" || mode === "prepay_out") && debtAccount.debtDirection !== "payable") {
+      const isCounterpartyDebtAccount = !!debtAccount.counterpartyId && !debtAccount.institutionId;
+      if (!isCounterpartyDebtAccount && (mode === "repay_out" || mode === "prepay_out") && debtAccount.debtDirection !== "payable") {
         throw new Error("还款只能选择已有借款项");
       }
-      if (mode === "lend_out" && debtAccount.debtDirection !== "receivable") {
+      if (!isCounterpartyDebtAccount && mode === "lend_out" && debtAccount.debtDirection !== "receivable") {
         throw new Error("借出只能选择已有借出项或往来对象");
       }
-      if (mode === "collect_in" && debtAccount.debtDirection !== "receivable") {
+      if (!isCounterpartyDebtAccount && mode === "collect_in" && debtAccount.debtDirection !== "receivable") {
         throw new Error("收回只能选择已有借出项");
       }
       resolvedDebtAccountId = debtAccount.id;
@@ -1810,6 +2032,246 @@ async function createDebtTransaction(formData: FormData) {
   }
 }
 
+async function editSplitWealthTransaction(formData: FormData, householdId: string) {
+  const entryId = String(formData.get("entryId") ?? "").trim();
+  if (!entryId) throw new Error("缺少参数");
+  const businessTransactionId = String(formData.get("businessTransactionId") ?? "").trim();
+  const dateStr = String(formData.get("date") ?? "").trim();
+  if (!dateStr) throw new Error("申请日期不能为空");
+  const date = new Date(dateStr);
+  const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
+  const validSubtypes = Object.values(FundSubtype);
+  const subtype: FundSubtype = validSubtypes.includes(subtypeInput as FundSubtype) ? (subtypeInput as FundSubtype) : FundSubtype.buy;
+  const isRedeem = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
+  const isDividend = subtype === FundSubtype.dividend_cash;
+  const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
+  if (!amountAbs) throw new Error("金额不正确");
+
+  const requestedWealthAccountId = String(formData.get("toAccountId") ?? formData.get("accountId") ?? "").trim();
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
+  const productNameInput = String(formData.get("fundName") ?? "").trim();
+  const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
+  const note = String(formData.get("memo") ?? formData.get("note") ?? "").trim();
+  const unitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
+  const navRaw = parseFloat(String(formData.get("fundNav") ?? ""));
+  const annualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
+  const interestRaw = parseFloat(String(formData.get("depositInterest") ?? ""));
+  const feeRaw = parseFloat(String(formData.get("fundFee") ?? ""));
+  const arrivalAmountRaw = parseMoneyInput(formData.get("fundArrivalAmount") ?? null);
+  const arrivalDate = dateFromYmd(String(formData.get("fundArrivalDate") ?? "").trim()) ?? (isRedeem || isDividend ? date : null);
+  const units = Number.isFinite(unitsRaw) && unitsRaw > 0 ? unitsRaw : null;
+  const nav = Number.isFinite(navRaw) && navRaw > 0 ? navRaw : null;
+  const annualRate = Number.isFinite(annualRateRaw) && annualRateRaw > 0 ? annualRateRaw : null;
+  const fee = Number.isFinite(feeRaw) && feeRaw >= 0 ? feeRaw : null;
+  const interest = Number.isFinite(interestRaw)
+    ? interestRaw
+    : isDividend
+      ? amountAbs
+      : null;
+  const principalAmount = isRedeem && units && nav ? Number((units * nav).toFixed(2)) : amountAbs;
+  const grossAmount = (isRedeem || isDividend) && !isDividend ? principalAmount : amountAbs;
+  const arrivalAmount = isDividend
+    ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
+    : isRedeem
+      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
+      : null;
+
+  const touchedAccountIds = new Set<string>();
+  await prisma.$transaction(async (tx) => {
+    const link = await tx.entryBusinessLink.findFirst({
+      where: {
+        householdId,
+        businessType: "wealth",
+        deletedAt: null,
+        OR: [
+          { cashEntryId: entryId },
+          ...(businessTransactionId ? [{ wealthTransactionId: businessTransactionId }] : []),
+          { wealthTransactionId: entryId },
+          { businessEntryId: entryId },
+        ],
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+    let wealthRow = businessTransactionId
+      ? await tx.wealthTransaction.findFirst({ where: { id: businessTransactionId, householdId } })
+      : null;
+    if (!wealthRow) {
+      wealthRow = link?.wealthTransactionId
+        ? await tx.wealthTransaction.findUnique({ where: { id: link.wealthTransactionId } })
+        : await tx.wealthTransaction.findFirst({
+            where: { householdId, OR: [{ id: entryId }, { cashEntryId: entryId }] },
+          });
+    }
+    if (!wealthRow) {
+      const legacy = await tx.txRecord.findFirst({
+        where: { id: entryId, householdId, deletedAt: null, type: TransactionType.investment, fundProductType: "wealth" },
+      });
+      if (!legacy) throw new Error("理财记录不存在");
+      await syncIndependentBusinessTransactionFromTxRecord(tx, { businessEntryId: legacy.id });
+      wealthRow = await tx.wealthTransaction.findFirst({
+        where: { householdId, OR: [{ id: legacy.id }, { cashEntryId: legacy.id }] },
+      });
+    }
+    if (!wealthRow) throw new Error("理财记录不存在");
+
+    const oldCashEntry = wealthRow.cashEntryId
+      ? await tx.txRecord.findUnique({ where: { id: wealthRow.cashEntryId } })
+      : null;
+    if (oldCashEntry) {
+      touchedAccountIds.add(oldCashEntry.accountId);
+      if (oldCashEntry.toAccountId) touchedAccountIds.add(oldCashEntry.toAccountId);
+    }
+    touchedAccountIds.add(wealthRow.accountId);
+    if (wealthRow.cashAccountId) touchedAccountIds.add(wealthRow.cashAccountId);
+
+    const fallbackCashAccountId =
+      cashAccountId ||
+      wealthRow.cashAccountId ||
+      (isRedeem || isDividend ? oldCashEntry?.toAccountId : oldCashEntry?.accountId) ||
+      "";
+    const cashAcc = await tx.account.findUnique({
+      where: { id: fallbackCashAccountId },
+      select: { id: true, name: true, currency: true },
+    });
+    if (!cashAcc) throw new Error(isRedeem || isDividend ? "请选择到账账户" : "请选择资金来源账户");
+    const wealthAcc = await tx.account.findUnique({
+      where: { id: requestedWealthAccountId || wealthRow.accountId },
+      select: { id: true, name: true, institutionId: true, currency: true },
+    });
+    if (!wealthAcc) throw new Error("请选择理财账户");
+
+    const resolvedWealthProductId = wealthProductIdInput || wealthRow.wealthProductId || "";
+    const resolvedProductNameInput = productNameInput || wealthRow.productName || "";
+    const wealthProduct = resolvedWealthProductId
+      ? await tx.wealthProduct.findFirst({
+          where: { id: resolvedWealthProductId, householdId, institutionId: wealthAcc.institutionId, isActive: true },
+        })
+      : resolvedProductNameInput
+        ? await tx.wealthProduct.findFirst({
+            where: { householdId, institutionId: wealthAcc.institutionId ?? null, name: resolvedProductNameInput, isActive: true },
+          }) ?? await tx.wealthProduct.create({
+            data: {
+              householdId,
+              institutionId: wealthAcc.institutionId ?? null,
+              name: resolvedProductNameInput,
+              currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
+              annualRate: annualRate ?? undefined,
+            },
+          })
+        : null;
+    if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    if (!isRedeem && !isDividend) {
+      await assertWealthUnitsWhenRequiredInTx(tx, {
+        householdId,
+        accountId: wealthAcc.id,
+        wealthProductId: wealthProduct.id,
+        productName: wealthProduct.name,
+        units,
+      });
+    }
+
+    const signedCashAmount = isRedeem || isDividend ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
+    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const investmentCategory = investmentCategoryName
+      ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
+      : null;
+    const cashNote = buildWealthCashFlowNote({
+      action: subtype,
+      productName: wealthProduct.name,
+      units,
+      userNote: note,
+    });
+    const cashEntryData = {
+      householdId,
+      date,
+      type: TransactionType.investment,
+      accountId: isRedeem || isDividend ? wealthAcc.id : cashAcc.id,
+      accountName: isRedeem || isDividend ? wealthAcc.name : cashAcc.name,
+      toAccountId: isRedeem || isDividend ? cashAcc.id : wealthAcc.id,
+      toAccountName: isRedeem || isDividend ? cashAcc.name : wealthAcc.name,
+      amount: signedCashAmount,
+      categoryId: investmentCategory?.id ?? null,
+      categoryName: investmentCategory?.name ?? investmentCategoryName ?? null,
+      currency: cashAcc.currency ?? wealthAcc.currency ?? "CNY",
+      source: "manual",
+      note: cashNote,
+      fundCode: null,
+      fundProductType: null,
+      fundSubtype: null,
+      fundName: null,
+      wealthProductId: null,
+      fundUnits: null,
+      fundNav: null,
+      fundFee: null,
+      fundConfirmDate: null,
+      fundArrivalDate: null,
+      fundArrivalAmount: null,
+      depositAnnualRate: null,
+      depositInterest: null,
+      realizedProfit: null,
+    };
+    const cashEntry = oldCashEntry
+      ? await tx.txRecord.update({ where: { id: oldCashEntry.id }, data: cashEntryData })
+      : await tx.txRecord.create({ data: cashEntryData });
+
+    await tx.wealthTransaction.update({
+      where: { id: wealthRow.id },
+      data: {
+        accountId: wealthAcc.id,
+        cashAccountId: cashAcc.id,
+        cashEntryId: cashEntry.id,
+        wealthProductId: wealthProduct.id,
+        productName: wealthProduct.name,
+        action: subtype,
+        source: "manual",
+        tradeDate: date,
+        confirmDate: date,
+        arrivalDate,
+        grossAmount,
+        arrivalAmount,
+        units,
+        nav,
+        interest,
+        fee,
+        annualRate,
+        realizedProfit: isRedeem || isDividend ? (interest ?? 0) - Math.max(0, fee ?? 0) : null,
+        note: note || null,
+        deletedAt: null,
+      },
+    });
+
+    await tx.entryBusinessLink.updateMany({
+      where: {
+        householdId,
+        businessType: "wealth",
+        linkType: "legacy_combined_record",
+        OR: [{ cashEntryId: cashEntry.id }, { businessEntryId: cashEntry.id }],
+        deletedAt: null,
+      },
+      data: { deletedAt: new Date() },
+    });
+    await upsertEntryBusinessCashFlowLink(tx, {
+      householdId,
+      cashEntryId: cashEntry.id,
+      businessEntryId: null,
+      wealthTransactionId: wealthRow.id,
+      businessType: "wealth",
+      cashFlowDirection: signedCashAmount < 0 ? "outflow" : signedCashAmount > 0 ? "inflow" : "none",
+      source: "manual",
+      note: "Linked cash flow to wealth transaction",
+      metadata: { splitRecord: true, independentBusinessTransaction: true },
+    });
+    touchedAccountIds.add(cashAcc.id);
+    touchedAccountIds.add(wealthAcc.id);
+  });
+
+  for (const id of touchedAccountIds) {
+    await recalcAndSaveAccountBalance(id).catch(() => {});
+  }
+  await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
+  revalidateAfterInvestChange();
+}
+
 async function editInvestment(formData: FormData) {
   "use server";
   const { householdId } = await getHouseholdScope();
@@ -1822,6 +2284,14 @@ async function editInvestment(formData: FormData) {
   const fundName = String(formData.get("fundName") ?? "").trim() || null;
   const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
   const fundProductType = String(formData.get("fundProductType") ?? "").trim() || null;
+  if (fundProductType === "wealth") {
+    try {
+      await editSplitWealthTransaction(formData, householdId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : "保存失败" };
+    }
+  }
   const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
   const metalUnitIdInput = String(formData.get("metalUnitId") ?? "").trim();
   const buyResultStatus = String(formData.get("buyResultStatus") ?? "normal").trim();
@@ -2091,9 +2561,10 @@ async function editInvestment(formData: FormData) {
         ? (fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0)))
         : (isDividendCash ? amountAbs : -amountAbs);
       const isMetalProduct = fundProductType === "metal";
+      const isWealthProduct = fundProductType === "wealth";
       const updateData: any = {
         date,
-        fundCode: isMetalProduct ? null : fundCode,
+        fundCode: isMetalProduct || isWealthProduct ? null : fundCode,
         fundName: isMetalProduct ? null : (wealthProduct?.name || fundName),
         wealthProductId: wealthProduct?.id ?? null,
         fundProductType,
@@ -2119,6 +2590,7 @@ async function editInvestment(formData: FormData) {
       };
       if (
         !isMetalProduct &&
+        !isWealthProduct &&
         finalFundSubtype === FundSubtype.buy &&
         buyResultStatus === "refund" &&
         !fundUnitsExplicitlyCleared &&
@@ -2169,6 +2641,7 @@ async function editInvestment(formData: FormData) {
         finalFundSubtype === FundSubtype.buy &&
         sourceValue !== "insurance" &&
         !isMetalProduct &&
+        !isWealthProduct &&
         buyResultStatus === "refund" &&
         refundAmount &&
         refundAmount > 0 &&
@@ -2209,8 +2682,13 @@ async function editInvestment(formData: FormData) {
         });
       }
     });
-    await syncFundTransactionsFromTxRecords([entryId]).catch((e) => {
-      console.error("editInvestment sync fund transaction:", e);
+    if (fundProductType !== "wealth") {
+      await syncFundTransactionsFromTxRecords([entryId]).catch((e) => {
+        console.error("editInvestment sync fund transaction:", e);
+      });
+    }
+    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
+      console.error("editInvestment sync independent business transaction:", e);
     });
 
     // 重算持仓：如果基金账户变更，需要重算旧账户和新账户
@@ -2225,7 +2703,7 @@ async function editInvestment(formData: FormData) {
         await recalcPreciousMetalPositions(finalInvestmentAccId).catch((e) => { console.error("editInvestment recalc new metal positions:", e); });
       }
     }
-    if (!isMetalProduct) {
+    if (!isMetalProduct && fundProductType !== "wealth") {
       if (oldInvestmentAccId && oldInvestmentAccId !== finalInvestmentAccId) {
         // 基金账户变更：重算旧账户和新账户
         await recalcFundPositions(oldInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc old fund positions:", e); });
@@ -2251,7 +2729,7 @@ async function editInvestment(formData: FormData) {
     }
 
     // 更新 T+N 确认天数到统一确认天数库
-    if (fundProductType !== "metal" && finalInvestmentAccId && fundCode && confirmDays !== undefined && confirmDays !== null) {
+    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && confirmDays !== undefined && confirmDays !== null) {
       await setFundConfirmDays(finalInvestmentAccId, fundCode, confirmDays).catch(() => {});
 
     // 更新入账天数到统一入账天数库
@@ -2261,7 +2739,7 @@ async function editInvestment(formData: FormData) {
     }
 
     // 更新费率到统一费率库，并按申购/赎回分开保存
-    if (fundProductType !== "metal" && finalInvestmentAccId && fundCode && feeRate !== undefined && feeRate !== null) {
+    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && feeRate !== undefined && feeRate !== null) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, fundConfirmDate ?? date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 
@@ -2893,7 +3371,7 @@ async function updateTransactionFromDialog(formData: FormData) {
   const dateStr = String(formData.get("date") ?? "").trim();
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
-  const amountAbs = type === "expense" ? Math.abs(amountRaw) : amountRaw > 0 ? Math.abs(amountRaw) : 0;
+  const amountAbs = Math.abs(amountRaw);
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
@@ -3131,7 +3609,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           : null;
 
       const expenseOrIncomeData: Record<string, unknown> = {
-        amount: type === "income" ? amountAbs : amountRaw < 0 ? amountAbs : -amountAbs,
+        amount: amountRaw,
         accountId: acc.id,
         accountName: acc.name,
         categoryId: cat ? cat.id : null,
@@ -3246,6 +3724,7 @@ export default async function Home({
     detailPage?: string;
     symbol?: string;
     fundCode?: string;
+    wealthProductId?: string;
     fundSort?: string;
     fundSortDir?: string;
     fundPageSize?: string;
@@ -3333,7 +3812,8 @@ export default async function Home({
   const hasDetailFilters =
     !!(detailDateFrom || detailDateTo || detailInFrom || detailInTo || detailOutFrom || detailOutTo) ||
     Object.values(detailColumnFilters).some((values) => values.length > 0);
-  const fundCodeParam = typeof params?.fundCode === "string" ? params.fundCode.trim() : "";
+  const rawFundCodeParam = typeof params?.fundCode === "string" ? params.fundCode.trim() : "";
+  const wealthProductIdParam = typeof params?.wealthProductId === "string" ? params.wealthProductId.trim() : "";
   const fundSortParam = typeof params?.fundSort === "string" ? params.fundSort.trim() : "marketValue";
   const fundSortDirParam = params?.fundSortDir === "asc" ? "asc" : "desc";
   const fundPageSizeParam = typeof params?.fundPageSize === "string" ? parseInt(params.fundPageSize, 10) : 20;
@@ -3423,7 +3903,11 @@ export default async function Home({
             ? getInvestmentAccountView(selectedAccount)
             : isOverview
               ? "overview"
-              : "detail";
+          : "detail";
+  const selectedWealthProductIdParam = view === "investwealth"
+    ? (wealthProductIdParam || rawFundCodeParam)
+    : "";
+  const fundCodeParam = view === "investwealth" ? "" : rawFundCodeParam;
   const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
   const legacyNames = (() => {
@@ -4119,6 +4603,9 @@ export default async function Home({
   const debtRowMap = new Map<string, {
     key: string;
     name: string;
+    objectType: string;
+    objectName: string;
+    itemName: string;
     accountId: string;
     institutionId: string;
     counterpartyId: string;
@@ -4143,20 +4630,45 @@ export default async function Home({
     accountCount: number;
     accountIds: string[];
     accountLabels: string[];
+    parentKey: string | null;
+    depth: number;
+    isGroup: boolean;
   }>();
+  const ACTIVE_DEBT_EPSILON = 0.005;
+  const debtGroupKeyByAccountId = new Map<string, string>();
+  const debtGroupKeyByInstitutionId = new Map<string, string>();
+  const debtGroupKeyByCounterpartyId = new Map<string, string>();
+  const ordinaryDebtAccountIds: string[] = [];
 
   for (const account of debtAccounts) {
-    const institutionName = (account.Institution?.name ?? "").trim();
-    const counterpartyName = (account.Counterparty?.name ?? "").trim();
+    const institutionName = (account.Institution?.shortName?.trim() || account.Institution?.name || "").trim();
+    const counterpartyName = (account.Counterparty?.shortName?.trim() || account.Counterparty?.name || "").trim();
     const objectName = counterpartyName || institutionName || account.name;
     const defaultItemName = objectName ? `${objectName}的往来款` : "";
     const itemName = objectName && (account.name === defaultItemName || account.name === objectName)
       ? "往来款"
       : account.name;
-    const rowKey = `account:${account.id}`;
-    const rowName = objectName && objectName !== itemName ? `${objectName} | ${itemName}` : account.name;
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const loanPlan = loanRepaymentPlanByAccountId.get(account.id);
+    const isBankSettlementAccount =
+      !!account.institutionId &&
+      account.Institution?.type === "bank";
+    if (isBankSettlementAccount && Math.abs(balance) < ACTIVE_DEBT_EPSILON) {
+      continue;
+    }
+    if (!isBankSettlementAccount) {
+      ordinaryDebtAccountIds.push(account.id);
+    }
+    const accountRowKey = `account:${account.id}`;
+    const accountRowName = objectName && objectName !== itemName ? `${objectName} | ${itemName}` : account.name;
+    const accountObjectType = isBankSettlementAccount
+      ? account.debtDirection === DebtDirection.receivable ? "银行应收" : "银行贷款"
+      : account.Counterparty?.type === "person" || account.Institution?.type === "person"
+        ? "个人往来"
+        : "组织往来";
+    debtGroupKeyByAccountId.set(account.id, accountRowKey);
+    if (account.institutionId) debtGroupKeyByInstitutionId.set(account.institutionId, accountRowKey);
+    if (account.counterpartyId) debtGroupKeyByCounterpartyId.set(account.counterpartyId, accountRowKey);
     const loanMemo = loanPlan ? decodeScheduledTaskMemo(loanPlan.memo) : null;
     const loanRateAdjustments = resolveLoanRateAdjustments({
       tableAdjustments: loanPlan ? loanRateAdjustmentsByAccountId.get(account.id) : [],
@@ -4216,9 +4728,12 @@ export default async function Home({
           return loanPlan.intervalUnit === IntervalUnit.day ? `每${loanPlan.intervalValue}天` : "";
         })()
       : "";
-    const current = debtRowMap.get(rowKey) ?? {
-      key: rowKey,
-      name: rowName,
+    const current = debtRowMap.get(accountRowKey) ?? {
+      key: accountRowKey,
+      name: accountRowName,
+      objectType: accountObjectType,
+      objectName,
+      itemName,
       accountId: account.id,
       institutionId: account.institutionId ?? "",
       counterpartyId: account.counterpartyId ?? "",
@@ -4243,11 +4758,13 @@ export default async function Home({
       accountCount: 0,
       accountIds: [],
       accountLabels: [],
+      parentKey: null,
+      depth: 0,
+      isGroup: false,
     };
     current.accountCount += 1;
     current.accountIds.push(account.id);
-    current.accountLabels.push(rowName);
-    current.name = rowName;
+    current.accountLabels.push(accountRowName);
     current.net += balance;
     if (balance >= 0) current.receivable += balance;
     else current.payable += Math.abs(balance);
@@ -4269,18 +4786,22 @@ export default async function Home({
     }
     current.itemType = current.net >= 0 ? "【债权】应收款" : "【债务】应付款";
     current.remainingPrincipal = Math.abs(current.net);
-    debtRowMap.set(rowKey, current);
+    debtRowMap.set(accountRowKey, current);
   }
 
-  const debtRows = Array.from(debtRowMap.values()).sort(
-    (a, b) => (b.payable + b.receivable) - (a.payable + a.receivable),
-  );
-  const derivedDebtKey = selectedAccount?.kind === AccountKind.loan ? `account:${selectedAccount.id}` : "";
+  const debtRows = Array.from(debtRowMap.values()).sort((a, b) => {
+    const amountDiff = (b.payable + b.receivable) - (a.payable + a.receivable);
+    if (Math.abs(amountDiff) > ACTIVE_DEBT_EPSILON) return amountDiff;
+    return a.name.localeCompare(b.name, "zh-CN");
+  });
+  const derivedDebtKey = selectedAccount?.kind === AccountKind.loan
+    ? debtGroupKeyByAccountId.get(selectedAccount.id) ?? `account:${selectedAccount.id}`
+    : "";
   const legacyInstitutionDebtRow = debtPersonParam.startsWith("institution:")
-    ? debtRows.find((row) => row.institutionId === debtPersonParam.slice("institution:".length))
+    ? debtRows.find((row) => row.key === debtGroupKeyByInstitutionId.get(debtPersonParam.slice("institution:".length)))
     : null;
   const legacyCounterpartyDebtRow = debtPersonParam.startsWith("counterparty:")
-    ? debtRows.find((row) => row.counterpartyId === debtPersonParam.slice("counterparty:".length))
+    ? debtRows.find((row) => row.key === debtGroupKeyByCounterpartyId.get(debtPersonParam.slice("counterparty:".length)))
     : null;
   const selectedDebtKey = debtRows.some((row) => row.key === debtPersonParam)
     ? debtPersonParam
@@ -4292,7 +4813,12 @@ export default async function Home({
       ? derivedDebtKey
       : "";
   const selectedDebtRow = debtRows.find((row) => row.key === selectedDebtKey) ?? null;
-  const selectedDebtInstitutionId = selectedDebtRow?.institutionId ?? "";
+  const ordinaryDebtAccountIdSet = new Set(ordinaryDebtAccountIds);
+  const selectedDebtRowIsOrdinary = !!selectedDebtRow?.accountIds?.some((id) => ordinaryDebtAccountIdSet.has(id));
+  const ordinaryDebtRows = debtRows.filter((row) => row.accountIds.some((id) => ordinaryDebtAccountIdSet.has(id)));
+  const debtRowsForShell = selectedDebtRow && !selectedDebtRowIsOrdinary
+    ? debtRows.filter((row) => row.key === selectedDebtRow.key)
+    : ordinaryDebtRows;
   const selectedDebtObjectValue = selectedDebtRow?.counterpartyId
     ? `counterparty:${selectedDebtRow.counterpartyId}`
     : selectedDebtRow?.institutionId
@@ -4560,7 +5086,7 @@ export default async function Home({
       }
     }
   }
-  const selectedDebtAccountIds = new Set(selectedDebtRow?.accountIds ?? []);
+  const selectedDebtAccountIds = new Set(selectedDebtRow?.accountIds ?? ordinaryDebtAccountIds);
   const debtAccountLabelById = new Map(
     debtAccounts.map((account) => [
       account.id,
@@ -5556,10 +6082,10 @@ export default async function Home({
 
   const creditBillBalanceValue = (() => {
     if (!currentStatementMonth) return (creditCardBill?.remain ?? 0) - (creditCardBill?.overpaid ?? 0);
-    const cum = cumulativeByMonth.get(currentStatementMonth);
-    if (cum) return cum.cumulativeRemain - cum.cumulativeOverpaid;
     const effective = effectiveBillByMonth.get(currentStatementMonth);
     if (effective !== undefined) return effective;
+    const cum = cumulativeByMonth.get(currentStatementMonth);
+    if (cum) return cum.cumulativeRemain - cum.cumulativeOverpaid;
     return (creditCardBill?.remain ?? 0) - (creditCardBill?.overpaid ?? 0);
   })();
 
@@ -5673,6 +6199,7 @@ export default async function Home({
     fundPageSize,
     fundPage,
     fundCodeParam,
+    wealthProductIdParam: selectedWealthProductIdParam,
   });
   const investDataHidFilter = JSON.stringify(hidFilter);
   const investmoneyData = view === "investmoney" && accountId
@@ -5811,14 +6338,48 @@ export default async function Home({
     );
   };
 
+  const detailLinkedWealthIds = Array.from(new Set((filteredEntries2 || []).flatMap((entry: any) =>
+    [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
+      .map((link: any) => link.wealthTransactionId)
+      .filter(Boolean),
+  )));
+  const detailLinkedWealthRows = detailLinkedWealthIds.length > 0
+    ? await prisma.wealthTransaction.findMany({
+        where: { id: { in: detailLinkedWealthIds }, householdId, deletedAt: null },
+        include: { WealthProduct: true, Account: true, CashAccount: true },
+      })
+    : [];
+  const detailLinkedWealthById = new Map(detailLinkedWealthRows.map((row) => [row.id, row]));
+  const linkedWealthRowOf = (entry: any) => {
+    const link = [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
+      .find((item: any) => item.wealthTransactionId && detailLinkedWealthById.has(item.wealthTransactionId));
+    return link?.wealthTransactionId ? detailLinkedWealthById.get(link.wealthTransactionId) ?? null : null;
+  };
+
   // Convert filtered entries to serializable format for client-side detail paging.
-  const allDetailEntries: DetailEntry[] = (filteredEntries2 || []).map((e) => ({
+  const allDetailEntries: DetailEntry[] = (filteredEntries2 || []).map((e) => {
+    const linkedWealth = linkedWealthRowOf(e);
+    const linkedWealthAction = linkedWealth?.action ?? null;
+    const linkedWealthIsCashIn =
+      linkedWealthAction === FundSubtype.redeem ||
+      linkedWealthAction === FundSubtype.switch_out ||
+      linkedWealthAction === FundSubtype.dividend_cash;
+    const linkedWealthGrossAmount = linkedWealth ? Math.abs(toNumber(linkedWealth.grossAmount)) : null;
+    const linkedWealthArrivalAmount = linkedWealth?.arrivalAmount != null ? Math.abs(toNumber(linkedWealth.arrivalAmount)) : null;
+    const linkedWealthAmount = linkedWealth && linkedWealthGrossAmount != null
+      ? linkedWealthIsCashIn
+        ? linkedWealthGrossAmount
+        : -linkedWealthGrossAmount
+      : toNumber(e.amount);
+    return ({
     id: e.id,
+    cashEntryId: linkedWealth?.cashEntryId ?? e.id,
+    businessTransactionId: linkedWealth?.id ?? null,
     date: entryDisplayDate(e).toISOString().slice(0, 10),
     postedAt: toDateOnlyLocalOrNull(e.postedAt),
     createdAt: toIsoOrNull(e.createdAt),
     dayOrder: e.dayOrder ?? 0,
-    amount: toNumber(e.amount),
+    amount: linkedWealthAmount,
     runningBalance: balanceByEntryId.get(e.id) ?? null,
     type: e.type,
     categoryId: e.categoryId,
@@ -5833,20 +6394,28 @@ export default async function Home({
     toAccountName: e.toAccountName,
     toAccountKind: e.toAccount?.kind ?? null,
     toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-    note: e.note,
+    note: linkedWealth
+      ? buildWealthCashFlowNote({
+          action: linkedWealth.action,
+          productName: linkedWealth.WealthProduct?.name ?? linkedWealth.productName ?? e.fundName,
+          units: linkedWealth.units == null ? null : toNumber(linkedWealth.units),
+          userNote: linkedWealth.note,
+        })
+      : e.note,
+    businessNote: linkedWealth?.note ?? null,
     toNote: e.toNote,
-    fundSubtype: e.fundSubtype,
-    fundCode: e.fundCode,
-    fundName: e.fundName,
-    wealthProductId: e.wealthProductId ?? null,
+    fundSubtype: linkedWealth?.action ?? e.fundSubtype,
+    fundCode: linkedWealth ? null : e.fundCode,
+    fundName: linkedWealth?.WealthProduct?.name ?? linkedWealth?.productName ?? e.fundName,
+    wealthProductId: linkedWealth?.wealthProductId ?? e.wealthProductId ?? null,
     source: e.source,
     insuranceProductId: e.insuranceProductId ?? null,
     debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
     debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
     debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
-    depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
-    depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
-    fundProductType: e.fundProductType,
+    depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
+    depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
+    fundProductType: linkedWealth ? "wealth" : e.fundProductType,
     metalTypeId: e.metalTypeId ?? null,
     metalTypeName: e.metalTypeName ?? null,
     metalUnitId: e.metalUnitId ?? null,
@@ -5854,19 +6423,20 @@ export default async function Home({
     metalQuantity: e.metalQuantity != null ? toNumber(e.metalQuantity) : null,
     metalUnitPrice: e.metalUnitPrice != null ? toNumber(e.metalUnitPrice) : null,
     metalFee: e.metalFee != null ? toNumber(e.metalFee) : null,
-    fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
-    fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
-    fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
-    fundConfirmDate: toIsoOrNull(e.fundConfirmDate),
-    fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
+    fundUnits: linkedWealth?.units != null ? toNumber(linkedWealth.units) : e.fundUnits != null ? toNumber(e.fundUnits) : null,
+    fundNav: linkedWealth?.nav != null ? toNumber(linkedWealth.nav) : e.fundNav != null ? toNumber(e.fundNav) : null,
+    fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
+    fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : toIsoOrNull(e.fundConfirmDate),
+    fundArrivalDate: linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
     fundSourceEntryId: e.fundSourceEntryId ?? null,
-    fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+    fundArrivalAmount: linkedWealthArrivalAmount ?? (e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
     ...buildEntryBusinessLinkSummary(e),
     entryTags: (e.EntryTag || []).map((et: any) => ({
       tagId: et.tagId,
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
     })),
-  }));
+  });
+  });
   const pagedDetailEntries: DetailEntry[] = detailAll
     ? allDetailEntries
     : allDetailEntries.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
@@ -6074,6 +6644,12 @@ export default async function Home({
 
   function buildWealthHoldingOptions(sourceEntryPool: Array<any>) {
     if (allWealthAccountIds.length === 0) return [];
+    const principalEps = 0.01;
+    const unitsEps = 0.000001;
+    const isHoldingCleared = (holding: { hasUnits: boolean; remainingAmount: number; remainingUnits: number }) =>
+      holding.hasUnits
+        ? holding.remainingAmount <= principalEps || holding.remainingUnits <= unitsEps
+        : holding.remainingAmount <= principalEps;
     const accountNameById = new Map(allWealthAccounts.map((account) => [account.id, account.label || account.name]));
     const buckets = new Map<string, {
       id: string;
@@ -6083,15 +6659,19 @@ export default async function Home({
       wealthAccountId: string;
       wealthAccountLabel: string;
       remainingAmount: number;
+      remainingUnits: number;
+      hasUnits: boolean;
       annualRate: number | null;
       termDays: number | null;
       firstDate: string;
       movements: Array<{ date: string; delta: number }>;
+      unitMovements: Array<{ date: string; delta: number }>;
     }>();
 
     for (const entry of sourceEntryPool) {
       if (entry.fundProductType !== "wealth" || entry.deletedAt) continue;
       const amountValue = toNumber(entry.amount);
+      const principalAmountValue = entry.wealthPrincipalAmount != null ? toNumber(entry.wealthPrincipalAmount) : amountValue;
       const isRedeemEntry =
         entry.fundSubtype === "redeem" ||
         entry.fundSubtype === "switch_out" ||
@@ -6112,16 +6692,25 @@ export default async function Home({
             ? toNumber(entry.WealthProduct.annualRate)
             : null;
       const principalDelta = isRedeemEntry
-        ? -Math.max(0, Math.abs(amountValue) - Math.max(0, toNumber(entry.depositInterest)))
+        ? -Math.abs(principalAmountValue)
         : isDividendEntry
           ? 0
-          : Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
+          : Math.abs(principalAmountValue);
+      const unitsValue = entry.fundUnits == null ? null : Math.abs(toNumber(entry.fundUnits));
+      const unitsDelta = unitsValue == null || isDividendEntry ? 0 : isRedeemEntry ? -unitsValue : unitsValue;
       const movementDate = toYmdOrNull(entry.date) ?? "";
 
       if (existing) {
         existing.remainingAmount += principalDelta;
+        if (unitsValue != null) {
+          existing.hasUnits = true;
+          existing.remainingUnits += unitsDelta;
+        }
         if (principalDelta !== 0 && movementDate) {
           existing.movements.push({ date: movementDate, delta: Number(principalDelta.toFixed(2)) });
+        }
+        if (unitsValue != null && unitsDelta !== 0 && movementDate) {
+          existing.unitMovements.push({ date: movementDate, delta: Number(unitsDelta.toFixed(6)) });
         }
         if (existing.annualRate == null && annualRate != null) existing.annualRate = annualRate;
         if (existing.termDays == null && entry.WealthProduct?.termDays != null) existing.termDays = entry.WealthProduct.termDays;
@@ -6134,16 +6723,20 @@ export default async function Home({
           wealthAccountId,
           wealthAccountLabel: accountNameById.get(wealthAccountId) ?? entry.toAccountName ?? entry.accountName ?? "理财账户",
           remainingAmount: principalDelta,
+          remainingUnits: unitsDelta,
+          hasUnits: unitsValue != null,
           annualRate,
           termDays: entry.WealthProduct?.termDays ?? null,
           firstDate: movementDate,
           movements: principalDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(principalDelta.toFixed(2)) }] : [],
+          unitMovements: unitsValue != null && unitsDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(unitsDelta.toFixed(6)) }] : [],
         });
       }
     }
 
     return Array.from(buckets.values())
       .filter((holding) => holding.movements.some((movement) => movement.delta > 0))
+      .filter((holding) => !isHoldingCleared(holding))
       .map((holding) => ({
         id: holding.id,
         label: holding.label,
@@ -6152,16 +6745,20 @@ export default async function Home({
           holding.annualRate != null ? `年化 ${holding.annualRate}%` : "",
           holding.termDays ? `${holding.termDays}天` : "",
           `可赎回 ${formatMoney(holding.remainingAmount)}`,
+          holding.hasUnits ? `份额 ${holding.remainingUnits.toFixed(6)}` : "",
         ].filter(Boolean).join(" · "),
         fundName: holding.fundName,
         wealthProductId: holding.wealthProductId,
         wealthAccountId: holding.wealthAccountId,
         wealthAccountLabel: holding.wealthAccountLabel,
         remainingAmount: Number(holding.remainingAmount.toFixed(2)),
+        remainingUnits: Number(holding.remainingUnits.toFixed(6)),
+        hasUnits: holding.hasUnits,
         annualRate: holding.annualRate,
         termDays: holding.termDays,
         firstDate: holding.firstDate,
         movements: holding.movements,
+        unitMovements: holding.unitMovements,
       }))
       .sort((a, b) => {
         if (a.wealthAccountLabel !== b.wealthAccountLabel) return a.wealthAccountLabel.localeCompare(b.wealthAccountLabel, "zh-Hans-CN");
@@ -6706,9 +7303,12 @@ export default async function Home({
             </div>
           ) : view === "debt" ? (
             <DebtShell
-              rows={debtRows.map((row) => ({
+              rows={debtRowsForShell.map((row) => ({
                 key: row.key,
                 name: row.name,
+                objectType: row.objectType,
+                objectName: row.objectName,
+                itemName: row.itemName,
                 accountId: row.accountId,
                 institutionId: row.institutionId,
                 counterpartyId: row.counterpartyId,
@@ -6731,6 +7331,9 @@ export default async function Home({
                 receivable: row.receivable,
                 net: row.net,
                 accountCount: row.accountCount,
+                parentKey: row.parentKey,
+                depth: row.depth,
+                isGroup: row.isGroup,
               }))}
               selectedKey={selectedDebtKey}
               entries={debtDetailEntries}
@@ -6785,6 +7388,7 @@ export default async function Home({
               investmentAccounts={investmentAccountList}
               cashAccountSSOptions={cashAccountSSOptions}
               investmentAccountSSOptions={investmentAccountSSOptions}
+              wealthHoldingOptions={wealthHoldingOptions}
               metalTypes={metalTypes}
               metalUnits={metalUnits}
               nestedFieldData={nestedFieldData}
@@ -6800,7 +7404,7 @@ export default async function Home({
             <FundShell
               key={`investwealth-${accountId}`}
               view="investwealth"
-              initialFundCode={investwealthData.selectedFundCode}
+              initialFundCode={investwealthData.selectedWealthProductId}
               positions={investwealthData.positions}
               clearedPositions={investwealthData.clearedPositions}
               allEntries={JSON.parse(JSON.stringify(investwealthData.allEntries))}
@@ -6819,6 +7423,7 @@ export default async function Home({
               investmentAccounts={investmentAccountList}
               cashAccountSSOptions={cashAccountSSOptions}
               investmentAccountSSOptions={investmentAccountSSOptions}
+              wealthHoldingOptions={wealthHoldingOptions}
               metalTypes={metalTypes}
               metalUnits={metalUnits}
               nestedFieldData={nestedFieldData}

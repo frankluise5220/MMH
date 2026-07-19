@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
+import {
+  normalizeDefaultCategoryHierarchyForHousehold,
+  SYSTEM_INSURANCE_EXPENSE_CATEGORY,
+  SYSTEM_INSURANCE_RETURN_CATEGORY,
+} from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
@@ -116,6 +121,18 @@ export async function GET(req: NextRequest) {
       },
       orderBy: { date: "asc" },
     });
+    const representedInvestmentEntryIds = new Set(
+      allEntries
+        .filter((entry) => entry.type === TransactionType.investment && getInvestmentStatisticItems(entry).length > 0)
+        .map((entry) => entry.id),
+    );
+    const wealthStatisticEntries = await loadWealthStatisticSourceEntries(ctx, {
+      start: new Date(Date.UTC(year, 0, 1)),
+      endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
+      accountIds: selectedAccountIds,
+      tagIds: selectedTagIds,
+      excludeEntryIds: representedInvestmentEntryIds,
+    });
 
     // Tag filter
     const filteredEntries = selectedTagIds
@@ -186,14 +203,14 @@ export async function GET(req: NextRequest) {
           const isRefund = e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
           if (isRefund) {
             row.income += effectiveAmount;
-            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: "保险回款" }), effectiveAmount);
+            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: SYSTEM_INSURANCE_RETURN_CATEGORY }), effectiveAmount);
             for (const et of e.EntryTag) {
               const existing = incomeByTag.get(et.tagId);
               incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
             }
           } else {
             row.expense += effectiveAmount;
-            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: "保险支出" }), effectiveAmount);
+            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: SYSTEM_INSURANCE_EXPENSE_CATEGORY }), effectiveAmount);
             for (const et of e.EntryTag) {
               const existing = expenseByTag.get(et.tagId);
               expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -216,6 +233,36 @@ export async function GET(req: NextRequest) {
             subtype: item.label, amount: item.amount, profit: signedProfit, profitRate: rate,
           });
         }
+      }
+    }
+
+    for (const e of wealthStatisticEntries) {
+      const d = e.date;
+      const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+      if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
+      const row = monthMap.get(m)!;
+      const amount = toNumber(e.amount);
+
+      for (const item of getInvestmentStatisticItems(e)) {
+        const signedProfit = item.type === "income" ? item.amount : -item.amount;
+        row.investPnL += signedProfit;
+        if (item.type === "income") {
+          addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        } else {
+          addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        }
+        const costBase = Math.abs(amount);
+        const rate = costBase > 0 ? signedProfit / costBase : 0;
+        pnlItems.push({
+          id: e.id,
+          date: d.toISOString().slice(0, 10),
+          fundCode: e.fundCode ?? "",
+          fundName: e.fundName ?? "",
+          subtype: item.label,
+          amount: item.amount,
+          profit: signedProfit,
+          profitRate: rate,
+        });
       }
     }
 

@@ -15,6 +15,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const accountId = url.searchParams.get("accountId");
     const fundCodeParam = url.searchParams.get("fundCode") || undefined;
+    const wealthProductIdParam = url.searchParams.get("wealthProductId") || undefined;
     const entryScope = url.searchParams.get("entryScope") === "account" ? "account" : "fund";
     const showCleared = url.searchParams.get("showCleared") === "1";
 
@@ -35,7 +36,7 @@ export async function GET(req: Request) {
 
     const selectedFundCode =
       account.investProductType === "wealth"
-        ? (fundCodeParam || "")
+        ? (wealthProductIdParam || fundCodeParam || "")
         : fundCodeParam || (positionDisplay.positions.length > 0
           ? [...positionDisplay.positions].sort((a, b) => b.marketValue - a.marketValue)[0]?.fundCode
           : (positionDisplay.clearedPositions.length > 0
@@ -63,7 +64,11 @@ export async function GET(req: Request) {
             });
     const fundEntries = entryScope === "account" || (account.investProductType === "wealth" && !selectedFundCode)
       ? allIndependentEntries
-      : allIndependentEntries.filter((entry: any) => entry.fundCode === selectedFundCode);
+      : allIndependentEntries.filter((entry: any) =>
+          account.investProductType === "wealth"
+            ? entry.wealthProductId === selectedFundCode
+            : entry.fundCode === selectedFundCode
+        );
 
     // Fee rates
     const feeRateRecords = await prisma.fundFeeRate.findMany({
@@ -108,6 +113,7 @@ export async function GET(req: Request) {
       allEntries: fundEntries,
       entryScope,
       selectedFundCode,
+      selectedWealthProductId: account.investProductType === "wealth" ? selectedFundCode : "",
       totalMarketValue,
       totalCost,
       totalHistoricalProfit,

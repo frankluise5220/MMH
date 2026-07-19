@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ReportDetailTable } from "@/components/ReportDetailTable";
 import { ReportResizableSplit } from "@/components/ReportResizableSplit";
@@ -13,6 +13,7 @@ import type {
   IncomeExpenseReport,
   IncomeExpenseReportDetails,
   IncomeExpenseReportDetailType,
+  IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
 
 type AccountOption = {
@@ -79,6 +80,30 @@ function activeDetailKey(details: IncomeExpenseReportDetails | null) {
   return `${details.type}:${details.categoryKey ?? "all"}:${details.columnKey ?? "all"}`;
 }
 
+function rowHasChildren(rows: IncomeExpenseReportRow[], index: number) {
+  return (rows[index + 1]?.depth ?? -1) > rows[index].depth;
+}
+
+function createVisibleReportRows(rows: IncomeExpenseReportRow[], expandedRows: Set<string>) {
+  const ancestors: IncomeExpenseReportRow[] = [];
+  return rows
+    .map((row, index) => {
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1].depth >= row.depth) {
+        ancestors.pop();
+      }
+      const visible = row.depth === 0 || ancestors.every((ancestor) => expandedRows.has(ancestor.key));
+      const item = {
+        row,
+        visible,
+        canToggle: rowHasChildren(rows, index),
+        expanded: expandedRows.has(row.key),
+      };
+      ancestors.push(row);
+      return item;
+    })
+    .filter((item) => item.visible);
+}
+
 function AmountButton({
   value,
   count,
@@ -132,6 +157,7 @@ export function IncomeExpenseReportClient({
   const [activeDetails, setActiveDetails] = useState<IncomeExpenseReportDetails | null>(report.details);
   const [detailEntries, setDetailEntries] = useState<DetailEntry[]>(initialDetailEntries);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [expandedCategoryRows, setExpandedCategoryRows] = useState<Set<string>>(() => new Set());
   const reportContextKey = useMemo(
     () => `${report.start}:${report.end}:${report.groupBy}:${accountId}`,
     [accountId, report.end, report.groupBy, report.start],
@@ -150,6 +176,7 @@ export function IncomeExpenseReportClient({
       setActiveDetails(report.details);
       setDetailEntries(initialDetailEntries);
       setLoadingKey(null);
+      setExpandedCategoryRows(new Set());
       return;
     }
 
@@ -162,6 +189,24 @@ export function IncomeExpenseReportClient({
     setDetailEntries(initialDetailEntries);
     setLoadingKey(null);
   }, [initialDetailEntries, report.details, reportContextKey]);
+
+  const visibleIncomeRows = useMemo(
+    () => createVisibleReportRows(report.income.rows, expandedCategoryRows),
+    [expandedCategoryRows, report.income.rows],
+  );
+  const visibleExpenseRows = useMemo(
+    () => createVisibleReportRows(report.expense.rows, expandedCategoryRows),
+    [expandedCategoryRows, report.expense.rows],
+  );
+
+  function toggleCategoryRow(rowKey: string) {
+    setExpandedCategoryRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }
 
   async function selectDetail(detail: DetailSelection) {
     const key = detailKey(detail);
@@ -191,6 +236,40 @@ export function IncomeExpenseReportClient({
     }
   }
 
+  const refreshActiveDetails = useCallback(async () => {
+    if (!activeDetails) return;
+    const detail: DetailSelection = {
+      type: activeDetails.type,
+      categoryKey: activeDetails.categoryKey ?? undefined,
+      columnKey: activeDetails.columnKey ?? undefined,
+    };
+    const requestSequence = ++detailRequestSequenceRef.current;
+    const key = detailKey(detail);
+    setLoadingKey(key);
+    try {
+      const params = buildDetailSearch(currentReportQuery, detail);
+      const res = await fetch(`/api/v1/reports/income-expense/detail?${params.toString()}`, { cache: "no-store" });
+      const data = (await res.json().catch(() => null)) as DetailResponse | null;
+      if (!res.ok || !data?.ok || !data.data) return;
+      if (requestSequence !== detailRequestSequenceRef.current) return;
+      if (!data.data.details) {
+        hasClientDetailSelectionRef.current = false;
+        clientDetailKeyRef.current = null;
+        setActiveDetails(null);
+        setDetailEntries([]);
+        window.history.replaceState(window.history.state, "", buildClearUrl(currentReportQuery));
+        return [];
+      }
+      hasClientDetailSelectionRef.current = true;
+      clientDetailKeyRef.current = activeDetailKey(data.data.details);
+      setActiveDetails(data.data.details);
+      setDetailEntries(data.data.entries ?? []);
+      return data.data.entries ?? [];
+    } finally {
+      if (requestSequence === detailRequestSequenceRef.current) setLoadingKey(null);
+    }
+  }, [activeDetails, currentReportQuery]);
+
   function clearDetails() {
     detailRequestSequenceRef.current += 1;
     hasClientDetailSelectionRef.current = false;
@@ -201,33 +280,44 @@ export function IncomeExpenseReportClient({
   }
 
   const hasDetails = Boolean(activeDetails);
+  const tableMinWidth = 240 + report.columns.length * 128 + 140;
 
   return (
     <ReportResizableSplit hasDetails={hasDetails}>
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
         <div className="min-h-0 flex-1 overflow-auto">
-          <table className="min-w-[960px] w-full border-separate border-spacing-0">
+          <table
+            className="w-full table-fixed border-separate border-spacing-0"
+            style={{ minWidth: `${tableMinWidth}px` }}
+          >
+            <colgroup>
+              <col style={{ width: "240px" }} />
+              {report.columns.map((column) => (
+                <col key={column.key} style={{ width: "128px" }} />
+              ))}
+              <col style={{ width: "140px" }} />
+            </colgroup>
             <thead className="bg-white">
               <tr>
-                <th className="sticky left-0 top-0 z-30 border-b border-slate-200 bg-white px-4 py-2 text-left text-xs font-semibold text-slate-600">分类</th>
+                <th className="sticky left-0 top-0 z-30 border-b border-r border-slate-200 bg-white px-4 py-2 text-left text-xs font-semibold text-slate-600">分类</th>
                 {report.columns.map((column) => (
                   <th
                     key={column.key}
-                    className="sticky top-0 z-20 border-b border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-600"
+                    className="sticky top-0 z-20 border-b border-r border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-600"
                   >
                     {column.label}
                   </th>
                 ))}
-                <th className="sticky top-0 z-20 border-b border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-700">合计</th>
+                <th className="sticky top-0 z-20 border-b border-r border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-700">合计</th>
               </tr>
             </thead>
             <tbody>
               <tr className="bg-emerald-50/70">
-                <td className="sticky left-0 z-10 border-b border-emerald-100 bg-emerald-50/70 px-4 py-2 text-sm font-semibold text-emerald-700">
+                <td className="sticky left-0 z-10 border-b border-r border-emerald-100 bg-emerald-50/70 px-4 py-2 text-sm font-semibold text-emerald-700">
                   收入合计
                 </td>
                 {report.income.periodTotals.map((value, index) => (
-                  <td key={`income-total-${index}`} className="border-b border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
+                  <td key={`income-total-${index}`} className="border-b border-r border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
                     <AmountButton
                       value={value}
                       count={report.income.periodCounts[index]}
@@ -238,7 +328,7 @@ export function IncomeExpenseReportClient({
                     />
                   </td>
                 ))}
-                <td className="border-b border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
+                <td className="border-b border-r border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
                   <AmountButton
                     value={report.income.total}
                     count={report.income.count}
@@ -249,16 +339,25 @@ export function IncomeExpenseReportClient({
                   />
                 </td>
               </tr>
-              {report.income.rows.map((row) => (
+              {visibleIncomeRows.map(({ row, canToggle, expanded }) => (
                 <tr key={row.key} className="hover:bg-slate-50">
                   <td
-                    className="sticky left-0 border-b border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700"
+                    className={`sticky left-0 border-b border-r border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700 ${canToggle ? "cursor-pointer select-none hover:bg-slate-50" : ""}`}
                     style={{ paddingLeft: `${16 + row.depth * 20}px` }}
+                    onClick={canToggle ? () => toggleCategoryRow(row.key) : undefined}
+                    onKeyDown={canToggle ? (event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      toggleCategoryRow(row.key);
+                    } : undefined}
+                    role={canToggle ? "button" : undefined}
+                    tabIndex={canToggle ? 0 : undefined}
+                    title={canToggle ? (expanded ? "点击收起下级分类" : "点击展开下级分类") : undefined}
                   >
-                    <span className={row.depth === 0 ? "font-semibold text-slate-800" : ""}>{row.name}</span>
+                    <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
                   </td>
                   {row.values.map((value, index) => (
-                    <td key={`${row.key}-${index}`} className="border-b border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
+                    <td key={`${row.key}-${index}`} className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
                       <AmountButton
                         value={value}
                         count={row.counts[index]}
@@ -269,7 +368,7 @@ export function IncomeExpenseReportClient({
                       />
                     </td>
                   ))}
-                  <td className="border-b border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
+                  <td className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
                     <AmountButton
                       value={row.total}
                       count={row.count}
@@ -283,11 +382,11 @@ export function IncomeExpenseReportClient({
               ))}
 
               <tr className="bg-rose-50/70">
-                <td className="sticky left-0 z-10 border-b border-rose-100 bg-rose-50/70 px-4 py-2 text-sm font-semibold text-rose-700">
+                <td className="sticky left-0 z-10 border-b border-r border-rose-100 bg-rose-50/70 px-4 py-2 text-sm font-semibold text-rose-700">
                   支出合计
                 </td>
                 {report.expense.periodTotals.map((value, index) => (
-                  <td key={`expense-total-${index}`} className="border-b border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
+                  <td key={`expense-total-${index}`} className="border-b border-r border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
                     <AmountButton
                       value={value}
                       count={report.expense.periodCounts[index]}
@@ -298,7 +397,7 @@ export function IncomeExpenseReportClient({
                     />
                   </td>
                 ))}
-                <td className="border-b border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
+                <td className="border-b border-r border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
                   <AmountButton
                     value={report.expense.total}
                     count={report.expense.count}
@@ -309,16 +408,25 @@ export function IncomeExpenseReportClient({
                   />
                 </td>
               </tr>
-              {report.expense.rows.map((row) => (
+              {visibleExpenseRows.map(({ row, canToggle, expanded }) => (
                 <tr key={row.key} className="hover:bg-slate-50">
                   <td
-                    className="sticky left-0 border-b border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700"
+                    className={`sticky left-0 border-b border-r border-slate-100 bg-white py-2 pr-3 text-xs text-slate-700 ${canToggle ? "cursor-pointer select-none hover:bg-slate-50" : ""}`}
                     style={{ paddingLeft: `${16 + row.depth * 20}px` }}
+                    onClick={canToggle ? () => toggleCategoryRow(row.key) : undefined}
+                    onKeyDown={canToggle ? (event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      toggleCategoryRow(row.key);
+                    } : undefined}
+                    role={canToggle ? "button" : undefined}
+                    tabIndex={canToggle ? 0 : undefined}
+                    title={canToggle ? (expanded ? "点击收起下级分类" : "点击展开下级分类") : undefined}
                   >
-                    <span className={row.depth === 0 ? "font-semibold text-slate-800" : ""}>{row.name}</span>
+                    <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
                   </td>
                   {row.values.map((value, index) => (
-                    <td key={`${row.key}-${index}`} className="border-b border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
+                    <td key={`${row.key}-${index}`} className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
                       <AmountButton
                         value={value}
                         count={row.counts[index]}
@@ -329,7 +437,7 @@ export function IncomeExpenseReportClient({
                       />
                     </td>
                   ))}
-                  <td className="border-b border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
+                  <td className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs font-medium tabular-nums text-slate-700">
                     <AmountButton
                       value={row.total}
                       count={row.count}
@@ -344,13 +452,13 @@ export function IncomeExpenseReportClient({
             </tbody>
             <tfoot className="sticky bottom-0 bg-slate-50">
               <tr>
-                <td className="sticky left-0 border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
+                <td className="sticky left-0 border-t border-r border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
                   净收支
                 </td>
                 {report.netPeriodTotals.map((value, index) => (
                   <td
                     key={`net-${index}`}
-                    className={`border-t border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(value, colorScheme)}`}
+                    className={`border-t border-r border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(value, colorScheme)}`}
                   >
                     <AmountButton
                       value={value}
@@ -362,7 +470,7 @@ export function IncomeExpenseReportClient({
                     />
                   </td>
                 ))}
-                <td className={`border-t border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(report.netTotal, colorScheme)}`}>
+                <td className={`border-t border-r border-slate-200 px-3 py-2 text-right text-xs font-semibold tabular-nums ${pnlColor(report.netTotal, colorScheme)}`}>
                   <AmountButton
                     value={report.netTotal}
                     count={report.income.count + report.expense.count}
@@ -396,6 +504,7 @@ export function IncomeExpenseReportClient({
             total={activeDetails.total}
             colorValue={activeDetails.type === "expense" ? -activeDetails.total : activeDetails.total}
             onClear={clearDetails}
+            onRefresh={refreshActiveDetails}
             resetKey={activeDetailKey(activeDetails)}
           />
         </div>

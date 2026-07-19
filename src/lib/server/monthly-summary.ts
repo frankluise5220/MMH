@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
@@ -67,6 +68,17 @@ export async function getMonthlySummary(
     },
     orderBy: { date: "asc" },
   });
+  const representedInvestmentEntryIds = new Set(
+    entries
+      .filter((entry) => entry.type === TransactionType.investment && getInvestmentStatisticItems(entry).length > 0)
+      .map((entry) => entry.id),
+  );
+  const wealthStatisticEntries = await loadWealthStatisticSourceEntries(ctx, {
+    start: new Date(Date.UTC(year, 0, 1)),
+    endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
+    accountIds,
+    excludeEntryIds: representedInvestmentEntryIds,
+  });
 
   const scopeAccountIds = accountIds ?? nonInvestAccountIds;
 
@@ -104,6 +116,15 @@ export async function getMonthlySummary(
         row.investPnL += item.type === "income" ? item.amount : -item.amount;
       }
       if (e.fundSubtype === "buy" && amount < 0) row.expense += Math.abs(amount);
+    }
+  }
+
+  for (const e of wealthStatisticEntries) {
+    const m = String(e.date.getUTCMonth() + 1).padStart(2, "0");
+    if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
+    const row = monthMap.get(m)!;
+    for (const item of getInvestmentStatisticItems(e)) {
+      row.investPnL += item.type === "income" ? item.amount : -item.amount;
     }
   }
 

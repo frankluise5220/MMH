@@ -1,4 +1,4 @@
-import { addDaysUtc, clampDay, startOfDayUtc } from "@/lib/date-utils";
+import { addDaysUtc, clampDay, startOfDayUtc, toNumber } from "@/lib/date-utils";
 
 export type CreditBillSummary = {
   month: string;
@@ -47,6 +47,15 @@ export type CreditCardCyclePersistRow = {
   isLocked: boolean;
   lockSource: string | null;
 };
+
+export function creditCardDisplayBalanceFromCurrentCycle(
+  cycle: { effectiveBill?: unknown; cumulativeRemain?: unknown; cumulativeOverpaid?: unknown } | null | undefined,
+  fallback = 0,
+) {
+  if (!cycle) return fallback;
+  if (cycle.effectiveBill != null) return toNumber(cycle.effectiveBill);
+  return toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid);
+}
 
 export function cycleForStatementMonth(
   statementMonth: string,

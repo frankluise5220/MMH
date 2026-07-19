@@ -495,6 +495,39 @@ export function TransactionFormModal({
     if (operation === "transfer") return false;
 
     if (editEntryId) {
+      if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
+        return false;
+      }
+      if (operation === "debt" && debtMode) {
+        const isDebtSourceFlow = debtMode === "borrow_in" || debtMode === "collect_in";
+        const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
+        const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
+        if (!cashAccountId) {
+          window.alert(isDebtSourceFlow ? "请选择资金到账账户" : "请选择资金来源账户");
+          return true;
+        }
+        const amountNumber = Number(amount);
+        if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+          window.alert("金额不正确");
+          return true;
+        }
+
+        window.dispatchEvent(new CustomEvent("mmh:debt:create", {
+          detail: {
+            requestId: requestId ?? makeRequestId(operation),
+            editEntryId,
+            mode: debtMode,
+            defaultDebtAccountId: debtAccountId,
+            defaultCashAccountId: cashAccountId,
+            defaultDate: date,
+            defaultPrincipal: amountNumber,
+            defaultNote: note,
+          },
+        }));
+        setOpen(false);
+        resetDraft();
+        return true;
+      }
       window.alert("这类目标账户需要用对应的专用记账窗口编辑，不能保存为普通转账。");
       return true;
     }
@@ -636,6 +669,10 @@ export function TransactionFormModal({
   function switchType(nextType: TxType) {
     const currentType = txType;
     if (nextType === "transfer" && currentType !== "transfer") {
+      setAmount((value) => {
+        const numericValue = Number(String(value).replace(/,/g, ""));
+        return Number.isFinite(numericValue) && numericValue !== 0 ? String(Math.abs(numericValue)) : value;
+      });
       const currentAccountId = accountId || defaultAccountId || "";
       if (currentType === "income") {
         setToAccountId(currentAccountId);
@@ -755,9 +792,7 @@ export function TransactionFormModal({
       const numericAmount = Number(detail.amount);
       setAmount(
         Number.isFinite(numericAmount) && numericAmount !== 0
-          ? detail.type === "expense" && numericAmount > 0
-            ? `-${Math.abs(numericAmount)}`
-            : String(Math.abs(numericAmount))
+          ? String(numericAmount)
           : "",
       );
       setNote(detail.note ?? "");
@@ -1223,7 +1258,7 @@ export function TransactionFormModal({
                           const numeric = Math.abs(Number(value));
                           setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
                         }
-                      }} placeholder="例如：88.50" label="金额" precision={2} />
+                      }} placeholder="流入填正，流出填负" label="金额" precision={2} />
                     </div>
                     {txType === "expense" ? (
                       <div className="space-y-1">

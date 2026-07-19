@@ -1184,7 +1184,14 @@ export default function EmailSettingsPage() {
         open={isOpen}
         onToggleOpen={() => setActivePreviewFilterColumn((current) => current === column ? null : column)}
         onClose={() => setActivePreviewFilterColumn(null)}
-        onChange={(values) => setPreviewColumnFilters((current) => ({ ...current, [column]: values }))}
+        onChange={(values) => setPreviewColumnFilters((current) => {
+          if (!values || values.length === 0) {
+            const next = { ...current };
+            delete next[column];
+            return next;
+          }
+          return { ...current, [column]: values };
+        })}
       />
     );
   }

@@ -15,7 +15,13 @@ import {
 
 /**
  * Converts stored cash-flow amounts into category-statistics amounts.
- * Normal expenses are stored as negative cash flow; expense refunds are positive.
+ * TxRecord.amount is an account-side cash-flow value: positive means inflow
+ * to accountId, negative means outflow from accountId. The transaction type
+ * chooses the report section only; it must not rewrite the stored sign.
+ *
+ * In reports, normal expense outflows are displayed as positive expense totals,
+ * while positive expense records reduce expense totals. Income records keep the
+ * same sign so negative income records can reduce income totals.
  */
 export function getIncomeExpenseStatisticAmount(
   type: TransactionType,
@@ -253,10 +259,13 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
   }
 
   if ((kind === "wealth" || kind === "deposit") && (subtype === "redeem" || subtype === "switch_out")) {
+    const hasRealizedProfit = entry.realizedProfit !== null && entry.realizedProfit !== undefined;
     const hasInterest = entry.depositInterest !== null && entry.depositInterest !== undefined;
     const hasFee = entry.fundFee !== null && entry.fundFee !== undefined;
-    if (hasInterest || hasFee) {
-      const netProfit = toNumber(entry.depositInterest) - toNumber(entry.fundFee);
+    if (hasRealizedProfit || hasInterest || hasFee) {
+      const netProfit = hasRealizedProfit
+        ? toNumber(entry.realizedProfit)
+        : toNumber(entry.depositInterest) - toNumber(entry.fundFee);
       if (netProfit !== 0) {
         const category = profitCategory(kind, netProfit);
         items.push({

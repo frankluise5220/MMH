@@ -27,7 +27,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-17-investment-action-categories-v7";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-19-insurance-stat-categories-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -56,6 +56,8 @@ export const SYSTEM_DEPOSIT_FEE_CATEGORY = "存款手续费";
 export const SYSTEM_INVESTMENT_DIVIDEND_CATEGORY = "投资分红";
 export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
 export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
+export const SYSTEM_INSURANCE_RETURN_CATEGORY = "保险回款";
+export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
 
 const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   income: new Set([
@@ -65,6 +67,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "股票收益",
     SYSTEM_WEALTH_PROFIT_CATEGORY,
     SYSTEM_DEPOSIT_INTEREST_CATEGORY,
+    SYSTEM_INSURANCE_RETURN_CATEGORY,
     "股息分红",
     SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
   ]),
@@ -75,6 +78,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "贷款本金",
     "贷款利息",
     "贷款手续费",
+    SYSTEM_INSURANCE_EXPENSE_CATEGORY,
     SYSTEM_INVESTMENT_LOSS_CATEGORY,
     SYSTEM_FUND_LOSS_CATEGORY,
     SYSTEM_WEALTH_LOSS_CATEGORY,
@@ -229,7 +233,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "金融保险",
-    children: ["保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
+    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
   },
   {
     type: "expense",
@@ -275,6 +279,12 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "income",
     name: "投资收入",
     children: ["投资收益", "利息", "股息分红", SYSTEM_FUND_PROFIT_CATEGORY, "股票收益", SYSTEM_WEALTH_PROFIT_CATEGORY, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "租金收入"],
+  },
+  {
+    type: "income",
+    name: SYSTEM_INSURANCE_RETURN_CATEGORY,
+    isSystem: true,
+    children: [],
   },
   {
     type: "income",

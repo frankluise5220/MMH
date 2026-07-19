@@ -2657,7 +2657,14 @@ export default function BatchImportPage() {
         open={isOpen}
         onToggleOpen={() => setActiveFilterColumn((current) => current === column ? null : column)}
         onClose={() => setActiveFilterColumn(null)}
-        onChange={(values) => setColumnFilters((prev) => ({ ...prev, [column]: values }))}
+        onChange={(values) => setColumnFilters((prev) => {
+          if (!values || values.length === 0) {
+            const next = { ...prev };
+            delete next[column];
+            return next;
+          }
+          return { ...prev, [column]: values };
+        })}
       />
     );
   };

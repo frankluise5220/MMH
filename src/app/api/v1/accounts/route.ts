@@ -21,6 +21,7 @@ import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import {
   accountSupportsNumberMasked,
   assertAccountIdentityUnique,
@@ -449,7 +450,7 @@ export async function GET(req: Request) {
         accountId: { in: rows.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
         isCurrentCycle: true,
       },
-      select: { accountId: true, cumulativeRemain: true, cumulativeOverpaid: true },
+      select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
     }),
     computeInsuranceAccountDisplayBalances(
       rows.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
@@ -459,7 +460,7 @@ export async function GET(req: Request) {
   const currentCreditBalanceByAccountId = new Map(
     currentCreditCycles.map((cycle) => [
       cycle.accountId,
-      toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid),
+      creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
 

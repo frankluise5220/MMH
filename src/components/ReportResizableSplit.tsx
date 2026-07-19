@@ -4,13 +4,12 @@ import { Children, useEffect, useRef, useState, type PointerEvent, type ReactNod
 
 const STORAGE_KEY = "mmh:reports:summary-height";
 const DEFAULT_HEIGHT = 440;
-const MIN_HEIGHT = 260;
-const DETAIL_RESERVED_HEIGHT = 220;
+const MIN_PANE_HEIGHT = 104;
 
 function heightBounds(availableHeight: number) {
-  const boundedHeight = Math.max(MIN_HEIGHT, availableHeight);
-  const minHeight = Math.max(MIN_HEIGHT, Math.round(boundedHeight / 2));
-  const maxHeight = Math.max(minHeight, boundedHeight - DETAIL_RESERVED_HEIGHT);
+  const boundedHeight = Math.max(MIN_PANE_HEIGHT, availableHeight);
+  const minHeight = Math.min(MIN_PANE_HEIGHT, boundedHeight);
+  const maxHeight = Math.max(minHeight, boundedHeight - MIN_PANE_HEIGHT);
   return { minHeight, maxHeight };
 }
 
@@ -28,7 +27,7 @@ export function ReportResizableSplit({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [upperHeight, setUpperHeight] = useState(DEFAULT_HEIGHT);
-  const [minimumUpperHeight, setMinimumUpperHeight] = useState(MIN_HEIGHT);
+  const [minimumUpperHeight, setMinimumUpperHeight] = useState(MIN_PANE_HEIGHT);
   const sections = Children.toArray(children);
   const upper = sections[0] ?? null;
   const lower = sections[1] ?? null;
@@ -89,7 +88,7 @@ export function ReportResizableSplit({
   }
 
   function adjustByKeyboard(delta: number) {
-    const availableHeight = containerRef.current?.clientHeight ?? MIN_HEIGHT;
+    const availableHeight = containerRef.current?.clientHeight ?? MIN_PANE_HEIGHT;
     setUpperHeight((current) => {
       const next = clampHeight(current + delta, availableHeight);
       window.localStorage.setItem(STORAGE_KEY, String(next));

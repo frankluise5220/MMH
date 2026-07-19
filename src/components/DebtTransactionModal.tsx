@@ -156,6 +156,15 @@ function rawDebtObjectId(value: string) {
   return match?.[1] ?? value;
 }
 
+function debtDirectionForMode(mode: DebtMode): "payable" | "receivable" {
+  return mode === "borrow_in" || mode === "repay_out" || mode === "prepay_out" ? "payable" : "receivable";
+}
+
+function canSwitchDebtEditMode(currentMode: DebtMode, nextMode: DebtMode) {
+  if (currentMode === nextMode) return true;
+  return canCreateDebtItemForMode(currentMode) && canCreateDebtItemForMode(nextMode);
+}
+
 function normalizeDebtObjectValue(value: string | undefined, data?: NestedFieldData) {
   const id = String(value ?? "").trim();
   if (!id || isDebtObjectRef(id)) return id;
@@ -361,12 +370,18 @@ export function DebtTransactionModal({
   }
 
   const resetDraft = useCallback(() => {
+    const normalizedDefaultObject = normalizeDebtObjectValue(defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData);
+    const defaultDebtAccount = defaultDebtAccountId
+      ? localDebtAccounts.find((account) => account.id === defaultDebtAccountId)
+      : undefined;
+    const defaultAccountObject = debtObjectValueForAccount(defaultDebtAccount);
+    const nextDebtObjectId = normalizedDefaultObject || defaultAccountObject;
     setMode("borrow_in");
     setLoanFundingMode("cash_disbursement");
     setEditingEntryId("");
     setDate(today);
-    setDebtAccountId(defaultDebtAccountId ?? localDebtAccounts[0]?.id ?? "");
-    setDebtInstitutionId(normalizeDebtObjectValue(defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData));
+    setDebtInstitutionId(nextDebtObjectId);
+    setDebtAccountId(nextDebtObjectId && defaultDebtAccountId ? defaultDebtAccountId : "");
     setDebtItemName("");
     setCashAccountId(defaultCashAccountId ?? cashAccounts[0]?.id ?? "");
     setPrincipal("");
@@ -426,19 +441,26 @@ export function DebtTransactionModal({
         defaultMortgageLprDiscount?: number | null;
         defaultLoanRateAdjustments?: LoanRateAdjustment[];
         defaultLoanFundingMode?: LoanFundingMode;
+        defaultNote?: string | null;
       }>).detail;
       resetDraft();
       if (detail?.editEntryId) setEditingEntryId(detail.editEntryId);
       if (detail?.mode) setMode(detail.mode);
       if (detail?.defaultLoanFundingMode) setLoanFundingMode(detail.defaultLoanFundingMode);
       if (detail?.defaultDate) setDate(detail.defaultDate);
-      if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
+      const eventDebtAccount = detail?.defaultDebtAccountId
+        ? localDebtAccounts.find((account) => account.id === detail.defaultDebtAccountId)
+        : undefined;
+      const eventDebtObject = debtObjectValueForAccount(eventDebtAccount);
       if (detail?.mode && !canCreateDebtItemForMode(detail.mode)) {
         setDebtInstitutionId("");
       } else if (detail?.defaultDebtInstitutionId) {
         setDebtInstitutionId(normalizeDebtObjectValue(detail.defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData));
-      } else if (detail?.mode === "lend_out" && detail?.defaultDebtAccountId) {
-        setDebtInstitutionId("");
+      } else if (eventDebtObject) {
+        setDebtInstitutionId(eventDebtObject);
+      }
+      if (detail?.defaultDebtAccountId && (!canCreateDebtItemForMode(detail?.mode ?? "borrow_in") || detail.defaultDebtInstitutionId || eventDebtObject)) {
+        setDebtAccountId(detail.defaultDebtAccountId);
       }
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
       if (detail?.defaultPrincipal != null) {
@@ -457,6 +479,7 @@ export function DebtTransactionModal({
         }
       }
       if (detail?.defaultPrepayStrategy) setPrepayStrategy(detail.defaultPrepayStrategy);
+      if (detail?.defaultNote != null) setNote(String(detail.defaultNote));
       if (detail?.mode === "repay_out" || detail?.mode === "prepay_out") {
         setRepaymentLprCheck({
           mortgageLprDiscount: detail.defaultMortgageLprDiscount ?? null,
@@ -468,7 +491,7 @@ export function DebtTransactionModal({
     }
     window.addEventListener("mmh:debt:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:debt:create", onCreate as EventListener);
-  }, [defaultCashAccountId, defaultDebtAccountId, localNestedFieldData, nestedFieldData, resetDraft]);
+  }, [defaultCashAccountId, defaultDebtAccountId, localDebtAccounts, localNestedFieldData, nestedFieldData, resetDraft]);
   useCloseOnNavigation(open, () => {
     setOpen(false);
     resetDraft();
@@ -484,6 +507,17 @@ export function DebtTransactionModal({
     if (mode !== "prepay_out" || prepayTotalManual) return;
     setPrepayTotal(prepayComputedTotal);
   }, [mode, prepayComputedTotal, prepayTotalManual]);
+
+  useEffect(() => {
+    if (!!editingEntryId || !canCreateDebtItemForMode(mode) || !isDebtObjectRef(debtInstitutionId)) return;
+    const rawId = rawDebtObjectId(debtInstitutionId);
+    const existingAccount = localDebtAccounts.find((account) => {
+      if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
+      if (account.debtDirection !== debtDirectionForMode(mode)) return false;
+      return account.institutionId === rawId;
+    });
+    setDebtAccountId(existingAccount?.id ?? "");
+  }, [debtInstitutionId, editingEntryId, localDebtAccounts, mode]);
 
   function applyPrepayTotalDraft(options?: { alertOnInvalid?: boolean }) {
     if (mode !== "prepay_out" || !prepayTotal.trim()) return penalty;
@@ -517,28 +551,48 @@ export function DebtTransactionModal({
     setPrepayTotalManual(true);
   }
 
+  function findDebtAccountForObject(objectValue: string, direction: "payable" | "receivable") {
+    if (!isDebtObjectRef(objectValue)) return null;
+    const rawId = rawDebtObjectId(objectValue);
+    return localDebtAccounts.find((account) => {
+      if (objectValue.startsWith("counterparty:")) return account.counterpartyId === rawId;
+      if (account.debtDirection !== direction) return false;
+      return account.institutionId === rawId;
+    }) ?? null;
+  }
+
+  function debtObjectValueForAccount(account: AccountOption | undefined) {
+    if (!account) return "";
+    if (account.counterpartyId) return `counterparty:${account.counterpartyId}`;
+    if (account.institutionId) return `institution:${account.institutionId}`;
+    return "";
+  }
+
+  function handleDebtAccountChange(id: string) {
+    setDebtAccountId(id);
+    setDebtItemName("");
+    if (!id) return;
+    const account = localDebtAccounts.find((item) => item.id === id);
+    const objectValue = debtObjectValueForAccount(account);
+    if (objectValue) setDebtInstitutionId(objectValue);
+  }
+
   function handleDebtItemOrObjectChange(id: string) {
-    if (mode === "lend_out" && id && !isDebtObjectRef(id)) {
-      setDebtAccountId(id);
-      setDebtInstitutionId("");
-      setDebtItemName("");
+    if (id && !isDebtObjectRef(id)) {
+      handleDebtAccountChange(id);
       return;
     }
+    const existingAccount = findDebtAccountForObject(id, debtDirectionForMode(mode));
     setDebtInstitutionId(id);
-    setDebtAccountId("");
+    setDebtAccountId(existingAccount?.id ?? "");
     setDebtItemName("");
   }
 
   function handleModeSelect(nextMode: DebtMode) {
+    if (editingEntryId && !canSwitchDebtEditMode(mode, nextMode)) return;
     setMode(nextMode);
     if (!canCreateDebtItemForMode(nextMode)) {
       setDebtInstitutionId("");
-    }
-    if (nextMode === "lend_out") {
-      const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
-      if (debtAccountId && selectedDebtAccount?.debtDirection !== "receivable") {
-        setDebtAccountId("");
-      }
     }
   }
 
@@ -635,7 +689,7 @@ export function DebtTransactionModal({
     formData.set("mode", mode);
     formData.set("loanFundingMode", loanFundingMode);
     formData.set("date", date);
-    const shouldUseDebtObject = !editingEntryId && canCreateDebtItemForMode(mode) && !!debtInstitutionId;
+    const shouldUseDebtObject = !editingEntryId && canCreateDebtItemForMode(mode) && !!debtInstitutionId && !debtAccountId;
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
     formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
     formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
@@ -777,18 +831,24 @@ export function DebtTransactionModal({
       .map((account) => ({ id: account.id, label: account.label, subLabel: account.subLabel })),
     [localDebtAccounts, mode],
   );
-  const lendOutSelectionOptions = useMemo(
-    () => mergeSmartSelectOptions(
-      debtAccountOptions.length > 0
-        ? [{ id: "debt-existing-receivable-header", label: "已有借出项", isHeader: true }, ...debtAccountOptions]
-        : [],
-      visibleDebtObjectOptions,
-    ),
-    [debtAccountOptions, visibleDebtObjectOptions],
-  );
-  const borrowInSelectionOptions = useMemo(
-    () => visibleDebtObjectOptions,
-    [visibleDebtObjectOptions],
+  const debtObjectAccountOptions: SmartSelectOption[] = useMemo(
+    () => localDebtAccounts
+      .filter((account) => {
+        if (!canCreateDebtItem) return debtAccountOptions.some((option) => option.id === account.id);
+        if (!isDebtObjectRef(debtInstitutionId)) return false;
+        const rawId = rawDebtObjectId(debtInstitutionId);
+        if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
+        return account.institutionId === rawId;
+      })
+      .map((account) => {
+        const directionLabel = account.debtDirection === "payable" ? "借入" : account.debtDirection === "receivable" ? "借出" : "未定方向";
+        return {
+          id: account.id,
+          label: account.label,
+          subLabel: [directionLabel, account.subLabel].filter(Boolean).join(" · "),
+        };
+      }),
+    [canCreateDebtItem, debtAccountOptions, debtInstitutionId, localDebtAccounts],
   );
   const debtItemSuggestions = useMemo(
     () => Array.from(new Set(localDebtAccounts
@@ -804,20 +864,7 @@ export function DebtTransactionModal({
   );
   const selectedDebtObjectName = debtObjectById.get(debtInstitutionId)?.name?.trim() || "往来对象";
   const editingExistingDebtItem = !!editingEntryId && canCreateDebtItem;
-  const selectedExistingLendOutItem = mode === "lend_out" && !!debtAccountId && !debtInstitutionId;
-  const selectedExistingDebtItem = editingExistingDebtItem || selectedExistingLendOutItem;
-  const debtSelectorValue = editingExistingDebtItem
-    ? debtAccountId
-    : mode === "lend_out"
-      ? (debtInstitutionId || debtAccountId)
-      : debtInstitutionId;
-  const debtSelectorOptions = editingExistingDebtItem
-    ? debtAccountOptions
-    : mode === "borrow_in"
-      ? borrowInSelectionOptions
-      : mode === "lend_out"
-        ? lendOutSelectionOptions
-        : debtAccountOptions;
+  const selectedExistingDebtItem = editingExistingDebtItem || !!debtAccountId;
   const disabled = cashAccounts.length === 0;
   const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
   const isInterestFreeRepaymentMethod = repaymentMethod === INTEREST_FREE_REPAYMENT_METHOD;
@@ -917,7 +964,7 @@ export function DebtTransactionModal({
                           key={item}
                           type="button"
                           onClick={() => handleModeSelect(item)}
-                          disabled={!!editingEntryId && item !== mode}
+                          disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
                           className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
                         >
                           {MODE_LABELS[item]}
@@ -952,97 +999,63 @@ export function DebtTransactionModal({
                         <div className="form-label">{mode === "borrow_in" ? (loanFundingMode === "financed_purchase" ? "发生日期" : "入账日期") : "日期"}</div>
                         <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
-                      {showPrepayment ? (
-                        <div className="space-y-1">
-                          <div className="form-label">{cashAccountLabel}</div>
-                          <SmartSelect
-                            mode="single"
-                            value={cashAccountId}
-                            onChange={setCashAccountId}
-                            options={visibleCashOptions}
-                            placeholder="请选择"
-                            behavior={{
-                              hierarchy: "auto",
-                              search: "auto",
-                              clearable: false,
-                              headerExtra: cashOwnerCycleButton,
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <div className="form-label">
-                            {editingExistingDebtItem
-                              ? (mode === "borrow_in" ? "借款项" : "借出项")
-                              : canCreateDebtItem
-                                ? (mode === "lend_out" ? "往来对象 / 借出项" : "往来对象")
-                                : mode === "repay_out"
-                                  ? "借款项"
-                                  : "借出项"}
-                          </div>
-                          {canCreateDebtItem ? (
-                            <SmartSelect
-                              mode="single"
-                              value={debtSelectorValue}
-                              onChange={editingExistingDebtItem ? setDebtAccountId : handleDebtItemOrObjectChange}
-                              options={debtSelectorOptions}
-                              placeholder={editingExistingDebtItem
-                                ? (mode === "borrow_in" ? "请选择已有借款项" : "请选择已有借出项")
-                                : mode === "lend_out"
-                                  ? "请选择往来对象或已有借出项"
-                                  : "请选择"}
-                              onCreateClick={editingExistingDebtItem ? undefined : () => { void openDebtObjectCreate(); }}
-                              createLabel={editingExistingDebtItem ? undefined : "新增往来对象"}
-                              behavior={{
-                                hierarchy: false,
-                                search: true,
-                                clearable: false,
-                                minDropdownWidth: 320,
-                              }}
-                            />
-                          ) : (
-                            <SmartSelect
-                              mode="single"
-                              value={debtAccountId}
-                              onChange={setDebtAccountId}
-                              options={debtAccountOptions}
-                              placeholder={mode === "repay_out" ? "请选择已有借款项" : "请选择已有借出项"}
-                              behavior={{
-                                hierarchy: false,
-                                search: true,
-                                clearable: false,
-                                minDropdownWidth: 360,
-                              }}
-                            />
-                          )}
-                        </div>
-                      )}
+                      <div className="space-y-1">
+                        <div className="form-label">{cashAccountLabel}</div>
+                        <SmartSelect
+                          mode="single"
+                          value={cashAccountId}
+                          onChange={setCashAccountId}
+                          options={visibleCashOptions}
+                          placeholder="请选择"
+                          behavior={{
+                            hierarchy: "auto",
+                            search: "auto",
+                            clearable: false,
+                            headerExtra: cashOwnerCycleButton,
+                          }}
+                        />
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       {canCreateDebtItem ? (
                         <div className="space-y-1">
-                          <div className="form-label">款项内容 <span className="text-slate-400">可选</span></div>
-                          <input
-                            value={debtItemName}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              setDebtItemName(value);
-                              if (mode === "borrow_in" && /(车贷|汽车贷款|购车)/.test(value)) {
-                                setLoanFundingMode("financed_purchase");
-                              }
+                          <div className="form-label">往来对象</div>
+                          <SmartSelect
+                            mode="single"
+                            value={debtInstitutionId}
+                            onChange={handleDebtItemOrObjectChange}
+                            options={visibleDebtObjectOptions}
+                            placeholder="请选择往来对象"
+                            onCreateClick={() => { void openDebtObjectCreate(); }}
+                            createLabel="新增往来对象"
+                            behavior={{
+                              hierarchy: false,
+                              search: true,
+                              clearable: false,
+                              minDropdownWidth: 320,
                             }}
-                            list={debtItemListId}
-                            disabled={selectedExistingDebtItem}
-                            placeholder={selectedExistingDebtItem ? "已有项不需要填写" : `不填则生成“${selectedDebtObjectName}的往来款”`}
-                            className="form-input"
                           />
-                          <datalist id={debtItemListId}>
-                            {debtItemSuggestions.map((name) => <option key={name} value={name} />)}
-                          </datalist>
                         </div>
                       ) : null}
-                      {showPrepayment ? (
+                      {canCreateDebtItem ? (
+                        <div className="space-y-1">
+                          <div className="form-label">往来账户</div>
+                          <SmartSelect
+                            mode="single"
+                            value={debtAccountId}
+                            onChange={handleDebtAccountChange}
+                            options={debtObjectAccountOptions}
+                            placeholder={debtInstitutionId ? "保存时自动复用或新建" : "请先选择往来对象"}
+                            behavior={{
+                              hierarchy: false,
+                              search: true,
+                              clearable: true,
+                              minDropdownWidth: 360,
+                            }}
+                          />
+                        </div>
+                      ) : showPrepayment ? (
                         <div className="col-span-2 space-y-1">
                           <div className="form-label">借款项</div>
                           <SmartSelect
@@ -1060,24 +1073,47 @@ export function DebtTransactionModal({
                           />
                         </div>
                       ) : (
-                      <div className={canCreateDebtItem ? "space-y-1" : "col-span-2 space-y-1"}>
-                        <div className="form-label">{cashAccountLabel}</div>
-                        <SmartSelect
-                          mode="single"
-                          value={cashAccountId}
-                          onChange={setCashAccountId}
-                          options={visibleCashOptions}
-                          placeholder="请选择"
-                          behavior={{
-                            hierarchy: "auto",
-                            search: "auto",
-                            clearable: false,
-                            headerExtra: cashOwnerCycleButton,
-                          }}
-                        />
-                      </div>
+                        <div className="col-span-2 space-y-1">
+                          <div className="form-label">{mode === "repay_out" ? "借款项" : "借出项"}</div>
+                          <SmartSelect
+                            mode="single"
+                            value={debtAccountId}
+                            onChange={setDebtAccountId}
+                            options={debtAccountOptions}
+                            placeholder={mode === "repay_out" ? "请选择已有借款项" : "请选择已有借出项"}
+                            behavior={{
+                              hierarchy: false,
+                              search: true,
+                              clearable: false,
+                              minDropdownWidth: 360,
+                            }}
+                          />
+                        </div>
                       )}
                     </div>
+
+                    {canCreateDebtItem && !debtAccountId ? (
+                      <div className="space-y-1">
+                        <div className="form-label">新账户名称 <span className="text-slate-400">可选</span></div>
+                          <input
+                            value={debtItemName}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setDebtItemName(value);
+                              if (mode === "borrow_in" && /(车贷|汽车贷款|购车)/.test(value)) {
+                                setLoanFundingMode("financed_purchase");
+                              }
+                            }}
+                            list={debtItemListId}
+                            disabled={selectedExistingDebtItem}
+                            placeholder={`不填则生成“${selectedDebtObjectName}的往来款”`}
+                            className="form-input"
+                          />
+                          <datalist id={debtItemListId}>
+                            {debtItemSuggestions.map((name) => <option key={name} value={name} />)}
+                          </datalist>
+                      </div>
+                    ) : null}
 
                     {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
