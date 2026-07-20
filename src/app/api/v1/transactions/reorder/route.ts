@@ -37,6 +37,28 @@ type ReorderRow = {
   fundArrivalDate: Date | null;
 };
 
+type LinkedWealthForReorder = {
+  id: string;
+  action: string;
+  arrivalDate: Date | null;
+  cashAccountId: string | null;
+  deletedAt: Date | null;
+};
+
+function isWealthCashReceiptAction(action?: string | null) {
+  return action === "redeem" || action === "dividend_cash";
+}
+
+function rowWithLinkedWealthDisplayDate(row: ReorderRow, wealthRow?: LinkedWealthForReorder | null): ReorderRow {
+  if (!wealthRow || wealthRow.deletedAt || !isWealthCashReceiptAction(wealthRow.action)) return row;
+  return {
+    ...row,
+    fundSubtype: wealthRow.action,
+    fundArrivalDate: wealthRow.arrivalDate ?? row.fundArrivalDate,
+    toAccountId: wealthRow.cashAccountId ?? row.toAccountId,
+  };
+}
+
 function localDateKey(date: Date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -118,11 +140,35 @@ export async function POST(req: Request) {
         AND ("accountId" = ${accountId} OR "toAccountId" = ${accountId})
     `;
 
-    const targetDay = localDateKey(getDetailEntryDisplayDate(target, accountId));
+    const rowIds = rows.map((row) => row.id);
+    const wealthLinks = rowIds.length > 0
+      ? await prisma.entryBusinessLink.findMany({
+          where: {
+            householdId,
+            deletedAt: null,
+            wealthTransactionId: { not: null },
+            OR: [
+              { cashEntryId: { in: rowIds } },
+              { businessEntryId: { in: rowIds } },
+            ],
+          },
+          include: { WealthTransaction: true },
+        })
+      : [];
+    const linkedWealthByEntryId = new Map<string, LinkedWealthForReorder>();
+    for (const link of wealthLinks) {
+      const wealthRow = link.WealthTransaction;
+      if (!wealthRow) continue;
+      if (link.cashEntryId) linkedWealthByEntryId.set(link.cashEntryId, wealthRow);
+      if (link.businessEntryId) linkedWealthByEntryId.set(link.businessEntryId, wealthRow);
+    }
+    const displayRowOf = (row: ReorderRow) => rowWithLinkedWealthDisplayDate(row, linkedWealthByEntryId.get(row.id) ?? null);
+
+    const targetDay = localDateKey(getDetailEntryDisplayDate(displayRowOf(target), accountId));
     const sameDayRows = rows
-      .filter((row) => localDateKey(getDetailEntryDisplayDate(row, accountId)) === targetDay)
+      .filter((row) => localDateKey(getDetailEntryDisplayDate(displayRowOf(row), accountId)) === targetDay)
       .filter((row) => !isBalanceAnchor(row))
-      .sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+      .sort((a, b) => compareDetailEntriesDesc(displayRowOf(a), displayRowOf(b), accountId));
 
     const currentIndex = sameDayRows.findIndex((row) => row.id === entryId);
     if (currentIndex < 0) {

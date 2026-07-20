@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState } from "react";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export function DeleteEntryButton({ entryId, entryName }: { entryId: string; entryName?: string }) {
@@ -16,7 +16,7 @@ export function DeleteEntryButton({ entryId, entryName }: { entryId: string; ent
       });
       if (data.ok) {
         const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
-        dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+        dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       } else {
         if (data.error !== "已取消删除") alert(data.error ?? "删除失败");
       }

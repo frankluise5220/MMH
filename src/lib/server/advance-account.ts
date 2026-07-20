@@ -11,7 +11,7 @@ type ResolveAdvanceAccountInput = {
 export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanceAccountInput) {
   const cashAccount = await tx.account.findFirst({
     where: { id: input.cashAccountId, householdId: input.householdId, isActive: true },
-    select: { id: true, groupId: true, currency: true },
+    select: { id: true, currency: true },
   });
   if (!cashAccount) throw new Error("资金账户不存在或已停用");
 
@@ -43,7 +43,6 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
   const existing = await tx.account.findFirst({
     where: {
       householdId: input.householdId,
-      groupId: cashAccount.groupId,
       kind: "loan",
       debtDirection: "receivable",
       isPlaceholder: { not: true },
@@ -61,13 +60,25 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
     return { account, objectId, objectName };
   }
 
+  const defaultGroup =
+    (await tx.accountGroup.findFirst({
+      where: { householdId: input.householdId, name: "未指定" },
+      select: { id: true },
+    })) ??
+    (await tx.accountGroup.findFirst({
+      where: { householdId: input.householdId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: { id: true },
+    }));
+  if (!defaultGroup) throw new Error("未找到默认账户分组");
+
   const account = await tx.account.create({
     data: {
       name: objectName,
       kind: "loan",
       debtDirection: "receivable",
       currency: cashAccount.currency,
-      groupId: cashAccount.groupId,
+      groupId: defaultGroup.id,
       counterpartyId: counterparty?.id ?? null,
       institutionId: institution?.id ?? null,
       householdId: input.householdId,

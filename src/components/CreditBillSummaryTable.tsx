@@ -457,92 +457,6 @@ export function CreditBillSummaryTable({
 
   return (
     <div className={["panel-surface overflow-hidden", fillHeight ? "flex h-full min-h-0 flex-col" : "", className ?? ""].filter(Boolean).join(" ")}>
-      <div className="panel-header">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
-          <Link href={buildHref((q) => q.set("billMonth", "all"))} prefetch={false} scroll={false} className={`h-6 px-1.5 rounded border text-xs flex items-center ${selectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
-            {t("creditBill.all")}
-          </Link>
-          {totalPages > 1 ? (
-            <div className="ml-1 flex items-center gap-0.5">
-              <button type="button" onClick={() => setPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={t("creditBill.firstPage")}>
-                <ChevronsLeft className="h-3.5 w-3.5" />
-              </button>
-              <button type="button" onClick={() => setPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={t("creditBill.prevPage")}>
-                <ChevronLeft className="h-3 w-3" />
-              </button>
-              <span className="px-1 text-xs text-slate-500">{safePage}/{totalPages}</span>
-              <button type="button" onClick={() => setPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={t("creditBill.nextPage")}>
-                <ChevronRight className="h-3 w-3" />
-              </button>
-              <button type="button" onClick={() => setPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={t("creditBill.lastPage")}>
-                <ChevronsRight className="h-3 w-3" />
-              </button>
-            </div>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <CreditBillMailImportButton
-            accountId={accountId}
-            accountName={accountName}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              const next = !showRecentBillCycles;
-              setCreditBillShowRecentCyclesPreference(next);
-              navigateWithQuery((q) => {
-                if (next) q.delete("billMonthsLimit");
-                else q.set("billMonthsLimit", "all");
-              });
-            }}
-            className={`h-7 px-2 rounded-md border text-xs flex items-center ${
-              showRecentBillCycles
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-            }`}
-            title={showRecentBillCycles ? t("creditBill.recentTitle") : t("creditBill.allBillsTitle")}
-          >
-            {showRecentBillCycles ? t("creditBill.recent10") : t("creditBill.allBills")}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const next = !hideZeroBills;
-              setCreditBillHideZeroPreference(next);
-              navigateWithQuery((q) => {
-                if (next) q.set("hideZeroBills", "1");
-                else q.delete("hideZeroBills");
-              });
-            }}
-            className={`h-7 px-2 rounded-md border text-xs flex items-center ${
-              hideZeroBills
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            {t("creditBill.hideZero")}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const next = !hideSettledBills;
-              setCreditBillHideSettledPreference(next);
-              navigateWithQuery((q) => {
-                if (next) q.set("hideSettledBills", "1");
-                else q.delete("hideSettledBills");
-              });
-            }}
-            className={`h-7 px-2 rounded-md border text-xs flex items-center ${
-              hideSettledBills
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            {t("creditBill.hideSettled")}
-          </button>
-        </div>
-      </div>
       <div className={fillHeight ? "min-h-0 flex-1" : "min-h-0"}>
         <AdvancedDataTable
           storageKey="mmh_credit_bill_summary_table_v1"
@@ -554,7 +468,95 @@ export function CreditBillSummaryTable({
           fillHeight={fillHeight}
           minTableWidth={760}
           toolbarMode="custom"
-          toolbarLeftContent={<span>共 {localRows.length} 期</span>}
+          toolbarLeftContent={(
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
+              <Link href={buildHref((q) => q.set("billMonth", "all"))} prefetch={false} scroll={false} className={`flex h-6 items-center rounded border px-1.5 text-xs ${selectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
+                {t("creditBill.all")}
+              </Link>
+              <span className="whitespace-nowrap text-xs text-slate-500">共 {localRows.length} 期</span>
+              {totalPages > 1 ? (
+                <div className="ml-1 flex items-center gap-0.5">
+                  <button type="button" onClick={() => setPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={t("creditBill.firstPage")}>
+                    <ChevronsLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <button type="button" onClick={() => setPage(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={t("creditBill.prevPage")}>
+                    <ChevronLeft className="h-3 w-3" />
+                  </button>
+                  <span className="px-1 text-xs text-slate-500">{safePage}/{totalPages}</span>
+                  <button type="button" onClick={() => setPage(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={t("creditBill.nextPage")}>
+                    <ChevronRight className="h-3 w-3" />
+                  </button>
+                  <button type="button" onClick={() => setPage(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={t("creditBill.lastPage")}>
+                    <ChevronsRight className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          )}
+          toolbarRightContent={(
+            <div className="flex min-w-0 items-center gap-2">
+              <CreditBillMailImportButton
+                accountId={accountId}
+                accountName={accountName}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showRecentBillCycles;
+                  setCreditBillShowRecentCyclesPreference(next);
+                  navigateWithQuery((q) => {
+                    if (next) q.delete("billMonthsLimit");
+                    else q.set("billMonthsLimit", "all");
+                  });
+                }}
+                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
+                  showRecentBillCycles
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+                title={showRecentBillCycles ? t("creditBill.recentTitle") : t("creditBill.allBillsTitle")}
+              >
+                {showRecentBillCycles ? t("creditBill.recent10") : t("creditBill.allBills")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !hideZeroBills;
+                  setCreditBillHideZeroPreference(next);
+                  navigateWithQuery((q) => {
+                    if (next) q.set("hideZeroBills", "1");
+                    else q.delete("hideZeroBills");
+                  });
+                }}
+                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
+                  hideZeroBills
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                {t("creditBill.hideZero")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !hideSettledBills;
+                  setCreditBillHideSettledPreference(next);
+                  navigateWithQuery((q) => {
+                    if (next) q.set("hideSettledBills", "1");
+                    else q.delete("hideSettledBills");
+                  });
+                }}
+                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
+                  hideSettledBills
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                {t("creditBill.hideSettled")}
+              </button>
+            </div>
+          )}
           onRowClick={(row) => selectBillMonth(row.month)}
           rowClassName={(row) => {
             const active = selectedBillMonth === row.month || activeStatementMonth === row.month;

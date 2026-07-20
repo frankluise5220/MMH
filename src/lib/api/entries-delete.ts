@@ -31,6 +31,7 @@ export type EntriesDeleteResponse =
       keptBusinessCount?: number;
       deletedEntryIds?: string[];
       removedEntryIds?: string[];
+      accountIds?: string[];
       needConfirm?: boolean;
       impacts?: EntryBusinessDeleteImpact[];
     }
@@ -53,6 +54,10 @@ export function getDeleteRefreshEntryIds(data: EntriesDeleteResponse, fallbackEn
       ? data.deletedEntryIds
       : fallbackEntryIds;
   return Array.from(new Set(ids.filter(Boolean)));
+}
+
+export function getDeleteRefreshAccountIds(data: EntriesDeleteResponse) {
+  return data.ok ? Array.from(new Set((data.accountIds ?? []).filter(Boolean))) : [];
 }
 
 function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], labelOverride?: string) {

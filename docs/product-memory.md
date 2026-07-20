@@ -55,11 +55,14 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - When showing grouped account lists, avoid repeating institution names inside child account labels if the parent group already shows the institution.
 - Sidebar debt grouping under "往来款" should keep the left navigation compact: show concrete bank loan/settlement accounts directly, and show one "借入借出" summary item that aggregates ordinary counterparty/person/company settlement accounts. Do not list each ordinary settlement object in the left sidebar; the debt page/table should show those concrete objects after entering "借入借出". Do not hardcode names for this layout; derive it from account kind plus counterparty/institution ownership. Cleared zero-balance bank loans should not clutter the debt group by default.
 - Ordinary counterparty settlement workflow is object-first: the user selects a `Counterparty`/往来对象 first, and settlement accounts are child accounts under that object. A normal person/company counterparty should not get separate same-name accounts solely because one operation is 借入 and another is 借出; borrow/lend are transaction modes on the object-owned account. Institution/bank loan items may still be represented by concrete loan accounts where the account itself is the managed item.
+- Ordinary counterparty borrow/lend dialogs are not bank-loan dialogs. For `Counterparty`-owned settlement accounts, do not show or save loan-only fields such as 资金到账/消费分期、还款方式、还款周期、期数、利率、LPR 折扣 or historical rate settings. Those fields belong only to bank/institution loan items.
+- 往来对象/往来账户没有“所有人”这个显示维度。数据库中的账户分组只是账户表必填字段，不应出现在往来账户名称、悬停标题、SS 下拉分组、导入匹配候选、概览或移动同步的显示 groupName 中；例如应显示“甄宋·债务/债权”，不能显示“张四·甄宋·债务/债权”。
 
 ### Amount And Color Rules
 
 - Keep sign/color rules unified everywhere.
 - `TxRecord.amount` is a cash-flow value from the `accountId` side: positive means money flows into `accountId` and increases that account balance; negative means money flows out of `accountId` and decreases that account balance. `type` (`income`, `expense`, `transfer`, etc.) describes business/report classification and must not force the amount sign. For transfer-like records, `toAccountId` is the receiving side and balance logic treats that side as an inflow.
+- In transaction create/edit dialogs, the user-facing amount follows the selected business type: for `expense`, positive means an outflow and negative means an inflow/refund, so the dialog converts it to the opposite `TxRecord.amount` sign on save and converts stored cash-flow signs back on edit open. For `income`, positive means inflow and negative means outflow/reversal, matching the stored cash-flow sign.
 - Do not compute sidebar balances from income minus expense.
 - Insurance cash value belongs to the same family as balance/value displays.
 - Coverage amount must be shown separately from cash value/balance, not merged into one ambiguous metric.
@@ -76,6 +79,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
 - Credit cards may also be the source side of an ordinary transfer. When the credit card is the source account, the row belongs to that credit card's statement month and counts as an outflow; only debit/e-wallet/cash transfers into a credit card should be labeled as credit-card repayment.
 - 信用卡与借记卡共用支出、收入、代付、转账四种记账语义。信用卡支出和收入沿用相同分类及正负方向；信用卡代付属于信用卡转出并进入对应账期；信用卡还款属于借记卡/现金/电子钱包转入信用卡的转账，分类为“信用卡还款”，不计入收支统计。
+- 代付窗口金额按用户输入正负表达业务方向：正数表示替往来对象垫付，保存为资金账户流出、往来应收增加；负数表示往来对象返还，保存为往来账户流出、资金账户流入、往来应收减少。两者都保存为 `type=transfer`、`source=advance`，并保留代付分类和往来对象快照。
 - 信用卡账单列表和账单周期缓存默认只显示/生成到当前日期所属账期。未来分期还款流水可以保留在明细中，但不能把账单列表延展到未来年份。
 - Credit card email bill import should mark mail that has local import history as "已导入", but must still allow the user to preview and import it again. Use mailbox UID, envelope hash, and stable parsed statement fingerprint only for marking and user warning, not as a hard duplicate block.
 - Credit card views should expose an import entry in the visible detail/table workflow, not only inside the bill-summary mail-reading control.
@@ -83,6 +87,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit-card statement parsing must not treat debit/repayment account tails as credit-card tails. Four-digit values near "扣款账号", "还款账号", "自动还款", "借记卡", "储蓄卡", or "Debit Account" are repayment-source account hints, not credit-card identity.
 - Credit card statement import uses the label "入账日期" for posting date. The value should be date-only (`YYYY-MM-DD`), default to the transaction date when missing, and remain editable in the import preview.
 - Ordinary transfer records are same-currency only. If two accounts use different currencies, the app should require a dedicated foreign-exchange/cross-currency flow that records both-side amounts and exchange rate instead of silently saving one amount.
+- 普通转账编辑窗口打开时金额永远显示正值，含义是“从转出账户转到转入账户”的业务金额；允许用户输入负值，负值表示把当前表单里的转出/转入方向反过来保存。落库后仍统一为 `accountId` 实际转出方、`toAccountId` 实际转入方、`amount` 为转出方负值。
 - When changing a record between income/expense/advance and transfer in any edit or import-preview flow, preserve the account on the correct cash-flow side: income accounts become transfer target accounts, expense and advance accounts become transfer source accounts, transfer-to-income uses the target account, and transfer-to-expense/advance uses the source account.
 - Insurance cash value should be treated like balance/value; coverage amount should remain a separate non-cash metric.
 - Expense entries may use a negative input amount to represent a refund or reduction within the same expense category. Store it as `type=expense` with a positive cash-flow amount, not as income, so category statistics can offset the original expense.
@@ -120,11 +125,11 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - 分类树可以表达层级和归属，但不能靠不同父级来区分同名分类。
 - 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
 - 投资、还款、贷款等系统业务类别必须出现在分类管理中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
-- 分类管理包含真正的“转账”系统父分类，“信用卡还款”是其子分类。分类管理用“转账”类型标题代表该父节点，避免重复显示两层“转账”。
+- 分类管理包含真正的“转账”系统父分类，“信用卡还款”和“借入借出”是其子分类。分类管理用“转账”类型标题代表该父节点，避免重复显示两层“转账”。借入借出明细的类型/分类显示必须来自分类树中的“转账 > 借入借出”，不能临时显示“往来款”“还款”等动作文案。
 - 分类管理包含真正的“投资”系统父分类，基金投资、理财投资、存款投资、贵金属投资、其他投资是其子分类；基金投资下继续分基金定投、基金买入、基金赎回、现金分红、分红再投资等具体动作分类。所有交易保存时应优先写入分类树中的 `categoryId`，即使是系统分类也不能只作为自由文本写入。投资买入、赎回和定投不计为普通收支，用户自定义的投资分类优先于自动系统分类。保险不统一归为投资：系统收支分类必须包含“保险支出”和“保险回款”，保费按保险支出、理赔/退保/满期领取按保险回款处理，只有未来明确建模的投连险投资账户部分才归投资。
 - 投资类记录按“收支大类 + 收支分类”判断业务归属：收支大类为“投资”时，收支分类的二级分类决定独立业务表（基金投资→基金交易表、理财投资→理财交易表、存款投资→存款交易表、贵金属投资→贵金属交易表），三级分类决定具体动作（如基金定投、基金买入、理财买入、理财赎回）。资金流水仍应通过 `EntryBusinessLink` 和业务表的 `cashEntryId` 与独立业务记录互相关联，不能只靠分类文字或备注推断关联。
 - 在往来款明细中删除任何一笔记录都只软删除所选记录。删除首笔借入/借出记录不能删除往来账户、后续明细、还款计划或利率调整；删除整个往来项目必须使用独立的项目/账户删除入口。
-- 往来款本金输入允许负数，便于修正和按用户习惯录入；现有数据模型仍以借入、借出、还款、收回等操作模式决定现金流方向，本金字段保存和计算金额大小，不用负号反转业务方向。
+- 往来款本金输入允许负数，便于修正和按用户习惯录入；普通借入、借出、收回应保留本金正负并同步影响资金流水方向、往来余额和再次编辑回显。贷款还款、提前还款、固定还款计划仍以本金绝对值参与计划校验和重算，避免负数破坏银行贷款计划。
 - 基金、理财、存款卖出/赎回/支取收益不应额外生成一条现金收入流水。现金账户只体现真实到账金额；基金已实现收益保存在投资交易 `realizedProfit` 中，理财和存款收益按 `depositInterest - fundFee` 计算，手续费必须扣入净收益。投资买入本身属于资产转换，不应作为收支支出统计；收支报表/统计应只映射收益、亏损、分红、利息等结果项。
 - 统计项应优先挂接到收支分类树的分类 ID。普通交易使用保存的 `categoryId`，旧数据可按 `categoryName` 回挂；基金收益/亏损、理财收益/亏损、存款利息/手续费等派生统计项也必须解析到系统内置分类节点。分类名称只是显示兜底，不应成为长期统计主键。
 

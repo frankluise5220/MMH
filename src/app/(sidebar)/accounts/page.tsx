@@ -19,6 +19,8 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 type CurrentCreditCycle = {
   accountId: string;
+  expenseAbs: Prisma.Decimal | number | string | null;
+  income: Prisma.Decimal | number | string | null;
   effectiveBill: Prisma.Decimal | number | string | null;
   paid: Prisma.Decimal | number | string | null;
   cumulativeRemain: Prisma.Decimal | number | string | null;
@@ -99,6 +101,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
           where: { accountId: { in: creditIds }, isCurrentCycle: true },
           select: {
             accountId: true,
+            expenseAbs: true,
+            income: true,
             effectiveBill: true,
             paid: true,
             cumulativeRemain: true,
@@ -164,6 +168,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         ? creditCardDisplayBalanceFromCurrentCycle(cycle)
         : toNumber(account.balance);
       const creditLimit = toNumber(account.creditLimit);
+      const currentAmount = toNumber(cycle?.expenseAbs) - toNumber(cycle?.income);
       return {
         id: account.id,
         name: display.label,
@@ -173,6 +178,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         balance,
         creditLimit,
         availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
+        currentAmount,
         billingDay: account.billingDay,
         repaymentDay: account.repaymentDay,
         currentBill: toNumber(cycle?.effectiveBill),
@@ -191,6 +197,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const creditUsedTotal = creditAccounts.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccounts.reduce((sum, account) => sum + account.creditLimit, 0);
   const creditAvailableTotal = Math.max(0, creditLimitTotal - creditUsedTotal);
+  const creditCurrentAmountTotal = creditAccounts.reduce((sum, account) => sum + account.currentAmount, 0);
   const creditBillTotal = creditAccounts.reduce((sum, account) => sum + account.currentBill, 0);
 
   const groupedMoneyAccounts = MONEY_KINDS.map((kind) => ({
@@ -248,10 +255,11 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                 </div>
                 <div className="text-xs text-slate-400">{creditAccounts.length} 张卡</div>
               </div>
-              <div className="grid grid-cols-2 gap-3 px-4 py-4">
+              <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-3">
                 <SummaryCard label="总额度" value={formatMoneyYuan(creditLimitTotal)} compact />
                 <SummaryCard label="已用额度" value={formatMoneyYuan(creditUsedTotal)} compact />
                 <SummaryCard label="可用额度" value={formatMoneyYuan(creditAvailableTotal)} compact />
+                <SummaryCard label="本期金额" value={formatMoneyYuan(creditCurrentAmountTotal)} compact />
                 <SummaryCard label="本期账单" value={formatMoneyYuan(creditBillTotal)} compact />
               </div>
             </div>
@@ -285,9 +293,10 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                           </div>
                         </div>
                       </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
                         <MiniMetric label="额度" value={formatMoney(account.creditLimit)} />
                         <MiniMetric label="可用" value={formatMoney(account.availableLimit)} />
+                        <MiniMetric label="本期金额" value={formatMoney(account.currentAmount)} valueClass={liabilityMoneyClass(account.currentAmount, isRedUp)} />
                         <MiniMetric label="本期账单" value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClass(account.currentBill, isRedUp)} />
                         <MiniMetric label="待还" value={formatMoney(account.remain)} valueClass={liabilityMoneyClass(account.remain, isRedUp)} />
                       </div>

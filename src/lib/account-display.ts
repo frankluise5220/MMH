@@ -58,6 +58,10 @@ export function formatAccountHoverTitle(input: {
   ]);
 }
 
+function accountUsesOwnerInDisplay(account: { kind?: string | null }) {
+  return account.kind !== "loan";
+}
+
 export function formatAccountDisplayName(accountName: string, institutionName?: string | null) {
   const account = accountName.trim();
   const institution = institutionName?.trim() ?? "";
@@ -177,8 +181,9 @@ export function buildAccountDisplayOption(
   options?: { suppressDuplicateCreditCardLast4?: boolean },
 ): AccountDisplayOption {
   const institutionName = formatDisplayInstitutionName(account.Institution, true);
-  const groupId = account.groupId ?? account.AccountGroup?.id ?? "";
-  const groupName = account.AccountGroup?.name?.trim() ?? "";
+  const showOwner = accountUsesOwnerInDisplay(account);
+  const groupId = showOwner ? account.groupId ?? account.AccountGroup?.id ?? "" : "";
+  const groupName = showOwner ? account.AccountGroup?.name?.trim() ?? "" : "";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
     creditCardLabelTemplateOrMode,
     creditCardLabelTemplateOrMode === "full_name" ? "full_name" : "short_last4",
@@ -244,7 +249,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
   const ungrouped: AccountDisplayOption[] = [];
 
   for (const account of accounts) {
-    if (account.groupId) {
+    if (account.groupId && accountUsesOwnerInDisplay(account)) {
       groups.set(account.groupId, {
         id: account.groupId,
         name: account.groupName || "未命名所有人",
@@ -300,7 +305,7 @@ export function buildFlatAccountOptions(
     label: account.selectorLabel ?? account.label,
     subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
     title: account.hoverTitle ?? account.title ?? formatAccountHoverTitle({
-      groupName: account.groupName,
+      groupName: accountUsesOwnerInDisplay(account) ? account.groupName : null,
       label: account.selectorLabel ?? account.label,
       subLabel: account.subLabel,
     }),

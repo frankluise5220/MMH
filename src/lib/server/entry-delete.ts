@@ -68,6 +68,14 @@ type IndependentBusinessDeleteResult = {
   touchedInvestment: boolean;
 };
 
+export type EntryDeleteResult = {
+  deletedCount: number;
+  keptBusinessCount: number;
+  deletedEntryIds: string[];
+  removedEntryIds: string[];
+  accountIds: string[];
+};
+
 function addOptionalAccountId(targets: InvestmentRecalcTargets, accountId: string | null | undefined) {
   if (accountId) targets.accountsToRecalcBalance.add(accountId);
 }
@@ -299,9 +307,11 @@ export async function softDeleteEntriesByIds(
   entryIds: string[],
   label?: string,
   options: EntryDeleteOptions = {},
-) {
+): Promise<EntryDeleteResult> {
   const ids = Array.from(new Set(entryIds.filter(Boolean)));
-  if (ids.length === 0) return { deletedCount: 0, keptBusinessCount: 0 };
+  if (ids.length === 0) {
+    return { deletedCount: 0, keptBusinessCount: 0, deletedEntryIds: [], removedEntryIds: [], accountIds: [] };
+  }
 
   const undo = await prepareEntryUndo(prisma, ctx.householdId, ids);
   let deletedCount = 0;
@@ -473,5 +483,6 @@ export async function softDeleteEntriesByIds(
     keptBusinessCount,
     deletedEntryIds: Array.from(new Set(deletedEntryIds)),
     removedEntryIds: Array.from(new Set(removedEntryIds)),
+    accountIds: Array.from(accountsToRecalcBalance),
   };
 }

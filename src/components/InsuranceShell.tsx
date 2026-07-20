@@ -28,6 +28,7 @@ import {
   type InsurancePolicyEditMeta,
   type InsurancePolicyEditValue,
 } from "./InsurancePolicyEditModal";
+import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import {
   InsuranceProductEditModal,
   type InsuranceProductEditInstitution,
@@ -1213,8 +1214,14 @@ export function InsuranceShell({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
-      <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <section className="panel-surface flex min-h-0 flex-[0_0_42%] flex-col overflow-hidden">
+      <ResizableVerticalSplit
+        storageKey="mmh:insurance:split-height"
+        hasLowerPane={!!selectedHolding}
+        defaultUpperHeight={360}
+        separatorLabel="调整保单列表和投保记录高度"
+        separatorTitle="拖动调整保单列表和投保记录高度"
+      >
+        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Shield className="h-4 w-4 text-cyan-600" />
@@ -1270,7 +1277,7 @@ export function InsuranceShell({
           </div>
         </section>
 
-        <section className="panel-surface flex h-[26rem] min-h-[26rem] shrink-0 flex-col overflow-hidden md:h-[28rem] md:min-h-[28rem]">
+        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Shield className="h-4 w-4 text-blue-500" />
@@ -1323,7 +1330,7 @@ export function InsuranceShell({
             </div>
           </BasicDetailSelectionProvider>
         </section>
-      </div>
+      </ResizableVerticalSplit>
 
       <InsurancePolicyEditModal
         open={!!policyEditValue}

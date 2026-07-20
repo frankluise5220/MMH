@@ -124,7 +124,7 @@ export async function POST(req: Request) {
       if (touchedInvestment) revalidateAfterInvestChange();
       else revalidateAfterTxChange();
       // Client-side will handle page refresh
-      return NextResponse.json({ ok: true, count: res.count, message: `已恢复 ${res.count} 条记录` });
+      return NextResponse.json({ ok: true, count: res.count, accountIds: Array.from(accountsToRecalc), message: `已恢复 ${res.count} 条记录` });
     }
 
     const entryIds: string[] = body?.entryIds;
@@ -167,7 +167,7 @@ export async function POST(req: Request) {
         ? Array.from(new Set(impacts.map((impact) => impact.selectedEntryId || impact.entryId).filter(Boolean)))
         : entryIds;
 
-    const { deletedCount, keptBusinessCount, deletedEntryIds, removedEntryIds } = await softDeleteEntriesByIds(ctx, effectiveEntryIds, undefined, { linkedAction });
+    const { deletedCount, keptBusinessCount, deletedEntryIds, removedEntryIds, accountIds } = await softDeleteEntriesByIds(ctx, effectiveEntryIds, undefined, { linkedAction });
 
     if (deletedCount === 0 && keptBusinessCount === 0) {
       return NextResponse.json(
@@ -186,6 +186,7 @@ export async function POST(req: Request) {
       keptBusinessCount,
       deletedEntryIds,
       removedEntryIds,
+      accountIds,
     });
   } catch (e) {
     console.error("[delete] Error:", e);

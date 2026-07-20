@@ -3,7 +3,7 @@
 import { Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 
@@ -236,7 +236,7 @@ export function BasicDetailBatchDeleteButton({ recordLabel = "资金明细" }: {
       setDeleteMessage(data.message ?? `已删除 ${entryIds.length} 条记录`);
       clear();
       const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
       setDeleteMessage("批量删除失败");
     } finally {

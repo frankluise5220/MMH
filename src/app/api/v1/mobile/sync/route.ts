@@ -415,7 +415,7 @@ export async function GET(req: Request) {
           institutionId: account.institutionId,
           institutionName: account.Institution?.name ?? null,
           groupId: account.groupId,
-          groupName: account.AccountGroup.name,
+          groupName: account.kind === AccountKind.loan ? "" : account.AccountGroup.name,
           costBasisMethod: account.costBasisMethod,
           updatedAt: account.updatedAt.toISOString(),
         })),

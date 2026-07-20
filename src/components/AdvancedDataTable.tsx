@@ -10,7 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { ArrowDown, ArrowUp, ChevronsUpDown, GripVertical, SlidersHorizontal } from "lucide-react";
+import { GripVertical, SlidersHorizontal } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
@@ -100,9 +100,11 @@ export type AdvancedDataTableProps<T> = {
   fillHeight?: boolean;
   compactRows?: boolean;
   toolbarMode?: "default" | "custom" | "none";
+  toolbarTitle?: ReactNode;
   toolbarLeftContent?: ReactNode;
   toolbarRightContent?: ReactNode;
-  showColumnVisibilityButton?: boolean;  sortable?: boolean;
+  showColumnVisibilityButton?: boolean;
+  sortable?: boolean;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   resetKey?: string;
@@ -213,9 +215,11 @@ export function AdvancedDataTable<T>({
   fillHeight = false,
   compactRows = false,
   toolbarMode = "default",
+  toolbarTitle,
   toolbarLeftContent,
   toolbarRightContent,
-  showColumnVisibilityButton = true,  sortable = true,
+  showColumnVisibilityButton = true,
+  sortable = true,
   columnVisibilityTriggerId,
   summaryRow,
   resetKey,
@@ -738,6 +742,7 @@ export function AdvancedDataTable<T>({
               toolbarLeftContent
             ) : (
               <>
+                {toolbarTitle ? <span className="font-semibold text-slate-700">{toolbarTitle}</span> : null}
                 {selectable ? <span>{tf("table.selectedCount", { count: selectedCount })}</span> : null}
                 {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
                 {hasAnyFilters ? (
@@ -762,7 +767,7 @@ export function AdvancedDataTable<T>({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {toolbarMode === "custom" ? toolbarRightContent : null}
+            {toolbarRightContent}
             {showColumnVisibilityButton ? (
               <div ref={columnMenuRef} className="relative">
                 <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title={t("table.columnSettings")}>
@@ -791,8 +796,8 @@ export function AdvancedDataTable<T>({
         ref={viewportRef}
         className={
           fillHeight
-            ? `${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
-            : `${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
+            ? `advanced-table-viewport custom-scrollbar ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `advanced-table-viewport custom-scrollbar ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>

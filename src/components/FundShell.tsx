@@ -13,7 +13,7 @@ import { startTransition } from "react";
 import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
@@ -32,6 +32,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/compo
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
+import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
@@ -1747,7 +1748,7 @@ export function FundShell(props: Props) {
       });
 
       const refreshEntryIds = getDeleteRefreshEntryIds(data, ids);
-      dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch {
 
@@ -1784,7 +1785,7 @@ export function FundShell(props: Props) {
         next.delete(id);
         return next;
       });
-      dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
       setBatchDeleteMessage("删除失败");
     } finally {
@@ -1841,9 +1842,17 @@ export function FundShell(props: Props) {
 
   return (
 
-    <div className="flex-1 min-h-0 flex flex-col gap-4 bg-transparent p-4 md:p-5">
+    <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
 
-      <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ResizableVerticalSplit
+        storageKey={`mmh:fund-shell:${accountId}:split-height`}
+        hasLowerPane
+        defaultUpperHeight={360}
+        separatorLabel={`调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
+        separatorTitle={`拖动调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
+      >
+
+      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
 
         <div className="panel-header shrink-0">
 
@@ -2329,7 +2338,7 @@ export function FundShell(props: Props) {
 
       {/* 交易明细 */}
 
-      <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
 
         <div className="panel-header shrink-0">
 
@@ -3358,6 +3367,8 @@ export function FundShell(props: Props) {
         </div>
 
       </div>
+
+      </ResizableVerticalSplit>
 
     </div>
 

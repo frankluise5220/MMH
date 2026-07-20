@@ -152,6 +152,7 @@
 
 - `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
 - 信用卡账户的 `balance` 与 Web 侧边栏一致，表示当前滚动余额：本期已出账账单金额 + 当前未出账周期支出 - 当前未出账周期收入/退款/还款；服务端取当前信用卡账期的 `effectiveBill`，不是 `cumulativeRemain - cumulativeOverpaid`。
+- `/api/v1/overview/summary` 的 `creditAccountList[].currentAmount` 和 `creditCurrentAmountTotal` 表示当前信用卡账期的“本期金额”，口径为 `expenseAbs - income`，用于展示本期支出扣除本期收入/退款后的净发生额；它不同于用户锁定或滚动后的 `currentBill`/待还金额。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
@@ -164,7 +165,7 @@
 - 普通转账只接受普通资金或信用卡目标账户。目标账户如果是基金/投资、存款或往来款，应按对应业务类型提交投资、存款或往来款交易，不能保存为普通转账。
 - 普通转账只支持同币种账户，并会把账户币种写入交易 `currency`。跨币种转账必须走后续专用的换汇/跨币种流程，不能用一个金额同时代表两边账户。
 - 现金、借记卡或电子钱包账户转入信用卡账户时，存储和显示类型均为 `type = "transfer"`，分类为“信用卡还款”；客户端可用 `accountKind` + `toAccountKind` 校验和补充该分类，不得计入收入或支出。
-- 信用卡与借记卡都支持 `expense | income | advance | transfer` 四种业务输入。`advance` 保存为转向应收往来账户的内部 `transfer`，并写入 `source = "advance"`、往来对象快照和信用卡账期；普通还款仍按上一条的“信用卡还款”转账规则处理。
+- 信用卡与借记卡都支持 `expense | income | advance | transfer` 四种业务输入。`advance` 保存为内部 `transfer`，并写入 `source = "advance"`、往来对象快照和信用卡账期；`amount > 0` 表示资金账户流出并增加应收往来，`amount < 0` 表示往来对象返还、资金账户流入并减少应收往来。普通还款仍按上一条的“信用卡还款”转账规则处理。
 - `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端以转账记录落库并写入“信用卡还款”分类。
 - `/api/v1/record/ingest` 批量导入失败时返回 `{ ok:false, error, failedRow?, trace? }`。`failedRow` 包含 0 基 rowIndex、类型、账户、转出/转入、分类和错误原因，客户端应在预览界面直接显示到用户，而不是只提示整批回滚。
 - `/api/v1/record/ingest/progress?traceId=...` 返回 `{ ok:true, progress }`，用于长时间批量导入的写库进度。`progress.phase` 包含 `preparing | writing | recalculating | done | failed`，`processed/total` 表示服务端写库进度。事务超时导致的行号表示执行到该行附近，不代表预览校验漏掉了该行脏数据。

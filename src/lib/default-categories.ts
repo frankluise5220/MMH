@@ -27,7 +27,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-19-insurance-stat-categories-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-20-settlement-transfer-category-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -58,6 +58,15 @@ export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
 export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
 export const SYSTEM_INSURANCE_RETURN_CATEGORY = "保险回款";
 export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
+export const SYSTEM_SETTLEMENT_TRANSFER_CATEGORY = "借入借出";
+
+const legacySettlementTransferActionCategoryNames = new Set(["往来款", "还款", "提前还款", "贷款还款", "借入", "借出", "出借", "收回"]);
+
+export function normalizeSettlementTransferCategoryName(categoryName?: string | null) {
+  const name = String(categoryName ?? "").trim();
+  if (!name || legacySettlementTransferActionCategoryNames.has(name)) return SYSTEM_SETTLEMENT_TRANSFER_CATEGORY;
+  return name;
+}
 
 const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   income: new Set([
@@ -86,7 +95,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "股票亏损",
   ]),
   advance: new Set(),
-  transfer: new Set(["转账", CREDIT_CARD_REPAYMENT_CATEGORY_NAME]),
+  transfer: new Set(["转账", CREDIT_CARD_REPAYMENT_CATEGORY_NAME, SYSTEM_SETTLEMENT_TRANSFER_CATEGORY]),
   investment: new Set(["投资", ...SYSTEM_INVESTMENT_CATEGORIES, ...SYSTEM_INVESTMENT_ACTION_CATEGORIES]),
 };
 
@@ -135,6 +144,19 @@ export function resolveCreditCardRepaymentCategory(writer: CategoryWriter, house
     categoryName: CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
     type: "transfer",
   });
+}
+
+export function resolveSettlementTransferCategory(writer: CategoryWriter, householdId: string) {
+  return resolveCategorySnapshot(writer, householdId, {
+    categoryName: SYSTEM_SETTLEMENT_TRANSFER_CATEGORY,
+    type: "transfer",
+  });
+}
+
+export async function ensureSettlementTransferCategory(writer: CategoryWriter, householdId: string) {
+  const root = await ensureDefaultCategory(writer, householdId, "transfer", "转账", null, true);
+  const child = await ensureDefaultCategory(writer, householdId, "transfer", SYSTEM_SETTLEMENT_TRANSFER_CATEGORY, root.id, true);
+  return { id: child.id, name: SYSTEM_SETTLEMENT_TRANSFER_CATEGORY, type: "transfer" as const };
 }
 
 const rootCategoryRenames = [
@@ -315,7 +337,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "transfer",
     name: "转账",
     isSystem: true,
-    children: [CREDIT_CARD_REPAYMENT_CATEGORY_NAME],
+    children: [CREDIT_CARD_REPAYMENT_CATEGORY_NAME, SYSTEM_SETTLEMENT_TRANSFER_CATEGORY],
   },
   {
     type: "investment",

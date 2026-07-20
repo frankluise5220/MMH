@@ -5,7 +5,8 @@ import { ArrowDownLeft, ArrowUpRight, Landmark } from "lucide-react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { EntryRowActions } from "./EntryRowActions";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatMoney } from "@/lib/format";
 
@@ -139,7 +140,7 @@ export function DepositShell({
     }
     setSelectedEntryIds(new Set());
     const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-    dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
   const lotColumns = useMemo<AdvancedDataTableColumn<DepositLot>[]>(() => [
@@ -215,9 +216,15 @@ export function DepositShell({
   ], []);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto bg-transparent p-4 md:p-5">
-      <div className="space-y-4">
-        <section className="panel-surface overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
+      <ResizableVerticalSplit
+        storageKey="mmh:deposit:split-height"
+        hasLowerPane={!!selectedLot}
+        defaultUpperHeight={360}
+        separatorLabel="调整存款持仓和明细高度"
+        separatorTitle="拖动调整存款持仓和明细高度"
+      >
+        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-cyan-600" />
@@ -235,12 +242,13 @@ export function DepositShell({
             minTableWidth={920}
             emptyText="暂无存款持仓"
             showFilters={false}
+            fillHeight
             onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
             rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
           />
         </section>
 
-        <section className="panel-surface overflow-hidden">
+        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-blue-500" />
@@ -257,16 +265,16 @@ export function DepositShell({
             rowKey={(entry) => entry.id}
             minTableWidth={1020}
             emptyText={selectedLot ? "这笔存单暂时没有关联明细" : "请先选择上方存款持仓"}
+            fillHeight
             selectable
             selectedKeys={selectedEntryIds}
             onSelectionChange={setSelectedEntryIds}
             batchActions={[
               { label: "批量删除", onClick: batchDeleteEntries },
-              { label: "批量修改", onClick: () => window.alert("批量修改入口已接入，下一步会复用统一批量修改弹窗。") },
             ]}
           />
         </section>
-      </div>
+      </ResizableVerticalSplit>
     </div>
   );
 }

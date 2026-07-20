@@ -40,7 +40,9 @@ export async function POST() {
     const completed: string[] = [];
 
     for (const p of allPlans) {
-      if ((p.endDate && p.endDate < now) || (p.totalRuns && p.executedRuns >= p.totalRuns)) {
+      const task = decodeScheduledTaskMemo(p.memo);
+      const isNonFundTask = isNonFundScheduledTask(task.type);
+      if ((!isNonFundTask && p.endDate && p.endDate < now) || (p.totalRuns && p.executedRuns >= p.totalRuns)) {
         completed.push(p.id);
       } else {
         plansToRun.push(p);

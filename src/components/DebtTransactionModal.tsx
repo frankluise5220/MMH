@@ -619,7 +619,7 @@ export function DebtTransactionModal({
 
   async function saveDebtTransaction(keepAdding: boolean, options?: { skipHistoryPrompt?: boolean }) {
     if (submitting) return;
-    const requiresLoanScheduleFields = mode === "borrow_in" && FIXED_REPAYMENT_METHODS.has(repaymentMethod);
+    const requiresLoanScheduleFields = showBorrowPlan && FIXED_REPAYMENT_METHODS.has(repaymentMethod);
     if (requiresLoanScheduleFields) {
       if (repaymentMethod !== INTEREST_FREE_REPAYMENT_METHOD && !parsePositiveNumberText(annualRate)) {
         window.alert("固定还款方式需要填写年利率");
@@ -636,6 +636,7 @@ export function DebtTransactionModal({
     }
     if (
       !options?.skipHistoryPrompt &&
+      showBorrowPlan &&
       shouldPromptHistoricalRepayments({
         mode,
         isFixedRepaymentMethod,
@@ -806,14 +807,26 @@ export function DebtTransactionModal({
 
   const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
   const showPrepayment = mode === "prepay_out";
-  const showBorrowPlan = mode === "borrow_in";
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
+  const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
+  const selectedDebtObject = debtObjectById.get(debtInstitutionId);
+  const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
+  const selectedDebtObjectIsBankInstitution =
+    (debtInstitutionId.startsWith("institution:") && selectedDebtObject?.type === "bank") ||
+    (!!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank");
+  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && selectedDebtObjectIsBankInstitution;
+  const showBorrowPlan = showLoanBorrowOptions;
+  useEffect(() => {
+    if (!showLoanBorrowOptions && loanFundingMode !== "cash_disbursement") {
+      setLoanFundingMode("cash_disbursement");
+    }
+  }, [loanFundingMode, showLoanBorrowOptions]);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
-    return (parseAbsMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
+    return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
   const cashAccountLabel = mode === "borrow_in"
-    ? (loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
+    ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
     : mode === "repay_out" || mode === "prepay_out"
       ? "支出账户"
       : mode === "collect_in"
@@ -822,6 +835,7 @@ export function DebtTransactionModal({
   const debtAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
+        if (account.counterpartyId) return true;
         if (mode === "borrow_in") return account.debtDirection === "payable";
         if (mode === "repay_out" || mode === "prepay_out") return account.debtDirection === "payable";
         if (mode === "collect_in") return account.debtDirection === "receivable";
@@ -972,7 +986,7 @@ export function DebtTransactionModal({
                       ))}
                     </div>
 
-                    {mode === "borrow_in" ? (
+                    {showLoanBorrowOptions ? (
                       <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 border-y border-slate-100 py-2">
                         <div className="form-label">贷款形式</div>
                         <div className="grid grid-cols-2 gap-1 rounded border border-slate-200 bg-slate-50 p-0.5">
@@ -996,7 +1010,7 @@ export function DebtTransactionModal({
 
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? (loanFundingMode === "financed_purchase" ? "发生日期" : "入账日期") : "日期"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "发生日期" : "入账日期") : "日期"}</div>
                         <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
                       <div className="space-y-1">
@@ -1118,7 +1132,7 @@ export function DebtTransactionModal({
                     {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? (loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
+                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (

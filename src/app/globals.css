@@ -326,3 +326,30 @@ html {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.34);
 }
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 85, 105, 0.44) transparent;
+}
+
+.advanced-table-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.advanced-table-viewport::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.9);
+  border-radius: 999px;
+}
+
+.advanced-table-viewport::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.42);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.advanced-table-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(51, 65, 85, 0.56);
+  background-clip: padding-box;
+}

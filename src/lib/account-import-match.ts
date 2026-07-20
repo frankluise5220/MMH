@@ -113,6 +113,7 @@ function accountBankKeys(account: ImportAccountMatchSource) {
 }
 
 function accountOwnerNames(account: ImportAccountMatchSource) {
+  if (account.kind === "loan") return [];
   return [account.AccountGroup?.name ?? ""]
     .map((name) => name.trim())
     .filter(Boolean);

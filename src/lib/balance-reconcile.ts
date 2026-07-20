@@ -33,7 +33,7 @@ export function effectiveAmountForAccount(entry: AccountFlowEntryLike, accountId
   if (target != null) return 0;
   const amount = toNumber(entry.amount);
   const isDebtReceivingSide = accountId && entry.toAccountId === accountId && entry.debtPrincipalAmount != null;
-  if (isDebtReceivingSide) return Math.abs(toNumber(entry.debtPrincipalAmount));
+  if (isDebtReceivingSide) return toNumber(entry.debtPrincipalAmount);
   return accountId && entry.toAccountId === accountId
     ? Math.abs(toNumber(entry.fundArrivalAmount ?? amount))
     : amount;

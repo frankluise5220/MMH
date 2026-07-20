@@ -42,17 +42,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
     }
 
-    // 状态检查：只有 active 状态才能执行
-    if (plan.status !== RegularInvestStatus.active) {
+    const scheduledTask = decodeScheduledTaskMemo(plan.memo);
+    const isNonFundTask = isNonFundScheduledTask(scheduledTask.type);
+    const canBackfillCompletedNonFundTask = isNonFundTask && plan.status === RegularInvestStatus.completed && plan.executedRuns === 0;
+
+    // 状态检查：历史转账/还贷/保险缴费计划可能结束日在过去，但仍需要先补生成记录。
+    if (plan.status !== RegularInvestStatus.active && !canBackfillCompletedNonFundTask) {
       return NextResponse.json({
         ok: false,
         error: `计划状态为 ${plan.status}，只有 active 状态才能执行`,
       }, { status: 400 });
     }
 
-    // 结束条件检查
+    // 基金定投按当前日期执行；非基金计划由执行器按 startDate → endDate/today 补生成历史记录。
     const now = new Date();
-    if (plan.endDate && plan.endDate < now) {
+    if (!isNonFundTask && plan.endDate && plan.endDate < now) {
       // 达到结束日期，自动标记为 completed
       await prisma.regularInvestPlan.update({
         where: { id: planId },
@@ -70,8 +74,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
     }
 
-    const scheduledTask = decodeScheduledTaskMemo(plan.memo);
-    if (isNonFundScheduledTask(scheduledTask.type)) {
+    if (isNonFundTask) {
       const parsedOverrideAmount = overrideAmount ? parseFloat(overrideAmount) : null;
       const result = await executeNonFundScheduledTaskPlan({
         householdId,

@@ -43,7 +43,7 @@ export async function resolveDebtAccountByCounterpartyName(
   tx: Db,
   householdId: string,
   accountName: string,
-  direction: "payable" | "receivable" = "receivable",
+  _direction: "payable" | "receivable" = "receivable",
 ): Promise<string | null> {
   const cacheKey = accountName;
   const cached = debtResolveCacheGet(householdId, cacheKey);
@@ -99,7 +99,7 @@ export async function resolveDebtAccountByCounterpartyName(
     data: {
       name: accountName,
       kind: AccountKind.loan,
-      debtDirection: direction,
+      debtDirection: "receivable",
       currency: "CNY",
       groupId: group.id,
       counterpartyId: counterparty.id,

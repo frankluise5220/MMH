@@ -97,6 +97,21 @@ function toDateInputValue(value: string | null | undefined) {
   ].join("-");
 }
 
+function parseMoneyDraft(value: string) {
+  const parsed = Number(String(value ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function storedAmountToDialogAmount(type: TxType, value: number) {
+  if (type === "transfer") return Math.abs(value);
+  return type === "expense" ? -value : value;
+}
+
+function dialogAmountToStoredAmount(type: TxType, value: string) {
+  const parsed = parseMoneyDraft(value);
+  return type === "expense" ? -parsed : parsed;
+}
+
 function inferDebtTransferMode(
   sourceAccount: AccountOption | SmartSelectOption | undefined,
   targetAccount: AccountOption | SmartSelectOption | undefined,
@@ -790,9 +805,10 @@ export function TransactionFormModal({
       setPostedAt(toDateInputValue(detail.postedAt || detail.date || today));
       setPostedAtEdited(Boolean(detail.postedAt));
       const numericAmount = Number(detail.amount);
+      const dialogAmount = Number.isFinite(numericAmount) ? storedAmountToDialogAmount(detail.type, numericAmount) : 0;
       setAmount(
-        Number.isFinite(numericAmount) && numericAmount !== 0
-          ? String(numericAmount)
+        dialogAmount !== 0
+          ? String(dialogAmount)
           : "",
       );
       setNote(detail.note ?? "");
@@ -846,7 +862,7 @@ export function TransactionFormModal({
   ]);
 
   useEffect(() => {
-    if (!open || txType !== "expense" || postedAtEdited) return;
+    if (!open || (txType !== "expense" && txType !== "income") || postedAtEdited) return;
     setPostedAt(toDateInputValue(date || today));
   }, [date, open, postedAtEdited, today, txType]);
 
@@ -874,8 +890,8 @@ export function TransactionFormModal({
         const formData = new FormData(e.currentTarget);
         formData.set("type", txType);
         formData.set("date", date);
-        if (txType === "expense") formData.set("postedAt", postedAt);
-        formData.set("amount", amount);
+        if (txType === "expense" || txType === "income") formData.set("postedAt", postedAt);
+        formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
         formData.set("note", note);
         formData.set("toNote", txType === "transfer" ? note : "");
         formData.set("entryId", editEntryId);
@@ -914,8 +930,8 @@ export function TransactionFormModal({
       formData = new FormData();
       formData.set("type", txType);
       formData.set("date", date);
-      if (txType === "expense") formData.set("postedAt", postedAt);
-      formData.set("amount", amount);
+      if (txType === "expense" || txType === "income") formData.set("postedAt", postedAt);
+      formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
       formData.set("note", note);
       formData.set("toNote", txType === "transfer" ? note : "");
       formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
@@ -1184,27 +1200,88 @@ export function TransactionFormModal({
 
               {(txType === "expense" || txType === "income" || txType === "advance") && (
                 <div className="space-y-3">
-                  {/* 第一行：日期 | 账户 */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">日期</div>
-                      <DateStepper name="date" value={date} onChange={setDate} />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="form-label">
-                        {isCreditCardAccount ? "记账账户" : (txType === "income" ? "收款账户" : "资金账户")}
+                  {txType === "advance" ? (
+                    <>
+                      <div className="space-y-1">
+                        <div className="form-label">日期</div>
+                        <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
-                      <SmartSelect mode="single" value={accountId}
-                        onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
-                        options={displayAccountOptions} placeholder="请选择"
-                        onCreateClick={() => { void openAccountCreate("account"); }}
-                        onCycleOwnerFilter={cycleOwnerFilter}
-                        ownerFilterLabel={ownerFilterLabel}
-                        behavior={compactAccountSelectBehavior} />
-                    </div>
-                  </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="form-label">往来对象</div>
+                          <SmartSelect
+                            mode="single"
+                            value={counterpartyInstitutionId}
+                            onChange={setCounterpartyInstitutionId}
+                            options={((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
+                              .filter((item) => COUNTERPARTY_TYPES.has(item.type ?? "other"))
+                              .map((item) => ({ id: item.id, label: item.name }))}
+                            placeholder="请选择"
+                            onCreateClick={() => setCounterpartyNestedOpen(true)}
+                            createLabel="新增往来对象"
+                            searchable
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">所属账户</div>
+                          <SmartSelect mode="single" value={accountId}
+                            onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                            options={displayAccountOptions} placeholder="请选择"
+                            onCreateClick={() => { void openAccountCreate("account"); }}
+                            onCycleOwnerFilter={cycleOwnerFilter}
+                            ownerFilterLabel={ownerFilterLabel}
+                            behavior={compactAccountSelectBehavior} />
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="form-label">日期</div>
+                          <DateStepper name="date" value={date} onChange={setDate} />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">
+                            {isCreditCardAccount ? "记账账户" : (txType === "income" ? "收款账户" : "资金账户")}
+                          </div>
+                          <SmartSelect mode="single" value={accountId}
+                            onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                            options={displayAccountOptions} placeholder="请选择"
+                            onCreateClick={() => { void openAccountCreate("account"); }}
+                            onCycleOwnerFilter={cycleOwnerFilter}
+                            ownerFilterLabel={ownerFilterLabel}
+                            behavior={compactAccountSelectBehavior} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="form-label">入账日期</div>
+                          <DateStepper
+                            value={postedAt}
+                            onChange={(value) => {
+                              setPostedAt(toDateInputValue(value));
+                              setPostedAtEdited(true);
+                            }}
+                            className="form-input"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">收支机构</div>
+                          <SmartSelect
+                            mode="single"
+                            value={counterpartyInstitutionId}
+                            onChange={setCounterpartyInstitutionId}
+                            options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
+                            placeholder="可选"
+                            createLabel="新增往来对象"
+                            searchable
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
 
-                  {/* 第二行：类别 | 标签 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">类别</div>
@@ -1248,49 +1325,15 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* 第三行：金额 | 入账日期 */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">金额</div>
-                      <CalcInput value={amount} onChange={(value) => {
-                        setAmount(value);
-                        if (createInstallment && !installmentAmountEdited) {
-                          const numeric = Math.abs(Number(value));
-                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
-                        }
-                      }} placeholder="流入填正，流出填负" label="金额" precision={2} />
-                    </div>
-                    {txType === "expense" ? (
-                      <div className="space-y-1">
-                        <div className="form-label">入账日期</div>
-                        <DateStepper
-                          value={postedAt}
-                          onChange={(value) => {
-                            setPostedAt(toDateInputValue(value));
-                            setPostedAtEdited(true);
-                          }}
-                          className="form-input"
-                        />
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <div className="form-label">{txType === "advance" ? "往来对象" : "收支机构"}</div>
-                        <SmartSelect
-                          mode="single"
-                          value={counterpartyInstitutionId}
-                          onChange={setCounterpartyInstitutionId}
-                          options={(txType === "advance"
-                            ? ((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
-                            : incomeExpenseInstitutionOptions)
-                            .filter((item) => txType !== "advance" || COUNTERPARTY_TYPES.has(item.type ?? "other"))
-                            .map((item) => ({ id: item.id, label: item.name }))}
-                          placeholder={txType === "advance" ? "请选择" : "可选"}
-                          onCreateClick={txType === "advance" ? () => setCounterpartyNestedOpen(true) : undefined}
-                          createLabel="新增往来对象"
-                          searchable
-                        />
-                      </div>
-                    )}
+                  <div className="space-y-1">
+                    <div className="form-label">金额</div>
+                    <CalcInput value={amount} onChange={(value) => {
+                      setAmount(value);
+                      if (createInstallment && !installmentAmountEdited) {
+                        const numeric = Math.abs(Number(value));
+                        setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
+                      }
+                    }} placeholder={txType === "expense" ? "正数流出，负数流入/退款" : "正数流入，负数流出/冲减"} label="金额" precision={2} />
                   </div>
 
                   {txType === "expense" && selectedAccountIsCreditCard && !editEntryId ? (
@@ -1365,22 +1408,6 @@ export function TransactionFormModal({
                           </div>
                         </>
                       ) : null}
-                    </div>
-                  ) : null}
-
-                  {/* 第四行：收支机构 */}
-                  {txType === "expense" ? (
-                    <div className="space-y-1">
-                      <div className="form-label">收支机构</div>
-                      <SmartSelect
-                        mode="single"
-                        value={counterpartyInstitutionId}
-                        onChange={setCounterpartyInstitutionId}
-                        options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
-                        placeholder="可选"
-                        createLabel="新增往来对象"
-                        searchable
-                      />
                     </div>
                   ) : null}
 

@@ -14,11 +14,13 @@ import {
   useBasicDetailSelection,
 } from "./BasicDetailSelection";
 import { useI18n } from "@/lib/i18n";
-import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
+import { advanceDialogAmount } from "@/lib/advance-transfer";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import {
   decodeDetailPaginationPreference,
@@ -47,6 +49,7 @@ export type DetailEntry = {
   accountName: string | null;
   accountKind?: string | null;
   accountDebtDirection?: string | null;
+  accountIsSettlementDebt?: boolean | null;
   accountInstitutionName?: string | null;
   counterpartyInstitutionId?: string | null;
   counterpartyInstitutionName?: string | null;
@@ -54,6 +57,7 @@ export type DetailEntry = {
   toAccountName: string | null;
   toAccountKind?: string | null;
   toAccountDebtDirection?: string | null;
+  toAccountIsSettlementDebt?: boolean | null;
   toAccountInstitutionName?: string | null;
   note: string | null;
   businessNote?: string | null;
@@ -99,19 +103,24 @@ export type DetailEntry = {
 };
 
 function buildBasicEntryEditPayload(entry: DetailEntry) {
+  const isAdvanceReturn = entry.source === "advance" && entry.accountKind === "loan";
+  const numericAmount = toNumber(entry.amount);
+  const dialogAmount = entry.type === "transfer" && entry.source !== "advance"
+    ? Math.abs(numericAmount)
+    : advanceDialogAmount({ amount: numericAmount, accountKind: entry.accountKind, source: entry.source });
   return {
     id: entry.id,
     transactionId: entry.id,
     date: (entry.date ?? "").slice(0, 10),
     postedAt: entry.postedAt ?? null,
     type: (entry.source === "advance" ? "advance" : entry.type) as EditPayload["type"],
-    amount: toNumber(entry.amount),
+    amount: dialogAmount,
     note: entry.note ?? "",
     toNote: entry.toNote ?? "",
     categoryId: entry.categoryId ?? undefined,
     categoryName: entry.categoryName ?? undefined,
-    accountId: entry.accountId ?? undefined,
-    accountName: entry.accountName ?? undefined,
+    accountId: (isAdvanceReturn ? entry.toAccountId : entry.accountId) ?? undefined,
+    accountName: (isAdvanceReturn ? entry.toAccountName : entry.accountName) ?? undefined,
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? undefined,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? undefined,
     fromAccountId: entry.type === "transfer" ? entry.accountId ?? undefined : undefined,
@@ -119,6 +128,48 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
     toAccountName: entry.toAccountName ?? undefined,
     tagIds: entry.entryTags?.map((item) => item.tagId) ?? [],
   };
+}
+
+function runningBalanceContribution(entry: DetailEntry, accountId: string) {
+  return applyBalanceReconcileEntry(0, entry, accountId);
+}
+
+function canRecalculateRunningBalanceFromLoadedEntries(entries: DetailEntry[], accountId: string) {
+  const ascEntries = [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+  const firstEntry = ascEntries[0];
+  if (!firstEntry || firstEntry.runningBalance == null) return false;
+  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId)) < 0.005;
+}
+
+function recalculateLoadedRunningBalances(entries: DetailEntry[], accountId: string) {
+  const runningBalanceById = new Map<string, number>();
+  let runningBalance = 0;
+  for (const entry of [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId))) {
+    runningBalance = applyBalanceReconcileEntry(runningBalance, entry, accountId);
+    runningBalanceById.set(entry.id, runningBalance);
+  }
+  return entries.map((entry) => ({ ...entry, runningBalance: runningBalanceById.get(entry.id) ?? entry.runningBalance ?? null }));
+}
+
+function removeEntriesAndUpdateRunningBalances(entries: DetailEntry[], deletedSet: Set<string>, accountId: string) {
+  const deletedEntries = entries.filter((entry) => deletedSet.has(entry.id));
+  if (deletedEntries.length === 0) return entries;
+  const remainingEntries = entries.filter((entry) => !deletedSet.has(entry.id));
+  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId)) {
+    return recalculateLoadedRunningBalances(remainingEntries, accountId);
+  }
+  if (deletedEntries.some((entry) => getBalanceReconcileTarget(entry) != null)) return remainingEntries;
+  return remainingEntries.map((entry) => {
+    if (entry.runningBalance == null) return entry;
+    const adjustment = deletedEntries.reduce((sum, deletedEntry) => (
+      compareDetailEntriesAsc(deletedEntry, entry, accountId) < 0
+        ? sum + runningBalanceContribution(deletedEntry, accountId)
+        : sum
+    ), 0);
+    return adjustment === 0
+      ? entry
+      : { ...entry, runningBalance: toNumber(entry.runningBalance) - adjustment };
+  });
 }
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
@@ -222,25 +273,10 @@ function formatType(type: string, t: (key: string) => string) {
   return type;
 }
 
-function debtActivityLabel(entry: {
-  type: string;
-  source: string | null;
-  note: string | null;
-  accountKind?: string | null;
-  accountDebtDirection?: string | null;
-  toAccountKind?: string | null;
-  toAccountDebtDirection?: string | null;
-}) {
-  const source = String(entry.source ?? "");
-  if (source === "debt_borrow_in") return "借入";
-  if (source === "debt_financed_purchase") return "消费分期";
-  if (source === "debt_lend_out") return "借出";
-  if (source === "debt_prepay_out") return "提前还款";
-  if (source === "debt_collect_in") return "收回";
-  if (source === "scheduled_task" && String(entry.note ?? "").includes("还贷款")) return "贷款还款";
-  if (source === "debt_repay_out") return "还款";
-  if (inferDebtMode(entry)) return "往来款";
-  return null;
+function isCreditCardRepaymentDisplayEntry(entry: DetailEntry) {
+  if (entry.accountIsSettlementDebt || entry.toAccountIsSettlementDebt) return false;
+  if (entry.accountKind === "loan" || entry.toAccountKind === "loan") return false;
+  return isCreditCardRepaymentTransfer(entry);
 }
 
 function debtModeFromSource(source: string, note?: string | null): DebtMode | null {
@@ -267,6 +303,7 @@ function inferDebtMode(
   accountById?: Map<string, DetailAccountOption>,
 ): DebtMode | null {
   if (entry.type !== "transfer") return null;
+  if (entry.source === "advance") return null;
   const sourceMode = debtModeFromSource(String(entry.source ?? ""), entry.note);
   if (sourceMode) return sourceMode;
   const sourceAccount = accountById?.get((entry as { accountId?: string | null }).accountId ?? "");
@@ -286,11 +323,35 @@ function isDebtActivityEntry(entry: {
   note: string | null;
   accountKind?: string | null;
   accountDebtDirection?: string | null;
+  accountIsSettlementDebt?: boolean | null;
   toAccountKind?: string | null;
   toAccountDebtDirection?: string | null;
+  toAccountIsSettlementDebt?: boolean | null;
 }, accountById?: Map<string, DetailAccountOption>) {
   if (entry.type !== "transfer") return false;
   return inferDebtMode(entry, accountById) != null;
+}
+
+function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null) {
+  const involvesBankDebt =
+    (entry.accountKind === "loan" && !entry.accountIsSettlementDebt) ||
+    (entry.toAccountKind === "loan" && !entry.toAccountIsSettlementDebt);
+  if (!involvesBankDebt) return null;
+  if (entry.source === "debt_financed_purchase") return "消费分期";
+  if (mode === "borrow_in") return "贷款发放";
+  if (mode === "repay_out") return "贷款还款";
+  if (mode === "prepay_out") return "提前还款";
+  if (mode === "lend_out") return "银行放款";
+  if (mode === "collect_in") return "银行收回";
+  return entry.categoryName || "银行贷款";
+}
+
+function debtCategoryLabel(entry: DetailEntry, accountById?: Map<string, DetailAccountOption>) {
+  if (!isDebtActivityEntry(entry, accountById)) return null;
+  const mode = inferDebtMode(entry, accountById);
+  const bankLabel = bankDebtTransferLabel(entry, mode);
+  if (bankLabel) return bankLabel;
+  return normalizeSettlementTransferCategoryName(entry.categoryName);
 }
 
 function displaySecondRemark(entry: { toNote?: string | null }) {
@@ -643,7 +704,7 @@ export function DetailViewClient({
     };
     const debtMode = inferDebtMode(e, accountOptionById);
     const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
-    const debtPrincipalAmount = Math.abs(toNumber(e.debtPrincipalAmount ?? e.amount));
+    const debtPrincipalAmount = e.debtPrincipalAmount == null ? Math.abs(toNumber(e.amount)) : toNumber(e.debtPrincipalAmount);
     const debtInterestAmount = Math.abs(toNumber(e.debtInterestAmount ?? 0));
     const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
     const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
@@ -751,8 +812,13 @@ export function DetailViewClient({
       const deletedEntryIds = (event as CustomEvent<{ deletedEntryIds?: string[] }>).detail?.deletedEntryIds ?? [];
       if (deletedEntryIds.length > 0) {
         const deletedSet = new Set(deletedEntryIds);
-        setRefreshedEntries({ accountId, entries: entries.filter((entry) => !deletedSet.has(entry.id)) });
+        detailRefreshSeqRef.current += 1;
+        setRefreshedEntries((current) => {
+          const currentEntries = current?.accountId === accountId ? current.entries : entries;
+          return { accountId, entries: removeEntriesAndUpdateRunningBalances(currentEntries, deletedSet, accountId) };
+        });
         setSelection(new Set());
+        return;
       }
       const url = new URL(window.location.href);
       const storedPagination = readDetailPaginationSnapshot(accountId);
@@ -858,14 +924,13 @@ export function DetailViewClient({
           (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
-        const debtLabel = debtActivityLabel(e);
-        if (debtLabel) return t("transaction.type.transfer");
+        if (isDebtActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
         if (e.type === "investment") return "投资";
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
       render: (e) => {
-        const debtLabel = debtActivityLabel(e);
+        const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -873,7 +938,7 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
-        const actLabel = debtLabel
+        const actLabel = isDebtActivity
           ? t("transaction.type.transfer")
           : e.type === "investment"
           ? "投资"
@@ -901,7 +966,7 @@ export function DetailViewClient({
       width: 140,
       minWidth: 90,
       filterText: (e) => {
-        const debtLabel = debtActivityLabel(e);
+        const debtLabel = debtCategoryLabel(e, accountOptionById);
         if (debtLabel) return debtLabel;
         const entryFundProductType =
           e.fundProductType ??
@@ -910,12 +975,12 @@ export function DetailViewClient({
           null;
         return e.type === "investment"
           ? investmentCategoryLabel(e, entryFundProductType)
-          : isCreditCardRepaymentTransfer(e)
+          : isCreditCardRepaymentDisplayEntry(e)
             ? t("transaction.category.creditCardRepayment")
           : getInsuranceDetailCategoryName(e);
       },
       render: (e) => {
-        const debtLabel = debtActivityLabel(e);
+        const debtLabel = debtCategoryLabel(e, accountOptionById);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -923,7 +988,7 @@ export function DetailViewClient({
           null;
         const text = debtLabel ?? (e.type === "investment"
           ? investmentCategoryLabel(e, entryFundProductType)
-          : isCreditCardRepaymentTransfer(e)
+          : isCreditCardRepaymentDisplayEntry(e)
             ? t("transaction.category.creditCardRepayment")
           : getInsuranceDetailCategoryName(e));
         return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
@@ -1062,7 +1127,7 @@ export function DetailViewClient({
         );
       },
     },
-  ], [accountDisplayFallback, accountId, buildEntryEditRequest, inflowCls, outflowCls, showAccountColumn, showRunningBalance, t]);
+  ], [accountDisplayFallback, accountId, accountOptionById, buildEntryEditRequest, inflowCls, investmentProductTypeByAccountId, outflowCls, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">

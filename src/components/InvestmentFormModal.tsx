@@ -10,7 +10,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { kindLabel } from "@/lib/account-kinds";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -1830,7 +1830,7 @@ export function InvestmentFormModal({
       }
       requestAnimationFrame(() => {
         const refreshEntryIds = getDeleteRefreshEntryIds(data, [entry.id]);
-        dispatchFinanceDataChanged({ reason: "investment-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+        dispatchFinanceDataChanged({ reason: "investment-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       });
     } catch {
       window.alert("删除失败");

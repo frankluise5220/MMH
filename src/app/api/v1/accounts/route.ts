@@ -479,7 +479,7 @@ export async function GET(req: Request) {
       kind: account.kind,
       debtDirection: account.debtDirection,
       currency: account.currency,
-      groupName: account.AccountGroup?.name ?? "",
+      groupName: account.kind === AccountKind.loan ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));

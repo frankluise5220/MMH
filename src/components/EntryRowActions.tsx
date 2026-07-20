@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export type EditPayload = {
@@ -23,6 +23,7 @@ export type EditPayload = {
   accountId?: string;
   accountLabel?: string;
   categoryId?: string;
+  counterpartyInstitutionId?: string;
   fromAccountId?: string;
   toAccountId?: string;
   toAccountName?: string;
@@ -134,7 +135,7 @@ export function EntryRowActions({
         throw new Error(data?.error ?? "删除失败");
       }
       const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
-      dispatchFinanceDataChanged({ reason: "entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch (e) {
       const msg =

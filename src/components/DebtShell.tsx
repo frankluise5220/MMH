@@ -1,13 +1,14 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, HandCoins, Percent, RefreshCw } from "lucide-react";
+import { HandCoins, Percent, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { EntryRowActions } from "./EntryRowActions";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatMoney } from "@/lib/format";
 import {
@@ -76,12 +77,13 @@ type DebtEntry = {
     defaultLoanFundingMode?: "cash_disbursement" | "financed_purchase";
   };
   edit?: {
-    type: "expense" | "income" | "transfer" | "investment";
+    type: "expense" | "income" | "advance" | "transfer" | "investment";
     date: string;
     amount: number;
     note: string;
     accountId?: string;
     categoryId?: string;
+    counterpartyInstitutionId?: string;
     fromAccountId?: string;
     toAccountId?: string;
   };
@@ -143,8 +145,6 @@ export function DebtShell({
   selectedKey,
   entries,
   repaymentScheduleRows,
-  totalPayable,
-  totalReceivable,
 }: {
   rows: DebtRow[];
   selectedKey: string;
@@ -177,11 +177,11 @@ export function DebtShell({
     visibleRows.find((row) => row.key === selectedKey) ??
     rows.find((row) => row.key === selectedKey) ??
     null;
-  const net = totalReceivable - totalPayable;
   const settledCount = rows.filter(isSettledDebtRow).length;
+  const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.objectType === "银行贷款";
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
-  const canAdjustRateSelectedRow = canRepaySelectedRow && !!selectedRow?.accountId;
-  const canRecalculateSelectedRow = canRepaySelectedRow && !!selectedRow?.accountId && !!selectedRow?.remainingRuns;
+  const canAdjustRateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId;
+  const canRecalculateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId && !!selectedRow?.remainingRuns;
   const visibleRepaymentScheduleRows = useMemo(
     () => showPaidScheduleRows ? repaymentScheduleRows : repaymentScheduleRows.filter((row) => row.status !== "paid"),
     [repaymentScheduleRows, showPaidScheduleRows],
@@ -207,6 +207,12 @@ export function DebtShell({
     }
   }, [rows, selectedKey]);
 
+  useEffect(() => {
+    if (!isSelectedBankLoan && detailTab === "schedule") {
+      setDetailTab("entries");
+    }
+  }, [detailTab, isSelectedBankLoan]);
+
   async function batchDeleteEntries() {
     if (selectedEntryIds.size === 0) return;
     const entryIds = Array.from(selectedEntryIds);
@@ -221,7 +227,7 @@ export function DebtShell({
     }
     setSelectedEntryIds(new Set());
     const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-    dispatchFinanceDataChanged({ reason: "entry-batch-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
   function openRepayment(row: DebtRow) {
@@ -512,18 +518,28 @@ export function DebtShell({
   const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
     { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
     { key: "type", label: "类型", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-    { key: "relatedAccount", label: "明细账户", width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
-    { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
+    { key: "relatedAccount", label: "资金账户", width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
     {
-      key: "amount",
-      label: "本金",
-      width: 120,
+      key: "outflow",
+      label: "流出",
+      width: 110,
       minWidth: 86,
       align: "right",
       render: (entry) => (
-        <span className={`inline-flex items-center justify-end gap-1 font-semibold tabular-nums ${amountClass(entry.principal)}`}>
-          {entry.principal >= 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
-          {formatMoney(entry.principal)}
+        <span className="font-semibold tabular-nums text-rose-700">
+          {entry.principal < 0 ? formatMoney(Math.abs(entry.principal)) : "-"}
+        </span>
+      ),
+    },
+    {
+      key: "inflow",
+      label: "流入",
+      width: 110,
+      minWidth: 86,
+      align: "right",
+      render: (entry) => (
+        <span className="font-semibold tabular-nums text-emerald-700">
+          {entry.principal > 0 ? formatMoney(entry.principal) : "-"}
         </span>
       ),
     },
@@ -538,7 +554,7 @@ export function DebtShell({
     },
     {
       key: "paymentTotal",
-      label: "还款总额",
+      label: isSelectedBankLoan ? "还款总额" : "流入合计",
       width: 120,
       minWidth: 92,
       align: "right",
@@ -550,7 +566,8 @@ export function DebtShell({
         </span>
       ),
     },
-    { key: "balance", label: "贷款余额", width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance)}`}>{formatMoney(entry.balance)}</span> },
+    { key: "balance", label: "往来余额", width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance)}`}>{formatMoney(entry.balance)}</span> },
+    { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     {
       key: "actions",
       label: "操作",
@@ -567,7 +584,7 @@ export function DebtShell({
         </div>
       ),
     },
-  ], []);
+  ], [isSelectedBankLoan]);
 
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {
@@ -603,27 +620,15 @@ export function DebtShell({
   ], []);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden bg-transparent p-4 md:p-5">
-        <section className="panel-surface flex min-h-0 flex-[0_0_48%] flex-col overflow-hidden">
-          <div className="panel-header">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-              <HandCoins className="h-4 w-4 text-amber-500" />
-              债权债务
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={showSettledRows}
-                  onChange={(event) => setShowSettledRows(event.target.checked)}
-                  className="h-3.5 w-3.5 accent-blue-600"
-                />
-                显示已还完{settledCount > 0 ? `(${settledCount})` : ""}
-              </label>
-              <div className="text-xs text-slate-400">正数表示借出余额，负数表示借入余额</div>
-            </div>
-          </div>
-
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
+      <ResizableVerticalSplit
+        storageKey="mmh:debt:split-height"
+        hasLowerPane={!!selectedRow}
+        defaultUpperHeight={360}
+        separatorLabel="调整往来款持仓和明细高度"
+        separatorTitle="拖动调整往来款持仓和明细高度"
+      >
+        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <AdvancedDataTable
             storageKey="mmh_debt_rows_table_v1"
             columns={rowColumns}
@@ -633,6 +638,26 @@ export function DebtShell({
             emptyText="暂无债务/债权余额"
             fillHeight
             compactRows
+            toolbarTitle={(
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <HandCoins className="h-4 w-4 text-amber-500" />
+                借入借出
+              </span>
+            )}
+            toolbarRightContent={(
+              <div className="flex items-center gap-3">
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={showSettledRows}
+                    onChange={(event) => setShowSettledRows(event.target.checked)}
+                    className="h-3.5 w-3.5 accent-blue-600"
+                  />
+                  显示已还完{settledCount > 0 ? `(${settledCount})` : ""}
+                </label>
+                <div className="text-xs text-slate-400">流入增加往来余额，流出减少往来余额</div>
+              </div>
+            )}
             onRowClick={(row) => openDebtRow(row)}
             onRowDoubleClick={(row) => { if (!row.isGroup) openRepayment(row); }}
             rowClassName={(row) => `cursor-pointer ${row.key === (selectedRow?.key ?? "") ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
@@ -650,78 +675,74 @@ export function DebtShell({
           />
         </section>
 
-        <section className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="panel-header">
-            <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5">
-              <button
-                type="button"
-                onClick={() => setDetailTab("entries")}
-                className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "entries" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
-              >
-                交易明细
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab("schedule")}
-                className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "schedule" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
-              >
-                还款表
-              </button>
-            </div>
+        <section className="panel-surface flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+          {isSelectedBankLoan ? <div className="panel-header">
+            {isSelectedBankLoan ? (
+              <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setDetailTab("entries")}
+                  className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "entries" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
+                >
+                  交易明细
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailTab("schedule")}
+                  className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "schedule" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
+                >
+                  还款表
+                </button>
+              </div>
+            ) : <div />}
             <div className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                disabled={!canAdjustRateSelectedRow}
-                onClick={() => selectedRow && openRateAdjustment(selectedRow)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                title={canAdjustRateSelectedRow ? "新增贷款利率调整" : "只有借入贷款可以调整利率"}
-              >
-                <Percent className="h-3.5 w-3.5" />
-                利率调整
-              </button>
-              <button
-                type="button"
-                disabled={!canRecalculateSelectedRow}
-                onClick={() => selectedRow && openRecalculateDialog(selectedRow)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                title={canRecalculateSelectedRow ? "按当前余额和利率重算后续还款计划" : "只有有固定计划的借入贷款可以重算"}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                重算
-              </button>
-              <button
-                type="button"
-                disabled={!canRepaySelectedRow}
-                onClick={() => selectedRow && openRepayment(selectedRow)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                title={canRepaySelectedRow ? "登记本期还款" : "只有借入余额可以还款"}
-              >
-                <HandCoins className="h-3.5 w-3.5" />
-                还款
-              </button>
+              {isSelectedBankLoan ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={!canAdjustRateSelectedRow}
+                    onClick={() => selectedRow && openRateAdjustment(selectedRow)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    title={canAdjustRateSelectedRow ? "新增贷款利率调整" : "只有银行贷款可以调整利率"}
+                  >
+                    <Percent className="h-3.5 w-3.5" />
+                    利率调整
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canRecalculateSelectedRow}
+                    onClick={() => selectedRow && openRecalculateDialog(selectedRow)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    title={canRecalculateSelectedRow ? "按当前余额和利率重算后续还款计划" : "只有有固定计划的银行贷款可以重算"}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    重算
+                  </button>
+                </>
+              ) : null}
             </div>
-          </div>
+          </div> : null}
 
           {!selectedRow ? (
             <div className="flex min-h-0 flex-1 items-center justify-center border-t border-slate-100 bg-slate-50/60 px-4 text-sm text-slate-500">
               请先选择上方往来账户
             </div>
-          ) : detailTab === "entries" ? (
+          ) : detailTab === "entries" || !isSelectedBankLoan ? (
             <AdvancedDataTable
               storageKey="mmh_debt_entries_table_v1"
               columns={entryColumns}
               rows={entries}
               rowKey={(entry) => entry.id}
-              minTableWidth={980}
+              minTableWidth={1240}
               emptyText="暂无明细"
               fillHeight
               compactRows
+              toolbarTitle="交易明细"
               selectable
               selectedKeys={selectedEntryIds}
               onSelectionChange={setSelectedEntryIds}
               batchActions={[
                 { label: "批量删除", onClick: batchDeleteEntries },
-                { label: "批量修改", onClick: () => window.alert("批量修改入口已接入，下一步会复用统一批量修改弹窗。") },
               ]}
             />
           ) : (
@@ -759,6 +780,7 @@ export function DebtShell({
             />
           )}
         </section>
+      </ResizableVerticalSplit>
 
         {rateCardOpen ? (
           <div className="app-modal-backdrop z-50">

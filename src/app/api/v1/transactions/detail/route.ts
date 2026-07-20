@@ -62,8 +62,9 @@ import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
-import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
@@ -78,6 +79,10 @@ import {
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
 export const runtime = "nodejs";
+
+function isSettlementDebtAccountForDetail(account?: { kind?: string | null; counterpartyId?: string | null } | null) {
+  return account?.kind === AccountKind.loan && !!account.counterpartyId;
+}
 const DETAIL_LIST_MAX_PAGE_SIZE = 5000;
 const TX_EDIT_TRANSACTION_OPTIONS = {
   maxWait: 15_000,
@@ -776,6 +781,7 @@ async function loadApiDetailRecord(entryId: string) {
     accountName: entry.accountName,
     accountKind: entry.account?.kind ?? null,
     accountDebtDirection: entry.account?.debtDirection ?? null,
+    accountIsSettlementDebt: isSettlementDebtAccountForDetail(entry.account),
     accountInstitutionName: entry.account?.Institution?.name ?? "",
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? null,
@@ -783,6 +789,7 @@ async function loadApiDetailRecord(entryId: string) {
     toAccountName: entry.toAccountName,
     toAccountKind: entry.toAccount?.kind ?? null,
     toAccountDebtDirection: entry.toAccount?.debtDirection ?? null,
+    toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(entry.toAccount),
     toAccountInstitutionName: entry.toAccount?.Institution?.name ?? "",
     note: entry.note,
     fundSubtype: entry.fundSubtype,
@@ -868,6 +875,18 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
       userNote: wealthRow.note,
     }),
     businessNote: wealthRow.note ?? null,
+  };
+}
+
+function entryWithLinkedWealthDisplayDateFields(record: any, wealthRow: any | null) {
+  if (!wealthRow) return record;
+  const action = normalizeFundSubtype(wealthRow.action);
+  if (!isWealthCashInSubtype(action)) return record;
+  return {
+    ...record,
+    fundSubtype: action,
+    fundArrivalDate: wealthRow.arrivalDate ?? record.fundArrivalDate,
+    toAccountId: wealthRow.cashAccountId ?? record.toAccountId,
   };
 }
 
@@ -1098,6 +1117,7 @@ export async function GET(req: Request) {
         accountName: record.accountName,
         accountKind: record.account?.kind ?? null,
         accountDebtDirection: record.account?.debtDirection ?? null,
+        accountIsSettlementDebt: isSettlementDebtAccountForDetail(record.account),
         accountInstitutionName: record.account?.Institution?.name ?? "",
         counterpartyInstitutionId: record.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
@@ -1105,6 +1125,7 @@ export async function GET(req: Request) {
         toAccountName: record.toAccountName,
         toAccountKind: record.toAccount?.kind ?? null,
         toAccountDebtDirection: record.toAccount?.debtDirection ?? null,
+        toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(record.toAccount),
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
         toNote: record.toNote,
@@ -1187,9 +1208,28 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
     }
 
+    const allLinkedWealthIds = Array.from(new Set(allEntries
+      .map((entry) => linkedWealthTransactionIdOf(entry))
+      .filter((id): id is string => !!id)));
+    const allLinkedWealthRows = allLinkedWealthIds.length > 0
+      ? await prisma.wealthTransaction.findMany({
+          where: { id: { in: allLinkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
+          include: {
+            WealthProduct: true,
+            Account: { include: { Institution: { select: { name: true } } } },
+            CashAccount: { include: { Institution: { select: { name: true } } } },
+          },
+        })
+      : [];
+    const linkedWealthById = new Map(allLinkedWealthRows.map((row) => [row.id, row]));
+    const displayDateEntryOf = (entry: typeof allEntries[number]) => {
+      const linkedWealthId = linkedWealthTransactionIdOf(entry);
+      return entryWithLinkedWealthDisplayDateFields(entry, linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null);
+    };
+
     const accountDisplayBalance = await resolveAccountDisplayBalance(account, hidFilter);
-    const orderedEntries = [...allEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
-    const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+    const orderedEntries = [...allEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
+    const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
     const runningBalanceById = new Map<string, number>();
     let runningBalance = 0;
     for (const entry of ascEntries) {
@@ -1198,26 +1238,13 @@ export async function GET(req: Request) {
     }
 
     const pagedEntries = orderedEntries.slice((page - 1) * pageSize, page * pageSize);
-    const linkedWealthIds = Array.from(new Set(pagedEntries
-      .map((entry) => linkedWealthTransactionIdOf(entry))
-      .filter((id): id is string => !!id)));
-    const linkedWealthRows = linkedWealthIds.length > 0
-      ? await prisma.wealthTransaction.findMany({
-          where: { id: { in: linkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
-          include: {
-            WealthProduct: true,
-            Account: { include: { Institution: { select: { name: true } } } },
-            CashAccount: { include: { Institution: { select: { name: true } } } },
-          },
-        })
-      : [];
-    const linkedWealthById = new Map(linkedWealthRows.map((row) => [row.id, row]));
     const entries = pagedEntries.map((e) => {
       const linkedWealthId = linkedWealthTransactionIdOf(e);
       const linkedWealth = linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null;
+      const displayDateEntry = entryWithLinkedWealthDisplayDateFields(e, linkedWealth);
       return ({
       id: e.id,
-      date: formatDateLocal(getDetailEntryDisplayDate(e, accountId)),
+      date: formatDateLocal(getDetailEntryDisplayDate(displayDateEntry, accountId)),
       postedAt: toDateOnlyLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
       dayOrder: e.dayOrder,
@@ -1230,6 +1257,7 @@ export async function GET(req: Request) {
       accountName: e.accountName,
       accountKind: e.account?.kind ?? null,
       accountDebtDirection: e.account?.debtDirection ?? null,
+      accountIsSettlementDebt: isSettlementDebtAccountForDetail(e.account),
       accountInstitutionName: e.account?.Institution?.name ?? "",
       counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
       counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
@@ -1237,6 +1265,7 @@ export async function GET(req: Request) {
       toAccountName: e.toAccountName,
       toAccountKind: e.toAccount?.kind ?? null,
       toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
+      toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(e.toAccount),
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
       toNote: e.toNote,
@@ -1309,8 +1338,8 @@ export async function GET(req: Request) {
  * Body (JSON):
  *   type: "expense" | "income" | "advance" | "transfer" | "investment"
  *   date: string (YYYY-MM-DD)
- *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
- *   amount: number
+ *   postedAt?: string (YYYY-MM-DD; expense/income only, defaults to date)
+ *   amount: number (advance: positive means paid on behalf of counterparty; negative means counterparty returned money)
  *   accountId: string
  *   categoryId?: string
  *   categoryName?: string
@@ -1357,7 +1386,7 @@ export async function POST(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-    const postedAt = type === "expense" ? (toDateOrNull(body.postedAt) ?? date) : null;
+    const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
     const { householdId } = ctx;
 
     if (!amountAbs) {
@@ -1389,27 +1418,25 @@ export async function POST(req: Request) {
           debtObjectId: counterpartyInstitutionId,
         });
         advanceAccountId = resolvedAdvance.account.id;
-        const statementMonth =
-          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
-            : null;
+        const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
+        const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
         const created = await tx.txRecord.create({
           data: {
             householdId,
-            accountId: acc.id,
-            accountName: acc.name,
-            toAccountId: resolvedAdvance.account.id,
-            toAccountName: resolvedAdvance.account.name,
+            accountId: transfer.fromAccount.id,
+            accountName: transfer.fromAccount.name,
+            toAccountId: transfer.toAccount.id,
+            toAccountName: transfer.toAccount.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
             counterpartyInstitutionId: resolvedAdvance.objectId,
             counterpartyInstitutionName: resolvedAdvance.objectName,
-            amount: -amountAbs,
+            amount: transfer.transferAmount,
             type: TransactionType.transfer,
             date,
             statementMonth,
             source: "advance",
-            note: note || "代付",
+            note: note || transfer.defaultNote,
           },
         });
         createdId = created.id;
@@ -1449,13 +1476,15 @@ export async function POST(req: Request) {
         const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const repaymentCategory = isCreditCardRepaymentTransfer({
-          type: TransactionType.transfer,
-          accountKind: fromAcc.kind,
-          toAccountKind: toAcc.kind,
-        })
-          ? await resolveCreditCardRepaymentCategory(tx, householdId)
-          : null;
+        const transferCategory = debtMode
+          ? await ensureSettlementTransferCategory(tx, householdId)
+          : isCreditCardRepaymentTransfer({
+              type: TransactionType.transfer,
+              accountKind: fromAcc.kind,
+              toAccountKind: toAcc.kind,
+            })
+            ? await resolveCreditCardRepaymentCategory(tx, householdId)
+            : null;
 
         const created = await tx.txRecord.create({
           data: {
@@ -1466,8 +1495,8 @@ export async function POST(req: Request) {
             amount: signedTransferAmount,
             type: TransactionType.transfer,
             date,
-            categoryId: repaymentCategory?.id ?? null,
-            categoryName: repaymentCategory?.name ?? null,
+            categoryId: transferCategory?.id ?? null,
+            categoryName: transferCategory?.name ?? null,
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
@@ -2209,11 +2238,13 @@ export async function POST(req: Request) {
             accountName: created.accountName,
             accountKind: created.account?.kind ?? null,
             accountDebtDirection: created.account?.debtDirection ?? null,
+            accountIsSettlementDebt: isSettlementDebtAccountForDetail(created.account),
             accountInstitutionName: created.account?.Institution?.name ?? "",
             toAccountId: created.toAccountId,
             toAccountName: created.toAccountName,
             toAccountKind: created.toAccount?.kind ?? null,
             toAccountDebtDirection: created.toAccount?.debtDirection ?? null,
+            toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(created.toAccount),
             toAccountInstitutionName: created.toAccount?.Institution?.name ?? "",
             note: created.note,
             fundSubtype: created.fundSubtype,
@@ -2256,7 +2287,7 @@ export async function POST(req: Request) {
  * Body (JSON):
  *   id: string (必填)
  *   date?: string (YYYY-MM-DD)
- *   postedAt?: string (YYYY-MM-DD; expense only, defaults to date)
+ *   postedAt?: string (YYYY-MM-DD; expense/income only, defaults to date)
  *   amount?: number
  *   type?: "expense" | "income" | "advance" | "transfer" | "investment"
  *   accountId?: string
@@ -2309,7 +2340,7 @@ export async function PUT(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-    const postedAt = type === "expense" ? (toDateOrNull(body.postedAt) ?? date) : null;
+    const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
     if (!amountAbs) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
@@ -2373,13 +2404,15 @@ export async function PUT(req: Request) {
         const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const repaymentCategory = isCreditCardRepaymentTransfer({
-          type: TransactionType.transfer,
-          accountKind: fromAcc.kind,
-          toAccountKind: toAcc.kind,
-        })
-          ? await resolveCreditCardRepaymentCategory(tx, householdId)
-          : null;
+        const transferCategory = debtMode
+          ? await ensureSettlementTransferCategory(tx, householdId)
+          : isCreditCardRepaymentTransfer({
+              type: TransactionType.transfer,
+              accountKind: fromAcc.kind,
+              toAccountKind: toAcc.kind,
+            })
+            ? await resolveCreditCardRepaymentCategory(tx, householdId)
+            : null;
 
         await tx.txRecord.update({
           where: { id: entryId },
@@ -2389,8 +2422,8 @@ export async function PUT(req: Request) {
             accountName: fromAcc.name,
             toAccountId: toAcc.id,
             toAccountName: toAcc.name,
-            categoryId: repaymentCategory?.id ?? null,
-            categoryName: repaymentCategory?.name ?? null,
+            categoryId: transferCategory?.id ?? null,
+            categoryName: transferCategory?.name ?? null,
             statementMonth: transferStatementMonth,
             date,
             postedAt: null,
@@ -2741,18 +2774,16 @@ return;
           debtObjectId: counterpartyInstitutionId,
         });
         advanceAccountId = resolvedAdvance.account.id;
-        const statementMonth =
-          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
-            : null;
+        const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
+        const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
         await tx.txRecord.update({
           where: { id: entryId },
           data: {
-            amount: -amountAbs,
-            accountId: acc.id,
-            accountName: acc.name,
-            toAccountId: resolvedAdvance.account.id,
-            toAccountName: resolvedAdvance.account.name,
+            amount: transfer.transferAmount,
+            accountId: transfer.fromAccount.id,
+            accountName: transfer.fromAccount.name,
+            toAccountId: transfer.toAccount.id,
+            toAccountName: transfer.toAccount.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
             counterpartyInstitutionId: resolvedAdvance.objectId,
@@ -2762,7 +2793,7 @@ return;
             postedAt: null,
             type: TransactionType.transfer,
             source: "advance",
-            note: note || "代付",
+            note: note || transfer.defaultNote,
             toNote: null,
             fundCode: null,
             fundProductType: null,
@@ -2960,6 +2991,7 @@ return;
         accountName: updated.accountName,
         accountKind: updated.account?.kind ?? null,
         accountDebtDirection: updated.account?.debtDirection ?? null,
+        accountIsSettlementDebt: isSettlementDebtAccountForDetail(updated.account),
         accountInstitutionName: updated.account?.Institution?.name ?? "",
         counterpartyInstitutionId: updated.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: updated.counterpartyInstitutionName ?? null,
@@ -2967,6 +2999,7 @@ return;
         toAccountName: updated.toAccountName,
         toAccountKind: updated.toAccount?.kind ?? null,
         toAccountDebtDirection: updated.toAccount?.debtDirection ?? null,
+        toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(updated.toAccount),
         toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",
         note: updated.note,
         fundSubtype: updated.fundSubtype,

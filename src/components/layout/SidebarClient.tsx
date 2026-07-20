@@ -119,14 +119,21 @@ function isSidebarSettlementLoan(item: AccountItem) {
   return item.kind === "loan" && (!!item.counterpartyId || item.institutionType !== "bank");
 }
 
+function isOwnerScopedSidebarItem(item: AccountItem) {
+  return item.kind !== "loan_summary" && !isSidebarSettlementLoan(item);
+}
+
 function normalizeSidebarItems(items: AccountItem[]) {
   const normalized = items.map(normalizeSidebarAccountItem);
   const loanItems = normalized
     .filter(isSidebarSettlementLoan)
-    .map((item) => ({ ...item, children: undefined }))
+    .map((item) => ({
+      ...item,
+      groupName: undefined,
+      hoverTitle: [item.label, "借入借出"].filter(Boolean).join(" · "),
+      children: undefined,
+    }))
     .sort((a, b) => {
-      const groupDiff = (a.groupName || "未设置所有人").localeCompare(b.groupName || "未设置所有人", "zh-Hans-CN");
-      if (groupDiff !== 0) return groupDiff;
       return a.label.localeCompare(b.label, "zh-Hans-CN");
     });
   const otherItems = normalized.filter((item) => !isSidebarSettlementLoan(item));
@@ -140,10 +147,10 @@ function normalizeSidebarItems(items: AccountItem[]) {
       id: "__debt__",
       name: "借入借出",
       label: "借入借出",
-      hoverTitle: "未设置所有人 · 借入借出 · 借入借出",
+      hoverTitle: "往来款 · 借入借出",
       balance: loanBalance,
       kind: "loan_summary",
-      groupName: "未设置所有人",
+      groupName: undefined,
       institution: "往来款",
       children: loanItems,
     },
@@ -241,7 +248,9 @@ export function SidebarClient({
   const { t } = useI18n();
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
-    () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item]).map((child) => child.groupName || "未设置所有人"))))
+    () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item])
+      .filter(isOwnerScopedSidebarItem)
+      .map((child) => child.groupName || "未设置所有人"))))
       .filter((name) => name !== "未指定")
       .sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
     [items],
@@ -479,7 +488,7 @@ export function SidebarClient({
     const passesCommonVisibility = (item: AccountItem) => {
       if (item.kind === "loan" && item.institutionType === "bank" && item.balance === 0) return false;
       if (hideZero && item.balance === 0) return false;
-      if (selectedOwnerFilter && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
+      if (selectedOwnerFilter && isOwnerScopedSidebarItem(item) && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
       return true;
     };
     const isVisibleLeaf = (item: AccountItem) => {
@@ -931,7 +940,7 @@ export function SidebarClient({
                                 q.set("view", view);
                                 return `/?${q.toString()}`;
                               })();
-                              const itemTitle = it.hoverTitle ?? [it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
+                              const itemTitle = it.hoverTitle ?? [it.kind === "loan" ? "" : it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
                               return (
                                 <Link
                                   key={`${group.key}:${it.id}:${it.name}`}

@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
-import { callDeleteEntries, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import {
@@ -542,7 +542,7 @@ export function AIPanel({
         setMessages((m) => [...m, { role: "assistant", text: data.message || `已删除 ${entryIds.length} 条记录。` }]);
         setConfirmDialog(null);
         const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-        dispatchFinanceDataChanged({ reason: "ai-entry-delete", deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+        dispatchFinanceDataChanged({ reason: "ai-entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
         setTimeout(() => router.refresh(), 500);
         return;
       }

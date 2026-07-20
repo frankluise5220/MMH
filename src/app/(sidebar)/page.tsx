@@ -21,19 +21,25 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { RegularInvestActionButtons } from "@/components/RegularInvestActionButtons";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
-import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
+import type { DetailEntry } from "@/components/DetailViewClient";
 import { BasicDetailPanel } from "@/components/BasicDetailPanel";
-import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import { CreditBillSummaryTable, type CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
+import { CreditBillDetailPanel } from "@/components/CreditBillDetailPanel";
+import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 import Link from "next/link";
-import { Upload } from "lucide-react";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  applyDebtRowEntryMetrics,
+  buildDebtDetailEntriesViewData,
+  buildDebtRepaymentScheduleRows,
+  buildDebtRowsViewData,
+} from "@/lib/server/debt-view-data";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
@@ -63,7 +69,6 @@ import {
   buildFlatAccountOptions,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
-import { debtActionLabel } from "@/lib/debt";
 import { getInvestmentAccountView, isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getAccountFundUnitsDecimals, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -77,18 +82,17 @@ import {
   resolveLoanRateAdjustments,
 } from "@/lib/server/loan-rate-adjustments";
 import {
-  DEFAULT_LOAN_PREPAY_STRATEGY,
   encodeLoanPrepayStrategy,
   normalizeLoanPrepayStrategy,
-  parseLoanPrepayStrategy,
 } from "@/lib/loan-prepay-strategy";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
-import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import {
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
@@ -99,12 +103,10 @@ import {
   calcLoanScheduledAmountForPeriodStart,
   calcLoanRunPartsWithRateAdjustments,
   calcLoanScheduledAmount,
-  getEffectiveLoanAnnualRate,
   normalizeLoanRateAdjustments,
 } from "@/lib/loan-repayment";
 import {
   buildMortgageLprRateAdjustments,
-  inferMortgageLprDiscountFromRateAdjustments,
   MORTGAGE_BASE_BENCHMARK_RATE,
 } from "@/lib/loan-lpr";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
@@ -263,32 +265,6 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
   return Number.isFinite(discount) && discount > 0 ? discount : null;
 }
 
-function debtPrincipalForAccountSide(
-  entry: { amount: unknown; debtPrincipalAmount?: unknown; toAccountId?: string | null },
-  debtAccountIds: Set<string>,
-) {
-  const amount = toNumber(entry.amount);
-  const isToDebtAccount = debtAccountIds.has(entry.toAccountId ?? "");
-  if (!isToDebtAccount) return amount;
-  return Math.abs(toNumber(entry.debtPrincipalAmount ?? amount));
-}
-
-function debtPaymentTotal(
-  entry: { amount: unknown; debtPrincipalAmount?: unknown; debtInterestAmount?: unknown; debtFeeAmount?: unknown },
-  fallbackInterest = 0,
-  fallbackFee = 0,
-) {
-  const hasStructuredSplit =
-    entry.debtPrincipalAmount != null ||
-    entry.debtInterestAmount != null ||
-    entry.debtFeeAmount != null;
-  const principal = Math.abs(toNumber(entry.debtPrincipalAmount ?? entry.amount));
-  const interest = Math.abs(toNumber(entry.debtInterestAmount));
-  const fee = Math.abs(toNumber(entry.debtFeeAmount));
-  if (!hasStructuredSplit) return principal + fallbackInterest + fallbackFee;
-  return Math.abs(toNumber(entry.amount)) || principal + interest + fee;
-}
-
 async function resolveOrCreateDebtAccount(
   tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
   householdId: string,
@@ -299,11 +275,13 @@ async function resolveOrCreateDebtAccount(
   const debtObject = await resolveDebtObject(tx, householdId, debtObjectId);
 
   const objectName = debtObject.shortName?.trim() || debtObject.name;
-  const accountName = itemName?.trim() || `${objectName}的往来款`;
+  const accountName = debtObject.kind === "counterparty"
+    ? `${objectName}的往来款`
+    : itemName?.trim() || `${objectName}的往来款`;
   const objectWhere = debtObject.kind === "counterparty"
     ? { counterpartyId: debtObject.id, institutionId: null }
     : { institutionId: debtObject.id, counterpartyId: null };
-  const requestedItemName = itemName?.trim();
+  const requestedItemName = debtObject.kind === "counterparty" ? "" : itemName?.trim();
   let existing;
   if (debtObject.kind === "counterparty") {
     existing = await tx.account.findFirst({
@@ -365,7 +343,7 @@ async function resolveOrCreateDebtAccount(
     data: {
       name: accountName,
       kind: AccountKind.loan,
-      debtDirection: direction,
+      debtDirection: debtObject.kind === "counterparty" ? "receivable" : direction,
       currency: "CNY",
       groupId: group.id,
       institutionId: debtObject.kind === "institution" ? debtObject.id : null,
@@ -683,7 +661,7 @@ type ExportAccountLike = {
 } | null | undefined;
 
 function exportAccountLabel(account: ExportAccountLike, fallbackName?: string | null) {
-  const owner = account?.AccountGroup?.name?.trim() || "";
+  const owner = account?.kind === "loan" ? "" : account?.AccountGroup?.name?.trim() || "";
   const institution = account?.Institution?.shortName?.trim() || account?.Institution?.name?.trim() || "";
   const accountName = account?.name?.trim() || fallbackName?.trim() || "";
   const tailOrName = account?.numberMasked?.trim() || accountName;
@@ -1058,7 +1036,7 @@ async function createTransaction(formData: FormData) {
   const installmentRateType = String(formData.get("installmentRateType") ?? "period_fee") as CreditCardInstallmentRateType;
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-  const postedAt = type === "expense" ? (postedAtInput ?? date) : null;
+  const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
   const { householdId } = await getHouseholdScope();
 
   if (!amountAbs) {
@@ -1067,10 +1045,12 @@ async function createTransaction(formData: FormData) {
 
   try {
     if (type === "transfer") {
-      const fromAccountId = String(formData.get("fromAccountId") ?? "").trim();
-      const toAccountId = String(formData.get("toAccountId") ?? "").trim();
-      if (!fromAccountId || !toAccountId) return { ok: false as const, error: "转账需要选择转出/转入账户" };
-      if (fromAccountId === toAccountId) return { ok: false as const, error: "转出/转入账户不能相同" };
+      const formFromAccountId = String(formData.get("fromAccountId") ?? "").trim();
+      const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
+      if (!formFromAccountId || !formToAccountId) return { ok: false as const, error: "转账需要选择转出/转入账户" };
+      if (formFromAccountId === formToAccountId) return { ok: false as const, error: "转出/转入账户不能相同" };
+      const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
+      const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
 
       await prisma.$transaction(async (tx) => {
         const [fromAcc, toAcc] = await Promise.all([
@@ -1201,27 +1181,25 @@ async function createTransaction(formData: FormData) {
         const advanceAccount = resolvedAdvance.account;
         if (advanceAccount.id === acc.id) throw new Error("资金账户不能和往来款账户相同");
         advanceAccountId = advanceAccount.id;
-        const statementMonth =
-          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
-            : null;
+        const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount });
+        const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
 
         const created = await tx.txRecord.create({
           data: {
-            accountId: acc.id,
-            accountName: acc.name,
-            toAccountId: advanceAccount.id,
-            toAccountName: advanceAccount.name,
+            accountId: transfer.fromAccount.id,
+            accountName: transfer.fromAccount.name,
+            toAccountId: transfer.toAccount.id,
+            toAccountName: transfer.toAccount.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
             counterpartyInstitutionId: resolvedAdvance.objectId,
             counterpartyInstitutionName: resolvedAdvance.objectName,
-            amount: -amountAbs,
+            amount: transfer.transferAmount,
             type: TransactionType.transfer,
             date,
             statementMonth,
             source: "advance",
-            note: note || "代付",
+            note: note || transfer.defaultNote,
             toNote: null,
             householdId,
           },
@@ -1642,6 +1620,7 @@ async function createDebtTransaction(formData: FormData) {
   if (penalty < 0) {
     return { ok: false as const, error: "手续费不能小于 0" };
   }
+  const debtPrincipalForRecord = mode === "repay_out" || mode === "prepay_out" ? principalAbs : principal;
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const mortgageLprDiscount = isInterestFreeRepayment
@@ -1759,6 +1738,7 @@ async function createDebtTransaction(formData: FormData) {
       if (!isCounterpartyDebtAccount && mode === "collect_in" && debtAccount.debtDirection !== "receivable") {
         throw new Error("收回只能选择已有借出项");
       }
+      const settlementTransferCategory = await ensureSettlementTransferCategory(tx, householdId);
       resolvedDebtAccountId = debtAccount.id;
       if (
         acceptedLprRateEffectiveDate &&
@@ -1799,6 +1779,12 @@ async function createDebtTransaction(formData: FormData) {
       if (!editEntryId && mode === "prepay_out" && prepayStrategy === "settle" && Math.abs(principalAbs - outstandingPrincipalBefore) > 0.005) {
         throw new Error(`全部结清时，提前还本金应等于当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
       }
+      const isInstitutionBorrow =
+        mode === "borrow_in" &&
+        !!debtAccount.institutionId &&
+        !!debtAccount.Institution &&
+        debtAccount.Institution.type === "bank";
+      const isFinancedPurchaseForRecord = isInstitutionBorrow && isFinancedPurchase;
       if (editEntryId) {
         if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
           throw new Error("只能在借入、借出、还款、提前还款或收回界面编辑往来款记录");
@@ -1819,7 +1805,7 @@ async function createDebtTransaction(formData: FormData) {
 
         const isDebtAccountFromSide = mode === "borrow_in" || mode === "collect_in";
         const transferFromAccount = isDebtAccountFromSide ? debtAccount : cashAccount;
-        const transferToAccount = isFinancedPurchase ? null : isDebtAccountFromSide ? cashAccount : debtAccount;
+        const transferToAccount = isFinancedPurchaseForRecord ? null : isDebtAccountFromSide ? cashAccount : debtAccount;
         const transferStatementMonth =
           transferToAccount &&
           (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
@@ -1836,16 +1822,18 @@ async function createDebtTransaction(formData: FormData) {
             amount: mode === "repay_out" || mode === "prepay_out"
               ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
               : mode === "collect_in"
-                ? Math.abs(principalAbs + interest)
-                : -principalAbs,
-            debtPrincipalAmount: principalAbs,
+                ? debtPrincipalForRecord + interest
+                : -debtPrincipalForRecord,
+            debtPrincipalAmount: debtPrincipalForRecord,
             debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : 0,
             debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : 0,
             date,
             note: note || null,
             toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : original.toNote,
             statementMonth: transferStatementMonth,
-            source: isFinancedPurchase ? "debt_financed_purchase" : `debt_${mode}`,
+            source: isFinancedPurchaseForRecord ? "debt_financed_purchase" : `debt_${mode}`,
+            categoryId: settlementTransferCategory?.id ?? null,
+            categoryName: settlementTransferCategory?.name ?? "借入借出",
           },
         });
         if (mode === "prepay_out" && transferToAccount?.id) {
@@ -1876,13 +1864,9 @@ async function createDebtTransaction(formData: FormData) {
         });
         return;
       }
-      const isInstitutionBorrow =
-        mode === "borrow_in" &&
-        !!debtAccount.institutionId &&
-        !!debtAccount.Institution &&
-        debtAccount.Institution.type === "bank";
       const shouldCreateRepaymentPlan =
         mode === "borrow_in" &&
+        isInstitutionBorrow &&
         createRepaymentPlan &&
         !!firstRepaymentDate &&
         !!repaymentPlanAmount &&
@@ -1891,7 +1875,7 @@ async function createDebtTransaction(formData: FormData) {
         loanTotalRuns > 0;
 
       const transferFromAccount = mode === "borrow_in" || mode === "collect_in" ? debtAccount : cashAccount;
-      const transferToAccount = isFinancedPurchase ? null : mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
+      const transferToAccount = isFinancedPurchaseForRecord ? null : mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
       const transferStatementMonth =
         transferToAccount &&
         (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
@@ -1908,28 +1892,32 @@ async function createDebtTransaction(formData: FormData) {
           amount: mode === "repay_out" || mode === "prepay_out"
             ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
             : mode === "collect_in"
-              ? Math.abs(principalAbs + interest)
-              : -principalAbs,
-          debtPrincipalAmount: principalAbs,
+              ? debtPrincipalForRecord + interest
+              : -debtPrincipalForRecord,
+          debtPrincipalAmount: debtPrincipalForRecord,
           debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : null,
           debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : null,
           type: TransactionType.transfer,
           date,
           note: mode === "borrow_in"
-            ? [
-                note || (isFinancedPurchase ? "消费分期" : isInstitutionBorrow ? "机构借入" : "借入"),
-                `还款方式：${repaymentMethod}`,
-                isFixedRepaymentMethod && Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
-                  ? `周期：每${repaymentIntervalMonths === 1 ? "月" : `${repaymentIntervalMonths}个月`}`
-                  : "",
-                isFixedRepaymentMethod && Number.isFinite(loanTotalRuns) && loanTotalRuns > 0 ? `期数：${loanTotalRuns}` : "",
-                isFixedRepaymentMethod && annualRate != null ? `年利率：${annualRate}%` : "",
-                isFixedRepaymentMethod && mortgageLprDiscount != null ? `LPR折扣：${mortgageLprDiscount}` : "",
-              ].filter(Boolean).join("；")
+            ? isInstitutionBorrow
+              ? [
+                  note || (isFinancedPurchaseForRecord ? "消费分期" : "机构借入"),
+                  `还款方式：${repaymentMethod}`,
+                  isFixedRepaymentMethod && Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
+                    ? `周期：每${repaymentIntervalMonths === 1 ? "月" : `${repaymentIntervalMonths}个月`}`
+                    : "",
+                  isFixedRepaymentMethod && Number.isFinite(loanTotalRuns) && loanTotalRuns > 0 ? `期数：${loanTotalRuns}` : "",
+                  isFixedRepaymentMethod && annualRate != null ? `年利率：${annualRate}%` : "",
+                  isFixedRepaymentMethod && mortgageLprDiscount != null ? `LPR折扣：${mortgageLprDiscount}` : "",
+                ].filter(Boolean).join("；")
+              : note || "借入"
             : note || null,
           toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : null,
           statementMonth: transferStatementMonth,
-          source: isFinancedPurchase ? "debt_financed_purchase" : `debt_${mode}`,
+          source: isFinancedPurchaseForRecord ? "debt_financed_purchase" : `debt_${mode}`,
+          categoryId: settlementTransferCategory?.id ?? null,
+          categoryName: settlementTransferCategory?.name ?? "借入借出",
           householdId,
         },
       });
@@ -3378,7 +3366,7 @@ async function updateTransactionFromDialog(formData: FormData) {
   const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-  const postedAt = type === "expense" ? (postedAtInput ?? date) : null;
+  const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
   if (!amountAbs) return { ok: false as const, error: "金额不正确" };
 
   try {
@@ -3399,10 +3387,12 @@ async function updateTransactionFromDialog(formData: FormData) {
       await replaceEntryTags({ tx, entryId, householdId: entry.householdId, tagIds });
 
       if (type === "transfer") {
-        const fromAccountId = String(formData.get("fromAccountId") ?? "").trim();
-        const toAccountId = String(formData.get("toAccountId") ?? "").trim();
-        if (!fromAccountId || !toAccountId) throw new Error("转账需要选择转出/转入账户");
-        if (fromAccountId === toAccountId) throw new Error("转出/转入账户不能相同");
+        const formFromAccountId = String(formData.get("fromAccountId") ?? "").trim();
+        const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
+        if (!formFromAccountId || !formToAccountId) throw new Error("转账需要选择转出/转入账户");
+        if (formFromAccountId === formToAccountId) throw new Error("转出/转入账户不能相同");
+        const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
+        const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
 
         const [fromAcc, toAcc] = await Promise.all([
           tx.account.findUnique({ where: { id: fromAccountId } }),
@@ -3554,20 +3544,18 @@ async function updateTransactionFromDialog(formData: FormData) {
           cashAccountId: acc.id,
           debtObjectId,
         });
-        const statementMonth =
-          (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
-            : null;
+        const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
+        const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
         touchedAccountIds.add(acc.id);
         touchedAccountIds.add(resolvedAdvance.account.id);
         await tx.txRecord.update({
           where: { id: entryId },
           data: {
-            amount: -amountAbs,
-            accountId: acc.id,
-            accountName: acc.name,
-            toAccountId: resolvedAdvance.account.id,
-            toAccountName: resolvedAdvance.account.name,
+            amount: transfer.transferAmount,
+            accountId: transfer.fromAccount.id,
+            accountName: transfer.fromAccount.name,
+            toAccountId: transfer.toAccount.id,
+            toAccountName: transfer.toAccount.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
             counterpartyInstitutionId: resolvedAdvance.objectId,
@@ -3577,7 +3565,7 @@ async function updateTransactionFromDialog(formData: FormData) {
             postedAt: null,
             type: TransactionType.transfer,
             source: "advance",
-            note: note || "代付",
+            note: note || transfer.defaultNote,
             toNote: null,
             fundCode: null,
             fundProductType: null,
@@ -3996,6 +3984,21 @@ export default async function Home({
   };
   const entryDisplayDate = (e: (typeof rawEntries)[number]) => getDetailEntryDisplayDate(e, accountId);
   const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
+  const isSettlementDebtAccountId = (id?: string | null) => {
+    if (!id) return false;
+    const account = accountMetaById.get(id);
+    if (!account || account.kind !== AccountKind.loan) return false;
+    return !!account.counterpartyId || account.Institution?.type !== "bank";
+  };
+  const isCreditCardRepaymentForDisplay = (e: (typeof entries)[number]) => {
+    if (isSettlementDebtAccountId(e.accountId) || isSettlementDebtAccountId(e.toAccountId)) return false;
+    return isCreditCardRepaymentTransfer({
+      type: e.type,
+      accountKind: e.account?.kind ?? accountMetaById.get(e.accountId ?? "")?.kind ?? null,
+      toAccountKind: e.toAccount?.kind ?? accountMetaById.get(e.toAccountId ?? "")?.kind ?? null,
+    });
+  };
   const getEntryDisplayNote = (e: (typeof entries)[number]) => {
     const fromNote = (e.note ?? "").trim();
     const receiverNote = (e.toNote ?? "").trim();
@@ -4026,7 +4029,7 @@ export default async function Home({
       return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
     }
     if (column === "category") {
-      if (isCreditCardRepaymentTransfer(e)) return "信用卡还款";
+      if (isCreditCardRepaymentForDisplay(e)) return "信用卡还款";
       if (e.type === TransactionType.investment) {
         if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
         return e.categoryName || getInvestmentCategoryName(e) || DETAIL_EMPTY_VALUE;
@@ -4107,7 +4110,7 @@ export default async function Home({
   const categoryLabels = buildCategoryPathLabels(categories);
   const exportCategoryLabels = buildCategoryExportLabels(categories);
   const getExportCategoryName = (e: (typeof filteredEntries2)[number]) => {
-    if (isCreditCardRepaymentTransfer(e)) return "信用卡还款";
+    if (isCreditCardRepaymentForDisplay(e)) return "信用卡还款";
     if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? stripExportCategoryRootLabel(e.categoryName);
     if (e.type === TransactionType.investment) {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
@@ -4295,7 +4298,7 @@ export default async function Home({
       if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
       if (isDepositAccount(selectedAccount)) return `存款 / ${accountLabel}`;
       if (selectedAccount.kind === AccountKind.insurance) return `保险 / ${accountLabel}`;
-      const group = (selectedAccount.AccountGroup?.name ?? "").trim();
+      const group = selectedAccount.kind === AccountKind.loan ? "" : (selectedAccount.AccountGroup?.name ?? "").trim();
       return [group, accountLabel].filter(Boolean).join(" / ");
     }
     return accountName || "";
@@ -4322,8 +4325,8 @@ export default async function Home({
       fullLabel: display.fullLabel,
       title: display.hoverTitle,
       hoverTitle: display.hoverTitle,
-      groupId: a.groupId ?? "",
-      groupName: a.AccountGroup?.name ?? "",
+      groupId: display.groupId,
+      groupName: display.groupName,
       institutionName: display.institutionName,
       institutionId: a.institutionId ?? "",
       institutionType: a.Institution?.type ?? "",
@@ -4413,8 +4416,8 @@ export default async function Home({
         label: display.selectorLabel,
         title: display.hoverTitle,
         hoverTitle: display.hoverTitle,
-        groupId: a.groupId ?? "",
-        groupName: a.AccountGroup?.name ?? "",
+        groupId: display.groupId,
+        groupName: display.groupName,
         institutionId: a.institutionId ?? "",
         institutionType: a.Institution?.type ?? "",
         investProductType: a.investProductType,
@@ -4443,8 +4446,8 @@ export default async function Home({
         label: display.selectorLabel,
         title: display.hoverTitle,
         hoverTitle: display.hoverTitle,
-        groupId: a.groupId ?? "",
-        groupName: a.AccountGroup?.name ?? "",
+        groupId: display.groupId,
+        groupName: display.groupName,
         institutionId: a.institutionId ?? "",
         institutionType: a.Institution?.type ?? "",
         investProductType: a.investProductType,
@@ -4600,328 +4603,27 @@ export default async function Home({
       loanRepaymentPlanByAccountId.set(plan.accountId, plan);
     }
   }
-  const debtRowMap = new Map<string, {
-    key: string;
-    name: string;
-    objectType: string;
-    objectName: string;
-    itemName: string;
-    accountId: string;
-    institutionId: string;
-    counterpartyId: string;
-    itemType: string;
-    repaymentMethod: string;
-    repaymentCycle: string;
-    annualRate: number | null;
-    mortgageLprDiscount: number | null;
-    remainingRuns: number | null;
-    paidPrincipal: number;
-    paidInterest: number;
-    remainingPrincipal: number;
-    remainingInterest: number;
-    nextRepaymentDate: string;
-    nextRepaymentPrincipal: number | null;
-    nextRepaymentInterest: number | null;
-    nextRepaymentCashAccountId: string;
-    loanRateAdjustments: Array<{ effectiveDate: string; annualRate: number }>;
-    payable: number;
-    receivable: number;
-    net: number;
-    accountCount: number;
-    accountIds: string[];
-    accountLabels: string[];
-    parentKey: string | null;
-    depth: number;
-    isGroup: boolean;
-  }>();
-  const ACTIVE_DEBT_EPSILON = 0.005;
-  const debtGroupKeyByAccountId = new Map<string, string>();
-  const debtGroupKeyByInstitutionId = new Map<string, string>();
-  const debtGroupKeyByCounterpartyId = new Map<string, string>();
-  const ordinaryDebtAccountIds: string[] = [];
-
-  for (const account of debtAccounts) {
-    const institutionName = (account.Institution?.shortName?.trim() || account.Institution?.name || "").trim();
-    const counterpartyName = (account.Counterparty?.shortName?.trim() || account.Counterparty?.name || "").trim();
-    const objectName = counterpartyName || institutionName || account.name;
-    const defaultItemName = objectName ? `${objectName}的往来款` : "";
-    const itemName = objectName && (account.name === defaultItemName || account.name === objectName)
-      ? "往来款"
-      : account.name;
-    const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
-    const loanPlan = loanRepaymentPlanByAccountId.get(account.id);
-    const isBankSettlementAccount =
-      !!account.institutionId &&
-      account.Institution?.type === "bank";
-    if (isBankSettlementAccount && Math.abs(balance) < ACTIVE_DEBT_EPSILON) {
-      continue;
-    }
-    if (!isBankSettlementAccount) {
-      ordinaryDebtAccountIds.push(account.id);
-    }
-    const accountRowKey = `account:${account.id}`;
-    const accountRowName = objectName && objectName !== itemName ? `${objectName} | ${itemName}` : account.name;
-    const accountObjectType = isBankSettlementAccount
-      ? account.debtDirection === DebtDirection.receivable ? "银行应收" : "银行贷款"
-      : account.Counterparty?.type === "person" || account.Institution?.type === "person"
-        ? "个人往来"
-        : "组织往来";
-    debtGroupKeyByAccountId.set(account.id, accountRowKey);
-    if (account.institutionId) debtGroupKeyByInstitutionId.set(account.institutionId, accountRowKey);
-    if (account.counterpartyId) debtGroupKeyByCounterpartyId.set(account.counterpartyId, accountRowKey);
-    const loanMemo = loanPlan ? decodeScheduledTaskMemo(loanPlan.memo) : null;
-    const loanRateAdjustments = resolveLoanRateAdjustments({
-      tableAdjustments: loanPlan ? loanRateAdjustmentsByAccountId.get(account.id) : [],
-      memoAdjustments: loanMemo?.loanRateAdjustments,
-    });
-    const remainingRuns =
-      loanPlan?.totalRuns == null
-        ? null
-        : Math.max(0, loanPlan.totalRuns - Math.max(0, loanPlan.executedRuns ?? 0));
-    const nextRunDateKey = loanPlan?.nextRunDate ? formatDateUtc(loanPlan.nextRunDate) : "";
-    const nextEffectiveAnnualRate = loanMemo
-      ? getEffectiveLoanAnnualRate({
-          baseAnnualRate: loanMemo.annualRate,
-          adjustments: loanRateAdjustments,
-          date: nextRunDateKey,
-        })
-      : null;
-    const loanIntervalMonths = loanMemo?.repaymentIntervalMonths ?? (loanPlan?.intervalUnit === IntervalUnit.month ? loanPlan.intervalValue : null);
-    const nextPreviousRunDateKey = loanPlan?.lastRunDate
-      ? formatDateUtc(loanPlan.lastRunDate)
-      : loanPlan?.startDate
-        ? formatDateUtc(loanPlan.startDate)
-        : null;
-    const nextPeriodStartScheduledAmount = loanPlan && balance < 0
-      ? calcLoanScheduledAmountForPeriodStart({
-          repaymentMethod: loanMemo?.repaymentMethod,
-          baseAnnualRate: loanMemo?.annualRate,
-          adjustments: loanRateAdjustments,
-          intervalMonths: loanIntervalMonths,
-          scheduledAmount: toNumber(loanPlan.amount),
-          remainingPrincipal: Math.abs(balance),
-          remainingRuns: remainingRuns ?? 1,
-          periodStartDate: nextPreviousRunDateKey,
-        })
-      : 0;
-    const nextRepaymentParts = loanPlan && balance < 0
-      ? calcLoanRunPartsWithRateAdjustments({
-          repaymentMethod: loanMemo?.repaymentMethod,
-          baseAnnualRate: loanMemo?.annualRate,
-          adjustments: loanRateAdjustments,
-          intervalMonths: loanIntervalMonths,
-          scheduledAmount: nextPeriodStartScheduledAmount,
-          remainingPrincipal: Math.abs(balance),
-          remainingRuns: remainingRuns ?? 1,
-          previousRunDate: nextPreviousRunDateKey,
-          runDate: nextRunDateKey,
-        })
-      : null;
-    const repaymentCycle = loanPlan
-      ? (() => {
-          const intervalMonths = loanMemo?.repaymentIntervalMonths ?? (loanPlan.intervalUnit === IntervalUnit.month ? loanPlan.intervalValue : null);
-          if (intervalMonths === 1) return "每月";
-          if (intervalMonths === 3) return "每季度";
-          if (intervalMonths === 6) return "每半年";
-          if (intervalMonths === 12 || loanPlan.intervalUnit === IntervalUnit.year) return "每年";
-          if (intervalMonths && intervalMonths > 0) return `每${intervalMonths}个月`;
-          return loanPlan.intervalUnit === IntervalUnit.day ? `每${loanPlan.intervalValue}天` : "";
-        })()
-      : "";
-    const current = debtRowMap.get(accountRowKey) ?? {
-      key: accountRowKey,
-      name: accountRowName,
-      objectType: accountObjectType,
-      objectName,
-      itemName,
-      accountId: account.id,
-      institutionId: account.institutionId ?? "",
-      counterpartyId: account.counterpartyId ?? "",
-      itemType: balance >= 0 ? "【债权】应收款" : "【债务】应付款",
-      repaymentMethod: "",
-      repaymentCycle: "",
-      annualRate: null,
-      mortgageLprDiscount: null,
-      remainingRuns: null,
-      paidPrincipal: 0,
-      paidInterest: 0,
-      remainingPrincipal: 0,
-      remainingInterest: 0,
-      nextRepaymentDate: "",
-      nextRepaymentPrincipal: null,
-      nextRepaymentInterest: null,
-      nextRepaymentCashAccountId: "",
-      loanRateAdjustments: [],
-      payable: 0,
-      receivable: 0,
-      net: 0,
-      accountCount: 0,
-      accountIds: [],
-      accountLabels: [],
-      parentKey: null,
-      depth: 0,
-      isGroup: false,
-    };
-    current.accountCount += 1;
-    current.accountIds.push(account.id);
-    current.accountLabels.push(accountRowName);
-    current.net += balance;
-    if (balance >= 0) current.receivable += balance;
-    else current.payable += Math.abs(balance);
-    if (loanPlan) {
-      current.repaymentMethod = loanMemo?.repaymentMethod || current.repaymentMethod;
-      current.repaymentCycle = repaymentCycle || current.repaymentCycle;
-      current.annualRate = nextEffectiveAnnualRate ?? current.annualRate;
-      current.mortgageLprDiscount =
-        loanMemo?.mortgageLprDiscount ??
-        debtBorrowLprDiscountByAccountId.get(account.id) ??
-        inferMortgageLprDiscountFromRateAdjustments(loanRateAdjustments) ??
-        current.mortgageLprDiscount;
-      current.remainingRuns = remainingRuns ?? current.remainingRuns;
-      current.nextRepaymentDate = loanPlan.nextRunDate ? formatDateUtc(loanPlan.nextRunDate) : current.nextRepaymentDate;
-      current.nextRepaymentPrincipal = nextRepaymentParts?.principal ?? current.nextRepaymentPrincipal;
-      current.nextRepaymentInterest = nextRepaymentParts?.interest ?? current.nextRepaymentInterest;
-      current.nextRepaymentCashAccountId = loanPlan.cashAccountId ?? current.nextRepaymentCashAccountId;
-      current.loanRateAdjustments = loanRateAdjustments;
-    }
-    current.itemType = current.net >= 0 ? "【债权】应收款" : "【债务】应付款";
-    current.remainingPrincipal = Math.abs(current.net);
-    debtRowMap.set(accountRowKey, current);
-  }
-
-  const debtRows = Array.from(debtRowMap.values()).sort((a, b) => {
-    const amountDiff = (b.payable + b.receivable) - (a.payable + a.receivable);
-    if (Math.abs(amountDiff) > ACTIVE_DEBT_EPSILON) return amountDiff;
-    return a.name.localeCompare(b.name, "zh-CN");
+  const {
+    debtRows,
+    debtRowsForShell,
+    selectedDebtKey,
+    selectedDebtRow,
+    selectedDebtObjectValue,
+    ordinaryDebtAccountIds,
+    totalDebtPayable,
+    totalDebtReceivable,
+  } = buildDebtRowsViewData({
+    debtAccounts,
+    cashDisplayBalanceByAccountId,
+    loanRepaymentPlanByAccountId,
+    loanRateAdjustmentsByAccountId,
+    debtBorrowLprDiscountByAccountId,
+    selectedAccountId: selectedAccount?.id,
+    selectedAccountKind: selectedAccount?.kind,
+    debtPersonParam,
   });
-  const derivedDebtKey = selectedAccount?.kind === AccountKind.loan
-    ? debtGroupKeyByAccountId.get(selectedAccount.id) ?? `account:${selectedAccount.id}`
-    : "";
-  const legacyInstitutionDebtRow = debtPersonParam.startsWith("institution:")
-    ? debtRows.find((row) => row.key === debtGroupKeyByInstitutionId.get(debtPersonParam.slice("institution:".length)))
-    : null;
-  const legacyCounterpartyDebtRow = debtPersonParam.startsWith("counterparty:")
-    ? debtRows.find((row) => row.key === debtGroupKeyByCounterpartyId.get(debtPersonParam.slice("counterparty:".length)))
-    : null;
-  const selectedDebtKey = debtRows.some((row) => row.key === debtPersonParam)
-    ? debtPersonParam
-    : legacyInstitutionDebtRow
-      ? legacyInstitutionDebtRow.key
-    : legacyCounterpartyDebtRow
-      ? legacyCounterpartyDebtRow.key
-    : debtRows.some((row) => row.key === derivedDebtKey)
-      ? derivedDebtKey
-      : "";
-  const selectedDebtRow = debtRows.find((row) => row.key === selectedDebtKey) ?? null;
-  const ordinaryDebtAccountIdSet = new Set(ordinaryDebtAccountIds);
-  const selectedDebtRowIsOrdinary = !!selectedDebtRow?.accountIds?.some((id) => ordinaryDebtAccountIdSet.has(id));
-  const ordinaryDebtRows = debtRows.filter((row) => row.accountIds.some((id) => ordinaryDebtAccountIdSet.has(id)));
-  const debtRowsForShell = selectedDebtRow && !selectedDebtRowIsOrdinary
-    ? debtRows.filter((row) => row.key === selectedDebtRow.key)
-    : ordinaryDebtRows;
-  const selectedDebtObjectValue = selectedDebtRow?.counterpartyId
-    ? `counterparty:${selectedDebtRow.counterpartyId}`
-    : selectedDebtRow?.institutionId
-      ? `institution:${selectedDebtRow.institutionId}`
-      : "";
-  const totalDebtPayable = debtRows.reduce((sum, row) => sum + row.payable, 0);
-  const totalDebtReceivable = debtRows.reduce((sum, row) => sum + row.receivable, 0);
-  const selectedRepaymentPlan = selectedDebtRow ? loanRepaymentPlanByAccountId.get(selectedDebtRow.accountId) : null;
-  const selectedRepaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
-  const selectedRemainingRuns =
-    selectedRepaymentPlan?.totalRuns == null
-      ? null
-      : Math.max(0, selectedRepaymentPlan.totalRuns - Math.max(0, selectedRepaymentPlan.executedRuns ?? 0));
-  const repaymentScheduleRows: Array<{
-    rowType: "payment" | "rate_adjustment";
-    status?: "paid" | "planned";
-    eventType?: "repayment" | "prepayment" | "rate_adjustment";
-    period: number;
-    date: string;
-    payment: number;
-    principal: number;
-    interest: number;
-    remainingPrincipal: number;
-    annualRate: number | null;
-  }> = [];
-  if (selectedDebtRow && selectedRepaymentPlan && selectedDebtRow.net < -0.005) {
-    let remainingPrincipal = Math.abs(selectedDebtRow.net);
-    let runDate = selectedRepaymentPlan.nextRunDate;
-    let lastScheduleDate = selectedRepaymentPlan.lastRunDate ?? selectedRepaymentPlan.startDate;
-    const rateAdjustments = normalizeLoanRateAdjustments(selectedDebtRow.loanRateAdjustments);
-    const emittedAdjustmentKeys = new Set<string>();
-    const maxRuns = Math.min(selectedRemainingRuns ?? 24, 360);
-    let scheduledAmountForRun = calcLoanScheduledAmountForPeriodStart({
-      repaymentMethod: selectedRepaymentMemo?.repaymentMethod,
-      baseAnnualRate: selectedRepaymentMemo?.annualRate,
-      adjustments: rateAdjustments,
-      intervalMonths: selectedRepaymentMemo?.repaymentIntervalMonths ?? (selectedRepaymentPlan.intervalUnit === IntervalUnit.month ? selectedRepaymentPlan.intervalValue : null),
-      scheduledAmount: toNumber(selectedRepaymentPlan.amount),
-      remainingPrincipal,
-      remainingRuns: selectedRemainingRuns ?? maxRuns,
-      periodStartDate: formatDateUtc(lastScheduleDate),
-    });
-    for (let index = 0; index < maxRuns && remainingPrincipal > 0.005; index++) {
-      const runDateKey = formatDateUtc(runDate);
-      const lastScheduleDateKey = formatDateUtc(lastScheduleDate);
-      for (const adjustment of rateAdjustments) {
-        if (
-          adjustment.effectiveDate > lastScheduleDateKey &&
-          adjustment.effectiveDate <= runDateKey &&
-          !emittedAdjustmentKeys.has(adjustment.effectiveDate)
-        ) {
-          repaymentScheduleRows.push({
-            rowType: "rate_adjustment",
-            status: "planned",
-            eventType: "rate_adjustment",
-            period: 0,
-            date: adjustment.effectiveDate,
-            payment: 0,
-            principal: 0,
-            interest: 0,
-            remainingPrincipal,
-            annualRate: adjustment.annualRate,
-          });
-          emittedAdjustmentKeys.add(adjustment.effectiveDate);
-        }
-      }
-      const remainingRunsForThisRun = selectedRemainingRuns == null ? Math.max(1, maxRuns - index) : Math.max(1, selectedRemainingRuns - index);
-      const parts = calcLoanRunPartsWithRateAdjustments({
-        repaymentMethod: selectedRepaymentMemo?.repaymentMethod,
-        baseAnnualRate: selectedRepaymentMemo?.annualRate,
-        adjustments: rateAdjustments,
-        intervalMonths: selectedRepaymentMemo?.repaymentIntervalMonths ?? (selectedRepaymentPlan.intervalUnit === IntervalUnit.month ? selectedRepaymentPlan.intervalValue : null),
-        scheduledAmount: scheduledAmountForRun,
-        remainingPrincipal,
-        remainingRuns: remainingRunsForThisRun,
-        previousRunDate: lastScheduleDateKey,
-        runDate: runDateKey,
-      });
-      scheduledAmountForRun = parts.scheduledAmount;
-      const nextRemainingPrincipal = Math.max(0, Math.round((remainingPrincipal - parts.principal) * 100) / 100);
-      repaymentScheduleRows.push({
-        rowType: "payment",
-        status: "planned",
-        eventType: "repayment",
-        period: Math.max(0, selectedRepaymentPlan.executedRuns ?? 0) + index + 1,
-        date: runDateKey,
-        payment: parts.payment,
-        principal: parts.principal,
-        interest: parts.interest,
-        remainingPrincipal: nextRemainingPrincipal,
-        annualRate: parts.annualRate,
-      });
-      remainingPrincipal = nextRemainingPrincipal;
-      lastScheduleDate = runDate;
-      runDate = calcNextScheduledRunDate(
-        runDate,
-        selectedRepaymentPlan.intervalUnit,
-        selectedRepaymentPlan.intervalValue,
-        selectedRepaymentPlan.executionDay,
-        false,
-      );
-    }
-  }
+  const selectedRepaymentPlan = selectedDebtRow ? loanRepaymentPlanByAccountId.get(selectedDebtRow.accountId) ?? null : null;
+  const repaymentScheduleRows = buildDebtRepaymentScheduleRows({ selectedDebtRow, selectedRepaymentPlan });
 
   const loanRepaymentPlanIds = loanRepaymentPlans.map((plan) => plan.id);
   const debtEntriesRaw =
@@ -4946,146 +4648,14 @@ export default async function Home({
           take: 3000,
         })
       : [];
-  for (const row of debtRows) {
-    const rowAccountIds = new Set(row.accountIds);
-    const rowPlanIds = new Set(
-      loanRepaymentPlans
-        .filter((plan) => rowAccountIds.has(plan.accountId))
-        .map((plan) => plan.id),
-    );
-    const rowPrincipalEntries = debtEntriesRaw.filter(
-      (entry) =>
-        entry.type === TransactionType.transfer &&
-        (rowAccountIds.has(entry.accountId ?? "") || rowAccountIds.has(entry.toAccountId ?? "")),
-    );
-    const rowPrincipalKey = (entry: (typeof debtEntriesRaw)[number]) => {
-      const dateKey = entryDisplayDate(entry).toISOString().slice(0, 10);
-      if (entry.regularInvestPlanId) return `plan:${entry.regularInvestPlanId}:${dateKey}`;
-      const debtAccountId = rowAccountIds.has(entry.toAccountId ?? "")
-        ? entry.toAccountId
-        : rowAccountIds.has(entry.accountId ?? "")
-          ? entry.accountId
-          : "";
-      const cashSideAccountId = rowAccountIds.has(entry.toAccountId ?? "")
-        ? entry.accountId
-        : entry.toAccountId;
-      return `account:${debtAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
-    };
-    const rowLockedInterestKeys = new Set<string>();
-    for (const entry of debtEntriesRaw) {
-      if (
-        entry.type === TransactionType.transfer ||
-        !(
-          rowAccountIds.has(entry.toAccountId ?? "") ||
-          (entry.regularInvestPlanId ? rowPlanIds.has(entry.regularInvestPlanId) : false)
-        ) ||
-        !(
-          String(entry.source ?? "").includes("interest") ||
-          String(entry.categoryName ?? "").includes("利息") ||
-          String(entry.note ?? "").includes("利息")
-        )
-      ) {
-        continue;
-      }
-      const source = String(entry.source ?? "");
-      if (source.startsWith("debt_") && source.includes("interest")) {
-        rowLockedInterestKeys.add(rowPrincipalKey(entry));
-      }
-    }
-    const rowInterestByPrincipalKey = new Map<string, number>();
-    for (const entry of debtEntriesRaw) {
-      if (
-        entry.type === TransactionType.transfer ||
-        !(
-          rowAccountIds.has(entry.toAccountId ?? "") ||
-          (entry.regularInvestPlanId ? rowPlanIds.has(entry.regularInvestPlanId) : false)
-        ) ||
-        !(
-          String(entry.source ?? "").includes("interest") ||
-          String(entry.categoryName ?? "").includes("利息") ||
-          String(entry.note ?? "").includes("利息")
-        )
-      ) {
-        continue;
-      }
-      const key = rowPrincipalKey(entry);
-      if (String(entry.source ?? "") === "scheduled_task" && rowLockedInterestKeys.has(key)) continue;
-      rowInterestByPrincipalKey.set(key, (rowInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
-    }
-    const paidEntries = rowPrincipalEntries.filter((entry) => {
-      const displayAmount = debtPrincipalForAccountSide(entry, rowAccountIds);
-      if (displayAmount <= 0) return false;
-      const source = String(entry.source ?? "");
-      return (
-        source === "debt_repay_out" ||
-        source === "debt_prepay_out" ||
-        source === "scheduled_task" ||
-        (entry.regularInvestPlanId ? rowPlanIds.has(entry.regularInvestPlanId) : false)
-      );
-    });
-    row.paidPrincipal = paidEntries.reduce((sum, entry) => {
-      return sum + Math.abs(debtPrincipalForAccountSide(entry, rowAccountIds));
-    }, 0);
-    row.paidInterest = paidEntries.reduce(
-      (sum, entry) => sum + Math.abs(toNumber(entry.debtInterestAmount)) + (rowInterestByPrincipalKey.get(rowPrincipalKey(entry)) ?? 0),
-      0,
-    );
-    row.remainingPrincipal = Math.abs(row.net);
-
-    const plan = loanRepaymentPlanByAccountId.get(row.accountId);
-    const memo = plan ? decodeScheduledTaskMemo(plan.memo) : null;
-    row.remainingInterest = 0;
-    if (plan && memo && row.net < -0.005 && plan.nextRunDate) {
-      let remainingPrincipal = Math.abs(row.net);
-      let runDate = plan.nextRunDate;
-      let lastScheduleDate = plan.lastRunDate ?? plan.startDate;
-      const remainingRuns =
-        plan.totalRuns == null
-          ? null
-          : Math.max(0, plan.totalRuns - Math.max(0, plan.executedRuns ?? 0));
-      const maxRuns = Math.min(remainingRuns ?? 24, 360);
-      const intervalMonths = memo.repaymentIntervalMonths ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : null);
-      const adjustments = resolveLoanRateAdjustments({
-        tableAdjustments: loanRateAdjustmentsByAccountId.get(row.accountId),
-        memoAdjustments: memo.loanRateAdjustments,
-      });
-      let scheduledAmountForRun = calcLoanScheduledAmountForPeriodStart({
-        repaymentMethod: memo.repaymentMethod,
-        baseAnnualRate: memo.annualRate,
-        adjustments,
-        intervalMonths,
-        scheduledAmount: toNumber(plan.amount),
-        remainingPrincipal,
-        remainingRuns: remainingRuns ?? maxRuns,
-        periodStartDate: formatDateUtc(lastScheduleDate),
-      });
-      for (let index = 0; index < maxRuns && remainingPrincipal > 0.005; index++) {
-        const remainingRunsForThisRun = remainingRuns == null ? Math.max(1, maxRuns - index) : Math.max(1, remainingRuns - index);
-        const parts = calcLoanRunPartsWithRateAdjustments({
-          repaymentMethod: memo.repaymentMethod,
-          baseAnnualRate: memo.annualRate,
-          adjustments,
-          intervalMonths,
-          scheduledAmount: scheduledAmountForRun,
-          remainingPrincipal,
-          remainingRuns: remainingRunsForThisRun,
-          previousRunDate: formatDateUtc(lastScheduleDate),
-          runDate: formatDateUtc(runDate),
-        });
-        row.remainingInterest += parts.interest;
-        scheduledAmountForRun = parts.scheduledAmount;
-        remainingPrincipal = Math.max(0, Math.round((remainingPrincipal - parts.principal) * 100) / 100);
-        lastScheduleDate = runDate;
-        runDate = calcNextScheduledRunDate(
-          runDate,
-          plan.intervalUnit,
-          plan.intervalValue,
-          plan.executionDay,
-          false,
-        );
-      }
-    }
-  }
+  applyDebtRowEntryMetrics({
+    debtRows,
+    debtEntriesRaw,
+    loanRepaymentPlans,
+    loanRepaymentPlanByAccountId,
+    loanRateAdjustmentsByAccountId,
+    displayAccountId: accountId,
+  });
   const selectedDebtAccountIds = new Set(selectedDebtRow?.accountIds ?? ordinaryDebtAccountIds);
   const debtAccountLabelById = new Map(
     debtAccounts.map((account) => [
@@ -5096,281 +4666,22 @@ export default async function Home({
   const debtDirectionByAccountId = new Map(
     debtAccounts.map((account) => [account.id, account.debtDirection ?? null]),
   );
-  const filteredDebtEntries = debtEntriesRaw.filter(
-    (entry) => selectedDebtAccountIds.has(entry.accountId ?? "") || selectedDebtAccountIds.has(entry.toAccountId ?? ""),
-  );
   const selectedLoanRepaymentPlanIds = new Set(
     loanRepaymentPlans
       .filter((plan) => selectedDebtAccountIds.has(plan.accountId))
       .map((plan) => plan.id),
   );
-  const filteredDebtInterestEntries = debtEntriesRaw.filter(
-    (entry) =>
-      entry.type !== TransactionType.transfer &&
-      (
-        selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
-        (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
-      ) &&
-      (
-        String(entry.source ?? "").includes("interest") ||
-        String(entry.categoryName ?? "").includes("利息") ||
-        String(entry.note ?? "").includes("利息")
-      ),
-  );
-  const filteredDebtFeeEntries = debtEntriesRaw.filter(
-    (entry) =>
-      entry.type !== TransactionType.transfer &&
-      (
-        selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
-        (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
-      ) &&
-      (
-        String(entry.source ?? "").includes("fee") ||
-        String(entry.categoryName ?? "").includes("手续费") ||
-        String(entry.note ?? "").includes("违约金")
-      ),
-  );
-  function debtPrincipalKey(entry: (typeof debtEntriesRaw)[number]) {
-    const dateKey = entryDisplayDate(entry).toISOString().slice(0, 10);
-    if (entry.regularInvestPlanId) return `plan:${entry.regularInvestPlanId}:${dateKey}`;
-    const debtAccountId = selectedDebtAccountIds.has(entry.toAccountId ?? "")
-      ? entry.toAccountId
-      : selectedDebtAccountIds.has(entry.accountId ?? "")
-        ? entry.accountId
-        : "";
-    const cashSideAccountId = selectedDebtAccountIds.has(entry.toAccountId ?? "")
-      ? entry.accountId
-      : entry.toAccountId;
-    return `account:${debtAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
-  }
-  const debtInterestByPrincipalKey = new Map<string, number>();
-  const lockedDebtInterestKeys = new Set<string>();
-  for (const entry of filteredDebtInterestEntries) {
-    const source = String(entry.source ?? "");
-    if (source.startsWith("debt_") && source.includes("interest")) {
-      lockedDebtInterestKeys.add(debtPrincipalKey(entry));
-    }
-  }
-  for (const entry of filteredDebtInterestEntries) {
-    const key = debtPrincipalKey(entry);
-    if (String(entry.source ?? "") === "scheduled_task" && lockedDebtInterestKeys.has(key)) continue;
-    debtInterestByPrincipalKey.set(key, (debtInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
-  }
-  const debtFeeByPrincipalKey = new Map<string, number>();
-  for (const entry of filteredDebtFeeEntries) {
-    const key = debtPrincipalKey(entry);
-    debtFeeByPrincipalKey.set(key, (debtFeeByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
-  }
-  const filteredDebtPrincipalEntries = filteredDebtEntries.filter((entry) => entry.type === TransactionType.transfer);
-  const debtBalanceByEntryId = new Map<string, number>();
-  const debtBalanceTimeline: Array<{ date: string; balance: number }> = [];
-  let runningDebtBalance = 0;
-  for (const entry of [...filteredDebtPrincipalEntries].sort((a, b) => compareDetailEntriesAsc(a, b))) {
-    const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-    runningDebtBalance += displayAmount;
-    debtBalanceByEntryId.set(entry.id, runningDebtBalance);
-    debtBalanceTimeline.push({
-      date: entryDisplayDate(entry).toISOString().slice(0, 10),
-      balance: runningDebtBalance,
-    });
-  }
-  function getDebtRemainingPrincipalBeforeDate(dateKey: string) {
-    let balanceBeforeDate: number | null = null;
-    for (const item of debtBalanceTimeline) {
-      if (item.date >= dateKey) break;
-      balanceBeforeDate = item.balance;
-    }
-    return Math.abs(balanceBeforeDate ?? selectedDebtRow?.net ?? 0);
-  }
-  const debtDetailEntries = filteredDebtPrincipalEntries
-    .map((entry) => {
-      const amount = toNumber(entry.amount);
-      const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
-      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
-      const paymentTotal =
-        interestAmount > 0 || feeAmount > 0 || entry.source === "debt_repay_out" || entry.source === "debt_prepay_out" || entry.source === "debt_collect_in" || entry.source === "scheduled_task"
-          ? debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount
-          : null;
-      const relatedAccountId = isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
-      const relatedDebtDirection =
-        debtDirectionByAccountId.get(relatedAccountId) ??
-        ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
-      const inferredDirection = relatedDebtDirection ?? ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
-      const debtEditMode =
-        entry.source === "debt_borrow_in" || entry.source === "debt_financed_purchase"
-          ? ("borrow_in" as const)
-          : entry.source === "debt_lend_out"
-            ? ("lend_out" as const)
-            : entry.source === "debt_collect_in"
-              ? ("collect_in" as const)
-              : entry.source === "debt_prepay_out"
-                ? ("prepay_out" as const)
-                : entry.source === "debt_repay_out" || entry.source === "scheduled_task"
-                  ? ("repay_out" as const)
-                  : isToDebtAccount
-                    ? (inferredDirection === "receivable" ? ("lend_out" as const) : ("repay_out" as const))
-                    : (inferredDirection === "receivable" ? ("collect_in" as const) : ("borrow_in" as const));
-      const transferActionLabel =
-        entry.source === "debt_borrow_in" || entry.source === "debt_financed_purchase"
-          ? (entry.source === "debt_financed_purchase" ? "消费分期" : "借入")
-          : entry.source === "debt_repay_out"
-            ? "还款"
-            : entry.source === "debt_prepay_out"
-              ? "提前还款"
-            : entry.source === "debt_lend_out"
-              ? "借出"
-              : entry.source === "debt_collect_in"
-                ? "收回"
-                : debtActionLabel({
-                    direction: inferredDirection,
-                    isDebtAccountFromSide: !isToDebtAccount,
-                  });
-      const entryDate = entryDisplayDate(entry);
-      const entryDateKey = entryDate.toISOString().slice(0, 10);
-      const defaultRecalculateStartDate =
-        selectedRepaymentPlan &&
-        (entry.regularInvestPlanId
-          ? entry.regularInvestPlanId === selectedRepaymentPlan.id
-          : selectedDebtAccountIds.has(relatedAccountId))
-          ? formatDateUtc(
-              entry.regularInvestPlanId
-                ? calcNextScheduledRunDate(
-                    entryDate,
-                    selectedRepaymentPlan.intervalUnit,
-                    selectedRepaymentPlan.intervalValue,
-                    selectedRepaymentPlan.executionDay,
-                    false,
-                  )
-                : calcInitialScheduledRunDate(
-                    entryDate,
-                    selectedRepaymentPlan.intervalUnit,
-                    selectedRepaymentPlan.intervalValue,
-                    selectedRepaymentPlan.executionDay,
-                    false,
-                  ),
-            )
-          : null;
-      return {
-        id: entry.id,
-        date: entryDateKey,
-        typeLabel: entry.type === TransactionType.transfer ? transferActionLabel : (entry.categoryName || formatType(entry.type)),
-        relatedAccountLabel: debtAccountLabelById.get(relatedAccountId) ?? "-",
-        note: entry.note ?? "",
-        amount: displayAmount,
-        principal: displayAmount,
-        interest: interestAmount,
-        paymentTotal,
-        balance: debtBalanceByEntryId.get(entry.id) ?? 0,
-        debtEdit:
-          entry.type === TransactionType.transfer
-            ? {
-                editEntryId: entry.id,
-                mode: debtEditMode,
-                defaultDebtAccountId: isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
-                defaultCashAccountId: entry.source === "debt_financed_purchase"
-                  ? (selectedRepaymentPlan?.cashAccountId ?? "")
-                  : isToDebtAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
-                defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
-                defaultDate: entryDateKey,
-                defaultPrincipal: Math.abs(displayAmount),
-                defaultInterest: interestAmount,
-                defaultPenalty: Math.abs(toNumber(entry.debtFeeAmount)),
-                defaultRecalculateStartDate,
-                defaultPrepayStrategy: entry.source === "debt_prepay_out"
-                  ? parseLoanPrepayStrategy(entry.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
-                  : undefined,
-              }
-            : undefined,
-        edit:
-          entry.type === TransactionType.transfer
-            ? {
-                type: "transfer" as const,
-                date: entryDisplayDate(entry).toISOString().slice(0, 10),
-                amount: Math.abs(amount),
-                note: entry.note ?? "",
-                fromAccountId: entry.accountId ?? "",
-                toAccountId: entry.toAccountId ?? "",
-              }
-            : {
-                type: entry.type === TransactionType.income ? "income" as const : "expense" as const,
-                date: entryDisplayDate(entry).toISOString().slice(0, 10),
-                amount: Math.abs(amount),
-                note: entry.note ?? "",
-                accountId: entry.accountId ?? "",
-                categoryId: entry.categoryId ?? "",
-              },
-      };
-    });
-
-  if (selectedDebtRow && selectedRepaymentPlan) {
-    const paidPrincipalEntries = [...filteredDebtPrincipalEntries]
-      .sort((a, b) => compareDetailEntriesAsc(a, b))
-      .filter((entry) => {
-      const amount = toNumber(entry.amount);
-      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-      if (displayAmount <= 0) return false;
-        const source = String(entry.source ?? "");
-        return (
-          source === "debt_repay_out" ||
-          source === "debt_prepay_out" ||
-          source === "scheduled_task" ||
-          (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
-        );
-      });
-    let paidRepaymentPeriod = 0;
-    for (const entry of paidPrincipalEntries) {
-      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
-      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(debtPrincipalKey(entry)) ?? 0);
-      const isPrepayment = entry.source === "debt_prepay_out";
-      if (!isPrepayment) paidRepaymentPeriod += 1;
-      repaymentScheduleRows.push({
-        rowType: "payment",
-        status: "paid",
-        eventType: isPrepayment ? "prepayment" : "repayment",
-        period: isPrepayment ? 0 : paidRepaymentPeriod,
-        date: entryDisplayDate(entry).toISOString().slice(0, 10),
-        payment: debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount,
-        principal: Math.abs(displayAmount),
-        interest: interestAmount,
-        remainingPrincipal: Math.abs(debtBalanceByEntryId.get(entry.id) ?? 0),
-        annualRate: null,
-      });
-    }
-
-    const existingRateRows = new Set(
-      repaymentScheduleRows
-        .filter((row) => row.rowType === "rate_adjustment")
-        .map((row) => row.date),
-    );
-    const nextRunDateKey = selectedRepaymentPlan.nextRunDate ? formatDateUtc(selectedRepaymentPlan.nextRunDate) : "";
-    for (const adjustment of normalizeLoanRateAdjustments(selectedDebtRow.loanRateAdjustments)) {
-      if (existingRateRows.has(adjustment.effectiveDate)) continue;
-      repaymentScheduleRows.push({
-        rowType: "rate_adjustment",
-        status: nextRunDateKey && adjustment.effectiveDate >= nextRunDateKey ? "planned" : "paid",
-        eventType: "rate_adjustment",
-        period: 0,
-        date: adjustment.effectiveDate,
-        payment: 0,
-        principal: 0,
-        interest: 0,
-        remainingPrincipal: getDebtRemainingPrincipalBeforeDate(adjustment.effectiveDate),
-        annualRate: adjustment.annualRate,
-      });
-    }
-    repaymentScheduleRows.sort((a, b) => {
-      const byDate = a.date.localeCompare(b.date);
-      if (byDate !== 0) return byDate;
-      const rank = (row: (typeof repaymentScheduleRows)[number]) =>
-        row.rowType === "rate_adjustment" ? 0 : row.status === "paid" ? 1 : 2;
-      const byRank = rank(a) - rank(b);
-      if (byRank !== 0) return byRank;
-      return a.period - b.period;
-    });
-  }
+  const { debtDetailEntries, repaymentScheduleRows: finalRepaymentScheduleRows } = buildDebtDetailEntriesViewData({
+    debtEntriesRaw,
+    selectedDebtAccountIds,
+    selectedLoanRepaymentPlanIds,
+    selectedDebtRow,
+    selectedRepaymentPlan,
+    repaymentScheduleRows,
+    accountLabelById,
+    debtDirectionByAccountId,
+    displayAccountId: accountId,
+  });
 
   // 查询最近使用的资金账户
   const lastUsedCashAccount = isInvestAccount && accountId
@@ -6143,19 +5454,21 @@ export default async function Home({
                 ? e.categoryId
                   ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
                   : e.categoryName ?? "未分类"
-                : isCreditCardRepaymentTransfer(e)
+                : isCreditCardRepaymentForDisplay(e)
                   ? "信用卡还款"
                   : e.categoryName,
             accountId: e.accountId,
             accountName: e.accountName,
             accountKind: e.account?.kind ?? null,
             accountDebtDirection: e.account?.debtDirection ?? null,
+            accountIsSettlementDebt: isSettlementDebtAccountId(e.accountId),
             counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
             counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
             toAccountId: e.toAccountId,
             toAccountName: e.toAccountName,
             toAccountKind: e.toAccount?.kind ?? null,
             toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
+            toAccountIsSettlementDebt: isSettlementDebtAccountId(e.toAccountId),
             note: e.note,
             toNote: e.toNote,
             fundSubtype: e.fundSubtype,
@@ -6388,12 +5701,14 @@ export default async function Home({
     accountName: e.accountName,
     accountKind: e.account?.kind ?? null,
     accountDebtDirection: e.account?.debtDirection ?? null,
+    accountIsSettlementDebt: isSettlementDebtAccountId(e.accountId),
     counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
     toAccountId: e.toAccountId,
     toAccountName: e.toAccountName,
     toAccountKind: e.toAccount?.kind ?? null,
     toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
+    toAccountIsSettlementDebt: isSettlementDebtAccountId(e.toAccountId),
     note: linkedWealth
       ? buildWealthCashFlowNote({
           action: linkedWealth.action,
@@ -7236,7 +6551,13 @@ export default async function Home({
                     </div>
                   </div>
                 ) : null}
-                <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
+                <ResizableVerticalSplit
+                  storageKey="mmh:credit-bill:split-height"
+                  hasLowerPane
+                  defaultUpperHeight={360}
+                  separatorLabel="调整信用卡账单和明细高度"
+                  separatorTitle="拖动调整信用卡账单和明细高度"
+                >
                   {billSummariesWithCumulative.length > 0 ? (
                     <CreditBillSummaryTable
                       accountId={selectedAccount?.id ?? ""}
@@ -7258,47 +6579,24 @@ export default async function Home({
                     </div>
                   )}
 
-                  <BasicDetailSelectionProvider resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}>
-                    <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-                      <BasicDetailBatchDeleteMessage />
-                      <DetailViewClient
-                        accountId={selectedAccount?.id ?? ""}
-                        isInvestAccount={false}
-                        initialEntries={creditBillDetailEntries}
-                        accountOptions={accountOptions}
-                        categoryOptions={categoryBatchReplaceOptions}
-                        investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
-                        compactRows
-                        storageKey="mmh_credit_bill_detail_table_v1"
-                        resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
-                        refreshOnGlobalEvent
-                        toolbarMode="custom"
-                        toolbarTitle={creditBillDetailTitle}
-                        toolbarRightContent={
-                          !showAllCreditBillDetails && creditCardBill ? (
-                            <div key="credit-bill-toolbar-period" className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
-                              <span className="hidden whitespace-nowrap md:inline">
-                                周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}
-                              </span>
-                              <span className="whitespace-nowrap text-slate-600">共 {creditBillDetailEntries.length} 条</span>
-                              <Link href="/batch-import" className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="导入信用卡账单记录">
-                                <Upload className="h-3 w-3" />导入
-                              </Link>
-                            </div>
-                          ) : (
-                            <div key="credit-bill-toolbar-all" className="flex min-w-0 items-center gap-3 text-xs text-slate-500 tabular-nums">
-                              <span className="whitespace-nowrap text-slate-600">共 {creditBillDetailEntries.length} 条</span>
-                              <Link href="/batch-import" className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="导入信用卡账单记录">
-                                <Upload className="h-3 w-3" />导入
-                              </Link>
-                            </div>
-                          )
-                        }
-                        emptyText="暂无记录"
-                      />
-                    </div>
-                  </BasicDetailSelectionProvider>
-                </div>
+                  <CreditBillDetailPanel
+                    accountId={selectedAccount?.id ?? ""}
+                    entries={creditBillDetailEntries}
+                    initialPage={detailPage}
+                    initialPageSize={pageSize}
+                    initialDetailAll={detailAll}
+                    resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
+                    title={creditBillDetailTitle}
+                    periodLabel={
+                      !showAllCreditBillDetails && creditCardBill
+                        ? <>周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}</>
+                        : undefined
+                    }
+                    accountOptions={accountOptions}
+                    categoryOptions={categoryBatchReplaceOptions}
+                    investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
+                  />
+                </ResizableVerticalSplit>
               </div>
             </div>
           ) : view === "debt" ? (
@@ -7337,7 +6635,7 @@ export default async function Home({
               }))}
               selectedKey={selectedDebtKey}
               entries={debtDetailEntries}
-              repaymentScheduleRows={repaymentScheduleRows}
+              repaymentScheduleRows={finalRepaymentScheduleRows}
               totalPayable={totalDebtPayable}
               totalReceivable={totalDebtReceivable}
             />

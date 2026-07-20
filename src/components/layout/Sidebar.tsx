@@ -111,7 +111,7 @@ async function getSidebarData() {
       hoverTitle: display.hoverTitle,
       balance,
       kind: account.kind as string,
-      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      groupName: display.groupName || (account.kind === AccountKind.loan ? "" : "未设置所有人"),
       institution: display.institutionName || undefined,
       institutionId: account.institutionId ?? null,
       institutionType: account.Institution?.type ?? null,

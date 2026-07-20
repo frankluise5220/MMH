@@ -49,6 +49,7 @@ export type CreditAccountRow = AccountListRow & {
   billingDay: number | null;
   repaymentDay: number | null;
   creditBillMode: "separate" | "consolidated";
+  currentAmount: number;
   currentBill: number;
   paid: number;
   remain: number;
@@ -66,6 +67,7 @@ export type AccountTypeTotals = {
   creditUsed: number;
   creditLimit: number;
   creditAvailable: number;
+  creditCurrentAmount: number;
   creditCurrentBill: number;
   loan: number;
   loanReceivable: number;
@@ -105,6 +107,7 @@ export type OverviewSummary = {
   creditUsedTotal: number;
   creditLimitTotal: number;
   creditAvailableTotal: number;
+  creditCurrentAmountTotal: number;
   creditCurrentBillTotal: number;
   investmentMarketValue: number;
   investmentCost: number;
@@ -291,7 +294,7 @@ export async function computeOverviewSummary(
     creditIds.length > 0
       ? await prisma.creditCardCycle.findMany({
           where: { accountId: { in: creditIds }, isCurrentCycle: true },
-          select: { accountId: true, effectiveBill: true, paid: true, cumulativeRemain: true, cumulativeOverpaid: true, dueDate: true },
+          select: { accountId: true, expenseAbs: true, income: true, effectiveBill: true, paid: true, cumulativeRemain: true, cumulativeOverpaid: true, dueDate: true },
         })
       : [];
   const cycleByAccountId = new Map(currentCycles.map((cycle) => [cycle.accountId, cycle]));
@@ -314,6 +317,7 @@ export async function computeOverviewSummary(
     const balance = cycle
       ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
       : toNumber(account.balance);
+    const currentAmount = toNumber(cycle?.expenseAbs) - toNumber(cycle?.income);
 
     return {
       id: account.id,
@@ -324,6 +328,7 @@ export async function computeOverviewSummary(
       institutionName: display.institutionName,
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
+      currentAmount,
       billingDay: account.billingDay,
       repaymentDay: account.repaymentDay,
       creditBillMode: account.creditBillMode,
@@ -352,7 +357,7 @@ export async function computeOverviewSummary(
       name: display.label,
       kind: account.kind,
       balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
-      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      groupName: display.groupName,
       institutionName: display.institutionName,
     };
   });
@@ -373,6 +378,7 @@ export async function computeOverviewSummary(
   const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + account.creditLimit, 0);
   const creditAvailableTotal = Math.max(0, creditLimitTotal - creditUsedTotal);
+  const creditCurrentAmountTotal = creditAccountList.reduce((sum, account) => sum + account.currentAmount, 0);
   const creditCurrentBillTotal = creditAccountList.reduce((sum, account) => sum + account.currentBill, 0);
 
   const liquidAssets = cash + bankDebit + ewallet + deposit + Math.max(0, other);
@@ -429,6 +435,7 @@ export async function computeOverviewSummary(
     creditUsed: creditUsedTotal,
     creditLimit: creditLimitTotal,
     creditAvailable: creditAvailableTotal,
+    creditCurrentAmount: creditCurrentAmountTotal,
     creditCurrentBill: creditCurrentBillTotal,
     loan,
     loanReceivable,
@@ -458,6 +465,7 @@ export async function computeOverviewSummary(
     creditUsedTotal,
     creditLimitTotal,
     creditAvailableTotal,
+    creditCurrentAmountTotal,
     creditCurrentBillTotal,
     investmentMarketValue,
     investmentCost,
