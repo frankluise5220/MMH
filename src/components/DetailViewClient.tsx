@@ -1249,5 +1249,7 @@ export function DetailViewClient({
       toolbarLeftContent={customToolbarLeft}
       toolbarRightContent={toolbarRightContent}
     />
+    </div>
+    </>
   );
 }
