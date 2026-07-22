@@ -51,7 +51,7 @@ export default function manifest(): MetadataRoute.Manifest {
       {
         name: "记一笔",
         short_name: "记一笔",
-        url: "/",
+        url: "/?quickEntry=1",
         icons: [
           {
             src: "/branding/mmh-logo-mark.preview.png",

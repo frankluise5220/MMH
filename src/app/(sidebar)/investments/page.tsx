@@ -10,6 +10,7 @@ import { formatMoney } from "@/lib/format";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { MobileInvestments } from "@/components/mobile/MobileInvestments";
 
 export const dynamic = "force-dynamic";
 
@@ -156,6 +157,17 @@ export default async function InvestmentsPage({
   }
 
   return (
+    <>
+    <div className="h-full md:hidden">
+      <MobileInvestments
+        rows={rows}
+        total={total}
+        totalCost={totalCost}
+        totalFloatingPnL={totalFloatingPnL}
+        isRedUp={isRedUp}
+      />
+    </div>
+    <div className="hidden h-full md:block">
     <div className="flex-1 min-h-0 overflow-auto bg-transparent p-4 md:p-5">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -254,5 +266,7 @@ export default async function InvestmentsPage({
         </div>
       </div>
     </div>
+    </div>
+    </>
   );
 }

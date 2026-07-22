@@ -12,6 +12,7 @@ import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { MobileAccounts } from "@/components/mobile/MobileAccounts";
 
 export const dynamic = "force-dynamic";
 
@@ -207,6 +208,20 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   })).filter((group) => group.accounts.length > 0);
 
   return (
+    <>
+    <div className="h-full md:hidden">
+      <MobileAccounts
+        assetTotal={assetTotal}
+        groups={groupedMoneyAccounts.map((group) => ({
+          kind: String(group.kind),
+          label: group.label,
+          accounts: group.accounts.map((account) => ({ ...account, kind: String(account.kind) })),
+        }))}
+        creditAccounts={creditAccounts.map((account) => ({ ...account, kind: String(account.kind) }))}
+        isRedUp={isRedUp}
+      />
+    </div>
+    <div className="hidden h-full md:block">
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
@@ -385,6 +400,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         )}
       </div>
     </div>
+    </div>
+    </>
   );
 }
 

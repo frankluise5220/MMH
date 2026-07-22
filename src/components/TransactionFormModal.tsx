@@ -1013,7 +1013,7 @@ export function TransactionFormModal({
 
       {open ? createPortal(
         <div className="app-modal-backdrop z-50">
-          <div className="app-modal-panel max-w-xl">
+          <div className="app-modal-panel mobile-transaction-modal max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
               <button

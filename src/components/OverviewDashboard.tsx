@@ -14,29 +14,30 @@ import {
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { MobileOverviewDashboard } from "@/components/mobile/MobileOverviewDashboard";
 
-type AssetDistItem = {
+export type AssetDistItem = {
   kind: string;
   label: string;
   value: number;
   pct: number;
 };
 
-type AccountItem = {
+export type AccountItem = {
   id: string;
   name: string;
   kind: string;
   balance: number;
 };
 
-type CreditAccountItem = AccountItem & {
+export type CreditAccountItem = AccountItem & {
   creditLimit: number;
   availableLimit: number;
   currentBill: number;
   paid: number;
 };
 
-type AccountTypeTotals = {
+export type AccountTypeTotals = {
   cash: number;
   bankDebit: number;
   ewallet: number;
@@ -57,7 +58,7 @@ type AccountTypeTotals = {
   totalNetWorth: number;
 };
 
-type InvestmentOverviewItem = {
+export type InvestmentOverviewItem = {
   accountId?: string;
   investProductType?: string | null;
   fundCode: string;
@@ -67,7 +68,7 @@ type InvestmentOverviewItem = {
   floatingPnLRate: number;
 };
 
-type OverviewDashboardProps = {
+export type OverviewDashboardProps = {
   netWorth: number;
   accountTypeTotals?: Partial<AccountTypeTotals> | null;
   assetDistribution: AssetDistItem[];
@@ -163,6 +164,27 @@ export function OverviewDashboard({
     `panel-surface ${overviewModuleCount === 3 && index === 0 ? "xl:col-span-2" : ""}`;
 
   return (
+    <>
+    <div className="h-full md:hidden">
+      <MobileOverviewDashboard
+        netWorth={netWorth}
+        accountTypeTotals={accountTypeTotals}
+        assetDistribution={assetDistribution}
+        monthIncome={monthIncome}
+        monthExpense={monthExpense}
+        accountList={accountList}
+        creditAccountList={creditAccountList}
+        debtAccountList={debtAccountList}
+        topPositions={topPositions}
+        investmentMarketValue={investmentMarketValue}
+        investmentCost={investmentCost}
+        investmentFloatingPnL={investmentFloatingPnL}
+        investmentFloatingPnLRate={investmentFloatingPnLRate}
+        insuranceOverview={insuranceOverview}
+        isRedUp={isRedUp}
+      />
+    </div>
+    <div className="hidden h-full md:block">
     <div className="page-body bg-transparent">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 md:px-5 md:py-5">
         <section className="panel-surface overflow-hidden">
@@ -170,7 +192,7 @@ export function OverviewDashboard({
             <div>
               <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Overview</div>
               <div className="mt-1 text-sm text-slate-500">总净值</div>
-              <div className={`mt-1 text-3xl font-semibold tracking-tight md:text-4xl ${directionalClass(netWorth, isRedUp)}`}>
+              <div className={`mt-1 break-all text-3xl font-semibold md:text-4xl ${directionalClass(netWorth, isRedUp)}`}>
                 {formatMoneyYuan(netWorth)}
               </div>
             </div>
@@ -212,12 +234,12 @@ export function OverviewDashboard({
                     href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/invest"}
                     prefetch={false}
                     scroll={false}
-                    className="grid grid-cols-[minmax(0,1fr)_96px_96px_72px] items-center gap-3 px-4 py-3 hover:bg-slate-50"
+                    className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                   >
                     <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
                     <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.marketValue, isRedUp)}`}>{formatMoney(item.marketValue)}</div>
-                    <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
-                    <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
+                    <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
+                    <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
                   </Link>
                 ))
               ) : (
@@ -305,7 +327,7 @@ export function OverviewDashboard({
                 </div>
                 <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
               </div>
-              <div className="grid grid-cols-3 gap-3 px-4 py-4">
+              <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-3">
                 <MetricCard label="我欠别人" value={formatMoneyYuan(totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
                 <MetricCard label="别人欠我" value={formatMoneyYuan(totals.loanReceivable)} valueClass={directionalClass(totals.loanReceivable, isRedUp)} />
                 <MetricCard label="账户数" value={`${debtAccounts.length} 个`} />
@@ -351,6 +373,8 @@ export function OverviewDashboard({
         </section>
       </div>
     </div>
+    </div>
+    </>
   );
 }
 

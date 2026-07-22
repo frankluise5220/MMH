@@ -7,6 +7,7 @@ import { formatMoney } from "@/lib/format";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { MobileFunds } from "@/components/mobile/MobileFunds";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,7 @@ export default async function FundsPage({
   ]);
 
   const investBalance = investBalByAccountId.get(selectedAccount.id)?.marketValue ?? 0;
-  const { positions, totalMarketValue, totalCost } = positionDisplay;
+  const { positions, clearedPositions, totalMarketValue, totalCost } = positionDisplay;
   const totalPnL = totalMarketValue - totalCost;
 
   const allEntries = await prisma.txRecord.findMany({
@@ -68,8 +69,35 @@ export default async function FundsPage({
     ? allEntries.filter((entry) => (entry.fundCode ?? "") === selectedSymbol)
     : allEntries;
 
+  const mobileAccounts = fundAccounts.map((account) => ({
+    id: account.id,
+    label: account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name,
+    marketValue: investBalByAccountId.get(account.id)?.marketValue ?? 0,
+  }));
+  const mobileEntries = allEntries.map((entry) => ({
+    id: entry.id,
+    fundCode: entry.fundCode ?? "",
+    date: entry.date.toISOString().slice(0, 10),
+    subtype: entry.fundSubtype ?? "",
+    amount: Math.abs(toNumber(entry.amount)),
+    units: entry.fundUnits == null ? null : Math.abs(toNumber(entry.fundUnits)),
+  }));
+
   return (
-    <div className="flex h-full w-full">
+    <>
+      <div className="h-full md:hidden">
+        <MobileFunds
+          accounts={mobileAccounts}
+          selectedAccountId={selectedAccount.id}
+          positions={positions}
+          clearedPositions={clearedPositions}
+          entries={mobileEntries}
+          totalMarketValue={totalMarketValue}
+          totalCost={totalCost}
+          isRedUp={isRedUp}
+        />
+      </div>
+      <div className="hidden h-full w-full md:flex">
       <div className="flex w-48 shrink-0 flex-col overflow-y-auto border-r border-foreground/10 bg-surface-white/80">
         <div className="border-b border-slate-100 px-4 py-3 text-xs font-semibold text-slate-500">基金账户</div>
         {fundAccounts.map((account) => {
@@ -178,6 +206,7 @@ export default async function FundsPage({
 
         {filteredEntries.length === 0 ? null : <div className="hidden" data-entry-count={filteredEntries.length} />}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

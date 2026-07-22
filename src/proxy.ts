@@ -16,6 +16,9 @@ const PUBLIC_PATHS = [
   "/test-results",
   "/_next",
   "/favicon",
+  "/manifest",
+  "/sw.js",
+  "/branding",
 ];
 
 const DEFAULT_ORIGINS = ["127.0.0.1", "localhost", "192.168.2.199"];

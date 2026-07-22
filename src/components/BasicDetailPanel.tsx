@@ -180,6 +180,21 @@ export function BasicDetailPanel({
     <BasicDetailSelectionProvider resetKey={selectionResetKey}>
       <BasicDetailBatchDeleteMessage />
       <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 md:hidden">
+          <span className="text-xs text-slate-500">共 {localTotalCount} 条</span>
+          <DetailTablePaginationControls
+            pageSize={pageSize}
+            pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
+            detailAll={detailAll}
+            safePage={safePage}
+            totalPages={totalPages}
+            canPrev={canPrev}
+            canNext={canNext}
+            onPageSizeChange={setPagedSize}
+            onShowAll={showAll}
+            onPageChange={goPage}
+          />
+        </div>
         <DetailViewClient
           accountId={accountId}
           isInvestAccount={isInvestAccount}

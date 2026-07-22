@@ -1138,7 +1138,83 @@ export function DetailViewClient({
     </div>
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
+  const mobileGroups = useMemo(() => {
+    const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
+    for (const entry of entries) {
+      const date = (entry.date ?? "").slice(0, 10) || "未设置日期";
+      const current = groups[groups.length - 1];
+      if (current?.date === date) current.entries.push(entry);
+      else groups.push({ date, entries: [entry] });
+    }
+    return groups;
+  }, [entries]);
+
   return (
+    <>
+    <div className="h-full overflow-y-auto bg-slate-100 md:hidden">
+      {mobileGroups.length > 0 ? (
+        <div className="pb-4">
+          {mobileGroups.map((group) => (
+            <section key={group.date}>
+              <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-100/96 px-3 py-1.5 text-xs font-semibold text-slate-500 backdrop-blur">
+                {group.date}
+              </div>
+              <div className="divide-y divide-slate-100 bg-white">
+                {group.entries.map((entry) => {
+                  const effectiveAmount = effectiveAmountForAccount(entry, accountId);
+                  const entryFundProductType =
+                    entry.fundProductType ??
+                    (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
+                    (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
+                    null;
+                  const category = (
+                    debtCategoryLabel(entry, accountOptionById) ?? (entry.type === "investment"
+                      ? investmentCategoryLabel(entry, entryFundProductType)
+                      : getInsuranceDetailCategoryName(entry))
+                  ) || "未分类";
+                  const note = displayDetailRemark(entry, accountId);
+                  const counterpart = entry.type === "transfer"
+                    ? (entry.accountId === accountId ? entry.toAccountName : entry.accountName)
+                    : entry.fundName || note;
+                  const { edit, customEditEvent } = buildEntryEditRequest(entry);
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      onClick={() => {
+                        if (!edit && !customEditEvent) return;
+                        dispatchEntryEdit({ entryId: entry.id, edit, customEditEvent });
+                      }}
+                      className="flex min-h-[68px] w-full items-center gap-3 px-3 py-2.5 text-left"
+                    >
+                      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${effectiveAmount >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
+                        {entry.type === "transfer" ? "转" : entry.type === "investment" ? "投" : effectiveAmount >= 0 ? "收" : "支"}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold text-slate-900">{category}</span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">{counterpart || note || "无备注"}</span>
+                      </span>
+                      <span className="shrink-0 text-right">
+                        <span className={`block text-sm font-semibold tabular-nums ${effectiveAmount >= 0 ? inflowCls : outflowCls}`}>
+                          {effectiveAmount >= 0 ? "+" : "-"}{formatMoney(Math.abs(effectiveAmount))}
+                        </span>
+                        {showRunningBalance && entry.runningBalance != null ? (
+                          <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">余额 {formatMoney(toNumber(entry.runningBalance))}</span>
+                        ) : null}
+                      </span>
+                      <span className="text-slate-300">›</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="flex h-40 items-center justify-center text-sm text-slate-400">{emptyText === "暂无记录" ? t("detail.empty") : emptyText}</div>
+      )}
+    </div>
+    <div className="hidden h-full md:block">
     <AdvancedDataTable
       storageKey={storageKey}
       resetKey={tableResetKey}

@@ -332,6 +332,42 @@ html {
   scrollbar-color: rgba(71, 85, 105, 0.44) transparent;
 }
 
+@media (max-width: 767px) {
+  .app-modal-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .app-modal-panel {
+    margin-top: 0;
+    height: 100dvh;
+    max-height: 100dvh;
+    max-width: 100vw;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .app-modal-panel .modal-header {
+    cursor: default;
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  .app-modal-panel .form-input,
+  .app-modal-panel .primary-button,
+  .app-modal-panel .secondary-button,
+  .app-modal-panel .segment-button {
+    min-height: 44px;
+  }
+
+  .mobile-transaction-modal form .grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .mobile-transaction-modal form {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}
+
 .advanced-table-viewport::-webkit-scrollbar {
   width: 10px;
   height: 10px;

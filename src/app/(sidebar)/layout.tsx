@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { AIPanel } from "@/components/layout/AIPanel";
+import { MobileNavigation } from "@/components/layout/MobileNavigation";
 import { getCurrentUser } from "@/lib/server/auth";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -22,24 +23,31 @@ export default async function SidebarLayout({
   const sidebarCollapsed = cookieStore.get("sidebar_collapsed")?.value === "true";
 
   return (
-    <div className="flex h-screen overflow-x-hidden overflow-y-hidden">
-      <Suspense
-        fallback={
-          <div
-            className={
-              sidebarCollapsed
-                ? "h-screen w-14 shrink-0 border-r border-foreground/5 bg-background"
-                : "h-screen w-72 shrink-0 border-r border-foreground/5 bg-background"
-            }
-          />
-        }
-      >
-        <Sidebar />
-      </Suspense>
-      <main className="min-h-0 min-w-0 flex-1 flex flex-col h-screen overflow-x-hidden overflow-y-hidden bg-background">
+    <div className="flex h-dvh overflow-x-hidden overflow-y-hidden">
+      <div className="hidden h-dvh shrink-0 md:block">
+        <Suspense
+          fallback={
+            <div
+              className={
+                sidebarCollapsed
+                  ? "h-dvh w-14 shrink-0 border-r border-foreground/5 bg-background"
+                  : "h-dvh w-72 shrink-0 border-r border-foreground/5 bg-background"
+              }
+            />
+          }
+        >
+          <Sidebar />
+        </Suspense>
+      </div>
+      <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-background pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-[calc(3.5rem+env(safe-area-inset-top))] md:p-0">
         {children}
       </main>
-      <AIPanel initialCollapsed={aiPanelCollapsed} />
+      <div className="hidden h-dvh shrink-0 xl:block">
+        <AIPanel initialCollapsed={aiPanelCollapsed} />
+      </div>
+      <Suspense fallback={null}>
+        <MobileNavigation />
+      </Suspense>
     </div>
   );
 }
