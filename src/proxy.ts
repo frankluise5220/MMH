@@ -137,6 +137,10 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+  }
+
   const loginUrl = req.nextUrl.clone();
   loginUrl.pathname = "/login";
   loginUrl.searchParams.delete("error");
