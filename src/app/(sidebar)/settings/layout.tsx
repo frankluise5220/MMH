@@ -42,7 +42,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   return (
     <div className="flex-1 flex min-h-0 min-w-0">
       {/* 左侧导航 */}
-      <nav className="w-44 shrink-0 border-r border-slate-200 bg-white flex flex-col">
+      <nav className="hidden w-44 shrink-0 flex-col border-r border-slate-200 bg-white md:flex">
         <div className="h-12 flex items-center px-4 border-b border-slate-100 shrink-0">
           <Settings className="w-4 h-4 text-slate-500 mr-2" />
           <span className="font-semibold text-sm text-slate-800">{t("nav.settings")}</span>
@@ -81,7 +81,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
       {/* 右侧内容 */}
       <div className="flex-1 min-w-0 overflow-auto bg-slate-50">
-        <div className="p-4">
+        <div className="p-3 md:p-4">
           {children}
         </div>
       </div>

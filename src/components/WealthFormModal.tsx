@@ -515,14 +515,7 @@ export function WealthFormModal({
   }, [defaultAccountId, entry, initIsRedeem, mode, openSignal, today, wealthAccountList, wealthHoldingOptions]);
 
   useEffect(() => {
-    if (!isHoldingAction) {
-      setHoldingFilterDate(date);
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setHoldingFilterDate(date);
-    }, 500);
-    return () => window.clearTimeout(timer);
+    setHoldingFilterDate(date);
   }, [date, isHoldingAction]);
 
   function reset() {
@@ -569,7 +562,7 @@ export function WealthFormModal({
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
-      setEditEntryId(detail.cashEntryId ?? detail.entryId);
+      setEditEntryId(detail.cashEntryId ?? null);
       setEditBusinessTransactionId(detail.businessTransactionId ?? null);
       const nextSubtype: WealthSubtype =
         detail.fundSubtype === "dividend_cash" ? "dividend_cash" : detail.fundSubtype === "redeem" ? "redeem" : "buy";
@@ -716,6 +709,28 @@ export function WealthFormModal({
     if (!isRedeem || redeemPrincipalNumber <= 0) return amountNumber;
     return Number(Math.max(0, redeemPrincipalNumber + interestNumber).toFixed(2));
   }, [amountNumber, interestNumber, isRedeem, redeemPrincipalNumber]);
+
+  function changeRedeemPrincipal(value: string) {
+    setAmount(value);
+    if (isRedeem) setArrivalEdited(false);
+  }
+
+  function changeRedeemUnits(value: string) {
+    unitsEditedRef.current = true;
+    setUnits(value);
+    if (isRedeem) setArrivalEdited(false);
+  }
+
+  function changeRedeemNav(value: string) {
+    setNav(value);
+    if (isRedeem) setArrivalEdited(false);
+  }
+
+  function changeRedeemInterest(value: string) {
+    setInterestEdited(true);
+    setInterestAmount(value);
+    if (isRedeem) setArrivalEdited(false);
+  }
 
   useEffect(() => {
     if (!isHoldingAction) {
@@ -970,20 +985,23 @@ export function WealthFormModal({
       fd.set("cashAccountId", cashAccountId);
       if (isHoldingAction) fd.set("fundArrivalDate", arrivalDate || date);
       if (unitsValue > 0) fd.set("fundUnits", String(unitsValue));
-      const navValue = parseNumber(nav);
-      if (isRedeem && navValue > 0) fd.set("fundNav", String(navValue));
+      const enteredNavValue = parseNumber(nav);
+      const navValue = enteredNavValue > 0
+        ? enteredNavValue
+        : (!isHoldingAction && unitsValue > 0 ? amt / unitsValue : 0);
+      if (navValue > 0) fd.set("fundNav", String(navValue));
       const rateValue = parseNumber(annualRate);
       if (rateValue > 0) fd.set("depositAnnualRate", String(rateValue));
       if (isRedeem) {
-        const arrivalValue = parseNumber(arrivalAmount);
+        const arrivalValue = arrivalEdited ? parseNumber(arrivalAmount) : arrivalPreview;
         if (arrivalValue <= 0) throw new Error("到账金额不正确");
         fd.set("fundArrivalAmount", String(arrivalValue));
         if (interestAmount.trim()) fd.set("depositInterest", String(interestNumber));
       }
-      const cashEntryIdForEdit = entry?.cashEntryId ?? entry?.id ?? editEntryId;
+      const cashEntryIdForEdit = entry?.cashEntryId ?? editEntryId;
       const businessTransactionIdForEdit = entry?.businessTransactionId ?? editBusinessTransactionId;
-      if (mode === "edit" && cashEntryIdForEdit) {
-        fd.set("entryId", cashEntryIdForEdit);
+      if (mode === "edit" && (cashEntryIdForEdit || businessTransactionIdForEdit)) {
+        if (cashEntryIdForEdit) fd.set("entryId", cashEntryIdForEdit);
         if (businessTransactionIdForEdit) fd.set("businessTransactionId", businessTransactionIdForEdit);
         fd.set("fundProductType", "wealth");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: "缺少 editAction" };
@@ -1150,7 +1168,7 @@ export function WealthFormModal({
                         <div className="form-label">赎回本金</div>
                         <CalcInput
                           value={amount}
-                          onChange={setAmount}
+                          onChange={changeRedeemPrincipal}
                           placeholder="0.00"
                           label="赎回本金"
                           precision={2}
@@ -1160,10 +1178,7 @@ export function WealthFormModal({
                         <div className="form-label">赎回份额</div>
                         <CalcInput
                           value={units}
-                          onChange={(value) => {
-                            unitsEditedRef.current = true;
-                            setUnits(value);
-                          }}
+                          onChange={changeRedeemUnits}
                           placeholder="可选"
                           label="赎回份额"
                           precision={6}
@@ -1173,7 +1188,7 @@ export function WealthFormModal({
                         <div className="form-label">净值</div>
                         <CalcInput
                           value={nav}
-                          onChange={setNav}
+                          onChange={changeRedeemNav}
                           placeholder="可选"
                           label="净值"
                           precision={6}
@@ -1193,10 +1208,7 @@ export function WealthFormModal({
                         <div className="form-label">利息</div>
                         <CalcInput
                           value={interestAmount}
-                          onChange={(value) => {
-                            setInterestEdited(true);
-                            setInterestAmount(value);
-                          }}
+                          onChange={changeRedeemInterest}
                           placeholder="0.00"
                           label="利息"
                           precision={2}

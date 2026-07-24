@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import {
+  assertCounterpartyDisplayNamesUnique,
+  isCounterpartyNameUniqueError,
+} from "@/lib/server/counterparty-name-unique";
 import { isInstitutionNameUniqueError } from "@/lib/server/institution-name-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
@@ -19,22 +23,10 @@ export async function POST(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const safeType = type === "organization" ? "organization" : "person";
 
-  const existing = await prisma.counterparty.findFirst({
-    where: {
-      householdId,
-      OR: [
-        { name },
-        ...(shortName ? [{ name: shortName }, { shortName }] : []),
-      ],
-    },
-  });
-  if (existing) {
-    return NextResponse.json({ ok: false, error: `往来对象“${name}”已存在` }, { status: 409 });
-  }
-
   let created: { id: string; name: string; shortName: string | null; type: string | null };
   try {
     created = await prisma.$transaction(async (tx) => {
+      await assertCounterpartyDisplayNamesUnique(tx, { householdId, name, shortName });
       const counterparty = await tx.counterparty.create({
         data: {
           name,
@@ -50,6 +42,9 @@ export async function POST(req: NextRequest) {
       };
     });
   } catch (error) {
+    if (isCounterpartyNameUniqueError(error)) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
     if (isInstitutionNameUniqueError(error)) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

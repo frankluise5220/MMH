@@ -96,6 +96,7 @@ export type InvestmentEntry = {
   fundArrivalDate?: string | null;
   fundArrivalAmount?: number | null;
   realizedProfit?: number | null;
+  feeRate?: string | number | null;
 };
 
 // 新增模式的默认值。
@@ -171,6 +172,7 @@ type InvestmentEditDetail = {
   fundArrivalDate?: string | null;
   fundArrivalAmount?: number | null;
   linkedCandidateEntries?: LinkedCandidateEntry[];
+  feeRate?: string | number | null;
 };
 
 export function InvestmentFormModal({
@@ -262,7 +264,7 @@ export function InvestmentFormModal({
   const initConfirmDays = mode === "edit" && entry
     ? (defaults?.confirmDays ?? 0)
     : (defaults?.confirmDays ?? 0);
-  const initFeeRate = mode === "edit" ? "" : (defaults?.feeRate ?? "0");
+  const initFeeRate = mode === "edit" ? String(entry?.feeRate ?? defaults?.feeRate ?? "0") : (defaults?.feeRate ?? "0");
   const initFundCode = mode === "edit" ? (entry?.fundCode ?? "") : (defaults?.fundCode ?? "");
   const initFundName = mode === "edit" ? (entry?.fundName ?? entry?.fundCode ?? "") : (defaults?.fundName ?? "");
   const initMetalTypeId = mode === "edit" ? (entry?.metalTypeId ?? (fixedProductType === "metal" ? initFundCode : "")) : "";
@@ -325,7 +327,7 @@ export function InvestmentFormModal({
   const [eventEditEntry, setEventEditEntry] = useState<InvestmentEntry | null>(null);
   const [eventLinkedEntries, setEventLinkedEntries] = useState<LinkedCandidateEntry[] | null>(null);
   const [linkedRefundEntryId, setLinkedRefundEntryId] = useState<string | null>(null);
-  const lastNavFetchedDate = useRef<string>("");
+  const lastNavFetchKey = useRef<string>("");
   const navDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   function setNavFromApi(navStr: string) {
     setNav(navStr);
@@ -342,7 +344,6 @@ export function InvestmentFormModal({
   const requestIdRef = useRef<string | null>(null);
   const handledInvestmentEditRequestRef = useRef<string | null>(null);
   const pendingFundCodeFetchRef = useRef<string | null>(null);
-  const redeemLastAppliedRef = useRef<number>(0);
   const prevSavedDateRef = useRef<string | null>(null);
   const editAutoNavEnabledRef = useRef(mode !== "edit");
   const suppressFeeAutoCalcRef = useRef(mode === "edit");
@@ -363,7 +364,12 @@ export function InvestmentFormModal({
 
   // Linked buy/refund records for display in the edit modal.
   const linkedRecords = useMemo(() => {
-    const candidateEntries = allEntries ?? eventLinkedEntries;
+    // The detail API supplies the complete cross-account link set. Keep page
+    // entries too, but let those complete records win when IDs overlap.
+    const candidateById = new Map<string, LinkedCandidateEntry>();
+    for (const item of allEntries ?? []) candidateById.set(item.id, item);
+    for (const item of eventLinkedEntries ?? []) candidateById.set(item.id, item);
+    const candidateEntries = Array.from(candidateById.values());
     if (mode !== "edit" || !currentEditEntry || !candidateEntries || candidateEntries.length === 0) return null;
     const target: RefundLinkableEntry = {
       id: currentEditEntry.id,
@@ -722,6 +728,13 @@ export function InvestmentFormModal({
 
   function changeFundCode(val: string) {
     enableEditAutoNav();
+    lastNavFetchKey.current = "";
+    setNav("");
+    setNavActualDate(null);
+    navEditedRef.current = false;
+    if (isBuyLike(subtype)) {
+      unitsEditedRef.current = false;
+    }
     setFundCode(val);
   }
 
@@ -753,7 +766,7 @@ export function InvestmentFormModal({
     amountEditedRef.current = false;
     navEditedRef.current = false;
     arrivalDateEditedRef.current = false;
-    lastNavFetchedDate.current = "";
+    lastNavFetchKey.current = "";
     editAutoNavEnabledRef.current = false;
     suppressFeeAutoCalcRef.current = true;
     cashAccountTouchedRef.current = false;
@@ -940,6 +953,7 @@ export function InvestmentFormModal({
       cashAccountId: detail.cashAccountId ?? null,
       fundArrivalDate: detail.fundArrivalDate ?? null,
       fundArrivalAmount: detail.fundArrivalAmount ?? null,
+      feeRate: detail.feeRate ?? null,
     });
 
     const loadInvestmentDetail = async (entryId: string, requestId: string): Promise<InvestmentEditDetail | null> => {
@@ -1014,7 +1028,7 @@ export function InvestmentFormModal({
       if (detail.fundNav != null) setNav(String(detail.fundNav));
       if (detail.fundFee != null) setFee(String(detail.fundFee));
       if (detail.fundName) setFundName(detail.fundName);
-      setFeeRate("");
+      setFeeRate(String(detail.feeRate ?? defaults?.feeRate ?? "0"));
       setFeeEdited(false);
       setFeeRateEdited(false);
       unitsEditedRef.current = false;
@@ -1067,7 +1081,7 @@ export function InvestmentFormModal({
 
     window.addEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
     return () => window.removeEventListener("mmh:investment:edit", onInvestmentEdit as EventListener);
-  }, [mode, today, defaultAccountId, entry?.id, entry?.transactionId]);
+  }, [mode, today, defaultAccountId, entry?.id, entry?.transactionId, defaults?.feeRate]);
 
   // Dispatch success event when create form is saved from AI panel
   function notifyAiSuccess(requestId: string) {
@@ -1077,9 +1091,17 @@ export function InvestmentFormModal({
   // 赎回时只计算申请日前已确认或已到账的可用份额。
   const holdingsAsOfDate = useMemo(() => {
     if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
+    const investmentAccountId = (toAccountId || defaultAccountId || "").trim();
+    const seenEntryIds = new Set<string>();
     const map = new Map<string, number>();
     for (const e of allEntries) {
       if (!e.fundCode) continue;
+      if (investmentAccountId && e.accountId !== investmentAccountId && e.toAccountId !== investmentAccountId) continue;
+      const entryId = String(e.id ?? "").trim();
+      if (entryId) {
+        if (seenEntryIds.has(entryId)) continue;
+        seenEntryIds.add(entryId);
+      }
       const sub = e.fundSubtype;
       const availableDate = sub === "buy" || sub === "dividend_reinvest"
         ? (e.fundArrivalDate ?? e.fundConfirmDate ?? e.date)
@@ -1087,16 +1109,16 @@ export function InvestmentFormModal({
       if (availableDate > applyDate) continue;
       let delta = 0;
       if (sub === "buy" || sub === "dividend_reinvest") {
-        delta = e.fundUnits ?? 0;
+        delta = roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
       } else if (sub === "redeem") {
-        delta = -(e.fundUnits ?? 0);
+        delta = -roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
       } else if (sub === "buy_failed" && e.source === "regular_invest_refund") {
-        delta = -(e.fundUnits ?? 0);
+        delta = -roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
       }
-      map.set(e.fundCode, (map.get(e.fundCode) ?? 0) + delta);
+      map.set(e.fundCode, roundFundUnits((map.get(e.fundCode) ?? 0) + delta, fundUnitsDecimals));
     }
     return map;
-  }, [allEntries, subtype, applyDate]);
+  }, [allEntries, applyDate, defaultAccountId, fundUnitsDecimals, subtype, toAccountId]);
 
   const effectiveHoldings = useMemo(() => {
     if (!holdings) return undefined;
@@ -1107,6 +1129,40 @@ export function InvestmentFormModal({
       units: holdingsAsOfDate.has(h.fundCode) ? holdingsAsOfDate.get(h.fundCode)! : 0,
     }));
   }, [holdings, holdingsAsOfDate]);
+
+  const isFundRedeemCreate =
+    mode === "create" &&
+    isRedeemLike(subtype) &&
+    (productType === "fund" || productType === "money");
+
+  const redeemFundOptions = useMemo<SmartSelectOption[]>(() => {
+    if (!isFundRedeemCreate || !holdingsAsOfDate) return [];
+    const names = new Map((holdings ?? []).map((holding) => [holding.fundCode, holding.name]));
+    return Array.from(holdingsAsOfDate.entries())
+      .filter(([, availableUnits]) => availableUnits > 0.0001)
+      .map(([code, availableUnits]) => ({
+        id: code,
+        label: names.get(code)?.trim() || code,
+        subLabel: `${code} · 剩余 ${formatFundUnitsValue(availableUnits, fundUnitsDecimals)} 份`,
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }, [fundUnitsDecimals, holdings, holdingsAsOfDate, isFundRedeemCreate]);
+
+  function selectRedeemFund(code: string) {
+    const nextCode = code.trim();
+    changeFundCode(nextCode);
+    setHoldingSearch("");
+    unitsEditedRef.current = false;
+    if (!nextCode) {
+      setFundName("");
+      setUnits("");
+      return;
+    }
+    const holding = holdings?.find((item) => item.fundCode === nextCode);
+    const availableUnits = holdingsAsOfDate?.get(nextCode) ?? 0;
+    setFundName(holding?.name ?? "");
+    setUnits(availableUnits > 0 ? formatUnits(availableUnits) : "");
+  }
 
   function findFundNameFromHoldings(code: string) {
     const target = code.trim();
@@ -1217,7 +1273,7 @@ export function InvestmentFormModal({
     if (isDividend(subtype)) return;
     if (fundCodeKey) {
       const feeType = isRedeemLike(subtype) ? "redeem" : "buy";
-      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}&feeType=${feeType}`)
+      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}&feeType=${feeType}${confirmDate ? `&effectiveDate=${encodeURIComponent(confirmDate)}` : ""}`)
         .then(r => r.json())
         .then(d => { if (!feeRateEdited) setFeeRate(d.ok && d.rate != null ? String(d.rate) : "0"); })
         .catch(() => { if (!feeRateEdited && !feeRate) setFeeRate("0"); });
@@ -1232,7 +1288,27 @@ export function InvestmentFormModal({
         .catch(() => {});
     }
     return () => controller.abort();
-  }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype]);
+  }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype, confirmDate]);
+
+  // 编辑模式下，用户改基金账户/代码/确认日期后也要按对应日期重新取费率并联动份额。
+  useEffect(() => {
+    if (!open || !toAccountId || !fundCodeKey) return;
+    if (!showFeeFor(subtype, productType) || feeRateEdited) return;
+    if (mode === "edit" && !editAutoNavEnabledRef.current) return;
+    const feeType = isRedeemLike(subtype) ? "redeem" : "buy";
+    const url = `/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}&feeType=${feeType}${confirmDate ? `&effectiveDate=${encodeURIComponent(confirmDate)}` : ""}`;
+    const controller = new AbortController();
+    fetch(url, { signal: controller.signal })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok || d.rate == null || feeRateEdited) return;
+        const nextRate = String(d.rate);
+        setFeeRate(nextRate);
+        if (!feeEdited) calculateFeeFromRate(nextRate);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [open, mode, toAccountId, fundCodeKey, confirmDate, subtype, productType, feeEdited, feeRateEdited]);
 
 
   function buildInvestmentCalculation(options?: {
@@ -1254,11 +1330,17 @@ export function InvestmentFormModal({
     const confirmedAmountN = isBuyLike(subtype) ? Math.max(0, amountN - refundN) : amountN;
     const unitsN = Math.max(0, p(units));
     const grossRedeemN = isRedeemLike(subtype) && navN > 0 && unitsN > 0 ? navN * unitsN : 0;
-    const feeBaseAmount = isRedeemLike(subtype) && grossRedeemN > 0 ? grossRedeemN : confirmedAmountN;
+    const feeBaseAmount = isRedeemLike(subtype) && grossRedeemN > 0
+      ? grossRedeemN
+      : confirmedAmountN;
     const calculatedFeeN = feeBaseAmount > 0 && feeRateN > 0 && showFeeFor(subtype, productType)
       ? feeBaseAmount * feeRateN / 100
       : 0;
-    const effectiveFeeN = feeInputN > 0 ? feeInputN : calculatedFeeN;
+    const effectiveFeeN = feeEdited
+      ? feeInputN
+      : feeRateN > 0
+        ? calculatedFeeN
+        : feeInputN;
     let unitsText = "";
     if (isBuyLike(subtype) && navN > 0 && amountN > 0) {
       const principal = confirmedAmountN - effectiveFeeN;
@@ -1279,7 +1361,7 @@ export function InvestmentFormModal({
 
   const investmentCalculation = useMemo(
     () => buildInvestmentCalculation(),
-    [amount, arrivalAmount, buyResultStatus, defaults?.fundUnits, fee, feeRate, nav, productType, subtype, units],
+    [amount, arrivalAmount, buyResultStatus, defaults?.fundUnits, fee, feeEdited, feeRate, nav, productType, subtype, units],
   );
   const redeemGrossAmount = investmentCalculation.redeemGrossAmount;
   const confirmedBuyAmount = investmentCalculation.confirmedBuyAmount;
@@ -1297,10 +1379,87 @@ export function InvestmentFormModal({
 
   const computedUnits = investmentCalculation.computedUnits;
 
+  function recalculateBuyUnitsFromInputs(options?: {
+    amountRaw?: string;
+    navRaw?: string;
+    feeRaw?: string;
+    feeRateRaw?: string;
+    refundRaw?: string;
+    recalculateFeeFromRate?: boolean;
+  }) {
+    if (productType !== "fund" && productType !== "money") return false;
+    if (subtype !== "buy") return false;
+
+    const nextAmountRaw = options?.amountRaw ?? amount;
+    const nextNavRaw = options?.navRaw ?? nav;
+    const nextRefundRaw = options?.refundRaw ?? arrivalAmount;
+    let nextFeeRaw = options?.feeRaw ?? fee;
+
+    if (options?.recalculateFeeFromRate) {
+      const rateCalc = buildInvestmentCalculation({
+        amountRaw: nextAmountRaw,
+        feeRaw: "",
+        feeRateRaw: options?.feeRateRaw ?? feeRate,
+        navRaw: nextNavRaw,
+        refundRaw: nextRefundRaw,
+        refundEnabled: buyResultStatus === "refund",
+      });
+      nextFeeRaw = rateCalc.computedFee || "0";
+      setFee(nextFeeRaw);
+      setFeeEdited(false);
+    }
+
+    unitsEditedRef.current = false;
+    calculateBuyUnits(
+      nextAmountRaw,
+      nextFeeRaw,
+      nextRefundRaw,
+      nextNavRaw,
+      buyResultStatus === "refund",
+      true,
+    );
+    return true;
+  }
+
+  function recalculateRedeemAmountsFromTerms(options?: {
+    unitsRaw?: string;
+    navRaw?: string;
+    feeRaw?: string;
+    feeRateRaw?: string;
+    recalculateFeeFromRate?: boolean;
+  }) {
+    if (productType !== "fund" && productType !== "money") return false;
+    if (!isRedeemLike(subtype)) return false;
+
+    const unitsN = Math.max(0, p(options?.unitsRaw ?? units));
+    const navN = Math.max(0, p(options?.navRaw ?? nav));
+    if (unitsN <= 0 || navN <= 0) return false;
+
+    const grossAmountN = unitsN * navN;
+    const feeN = options?.recalculateFeeFromRate
+      ? grossAmountN * Math.max(0, p(options?.feeRateRaw ?? feeRate)) / 100
+      : Math.max(0, p(options?.feeRaw ?? fee));
+
+    if (options?.recalculateFeeFromRate) {
+      setFee(feeN > 0 ? feeN.toFixed(2) : "0");
+      setFeeEdited(false);
+    }
+
+    amountEditedRef.current = false;
+    setAmount(grossAmountN.toFixed(2));
+    setArrivalAmount(Math.max(0, grossAmountN - feeN).toFixed(2));
+    return true;
+  }
+
   useEffect(() => {
     if (mode !== "create") return;
     if (!showFeeFor(subtype, productType) || feeEdited) return;
-    if (fee !== computedFee) setFee(computedFee);
+    if (fee !== computedFee) {
+      setFee(computedFee);
+      if (!recalculateBuyUnitsFromInputs({ feeRaw: computedFee })) {
+        recalculateRedeemAmountsFromTerms({ feeRaw: computedFee });
+      }
+    }
   }, [computedFee, fee, feeEdited, mode, productType, subtype]);
 
   useEffect(() => {
@@ -1330,21 +1489,40 @@ export function InvestmentFormModal({
   }
 
   function calculateUnitsAfterFeeChange(nextFeeRaw: string) {
-    calculateBuyUnits(amount, nextFeeRaw);
+    if (
+      !recalculateBuyUnitsFromInputs({ feeRaw: nextFeeRaw }) &&
+      !recalculateRedeemAmountsFromTerms({ feeRaw: nextFeeRaw })
+    ) {
+      calculateBuyUnits(amount, nextFeeRaw);
+    }
   }
 
   function calculateUnitsAfterAmountChange(nextAmountRaw: string) {
-    calculateBuyUnits(nextAmountRaw, fee);
+    if (
+      !recalculateBuyUnitsFromInputs({ amountRaw: nextAmountRaw, recalculateFeeFromRate: !feeEdited }) &&
+      !recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: !feeEdited })
+    ) {
+      calculateBuyUnits(nextAmountRaw, fee);
+    }
   }
 
   function calculateUnitsAfterRefundChange(nextRefundRaw: string) {
     unitsEditedRef.current = false;
-    calculateBuyUnits(amount, fee, nextRefundRaw, nav, p(nextRefundRaw) > 0 || buyResultStatus === "refund", true);
+    if (!recalculateBuyUnitsFromInputs({ refundRaw: nextRefundRaw, recalculateFeeFromRate: !feeEdited })) {
+      calculateBuyUnits(amount, fee, nextRefundRaw, nav, p(nextRefundRaw) > 0 || buyResultStatus === "refund", true);
+    }
   }
 
   function calculateFeeFromRate(nextRateRaw: string) {
     suppressFeeAutoCalcRef.current = false;
     setFeeEdited(false);
+    const recalculateOptions = {
+      feeRateRaw: nextRateRaw,
+      recalculateFeeFromRate: true,
+    };
+    if (recalculateBuyUnitsFromInputs(recalculateOptions)) return;
+    if (recalculateRedeemAmountsFromTerms(recalculateOptions)) return;
+
     unitsEditedRef.current = false;
     const rateCalc = buildInvestmentCalculation({ feeRaw: "", feeRateRaw: nextRateRaw });
     const nextFee = rateCalc.computedFee;
@@ -1358,13 +1536,14 @@ export function InvestmentFormModal({
     });
     setUnits(nextCalc.computedUnits);
 
-    if (feeChanged && isRedeemLike(subtype) && !arrivalAmount) {
+    if (feeChanged && isRedeemLike(subtype)) {
       const gross = redeemGrossAmount > 0 ? redeemGrossAmount : p(amount);
       if (gross > 0) setArrivalAmount(Math.max(0, gross - p(nextFee)).toFixed(2));
     }
   }
 
   // 申请日期变化时，联动确认日期和到账日期。
+  // 到账日期只反向更新到账天数，不反向覆盖确认日期。
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
@@ -1377,7 +1556,7 @@ export function InvestmentFormModal({
         setArrivalDate(addDays(nextConfirmDate, arrivalDays));
       }
     }
-  }, [applyDate, confirmDays, subtype, open, arrivalDays, mode]);
+  }, [applyDate, confirmDays, subtype, open, mode]);
 
   // 手动修改到账日期时，反算并保存 arrivalDays。
   const arrivalDateEditedRef = useRef(false);
@@ -1403,12 +1582,26 @@ export function InvestmentFormModal({
     }
   }
 
-  // 赎回模式下，日期变化后按当日可用持仓重算份额。
+  // 新建基金赎回按申请日限定基金和份额；其他模式保留原有联动。
   useEffect(() => {
+    if (isFundRedeemCreate) {
+      if (!holdingsAsOfDate || !fundCode) return;
+      const availableUnits = holdingsAsOfDate.get(fundCode) ?? 0;
+      unitsEditedRef.current = false;
+      if (availableUnits > 0.0001) {
+        setUnits(formatUnits(availableUnits));
+      } else {
+        changeFundCode("");
+        setFundName("");
+        setHoldingSearch("");
+        setUnits("");
+      }
+      return;
+    }
     if (!isRedeemLike(subtype) || unitsEditedRef.current || !fundCode || !effectiveHoldings) return;
     const h = effectiveHoldings.find(p => p.fundCode === fundCode);
     if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
-  }, [applyDate, effectiveHoldings, fundCode, subtype]);
+  }, [applyDate, effectiveHoldings, fundCode, holdingsAsOfDate, isFundRedeemCreate, subtype]);
 
   useEffect(() => {
     const code = fundCode.trim();
@@ -1418,37 +1611,36 @@ export function InvestmentFormModal({
     // 防抖获取净值，避免日期和代码联动时连续请求。
     if (navDebounce.current) clearTimeout(navDebounce.current);
     navDebounce.current = setTimeout(() => {
-      if (lastNavFetchedDate.current === confirmDate) return;
-      lastNavFetchedDate.current = confirmDate;
+      const fetchKey = `${toAccountId}:${code}:${confirmDate}`;
+      if (lastNavFetchKey.current === fetchKey) return;
+      lastNavFetchKey.current = fetchKey;
       setNavLoading(true);
       fetch(buildFundNavUrl(code, confirmDate, toAccountId))
         .then(r => r.json())
         .then(d => {
           if (d.ok && d.nav) {
-            setNavFromApi(String(d.nav));
+            const nextNav = String(d.nav);
+            setNavFromApi(nextNav);
             setNavActualDate(d.date && d.date !== confirmDate ? d.date : null);
-            calculateBuyUnits(amount, fee, arrivalAmount, String(d.nav));
+            const recalculated = subtype === "buy"
+              ? recalculateBuyUnitsFromInputs({
+                  navRaw: nextNav,
+                  recalculateFeeFromRate: !feeEdited,
+                })
+              : recalculateRedeemAmountsFromTerms({
+                  navRaw: nextNav,
+                  recalculateFeeFromRate: !feeEdited,
+                });
+            if (!recalculated) {
+              calculateBuyUnits(amount, fee, arrivalAmount, nextNav);
+            }
           }
         })
         .catch(() => {})
         .finally(() => setNavLoading(false));
     }, 500);
     return () => { if (navDebounce.current) clearTimeout(navDebounce.current); };
-  }, [confirmDate, fundCode, subtype, productType, mode, entry?.fundNav, toAccountId]);
-
-  useEffect(() => {
-    if (!isRedeemLike(subtype) || mode !== "create") return;
-    const gross = redeemGrossAmount;
-    const feeN = p(fee) > 0 ? p(fee) : (computedFee ? p(computedFee) : 0);
-    // 用户手动改过赎回金额后，不再用 gross 覆盖用户输入。
-    const effectiveAmount = amountEditedRef.current ? p(amount) : gross;
-    if (effectiveAmount <= 0) return;
-    const key = effectiveAmount + feeN;
-    if (Math.abs(key - redeemLastAppliedRef.current) < 0.005) return;
-    redeemLastAppliedRef.current = key;
-    setArrivalAmount(Math.max(0, effectiveAmount - feeN).toFixed(2));
-    if (!amountEditedRef.current && gross > 0) setAmount(gross.toFixed(2));
-  }, [redeemGrossAmount, amount, fee, computedFee, subtype, mode]);
+  }, [amount, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId, units]);
 
   function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
@@ -1475,6 +1667,7 @@ export function InvestmentFormModal({
       setFundName(nextFundName);
       setHoldingSearch(nextFundCode ? `${nextFundCode} ${nextFundName || nextFundCode}` : "");
       setFeeRate(defaults?.feeRate ?? "0");
+      setConfirmDays(typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 0);
       setFeeRateEdited(false);
     }
     // 重置日期、金额、份额、净值、手续费和备注。
@@ -1489,6 +1682,7 @@ export function InvestmentFormModal({
     arrivalDateEditedRef.current = false;
     setNav("");
     setNavActualDate(null);
+    lastNavFetchKey.current = "";
     setNavLoading(false);
     setUnits("");
     setAmount("");
@@ -1510,7 +1704,7 @@ export function InvestmentFormModal({
     resetForCreate(false, { preferDefaults: true });
     setOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry, mode, openSignal]);
+  }, [entry, mode, openSignal, defaults?.fundCode, defaults?.fundName, defaults?.fundUnits, defaults?.confirmDays, defaults?.feeRate]);
 
   async function handleFundCodeBlur() {
     if (!open) return;
@@ -1538,10 +1732,15 @@ export function InvestmentFormModal({
       .then(r => r.json())
       .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
       .catch(() => {});
-    if (mode === "create") {
-      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
+    if (!feeRateEdited) {
+      fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}${confirmDate ? `&effectiveDate=${encodeURIComponent(confirmDate)}` : ""}`)
         .then(r => r.json())
-        .then(d => { if (d.ok && d.rate != null) setFeeRate(String(d.rate)); })
+        .then(d => {
+          if (!d.ok || d.rate == null || feeRateEdited) return;
+          const nextRate = String(d.rate);
+          setFeeRate(nextRate);
+          if (mode !== "edit" || editAutoNavEnabledRef.current) calculateFeeFromRate(nextRate);
+        })
         .catch(() => {});
     }
   }
@@ -1555,14 +1754,32 @@ export function InvestmentFormModal({
       const res = await fetch(buildFundNavUrl(fundCode, fetchDate, toAccountId));
       const data = await res.json();
       if (data.ok && data.nav) {
-        setNavFromApi(String(data.nav));
+        const nextNav = String(data.nav);
+        setNavFromApi(nextNav);
         setNavActualDate(data.date && data.date !== fetchDate ? data.date : null);
-        const navN = data.nav;
+        lastNavFetchKey.current = `${toAccountId}:${fundCode.trim()}:${fetchDate}`;
+        const navN = p(nextNav);
         const amountN = p(amount);
         const feeN = p(fee);
         const effectiveFee = feeN > 0 ? feeN : 0;
-        calculateBuyUnits(amount, fee, arrivalAmount, String(data.nav));
-        if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
+        const recalculated = subtype === "buy"
+          ? recalculateBuyUnitsFromInputs({
+              navRaw: nextNav,
+              recalculateFeeFromRate: !feeEdited,
+            })
+          : recalculateRedeemAmountsFromTerms({
+              navRaw: nextNav,
+              recalculateFeeFromRate: !feeEdited,
+            });
+        if (!recalculated) {
+          calculateBuyUnits(amount, fee, arrivalAmount, nextNav, buyResultStatus === "refund", true);
+          if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !unitsEditedRef.current) {
+            setUnits(formatUnits(amountN / navN));
+          }
+          if (isRedeemLike(subtype) && navN > 0 && amountN > 0 && !arrivalAmount) {
+            setArrivalAmount(Math.max(0, amountN - effectiveFee).toFixed(2));
+          }
+        }
       } else {
         window.alert(data.error ?? `净值获取失败 code=${fundCode},date=${fetchDate})`);
       }
@@ -1615,6 +1832,22 @@ export function InvestmentFormModal({
     }
     const finalFundCode = productType === "metal" ? "" : fundCode.trim();
     const finalFundName = productType === "metal" ? "" : fundName.trim();
+
+    if (isFundRedeemCreate) {
+      const availableUnits = holdingsAsOfDate?.get(finalFundCode) ?? 0;
+      if (!finalFundCode || availableUnits <= 0.0001) {
+        window.alert("请选择赎回日期仍有持仓的基金");
+        return;
+      }
+      if (p(units) <= 0) {
+        window.alert("赎回份额必须大于 0");
+        return;
+      }
+      if (p(units) > availableUnits + 0.0001) {
+        window.alert(`赎回份额不能超过该日期的可用份额（${formatUnits(availableUnits)}）`);
+        return;
+      }
+    }
 
     // 分红再投资：金额 = 份额 * 净值。
     const effectiveAmount = subtype === "dividend_reinvest" && !(finalAmount > 0) && finalUnits > 0 && p(nav) > 0
@@ -1786,11 +2019,21 @@ export function InvestmentFormModal({
               .then(r => r.json())
               .then(d => {
                 if (d.ok && d.nav) {
-                  setNavFromApi(String(d.nav));
+                  const nextNav = String(d.nav);
+                  setNavFromApi(nextNav);
                   setNavActualDate(d.date && d.date !== nextDate ? d.date : null);
-                  const navN = d.nav;
+                  const navN = p(nextNav);
                   const amountN = p(amount);
-                  if (navN > 0 && amountN > 0) {
+                  const recalculated = subtype === "buy"
+                    ? recalculateBuyUnitsFromInputs({
+                        navRaw: nextNav,
+                        recalculateFeeFromRate: !feeEdited,
+                      })
+                    : recalculateRedeemAmountsFromTerms({
+                        navRaw: nextNav,
+                        recalculateFeeFromRate: !feeEdited,
+                      });
+                  if (!recalculated && navN > 0 && amountN > 0) {
                     const feeN = p(fee);
                     const effectiveFee = feeEdited ? feeN : (feeN > 0 ? feeN : (amountN * (p(feeRate) / 100)));
                     const refundAmountN = buyResultStatus === "refund" ? Math.max(0, p(arrivalAmount)) : 0;
@@ -2011,7 +2254,7 @@ export function InvestmentFormModal({
                         }}
                         placeholder="0.00"
                         label="份额"
-                        precision={3}
+                        precision={fundUnitsDecimals}
                       />
                     </div>
                   )}
@@ -2100,7 +2343,19 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  {productType === "metal" ? renderMetalFields() : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
+                  {productType === "metal" ? renderMetalFields() : isFundRedeemCreate ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">基金</div>
+                      <SmartSelect
+                        mode="single"
+                        value={fundCode}
+                        onChange={selectRedeemFund}
+                        options={redeemFundOptions}
+                        placeholder={redeemFundOptions.length > 0 ? "选择持仓基金" : "该日期没有可赎回基金"}
+                        behavior={{ search: true, clearable: false, density: "compact" }}
+                      />
+                    </div>
+                  ) : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
                       fundCode={fundCode}
@@ -2159,10 +2414,11 @@ export function InvestmentFormModal({
                             unitsEditedRef.current = true;
                             amountEditedRef.current = false;
                             setUnits(v);
+                            recalculateRedeemAmountsFromTerms({ unitsRaw: v });
                           }}
                           placeholder="0.00"
                           label="份额"
-                          precision={3}
+                          precision={fundUnitsDecimals}
                         />
                       </div>
                       <button
@@ -2188,8 +2444,13 @@ export function InvestmentFormModal({
                           inputMode="decimal"
                           value={nav}
                           onChange={(e) => {
-                            setNav(e.target.value);
+                            const nextNav = e.target.value;
+                            setNav(nextNav);
                             navEditedRef.current = true;
+                            recalculateRedeemAmountsFromTerms({
+                              navRaw: nextNav,
+                              recalculateFeeFromRate: !feeEdited,
+                            });
                           }}
                           placeholder="1.2345"
                           style={{ caretColor: "var(--foreground)" }}
@@ -2233,16 +2494,14 @@ export function InvestmentFormModal({
                           inputMode="decimal"
                           value={fee}
                           onChange={(e) => {
-                            if (mode === "edit") return;
                             suppressFeeAutoCalcRef.current = false;
                             setFee(e.target.value);
                             setFeeEdited(true);
                             calculateUnitsAfterFeeChange(e.target.value);
                           }}
-                          readOnly={mode === "edit"}
                           placeholder={computedFee || "0.00"}
                           style={{ caretColor: "var(--foreground)" }}
-                          className={`form-input caret-slate-800 ${mode === "edit" ? "bg-slate-50 text-slate-500" : ""}`}
+                          className="form-input caret-slate-800"
                         />
                       </div>
                     </div>
@@ -2348,9 +2607,17 @@ export function InvestmentFormModal({
                     inputMode="decimal"
                     value={nav}
                     onChange={(e) => {
-                      setNav(e.target.value);
+                      const nextNav = e.target.value;
+                      setNav(nextNav);
                       navEditedRef.current = true;
-                      calculateBuyUnits(amount, fee, arrivalAmount, e.target.value);
+                      if (subtype === "buy") {
+                        recalculateBuyUnitsFromInputs({
+                          navRaw: nextNav,
+                          recalculateFeeFromRate: !feeEdited,
+                        });
+                      } else {
+                        calculateBuyUnits(amount, fee, arrivalAmount, nextNav);
+                      }
                     }}
                     placeholder="1.2345"
                     className="form-input"
@@ -2446,15 +2713,13 @@ export function InvestmentFormModal({
                     <div className="text-xs font-medium text-slate-600">手续费金额</div>
                     <input inputMode="decimal" value={fee}
                       onChange={(e) => {
-                        if (mode === "edit") return;
                         suppressFeeAutoCalcRef.current = false;
                         setFee(e.target.value);
                         setFeeEdited(true);
                         calculateUnitsAfterFeeChange(e.target.value);
                       }}
-                      readOnly={mode === "edit"}
                       placeholder={computedFee || "0.00"}
-                      className={`form-input ${mode === "edit" ? "bg-slate-50 text-slate-500" : ""}`} />
+                      className="form-input" />
                   </div>
                 </div>
               )}
@@ -2469,7 +2734,7 @@ export function InvestmentFormModal({
                   <CalcInput value={units}
                     onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
                     placeholder={computedUnits || "0.00"}
-                    label="份额" precision={3} />
+                    label="份额" precision={fundUnitsDecimals} />
                 </div>
               </div>
                 </>

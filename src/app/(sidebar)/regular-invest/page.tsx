@@ -8,6 +8,7 @@ import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { toStatementMonth } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { RegularInvestClient } from "./RegularInvestClient";
+import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
@@ -267,7 +268,12 @@ export default async function RegularInvestPage() {
   }));
 
   return (
-    <RegularInvestClient
+    <>
+      <div className="h-full md:hidden">
+        <MobileRegularInvest plans={plansData} />
+      </div>
+      <div className="hidden h-full md:block">
+        <RegularInvestClient
       initialPlans={plansData}
       investmentAccounts={investmentAccounts}
       cashAccounts={cashAccounts}
@@ -283,7 +289,9 @@ export default async function RegularInvestPage() {
         institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? undefined })),
       }}
       transactionCreateAction={unavailableCreateTransaction}
-      transactionEditAction={updateScheduledTransferRecord}
-    />
+          transactionEditAction={updateScheduledTransferRecord}
+        />
+      </div>
+    </>
   );
 }

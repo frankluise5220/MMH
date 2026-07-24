@@ -219,7 +219,8 @@ function profitCategory(kind: InvestmentProductKind, value: number) {
  * Cash account balance still uses the real cash flow (`fundArrivalAmount` etc.).
  * This helper only exposes the economic P/L portion for reports/statistics:
  * fund realized P/L comes from the canonical fund recalculation result
- * (`TxRecord.realizedProfit`), while wealth/deposit yield uses interest minus fee.
+ * (`TxRecord.realizedProfit`). Wealth uses `realizedProfit` when unit-based
+ * redemption recalculation has written it, and falls back to interest minus fee.
  */
 export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike): InvestmentStatisticItem[] {
   const items: InvestmentStatisticItem[] = [];

@@ -174,6 +174,7 @@ export function ReportDetailTable({
           draggableRows={false}
           showAccountColumn
           showRunningBalance={false}
+          enableAccountNavigation
         />
       </div>
     </BasicDetailSelectionProvider>

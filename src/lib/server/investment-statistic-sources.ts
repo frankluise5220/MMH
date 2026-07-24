@@ -2,6 +2,8 @@ import { FundSubtype } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { calculateWealthPositionsFromEntries } from "@/lib/wealth-position";
+import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import type { InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
 
@@ -40,20 +42,14 @@ export async function loadWealthStatisticSourceEntries(
   const tagIds = Array.from(new Set(params.tagIds?.filter(Boolean) ?? []));
   const excluded = new Set(params.excludeEntryIds ?? []);
 
-  const rows = await prisma.wealthTransaction.findMany({
+  const calcRows = await prisma.wealthTransaction.findMany({
     where: {
       householdId: ctx.householdId,
       deletedAt: null,
-      tradeDate: { gte: params.start, lt: params.endExclusive },
+      tradeDate: { lt: params.endExclusive },
       ...(accountIds.length
         ? { OR: [{ accountId: { in: accountIds } }, { cashAccountId: { in: accountIds } }] }
         : {}),
-      OR: [
-        { realizedProfit: { not: null } },
-        { interest: { not: null } },
-        { fee: { not: null } },
-        { action: FundSubtype.dividend_cash },
-      ],
     },
     include: {
       Account: true,
@@ -61,6 +57,13 @@ export async function loadWealthStatisticSourceEntries(
       WealthProduct: true,
     },
     orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+  });
+  const startMs = params.start.getTime();
+  const endMs = params.endExclusive.getTime();
+  const rows = calcRows.filter((row) => {
+    const tradeMs = row.tradeDate.getTime();
+    if (tradeMs < startMs || tradeMs >= endMs) return false;
+    return isCashInAction(row.action) || row.realizedProfit != null || row.interest != null || row.fee != null;
   });
 
   const cashEntryIds = Array.from(new Set(rows.map((row) => row.cashEntryId).filter(Boolean) as string[]));
@@ -82,6 +85,36 @@ export async function loadWealthStatisticSourceEntries(
       })
     : [];
   const cashEntryById = new Map(cashEntries.map((entry) => [entry.id, entry]));
+  const profitByTransactionId = new Map<string, number>();
+  const rowsByAccountId = new Map<string, typeof calcRows>();
+  for (const row of calcRows) {
+    const list = rowsByAccountId.get(row.accountId) ?? [];
+    list.push(row);
+    rowsByAccountId.set(row.accountId, list);
+  }
+  for (const accountRows of rowsByAccountId.values()) {
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(accountRows[0]?.Account?.fundUnitsDecimals, 3);
+    const calc = calculateWealthPositionsFromEntries(
+      accountRows.map((row) => ({
+        id: row.id,
+        cashEntryId: row.cashEntryId,
+        productKey: `${row.accountId}:${row.wealthProductId ?? row.productName ?? `wealth:${row.id}`}`,
+        action: row.action,
+        tradeDate: row.tradeDate,
+        createdAt: row.createdAt,
+        grossAmount: row.grossAmount,
+        arrivalAmount: row.arrivalAmount,
+        units: row.units,
+        nav: row.nav,
+        interest: row.interest,
+        fee: row.fee,
+      })),
+      fundUnitsDecimals,
+    );
+    for (const [entryId, profit] of calc.realizedProfitByTransactionId) {
+      profitByTransactionId.set(entryId, profit);
+    }
+  }
 
   return rows.flatMap((row): InvestmentStatisticSourceEntry[] => {
     const entryId = row.cashEntryId ?? row.id;
@@ -111,7 +144,7 @@ export async function loadWealthStatisticSourceEntries(
       amount: displayAmount,
       fundSubtype: row.action,
       fundProductType: "wealth",
-      realizedProfit: row.realizedProfit,
+      realizedProfit: profitByTransactionId.get(row.id) ?? row.realizedProfit,
       depositInterest: row.interest,
       fundFee: row.fee,
       fundCode: null,

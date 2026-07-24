@@ -31,6 +31,13 @@ type EntryBusinessLinkSummaryRow = {
   preciousMetalTransactionId?: string | null;
   businessType: EntryBusinessType | string;
   linkType?: string | null;
+  CashEntry?: { id: string; deletedAt?: Date | null } | null;
+  BusinessEntry?: { id: string; deletedAt?: Date | null } | null;
+  FundTransaction?: { id: string; deletedAt?: Date | null } | null;
+  InsuranceTransaction?: { id: string; deletedAt?: Date | null } | null;
+  WealthTransaction?: { id: string; deletedAt?: Date | null } | null;
+  DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
+  PreciousMetalTransaction?: { id: string; deletedAt?: Date | null } | null;
 };
 
 export const entryBusinessLinkSummaryInclude = {
@@ -46,6 +53,13 @@ export const entryBusinessLinkSummaryInclude = {
       preciousMetalTransactionId: true,
       businessType: true,
       linkType: true,
+      CashEntry: { select: { id: true, deletedAt: true } },
+      BusinessEntry: { select: { id: true, deletedAt: true } },
+      FundTransaction: { select: { id: true, deletedAt: true } },
+      InsuranceTransaction: { select: { id: true, deletedAt: true } },
+      WealthTransaction: { select: { id: true, deletedAt: true } },
+      DepositTransaction: { select: { id: true, deletedAt: true } },
+      PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
     },
   },
   EntryBusinessLinkBusiness: {
@@ -60,6 +74,13 @@ export const entryBusinessLinkSummaryInclude = {
       preciousMetalTransactionId: true,
       businessType: true,
       linkType: true,
+      CashEntry: { select: { id: true, deletedAt: true } },
+      BusinessEntry: { select: { id: true, deletedAt: true } },
+      FundTransaction: { select: { id: true, deletedAt: true } },
+      InsuranceTransaction: { select: { id: true, deletedAt: true } },
+      WealthTransaction: { select: { id: true, deletedAt: true } },
+      DepositTransaction: { select: { id: true, deletedAt: true } },
+      PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
     },
   },
 } as const;
@@ -290,6 +311,13 @@ export function buildEntryBusinessLinkSummary(entry: {
 }) {
   const uniqueRows = new Map<string, EntryBusinessLinkSummaryRow>();
   for (const row of [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]) {
+    if (row.cashEntryId && (!row.CashEntry || row.CashEntry.deletedAt)) continue;
+    if (row.businessEntryId && (!row.BusinessEntry || row.BusinessEntry.deletedAt)) continue;
+    if (row.fundTransactionId && (!row.FundTransaction || row.FundTransaction.deletedAt)) continue;
+    if (row.insuranceTransactionId && (!row.InsuranceTransaction || row.InsuranceTransaction.deletedAt)) continue;
+    if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
+    if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
+    if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
     const targetId =
       row.fundTransactionId ??
       row.insuranceTransactionId ??

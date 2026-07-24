@@ -37,12 +37,14 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
+import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
+import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -103,6 +105,25 @@ function parseMoney(val: unknown): number {
 function positiveNumber(value: unknown) {
   const n = toNumber(value);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function resolveRecordFundFeeRate(record: {
+  fundCode?: string | null;
+  fundProductType?: string | null;
+  fundSubtype?: FundSubtype | null;
+  accountId: string;
+  toAccountId?: string | null;
+  date: Date;
+  fundConfirmDate?: Date | null;
+}) {
+  const fundCode = String(record.fundCode ?? "").trim();
+  if (!fundCode || record.fundProductType === "metal" || record.fundProductType === "wealth") return null;
+  const redeemLike = record.fundSubtype === FundSubtype.redeem || record.fundSubtype === FundSubtype.switch_out;
+  const fundAccountId = redeemLike ? record.accountId : record.toAccountId;
+  if (!fundAccountId) return null;
+  const feeType = redeemLike ? "redeem" : "buy";
+  const feeDate = record.fundConfirmDate ?? record.date;
+  return getFundFeeRateByDate(fundAccountId, fundCode, feeDate, feeType).catch(() => null);
 }
 
 async function resolveAccountDisplayBalance(
@@ -492,7 +513,11 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
         interest,
         fee,
         annualRate,
-        realizedProfit: isCashIn ? (interest ?? 0) - Math.max(0, fee ?? 0) : null,
+        realizedProfit: subtype === FundSubtype.dividend_cash
+          ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+          : isCashIn
+            ? (interest ?? 0) - Math.max(0, fee ?? 0)
+            : null,
         note: note || null,
       },
     });
@@ -516,6 +541,9 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
   });
 
   for (const id of touchedAccountIds) {
+    await recalcWealthPositions(id).catch(logger.catchLog("理财持仓收益重算失败", "route.ts"));
+  }
+  for (const id of touchedAccountIds) {
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
@@ -525,8 +553,8 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
 
 async function editSplitWealthTransactionFromBody(body: Record<string, unknown>, householdId: string, tagIds: string[]) {
   const entryId = String(body.id ?? body.entryId ?? "").trim();
-  if (!entryId) throw new Error("缺少 id");
   const businessTransactionId = String(body.businessTransactionId ?? "").trim();
+  if (!entryId && !businessTransactionId) throw new Error("缺少 id");
   const date = toDateOrNull(body.date) ?? new Date();
   const subtype = normalizeFundSubtype(body.fundSubtype ?? body.subtype);
   const isCashIn = isWealthCashInSubtype(subtype);
@@ -568,10 +596,9 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
         businessType: "wealth",
         deletedAt: null,
         OR: [
-          { cashEntryId: entryId },
+          ...(entryId ? [{ cashEntryId: entryId }] : []),
           ...(businessTransactionId ? [{ wealthTransactionId: businessTransactionId }] : []),
-          { wealthTransactionId: entryId },
-          { businessEntryId: entryId },
+          ...(entryId ? [{ wealthTransactionId: entryId }, { businessEntryId: entryId }] : []),
         ],
       },
       orderBy: { updatedAt: "desc" },
@@ -582,7 +609,9 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     if (!wealthRow) {
       wealthRow = link?.wealthTransactionId
         ? await tx.wealthTransaction.findUnique({ where: { id: link.wealthTransactionId } })
-        : await tx.wealthTransaction.findFirst({ where: { householdId, OR: [{ id: entryId }, { cashEntryId: entryId }] } });
+        : entryId
+          ? await tx.wealthTransaction.findFirst({ where: { householdId, OR: [{ id: entryId }, { cashEntryId: entryId }] } })
+          : null;
     }
 
     if (!wealthRow) {
@@ -680,6 +709,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       depositAnnualRate: null,
       depositInterest: null,
       realizedProfit: null,
+      deletedAt: null,
     };
     const cashEntry = oldCashEntry
       ? await tx.txRecord.update({ where: { id: oldCashEntry.id }, data: cashEntryData })
@@ -705,7 +735,11 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
         interest,
         fee,
         annualRate,
-        realizedProfit: isCashIn ? (interest ?? 0) - Math.max(0, fee ?? 0) : null,
+        realizedProfit: subtype === FundSubtype.dividend_cash
+          ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+          : isCashIn
+            ? (interest ?? 0) - Math.max(0, fee ?? 0)
+            : null,
         note: note || null,
         deletedAt: null,
       },
@@ -738,6 +772,9 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     return { cashEntryId: cashEntry.id, wealthTransactionId: wealthRow.id };
   }, TX_EDIT_TRANSACTION_OPTIONS);
 
+  for (const id of touchedAccountIds) {
+    await recalcWealthPositions(id).catch(logger.catchLog("理财持仓收益重算失败", "route.ts"));
+  }
   for (const id of touchedAccountIds) {
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
@@ -862,7 +899,7 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
     fundUnits: wealthRow.units == null ? null : toNumber(wealthRow.units),
     fundFee: wealthRow.fee == null ? null : toNumber(wealthRow.fee),
     fundConfirmDate: wealthRow.confirmDate ? formatDateLocal(wealthRow.confirmDate) : null,
-    fundArrivalDate: wealthRow.arrivalDate ? formatDateLocal(wealthRow.arrivalDate) : null,
+    fundArrivalDate: wealthRow.arrivalDate ? formatDateLocal(wealthRow.arrivalDate) : (record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null),
     fundArrivalAmount: arrivalAmount,
     depositAnnualRate: wealthRow.annualRate == null ? wealthRow.WealthProduct?.annualRate ?? null : toNumber(wealthRow.annualRate),
     depositInterest: wealthRow.interest == null ? null : toNumber(wealthRow.interest),
@@ -1104,6 +1141,7 @@ export async function GET(req: Request) {
             },
           })
         : null;
+      const fundFeeRate = await resolveRecordFundFeeRate(record);
       const entry = {
         id: record.id,
         date: formatDateLocal(record.date),
@@ -1154,6 +1192,7 @@ export async function GET(req: Request) {
         fundSourceEntryId: record.fundSourceEntryId ?? null,
         fundUnits: record.fundUnits ? toNumber(record.fundUnits) : null,
         fundFee: record.fundFee ? toNumber(record.fundFee) : null,
+        feeRate: fundFeeRate,
         fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
         fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
         fundArrivalAmount: record.fundArrivalAmount ? toNumber(record.fundArrivalAmount) : null,
@@ -2322,12 +2361,14 @@ export async function PUT(req: Request) {
       return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
     }
 
+    const type = String(body.type ?? "").trim();
     const entryId = String(body.id ?? body.entryId ?? "").trim();
-    if (!entryId) {
+    const productType = String(body.fundProductType ?? body.productType ?? "").trim();
+    const businessTransactionId = String(body.businessTransactionId ?? "").trim();
+    if (!entryId && !(type === "investment" && productType === "wealth" && businessTransactionId)) {
       return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
     }
 
-    const type = String(body.type ?? "").trim();
     const dateStr = String(body.date ?? "").trim();
     const amountRaw = parseMoney(body.amount);
     const amountAbs = Math.abs(amountRaw);
@@ -2346,7 +2387,7 @@ export async function PUT(req: Request) {
     }
 
     const { householdId } = ctx;
-    const undo = await prepareEntryUndo(prisma, householdId, [entryId]);
+    const undo = entryId ? await prepareEntryUndo(prisma, householdId, [entryId]) : null;
 
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;

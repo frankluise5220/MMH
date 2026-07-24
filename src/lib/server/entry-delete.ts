@@ -5,6 +5,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
+import { recalcWealthPositions } from "@/lib/wealth-position";
 import { isAdmin } from "@/lib/server/auth";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
@@ -26,6 +27,7 @@ function collectInvestmentRecalcTargets(
     accountsToRecalcBalance: Set<string>;
     fundAccountsToRecalc: Map<string, string[]>;
     metalAccountsToRecalc: Set<string>;
+    wealthAccountsToRecalc: Set<string>;
   },
 ) {
   if (txRecord.accountId) targets.accountsToRecalcBalance.add(txRecord.accountId);
@@ -35,6 +37,10 @@ function collectInvestmentRecalcTargets(
   const investmentAccId = isRedeemLike ? txRecord.accountId : txRecord.toAccountId ?? txRecord.accountId;
   if ((txRecord.metalTypeId || txRecord.fundProductType === "metal") && investmentAccId) {
     targets.metalAccountsToRecalc.add(investmentAccId);
+    return;
+  }
+  if (txRecord.fundProductType === "wealth" && investmentAccId) {
+    targets.wealthAccountsToRecalc.add(investmentAccId);
     return;
   }
   if (txRecord.fundCode && txRecord.fundProductType && investmentAccId) {
@@ -59,6 +65,7 @@ type InvestmentRecalcTargets = {
   accountsToRecalcBalance: Set<string>;
   fundAccountsToRecalc: Map<string, string[]>;
   metalAccountsToRecalc: Set<string>;
+  wealthAccountsToRecalc: Set<string>;
 };
 
 type IndependentBusinessDeleteResult = {
@@ -148,6 +155,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
     pushRemovedIds(row.id, row.cashEntryId);
     addOptionalAccountId(targets, row.accountId);
     addOptionalAccountId(targets, row.cashAccountId);
+    targets.wealthAccountsToRecalc.add(row.accountId);
   }
 
   const wealthRows = await prisma.wealthTransaction.findMany({
@@ -320,6 +328,7 @@ export async function softDeleteEntriesByIds(
   const removedEntryIds: string[] = [];
   const fundAccountsToRecalc = new Map<string, string[]>();
   const metalAccountsToRecalc = new Set<string>();
+  const wealthAccountsToRecalc = new Set<string>();
   const accountsToRecalcBalance = new Set<string>();
   const changedFundEntryIds: string[] = [];
   const processedInstallmentPlanIds = new Set<string>();
@@ -347,6 +356,7 @@ export async function softDeleteEntriesByIds(
           accountsToRecalcBalance,
           fundAccountsToRecalc,
           metalAccountsToRecalc,
+          wealthAccountsToRecalc,
         });
         const businessAccount = businessAccountSnapshotOf(txRecord);
         if (businessAccount.id) accountsToRecalcBalance.add(businessAccount.id);
@@ -419,6 +429,7 @@ export async function softDeleteEntriesByIds(
       accountsToRecalcBalance,
       fundAccountsToRecalc,
       metalAccountsToRecalc,
+      wealthAccountsToRecalc,
     });
 
   }
@@ -428,6 +439,7 @@ export async function softDeleteEntriesByIds(
       accountsToRecalcBalance,
       fundAccountsToRecalc,
       metalAccountsToRecalc,
+      wealthAccountsToRecalc,
     });
     deletedCount += independentDelete.deletedCount;
     deletedEntryIds.push(...independentDelete.deletedEntryIds);
@@ -448,6 +460,9 @@ export async function softDeleteEntriesByIds(
   }
   for (const accountId of metalAccountsToRecalc) {
     await recalcPreciousMetalPositions(accountId).catch(logger.catchLog("操作失败", "entry-delete.ts"));
+  }
+  for (const accountId of wealthAccountsToRecalc) {
+    await recalcWealthPositions(accountId).catch(logger.catchLog("理财持仓收益重算失败", "entry-delete.ts"));
   }
   for (const accountId of accountsToRecalcBalance) {
     await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "entry-delete.ts"));

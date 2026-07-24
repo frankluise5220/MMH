@@ -8,6 +8,10 @@ export function revalidateAfterTxChange() {
   revalidatePath("/accounts");
 }
 
+export function revalidateAfterEntryOrderChange() {
+  revalidateTag("entries", "max");
+}
+
 export function revalidateAfterInvestChange() {
   revalidateAfterTxChange();
   revalidateTag("invest-balances", "max");

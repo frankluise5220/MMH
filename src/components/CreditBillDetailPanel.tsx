@@ -19,6 +19,8 @@ import {
 
 type CreditBillDetailPanelProps = {
   accountId: string;
+  reorderAccountIds?: string[];
+  showCardColumn?: boolean;
   entries: DetailEntry[];
   initialPage: number;
   initialPageSize: number;
@@ -26,7 +28,7 @@ type CreditBillDetailPanelProps = {
   resetKey: string;
   title: ReactNode;
   periodLabel?: ReactNode;
-  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; debtDirection?: string | null }>;
+  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; debtDirection?: string | null; numberMasked?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
 };
@@ -50,6 +52,8 @@ function writeStoredDetailPreference(accountId: string, pageSize: number, detail
 
 export function CreditBillDetailPanel({
   accountId,
+  reorderAccountIds,
+  showCardColumn = false,
   entries,
   initialPage,
   initialPageSize,
@@ -160,11 +164,19 @@ export function CreditBillDetailPanel({
           categoryOptions={categoryOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows
+          showAccountColumn={showCardColumn}
+          accountColumnLabel="卡号"
+          accountColumnMode="cardLast4"
+          accountColumnDefaultHidden
+          relatedAccountDefaultHidden
+          runningBalanceDefaultHidden
+          reorderAccountIds={reorderAccountIds}
           storageKey="mmh_credit_bill_detail_table_v1"
           resetKey={tableResetKey}
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           toolbarTitle={title}
+          sortable={false}
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
               {periodLabel ? <span className="hidden whitespace-nowrap md:inline">{periodLabel}</span> : null}

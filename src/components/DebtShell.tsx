@@ -570,7 +570,7 @@ export function DebtShell({
     { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     {
       key: "actions",
-      label: "操作",
+      label: "",
       width: 92,
       minWidth: 76,
       align: "right",
@@ -742,7 +742,7 @@ export function DebtShell({
               selectedKeys={selectedEntryIds}
               onSelectionChange={setSelectedEntryIds}
               batchActions={[
-                { label: "批量删除", onClick: batchDeleteEntries },
+                { label: "批量删除", title: "删除按钮", ariaLabel: "删除按钮", tone: "danger", onClick: batchDeleteEntries },
               ]}
             />
           ) : (
@@ -856,7 +856,7 @@ export function DebtShell({
                   <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2 px-1 text-xs font-medium text-slate-500">
                     <div>生效日期</div>
                     <div>年利率（%）</div>
-                    <div className="text-right">操作</div>
+                    <div className="text-right" aria-label="Action buttons" />
                   </div>
                   <div className="max-h-[230px] space-y-2 overflow-y-auto pr-1">
                     {rateDrafts.length === 0 ? (

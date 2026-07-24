@@ -146,7 +146,7 @@ export function MobileOverviewDashboard({
               {accountList.slice(0, 8).map((account) => (
                 <Link
                   key={account.id}
-                  href={`/?accountId=${account.id}&view=${account.kind === "bank_credit" ? "bill" : "detail"}`}
+                  href={`/accounts/${encodeURIComponent(account.id)}`}
                   className="flex min-h-16 items-center gap-3 px-3 py-2.5"
                 >
                   <AccountIcon kind={account.kind} />

@@ -34,6 +34,7 @@ type AccountOption = {
   debtDirection?: string | null;
   institutionId?: string | null;
   currency?: string | null;
+  billingDay?: number | null;
   isHeader?: boolean;
   isGroup?: boolean;
   parentId?: string;
@@ -95,6 +96,13 @@ function toDateInputValue(value: string | null | undefined) {
     String(d.getMonth() + 1).padStart(2, "0"),
     String(d.getDate()).padStart(2, "0"),
   ].join("-");
+}
+
+function dateInputToUtcDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isFinite(date.getTime()) ? date : null;
 }
 
 function parseMoneyDraft(value: string) {
@@ -486,20 +494,27 @@ export function TransactionFormModal({
     || (isCreditCardAccount && accountId === (defaultAccountId ?? accountId));
   const installmentPreview = useMemo(() => {
     if (!createInstallment) return null;
+    const account = accountMetaById.get(accountId);
+    const billingDay = Number(account?.billingDay);
+    const firstDate = dateInputToUtcDate(date);
+    if (!firstDate || !Number.isFinite(billingDay) || billingDay < 1 || billingDay > 31) return null;
     try {
       const rows = buildCreditCardInstallmentSchedule({
         principal: Number(installmentAmount),
         totalRuns: Number(installmentTotal),
         rateType: installmentRateType,
         rate: Number(installmentRate),
-        firstStatementMonth: "2026-01",
-        firstDate: new Date("2026-01-01T00:00:00.000Z"),
+        billingDay,
+        firstDate,
       });
-      return summarizeCreditCardInstallments(rows);
+      return {
+        rows,
+        summary: summarizeCreditCardInstallments(rows),
+      };
     } catch {
       return null;
     }
-  }, [createInstallment, installmentAmount, installmentRate, installmentRateType, installmentTotal]);
+  }, [accountId, accountMetaById, createInstallment, date, installmentAmount, installmentRate, installmentRateType, installmentTotal]);
 
   function openSpecialTransferTargetIfNeeded() {
     if (txType !== "transfer") return false;
@@ -1402,10 +1417,36 @@ export function TransactionFormModal({
                             </div>
                             {installmentPreview ? (
                               <div className="text-xs tabular-nums text-slate-500">
-                                首期 {installmentPreview.firstPayment.toFixed(2)} · 费用 {installmentPreview.totalInterest.toFixed(2)} · 合计 {installmentPreview.totalPayment.toFixed(2)}
+                                首期 {installmentPreview.summary.firstPayment.toFixed(2)} · 费用 {installmentPreview.summary.totalInterest.toFixed(2)} · 合计 {installmentPreview.summary.totalPayment.toFixed(2)}
                               </div>
                             ) : null}
                           </div>
+                          {installmentPreview ? (
+                            <div className="max-h-48 overflow-auto rounded-md border border-slate-200">
+                              <table className="min-w-full text-xs tabular-nums">
+                                <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                                  <tr>
+                                    <th className="px-2 py-1 text-left font-medium">期数</th>
+                                    <th className="px-2 py-1 text-left font-medium">日期</th>
+                                    <th className="px-2 py-1 text-right font-medium">本金</th>
+                                    <th className="px-2 py-1 text-right font-medium">{installmentRateType === "annual_interest" ? "利息" : "手续费"}</th>
+                                    <th className="px-2 py-1 text-right font-medium">应还</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {installmentPreview.rows.map((row) => (
+                                    <tr key={row.installmentNo} className="border-t border-slate-100">
+                                      <td className="px-2 py-1 text-slate-600">{row.installmentNo}/{installmentTotal}</td>
+                                      <td className="px-2 py-1 text-slate-600">{row.date.toISOString().slice(0, 10)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{row.principal.toFixed(2)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{row.interest.toFixed(2)}</td>
+                                      <td className="px-2 py-1 text-right font-medium text-slate-800">{row.payment.toFixed(2)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
                         </>
                       ) : null}
                     </div>

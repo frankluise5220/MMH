@@ -153,11 +153,13 @@
 - `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
 - 信用卡账户的 `balance` 与 Web 侧边栏一致，表示当前滚动余额：本期已出账账单金额 + 当前未出账周期支出 - 当前未出账周期收入/退款/还款；服务端取当前信用卡账期的 `effectiveBill`，不是 `cumulativeRemain - cumulativeOverpaid`。
 - `/api/v1/overview/summary` 的 `creditAccountList[].currentAmount` 和 `creditCurrentAmountTotal` 表示当前信用卡账期的“本期金额”，口径为 `expenseAbs - income`，用于展示本期支出扣除本期收入/退款后的净发生额；它不同于用户锁定或滚动后的 `currentBill`/待还金额。
+- 信用卡账单明细和汇总按账期日期窗口归属。`statementMonth` 是缓存/兼容字段，不能让一条入账日期落在其他周期内的交易进入本期，也不能把本期日期内的交易排除出去。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
 - `POST /api/v1/accounts` 与 `PUT /api/v1/accounts` 在这类账户上接受 `tradingCalendar`；当账户类型不支持该字段时，服务端会自动清空。
 - `/api/v1/business-transactions/integrity` 用于迁移期检查和修复资金流水与独立业务交易表的一致性。`GET` 返回各业务类型的 expected/existing/linked/missing 统计和问题列表；`POST { limit? }` 会复用正式同步逻辑补齐缺失的业务交易和 `EntryBusinessLink`，不直接清空 `TxRecord` 兼容字段。
+- `/api/v1/business-transactions/link-cash-flow` 用于从独立业务交易补建或恢复资金侧流水并建立 `EntryBusinessLink`。`POST { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund", businessTransactionId }`，成功返回 `{ ok:true, data:{ cashEntryId, businessTransactionId } }`；缺少资金账户、业务记录 ID 或不支持的类型时返回 `{ ok:false, error }`。
 - `/api/v1/business-transactions/insurance?accountId=...` 从独立 `InsuranceTransaction` 表读取某个保险账户的业务交易明细，返回 `{ ok:true, data:{ entries } }`。保险页面保存后的刷新应使用该接口，不再通过 `/api/v1/transactions/detail` 筛选 `source=insurance` 作为业务台账来源。
 
 ### Transactions
@@ -197,7 +199,7 @@
 
 - `/api/v1/transactions`
 - `/api/v1/transactions/detail`
-- `/api/v1/transactions/reorder` 用于同一账户明细、同一显示日期内调整记录顺序；成功返回 `orderedEntryIds`，客户端应以该顺序作为服务端最终顺序。
+- `/api/v1/transactions/reorder` 用于同一账户明细、同一显示日期内调整记录顺序；成功返回 `orderedEntryIds` 和同日受影响记录的 `runningBalances`，客户端应以该顺序和余额作为服务端最终结果，并避免触发全局财务刷新。
 - `/api/v1/entries/batch-edit`
 - `/api/v1/entries/batch-update`
   - 批量更新支持 `categoryId`，客户端应提交真实分类 ID；传空字符串表示清空分类。层级分类中，二级、三级以及带子分类的真实分类节点都可以作为 `categoryId`。
@@ -351,6 +353,7 @@ Request body:
 - `refund` 是导入别名，服务端会兼容映射到现有退回记录子类型。
 - `confirmDate` 表示净值日期，写入 `fundConfirmDate`。
 - `arrivalDate` 表示入账日期，写入 `fundArrivalDate`。
+- 基金买入和定投的现金侧发生日按申请日期 `date` 展示和排序；只有赎回、现金分红、买入退回等现金入账记录在现金/借记账户明细中按 `arrivalDate` 展示和排序。
 - 买入退回记录会通过 `fundSourceEntryId` 显式关联到源买入记录；借记卡/现金账户明细展示这类退回入账时，按实际到账日期显示和排序。基金交易明细按源买入申请日期归集展示，退回到账日期保留在到账日期字段。
 - 预览阶段会按基金账户已有配置或本次 `overrides` 自动补全确认天数、净值日期、入账日期、手续费；不会为了预览额外查询净值。
 - `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户。
@@ -514,7 +517,7 @@ Notes:
 
 - 定期计划任务。
 - 当前支持基金定投、还房贷、转账、保险缴费四类任务。
-- 任务共用计划字段：资金账户、任务类型、周期、下次执行、已执行次数、开始日期、停止日期。
+- 任务共用计划字段：资金账户、任务类型、周期、已执行次数、开始日期、停止日期。`nextRunDate` 是服务端内部执行游标，可用于到期判断和只读展示，但客户端不能把它作为编辑字段提交。
 - 任务内容按类型保存不同目标：基金代码/基金账户、贷款账户、转入账户、保险产品。
 - 执行时调用现有交易、基金、保险业务语义，不新增独立交易类型。
 - 每日自动执行扫描所有执行中计划，未到执行日的计划直接跳过。
@@ -585,19 +588,19 @@ Notes:
 - `creditCardInstallmentPlanId`: 分期计划稳定 ID。
 - `installmentNo` / `installmentTotal`: 当前期次与总期数；冲抵行的 `installmentNo` 为 `null`。
 - `installmentPrincipal` / `installmentInterest`: 本行本金与手续费/利息。
-- `installmentRole`: `adjustment` 表示原账期本金冲抵，`payment` 表示某一期应还。
+- `installmentRole`: `adjustment` 表示原账期本金冲抵，`payment` 表示某一期本金，`fee` 表示同一期手续费/利息。
 - `installmentSourceType`: `transaction` 表示消费时创建的消费分期，`statement` 表示已出账后创建的账单分期。
 - `installmentSourceStatementMonth`: 账单分期的来源账单月份（`YYYY-MM`）；消费分期为 `null`。
 
-消费分期支持仅对原支出的部分金额分期；账单分期支持对已出账且未结清账单的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、在来源账单冲抵分期本金、从首期账单开始逐期加入本金与费用”。账单分期的首期从来源账单的下一个账单月开始。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
+消费分期支持仅对原支出的部分金额分期；账单分期支持对已出账且未结清账单的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、在来源账单冲抵分期本金、从首期账单开始逐期加入本金与费用”。冲抵行是信用卡账户流入/支出抵减，保存为 `type=expense` 且 `amount` 为正数；账单摘要的流出/流入按信用卡视角的金额正负统计，不按 `type` 大类统计，因此该冲抵行计入流入。每期扣款日期按首期入账日期逐月推进，例如首期入账日期为 `11-27` 时第二期日期为 `12-27`；账单分期窗口中首期入账日期默认等于分期日期，但可单独指定。每期本金和手续费/利息生成同日两条流水（无手续费/利息时不生成零金额手续费流水）。首期本金/手续费所属账期按首期入账日期和账单日计算，不强制归到来源账单的下一期。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
 
 ### 创建账单分期
 
 - Method: `POST`
 - Path: `/api/v1/bill/installment`
 - Auth: required
-- Body: `accountId`, `statementMonth`（`YYYY-MM`）, `amount`, `totalRuns`, `rateType`, `rate`
-- 仅允许已出账且尚有未还金额的信用卡账单；同一合并/独立账单月份只能有一个有效账单分期计划。
+- Body: `accountId`, `amount`, `date`（`YYYY-MM-DD`，分期确定/冲抵日期，系统按该日期和账单日自动归属来源账单月份）, `firstPaymentDate`（可选，`YYYY-MM-DD`，首期入账日期，默认等于 `date`）, `totalRuns`, `rateType`, `rate`；`statementMonth` 仅作为兼容校验字段可选传入，必须与日期推导结果一致。
+- 仅允许日期归属到已出账的信用卡账单；分期金额默认可参考未还金额但不限制输入上限，也不以系统计算的未还金额作为创建门槛；同一合并/独立账单月份只能有一个有效账单分期计划。
 - 返回 `planId`, `sourceType`, `sourceStatementMonth`, `installmentPrincipal`, `firstStatementMonth`, `totalRuns`。
 
 ## 接口详情模板

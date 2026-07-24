@@ -70,11 +70,8 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     const subtype = e.subtype ?? (amount < 0 ? "buy" : "redeem");
 
     if (subtype === "buy_failed") {
-      const rec = map.get(code) ?? emptyHolding();
-      const a = Math.abs(toNum(amount));
-      if (e.source === "regular_invest_refund") rec.pendingCost -= a;
-      else rec.pendingCost += a;
-      map.set(code, rec);
+      // Failed subscriptions are cash-flow history only. They never become fund
+      // holdings, so they should not inflate pending fund cost.
       continue;
     }
 
@@ -126,11 +123,8 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     const subtype = e.subtype ?? (amount < 0 ? "buy" : "redeem");
 
     if (subtype === "buy_failed") {
-      const rec = result.get(code) ?? emptyHolding();
-      const a = Math.abs(toNum(amount));
-      if (e.source === "regular_invest_refund") rec.pendingCost -= a;
-      else rec.pendingCost += a;
-      result.set(code, rec);
+      // Failed subscriptions are cash-flow history only. They never become fund
+      // holdings, so they should not inflate pending fund cost.
       continue;
     }
 

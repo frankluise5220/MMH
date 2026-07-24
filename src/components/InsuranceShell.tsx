@@ -1,6 +1,7 @@
 ﻿"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
 import { formatMoney } from "@/lib/format";
@@ -15,6 +16,7 @@ import {
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
+import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchDeleteMessage,
@@ -49,6 +51,7 @@ type InsuranceEntry = {
   note: string;
   fundArrivalDate?: string | null;
   amount: number;
+  businessTransactionId?: string | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
   coverageAmount: number | null;
@@ -145,50 +148,6 @@ function amountClass(value: number) {
   if (value > 0) return "text-emerald-700";
   if (value < 0) return "text-rose-700";
   return "text-slate-500";
-}
-
-function BusinessLinkHeaderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
-      <path
-        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
-}
-
-function BusinessLinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
-  return (
-    <span
-      title={title}
-      className={[
-        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
-        active
-          ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
-          : "border-slate-200 bg-transparent text-slate-300",
-      ].join(" ")}
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
-        <path
-          d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="2"
-        />
-      </svg>
-    </span>
-  );
-}
-
-function stopRowClick(event: React.MouseEvent) {
-  event.stopPropagation();
 }
 
 function todayLocalYmd() {
@@ -424,13 +383,19 @@ function InsuranceEntryRecordsTable({
   rows,
   hasSelectedHolding,
   cashAccounts,
+  toolbarTitle,
+  toolbarRightContent,
   onRowDoubleClick,
+  rowActions,
 }: {
   columns: AdvancedDataTableColumn<InsuranceEntry>[];
   rows: InsuranceEntry[];
   hasSelectedHolding: boolean;
   cashAccounts: InsuranceCashAccountOption[];
+  toolbarTitle?: ReactNode;
+  toolbarRightContent?: ReactNode;
   onRowDoubleClick: (entry: InsuranceEntry) => void;
+  rowActions: (entry: InsuranceEntry) => ReactNode;
 }) {
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const accountOptions = useMemo(
@@ -448,9 +413,14 @@ function InsuranceEntryRecordsTable({
       emptyText={hasSelectedHolding ? "这份保单暂时没有关联记录" : "请先选择上方保单"}
       selectable
       fillHeight
+      toolbarTitle={toolbarTitle}
+      toolbarRightContent={toolbarRightContent}
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
       onRowDoubleClick={onRowDoubleClick}
+      rowActions={rowActions}
+      rowActionsWidth={112}
+      rowActionsMinWidth={92}
       batchActionSlot={
         <>
           <BasicDetailBatchReplaceButton
@@ -505,6 +475,7 @@ export function InsuranceShell({
   const [productEditValue, setProductEditValue] = useState<InsuranceProductEditValue | null>(null);
   const [savingProduct, setSavingProduct] = useState(false);
   const [entryEditValue, setEntryEditValue] = useState<InsuranceEntryEditValue | null>(null);
+  const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const refreshSeq = useRef(0);
   const currentHoldingsRef = useRef<InsuranceHolding[]>(holdings);
   const familyMemberOptionsRef = useRef<SmartSelectOption[]>(familyMemberOptions);
@@ -595,6 +566,36 @@ export function InsuranceShell({
       setRefreshedHoldings(nextHoldings);
     } catch {}
   }, [accountId]);
+
+  const linkInsuranceCashFlow = useCallback(async (entry: InsuranceEntry) => {
+    const id = String(entry.id ?? "").trim();
+    if (!id || linkingIds.has(id)) return;
+    const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
+    if (!businessTransactionId) {
+      window.alert("这条保险记录缺少业务记录 ID，无法自动建立关联");
+      return;
+    }
+    setLinkingIds((prev) => new Set(prev).add(id));
+    try {
+      const res = await fetch("/api/v1/business-transactions/link-cash-flow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ businessType: "insurance", businessTransactionId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "建立关联失败");
+      await refreshInsuranceData();
+      dispatchFinanceDataChanged({ reason: "insurance-link-cash-flow", accountIds: [accountId], entryIds: [data.data?.cashEntryId, id].filter(Boolean) });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "建立关联失败");
+    } finally {
+      setLinkingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [accountId, linkingIds, refreshInsuranceData]);
 
   useEffect(() => {
     setRefreshedEntries(null);
@@ -1043,13 +1044,13 @@ export function InsuranceShell({
       },
       {
         key: "actions",
-        label: "操作",
+        label: "",
         width: 92,
         minWidth: 76,
         align: "right",
         hideable: true,
         render: (holding) => (
-          <div className="flex items-center justify-end gap-1" onClick={stopRowClick}>
+          <div className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
             <button
               type="button"
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
@@ -1076,7 +1077,8 @@ export function InsuranceShell({
                   ownerName: holding.ownerName ?? null,
                 });
               }}
-              title="编辑保单"
+              title="编辑按钮"
+              aria-label="编辑按钮"
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -1092,7 +1094,8 @@ export function InsuranceShell({
                   relatedEntryCount: holding.relatedEntryIds.length,
                 });
               }}
-              title="删除保单"
+              title="删除按钮"
+              aria-label="删除按钮"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -1105,22 +1108,6 @@ export function InsuranceShell({
 
   const entryColumns = useMemo<AdvancedDataTableColumn<InsuranceEntry>[]>(
     () => [
-      {
-        key: "businessLink",
-        label: <BusinessLinkHeaderIcon />,
-        width: 38,
-        minWidth: 34,
-        align: "center",
-        hideable: true,
-        render: (entry) => {
-          const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
-          const labels = entry.businessLinkLabels ?? [];
-          const title = hasBusinessLink
-            ? `已关联：${labels.join("、") || "业务记录"}`
-            : "未关联业务记录";
-          return <BusinessLinkStatusIcon active={hasBusinessLink} title={title} />;
-        },
-      },
       {
         key: "date",
         label: "日期",
@@ -1196,18 +1183,6 @@ export function InsuranceShell({
           </span>
         ),
       },
-      {
-        key: "actions",
-        label: "操作",
-        width: 92,
-        minWidth: 76,
-        align: "right",
-        render: (entry) => (
-          <div onClick={stopRowClick}>
-            <EntryRowActions entryId={entry.id} edit={entry.edit} />
-          </div>
-        ),
-      },
     ],
     [],
   );
@@ -1221,28 +1196,7 @@ export function InsuranceShell({
         separatorLabel="调整保单列表和投保记录高度"
         separatorTitle="拖动调整保单列表和投保记录高度"
       >
-        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
-          <div className="panel-header">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-              <Shield className="h-4 w-4 text-cyan-600" />
-              保单列表
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-400">
-              <label className="inline-flex cursor-pointer items-center gap-1.5 text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={showActiveOnly}
-                  onChange={(event) => {
-                    setShowActiveOnly(event.target.checked);
-                    setSelectedHoldingId(null);
-                  }}
-                  className="h-3.5 w-3.5 rounded border-slate-300"
-                />
-                仅保障中
-              </label>
-            </div>
-          </div>
-
+        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="min-h-0 flex-1">
             <AdvancedDataTable
               storageKey="mmh_insurance_holdings_table_v2"
@@ -1254,6 +1208,26 @@ export function InsuranceShell({
               showFilters={false}
               showColumnVisibilityButton
               fillHeight
+              toolbarTitle={
+                <span className="inline-flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-cyan-600" />
+                  保单列表
+                </span>
+              }
+              toolbarRightContent={
+                <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={showActiveOnly}
+                    onChange={(event) => {
+                      setShowActiveOnly(event.target.checked);
+                      setSelectedHoldingId(null);
+                    }}
+                    className="h-3.5 w-3.5 rounded border-slate-300"
+                  />
+                  仅保障中
+                </label>
+              }
               summaryRow={holdingSummaryRow}
               onRowClick={(holding) =>
                 setSelectedHoldingId((current) => (current === holding.id ? null : holding.id))
@@ -1277,41 +1251,7 @@ export function InsuranceShell({
           </div>
         </section>
 
-        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
-          <div className="panel-header">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-              <Shield className="h-4 w-4 text-blue-500" />
-              投保记录
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!selectedHolding}
-                onClick={() => openInsurancePaymentModal("premium")}
-                title={selectedHolding ? "给当前保单手动记录一次续期保费" : "请先选择上方保单"}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                续期
-              </button>
-              <button
-                type="button"
-                className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!selectedHolding}
-                onClick={() => openInsurancePaymentModal("additional_premium")}
-                title={selectedHolding ? "对当前保单追加保全保费" : "请先选择上方保单"}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                追加
-              </button>
-              <div className="text-xs text-slate-400">
-                {selectedHolding
-                  ? `当前显示 ${visibleEntries.length} 条关联记录`
-                  : "请先选择上方保单"}
-              </div>
-            </div>
-          </div>
-
+        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <BasicDetailSelectionProvider
             resetKey={`${accountId}:${selectedHolding?.id ?? "none"}:insurance-entries`}
           >
@@ -1322,9 +1262,68 @@ export function InsuranceShell({
                 rows={visibleEntries}
                 hasSelectedHolding={!!selectedHolding}
                 cashAccounts={cashAccounts}
+                toolbarTitle={
+                  <span className="inline-flex items-center gap-2">
+                    <Shield className="h-4 w-4 text-blue-500" />
+                    投保记录
+                  </span>
+                }
+                toolbarRightContent={
+                  <>
+                    <Link
+                      href={`/?accountId=${encodeURIComponent(accountId)}&view=detail&detailAll=1`}
+                      className="secondary-button h-7 px-2 text-xs"
+                    >
+                      全部交易
+                    </Link>
+                    <button
+                      type="button"
+                      className="secondary-button h-7 gap-1.5 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!selectedHolding}
+                      onClick={() => openInsurancePaymentModal("premium")}
+                      title={selectedHolding ? "给当前保单手动记录一次续期保费" : "请先选择上方保单"}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      续期
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button h-7 gap-1.5 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!selectedHolding}
+                      onClick={() => openInsurancePaymentModal("additional_premium")}
+                      title={selectedHolding ? "对当前保单追加保全保费" : "请先选择上方保单"}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      追加
+                    </button>
+                    <div className="text-xs text-slate-400">
+                      {selectedHolding
+                        ? `当前显示 ${visibleEntries.length} 条关联记录`
+                        : "请先选择上方保单"}
+                    </div>
+                  </>
+                }
                 onRowDoubleClick={(entry) => {
                   if (!entry.edit) return;
                   dispatchEntryEdit({ entryId: entry.id, edit: entry.edit });
+                }}
+                rowActions={(entry) => {
+                  const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
+                  const labels = entry.businessLinkLabels ?? [];
+                  const title = hasBusinessLink
+                    ? `已关联：${labels.join("、") || "业务记录"}`
+                    : "未关联，点击建立资金侧关联";
+                  return (
+                    <>
+                      <BusinessLinkActionButton
+                        active={hasBusinessLink}
+                        title={title}
+                        busy={linkingIds.has(entry.id)}
+                        onClick={() => linkInsuranceCashFlow(entry)}
+                      />
+                      <EntryRowActions entryId={entry.id} edit={entry.edit} />
+                    </>
+                  );
                 }}
               />
             </div>

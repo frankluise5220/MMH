@@ -27,7 +27,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-20-settlement-transfer-category-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-24-bank-installment-expense-category-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -59,6 +59,7 @@ export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
 export const SYSTEM_INSURANCE_RETURN_CATEGORY = "保险回款";
 export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
 export const SYSTEM_SETTLEMENT_TRANSFER_CATEGORY = "借入借出";
+export const SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY = "银行分期";
 
 const legacySettlementTransferActionCategoryNames = new Set(["往来款", "还款", "提前还款", "贷款还款", "借入", "借出", "出借", "收回"]);
 
@@ -87,6 +88,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "贷款本金",
     "贷款利息",
     "贷款手续费",
+    SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY,
     SYSTEM_INSURANCE_EXPENSE_CATEGORY,
     SYSTEM_INVESTMENT_LOSS_CATEGORY,
     SYSTEM_FUND_LOSS_CATEGORY,
@@ -157,6 +159,12 @@ export async function ensureSettlementTransferCategory(writer: CategoryWriter, h
   const root = await ensureDefaultCategory(writer, householdId, "transfer", "转账", null, true);
   const child = await ensureDefaultCategory(writer, householdId, "transfer", SYSTEM_SETTLEMENT_TRANSFER_CATEGORY, root.id, true);
   return { id: child.id, name: SYSTEM_SETTLEMENT_TRANSFER_CATEGORY, type: "transfer" as const };
+}
+
+export async function ensureBankInstallmentExpenseCategory(writer: CategoryWriter, householdId: string) {
+  const root = await ensureDefaultCategory(writer, householdId, "expense", "金融保险", null, false);
+  const child = await ensureDefaultCategory(writer, householdId, "expense", SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, root.id, true);
+  return { id: child.id, name: SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, type: "expense" as const };
 }
 
 const rootCategoryRenames = [
@@ -255,7 +263,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "金融保险",
-    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
+    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
   },
   {
     type: "expense",

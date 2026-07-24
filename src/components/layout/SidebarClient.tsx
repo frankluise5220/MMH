@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo, useRef, startTransition } from "react";
 import {
   LayoutDashboard,
   Users,
   CalendarClock,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   Repeat,
   EyeOff,
@@ -78,6 +80,32 @@ function normalizeSidebarAccountItem(item: AccountItem): AccountItem {
     ...item,
     kind: normalizeSidebarItemKind(item),
   };
+}
+
+function HeaderHistoryButton({
+  direction,
+  title,
+  disabled,
+  onClick,
+}: {
+  direction: "back" | "forward";
+  title: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const Icon = direction === "back" ? ChevronLeft : ChevronRight;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
+      title={title}
+      aria-label={title}
+    >
+      <Icon size={16} />
+    </button>
+  );
 }
 
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
@@ -224,8 +252,13 @@ export function SidebarClient({
     sidebarGroupBy: "kind" | "institution";
   };
 }) {
+  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentAppUrl = useMemo(() => {
+    const query = searchParams.toString();
+    return query ? `${pathname}?${query}` : pathname;
+  }, [pathname, searchParams]);
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
   const selectedView = (searchParams.get("view") ?? "").trim();
@@ -245,6 +278,11 @@ export function SidebarClient({
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
+  const internalHistoryTargetRef = useRef<{ url: string; index: number } | null>(null);
+  const [appHistory, setAppHistory] = useState<{ entries: string[]; index: number }>({
+    entries: [],
+    index: -1,
+  });
   const { t } = useI18n();
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
@@ -272,6 +310,38 @@ export function SidebarClient({
     } catch (error) {
       window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
     }
+  }
+
+  useEffect(() => {
+    setAppHistory((prev) => {
+      const pendingTarget = internalHistoryTargetRef.current;
+      if (pendingTarget?.url === currentAppUrl) {
+        internalHistoryTargetRef.current = null;
+        return prev.entries[pendingTarget.index] === currentAppUrl
+          ? { entries: prev.entries, index: pendingTarget.index }
+          : prev;
+      }
+      if (prev.index >= 0 && prev.entries[prev.index] === currentAppUrl) return prev;
+
+      const currentStack = prev.index >= 0 ? prev.entries.slice(0, prev.index + 1) : [];
+      if (currentStack[currentStack.length - 1] === currentAppUrl) {
+        return { entries: currentStack, index: currentStack.length - 1 };
+      }
+
+      const entries = [...currentStack, currentAppUrl].slice(-50);
+      return { entries, index: entries.length - 1 };
+    });
+  }, [currentAppUrl]);
+
+  function navigateAppHistory(direction: "back" | "forward") {
+    const nextIndex = direction === "back" ? appHistory.index - 1 : appHistory.index + 1;
+    const targetUrl = appHistory.entries[nextIndex];
+    if (!targetUrl) return;
+    internalHistoryTargetRef.current = { url: targetUrl, index: nextIndex };
+    setAppHistory((prev) => ({ ...prev, index: nextIndex }));
+    startTransition(() => {
+      router.push(targetUrl, { scroll: false });
+    });
   }
 
   // Refresh items when fund data changes (debounced)
@@ -764,25 +834,44 @@ export function SidebarClient({
     <aside className="flex h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl transition-[width] duration-200">
       {/* Fixed Header */}
       <div className="shrink-0 px-4 pb-2 pt-4">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           <button
             ref={ledgerSwitcherAnchorRef}
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
-            className="flex h-10 w-10 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
+            className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
             title="切换账簿"
           >
-            <MmhLogo size={28} />
+            <MmhLogo size={26} />
           </button>
           <button
             type="button"
             onClick={handleSwitchUser}
-            className="flex h-7 min-w-0 max-w-[128px] items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            className="flex h-7 min-w-0 max-w-[72px] items-center gap-1 rounded-md px-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
             title={`退出${user?.name ? `：${user.name}` : "当前用户"}`}
           >
             <UserRound size={15} className="shrink-0" />
             <span className="truncate">{user?.name || "用户"}</span>
           </button>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <HeaderHistoryButton
+              direction="back"
+              title="前一页"
+              disabled={appHistory.index <= 0}
+              onClick={() => navigateAppHistory("back")}
+            />
+            <HeaderHistoryButton
+              direction="forward"
+              title="后一页"
+              disabled={appHistory.index < 0 || appHistory.index >= appHistory.entries.length - 1}
+              onClick={() => navigateAppHistory("forward")}
+            />
+            <UndoLastOperationButton
+              compact
+              iconSize={15}
+              className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
+            />
+          </div>
           <div className="ml-auto flex items-center justify-end gap-1">
             <LanguageSwitcher />
             <button
@@ -975,7 +1064,6 @@ export function SidebarClient({
         </div>
 
         <div className="mt-4 shrink-0 space-y-1 border-t border-slate-200 pt-4">
-          <UndoLastOperationButton />
           <Link
             href="/settings"
             prefetch={false}

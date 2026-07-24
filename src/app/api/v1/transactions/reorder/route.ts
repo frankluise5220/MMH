@@ -4,19 +4,20 @@
  * Body:
  * - { accountId: string; entryId: string; direction: "up" | "down" }
  * - { accountId: string; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
- * Response: { ok: true, changed: boolean, orderedEntryIds: string[] } | { ok: false, error }
+ * - { accountId: string; accountIds: string[]; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
+ * Response: { ok: true, changed: boolean, orderedEntryIds: string[], runningBalances?: Record<string, number> } | { ok: false, error }
  *
  * Reorders ordinary TxRecord rows within the same displayed local date for one
  * account detail view. It never moves balance anchors; those remain end-of-day
  * records for running balance calculation.
  */
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { revalidateAfterEntryOrderChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -28,13 +29,16 @@ type ReorderRow = {
   date: Date;
   createdAt: Date;
   dayOrder: number | null;
+  amount: unknown;
   type: string;
   accountId: string | null;
   toAccountId: string | null;
+  debtPrincipalAmount: unknown;
   fundSubtype: string | null;
   source: string | null;
   toNote: string | null;
   fundArrivalDate: Date | null;
+  fundArrivalAmount: unknown;
 };
 
 type LinkedWealthForReorder = {
@@ -77,6 +81,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null) as {
       accountId?: unknown;
       entryId?: unknown;
+      accountIds?: unknown;
       direction?: unknown;
       targetEntryId?: unknown;
       targetPosition?: unknown;
@@ -91,6 +96,11 @@ export async function POST(req: Request) {
     if (!accountId || !entryId || (!targetEntryId && direction !== "up" && direction !== "down")) {
       return NextResponse.json({ ok: false, error: "参数不完整" }, { status: 400 });
     }
+    const accountIdsRaw = Array.isArray(body?.accountIds) ? body.accountIds : [];
+    const scopeAccountIds = Array.from(new Set([
+      accountId,
+      ...accountIdsRaw.map((id) => String(id ?? "").trim()),
+    ].filter(Boolean))).slice(0, 50);
 
     const { householdId } = await getHouseholdScope();
     const targetRows = await prisma.$queryRaw<ReorderRow[]>`
@@ -99,18 +109,21 @@ export async function POST(req: Request) {
         date,
         "createdAt",
         "dayOrder",
+        amount,
         type::text AS type,
         "accountId",
         "toAccountId",
+        "debtPrincipalAmount",
         "fundSubtype"::text AS "fundSubtype",
         source,
         "toNote",
-        "fundArrivalDate"
+        "fundArrivalDate",
+        "fundArrivalAmount"
       FROM transactions
       WHERE id = ${entryId}
         AND "deletedAt" IS NULL
         AND "householdId" = ${householdId}
-        AND ("accountId" = ${accountId} OR "toAccountId" = ${accountId})
+        AND ("accountId" IN (${Prisma.join(scopeAccountIds)}) OR "toAccountId" IN (${Prisma.join(scopeAccountIds)}))
       LIMIT 1
     `;
     const target = targetRows[0] ?? null;
@@ -127,17 +140,20 @@ export async function POST(req: Request) {
         date,
         "createdAt",
         "dayOrder",
+        amount,
         type::text AS type,
         "accountId",
         "toAccountId",
+        "debtPrincipalAmount",
         "fundSubtype"::text AS "fundSubtype",
         source,
         "toNote",
-        "fundArrivalDate"
+        "fundArrivalDate",
+        "fundArrivalAmount"
       FROM transactions
       WHERE "deletedAt" IS NULL
         AND "householdId" = ${householdId}
-        AND ("accountId" = ${accountId} OR "toAccountId" = ${accountId})
+        AND ("accountId" IN (${Prisma.join(scopeAccountIds)}) OR "toAccountId" IN (${Prisma.join(scopeAccountIds)}))
     `;
 
     const rowIds = rows.map((row) => row.id);
@@ -206,6 +222,22 @@ export async function POST(req: Request) {
       normalizedOrders.set(reorderedRows[index].id, (reorderedRows.length - index) * step);
     }
 
+    const rowWithNormalizedOrder = (row: ReorderRow): ReorderRow => ({
+      ...row,
+      dayOrder: normalizedOrders.get(row.id) ?? row.dayOrder ?? 0,
+    });
+    const orderedRowsAfterChange = rows
+      .map((row) => rowWithNormalizedOrder(displayRowOf(row)))
+      .sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+    const ascRowsAfterChange = [...orderedRowsAfterChange].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+    const affectedDayIdSet = new Set(sameDayRows.map((row) => row.id));
+    const runningBalances: Record<string, number> = {};
+    let runningBalance = 0;
+    for (const row of ascRowsAfterChange) {
+      runningBalance = applyBalanceReconcileEntry(runningBalance, row, accountId);
+      if (affectedDayIdSet.has(row.id)) runningBalances[row.id] = runningBalance;
+    }
+
     await prisma.$transaction(async (tx) => {
       for (const row of sameDayRows) {
         await tx.$executeRaw`
@@ -217,17 +249,9 @@ export async function POST(req: Request) {
       }
     });
 
-    const accountIds = new Set<string>([accountId]);
-    for (const row of sameDayRows) {
-      if (row.accountId) accountIds.add(row.accountId);
-      if (row.toAccountId) accountIds.add(row.toAccountId);
-    }
-    for (const id of accountIds) {
-      await recalcAndSaveAccountBalance(id).catch(() => {});
-    }
-    revalidateAfterTxChange();
+    revalidateAfterEntryOrderChange();
 
-    return NextResponse.json({ ok: true, changed: true, orderedEntryIds: reorderedRows.map((row) => row.id) });
+    return NextResponse.json({ ok: true, changed: true, orderedEntryIds: reorderedRows.map((row) => row.id), runningBalances });
   } catch (error) {
     console.error("POST /api/v1/transactions/reorder error:", error);
     const message = error instanceof Error ? error.message : "调整顺序失败";

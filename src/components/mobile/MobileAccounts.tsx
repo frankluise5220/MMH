@@ -122,11 +122,10 @@ export function MobileAccounts({
               {!isCollapsed ? (
                 <div className="divide-y divide-slate-100">
                   {group.accounts.map((account) => {
-                    const detailView = account.kind === "bank_credit" ? "bill" : account.kind === "deposit" ? "deposit" : account.kind === "loan" ? "debt" : "detail";
                     return (
                       <Link
                         key={account.id}
-                        href={`/?accountId=${account.id}&view=${detailView}`}
+                        href={`/accounts/${encodeURIComponent(account.id)}`}
                         title={account.hoverTitle}
                         className="flex min-h-16 items-center gap-3 px-3 py-2.5"
                       >

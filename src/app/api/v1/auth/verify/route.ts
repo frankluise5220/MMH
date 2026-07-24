@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
   const maxAge = resolveSessionMaxAge(req);
-  const cookieOptions = sessionCookieOptions(maxAge);
+  const cookieOptions = sessionCookieOptions(maxAge, req);
   response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
   response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
   if (user.householdId) {

@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { AIPanel } from "@/components/layout/AIPanel";
+import { BackgroundTaskStatusBar } from "@/components/BackgroundTaskStatusBar";
 import { MobileNavigation } from "@/components/layout/MobileNavigation";
 import { getCurrentUser } from "@/lib/server/auth";
 import { cookies } from "next/headers";
@@ -24,6 +25,7 @@ export default async function SidebarLayout({
 
   return (
     <div className="flex h-dvh overflow-x-hidden overflow-y-hidden">
+      <BackgroundTaskStatusBar />
       <div className="hidden h-dvh shrink-0 md:block">
         <Suspense
           fallback={

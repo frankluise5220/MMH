@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     household: { id: household.id, name: household.name },
   });
   const maxAge = resolveSessionMaxAge(req);
-  const cookieOptions = sessionCookieOptions(maxAge);
+  const cookieOptions = sessionCookieOptions(maxAge, req);
   response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
   response.cookies.set(USERNAME_COOKIE, adminUser.name, cookieOptions);
   response.cookies.set(HOUSEHOLD_COOKIE, household.id, cookieOptions);

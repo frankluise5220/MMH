@@ -10,7 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { GripVertical, SlidersHorizontal } from "lucide-react";
+import { GripVertical, Pencil, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
@@ -46,6 +46,10 @@ export type AdvancedDataTableBatchAction = {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  icon?: ReactNode;
+  title?: string;
+  ariaLabel?: string;
+  tone?: "default" | "primary" | "danger";
 };
 
 export type AdvancedDataTableSummaryRow = {
@@ -76,6 +80,11 @@ function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: s
   return next.every((item, index) => item.key === items[index]?.key) ? items : next;
 }
 
+function getDropPositionFromClientY(rowElement: HTMLElement, clientY: number): AdvancedDataTableDropPosition {
+  const rect = rowElement.getBoundingClientRect();
+  return clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
 export type AdvancedDataTableProps<T> = {
   storageKey: string;
   columns: AdvancedDataTableColumn<T>[];
@@ -96,6 +105,9 @@ export type AdvancedDataTableProps<T> = {
   onSelectionChange?: (keys: Set<string>) => void;
   batchActions?: AdvancedDataTableBatchAction[];
   batchActionSlot?: ReactNode;
+  rowActions?: (row: T, index: number) => ReactNode;
+  rowActionsWidth?: number;
+  rowActionsMinWidth?: number;
   showFilters?: boolean;
   fillHeight?: boolean;
   compactRows?: boolean;
@@ -114,6 +126,21 @@ function alignClass(align?: "left" | "center" | "right") {
   if (align === "right") return "text-right";
   if (align === "center") return "text-center";
   return "text-left";
+}
+
+function batchActionToneClass(tone: AdvancedDataTableBatchAction["tone"]) {
+  if (tone === "danger") return "border-red-200 bg-red-50 text-red-700 hover:bg-red-100";
+  if (tone === "primary") return "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100";
+  return "border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
+}
+
+function inferBatchActionIcon(action: AdvancedDataTableBatchAction) {
+  if (action.icon) return action.icon;
+  if (action.label.includes("删除")) return <Trash2 className="h-3.5 w-3.5" />;
+  if (action.label.includes("编辑") || action.label.includes("修改") || action.label.includes("替换")) {
+    return <Pencil className="h-3.5 w-3.5" />;
+  }
+  return null;
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -211,6 +238,9 @@ export function AdvancedDataTable<T>({
   onSelectionChange,
   batchActions = [],
   batchActionSlot,
+  rowActions,
+  rowActionsWidth = 96,
+  rowActionsMinWidth = 76,
   showFilters = true,
   fillHeight = false,
   compactRows = false,
@@ -253,22 +283,44 @@ export function AdvancedDataTable<T>({
   const skipNextSortWriteRef = useRef(false);
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
+  const tableColumns = useMemo<AdvancedDataTableColumn<T>[]>(() => {
+    if (!rowActions) return columns;
+    return [
+      ...columns,
+      {
+        key: "__row_actions",
+        label: "",
+        width: rowActionsWidth,
+        minWidth: rowActionsMinWidth,
+        align: "right",
+        render: (row, index) => (
+          <div
+            data-row-double-click-ignore
+            className="flex items-center justify-end gap-1"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {rowActions(row, index)}
+          </div>
+        ),
+      },
+    ];
+  }, [columns, rowActions, rowActionsMinWidth, rowActionsWidth]);
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
   const hideableColumnKeys = useMemo(
-    () => new Set(columns.filter((column) => column.hideable).map((column) => column.key)),
-    [columns],
+    () => new Set(tableColumns.filter((column) => column.hideable).map((column) => column.key)),
+    [tableColumns],
   );
   const defaultHiddenKeys = useMemo(
-    () => columns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
-    [columns],
+    () => tableColumns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
+    [tableColumns],
   );
   const filterableColumnKeys = useMemo(
-    () => new Set(columns.filter((column) => column.filterText).map((column) => column.key)),
-    [columns],
+    () => new Set(tableColumns.filter((column) => column.filterText).map((column) => column.key)),
+    [tableColumns],
   );
   const sortableColumnKeys = useMemo(
-    () => new Set(columns.filter((column) => column.sortValue || column.filterText).map((column) => column.key)),
-    [columns],
+    () => new Set(tableColumns.filter((column) => column.sortValue || column.filterText).map((column) => column.key)),
+    [tableColumns],
   );
   const filtersStorageKey = `${storageKey}:filters:v1`;
   const sortStorageKey = `${storageKey}:sort:v1`;
@@ -289,13 +341,18 @@ export function AdvancedDataTable<T>({
       readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
       filterableColumnKeys,
     ));
-    setSortState(normalizeStoredSortState(
-      readJson<AdvancedDataTableSortState | null>(sortStorageKey, null),
-      sortableColumnKeys,
-    ));
+    if (!sortable) {
+      setSortState(null);
+      writeJson(sortStorageKey, null);
+    } else {
+      setSortState(normalizeStoredSortState(
+        readJson<AdvancedDataTableSortState | null>(sortStorageKey, null),
+        sortableColumnKeys,
+      ));
+    }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [filterableColumnKeys, filtersStorageKey, sortStorageKey, sortableColumnKeys]);
+  }, [filterableColumnKeys, filtersStorageKey, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
@@ -356,7 +413,7 @@ export function AdvancedDataTable<T>({
     const table = node.querySelector("table");
     if (table) observer.observe(table);
     return () => observer.disconnect();
-  }, [columns, fillHeight, hiddenKeys, minTableWidth, selectable, viewportWidth, rows.length]);
+  }, [fillHeight, hiddenKeys, minTableWidth, selectable, tableColumns, viewportWidth, rows.length]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -377,29 +434,29 @@ export function AdvancedDataTable<T>({
   }, [columnVisibilityTriggerId]);
 
   const visibleColumns = useMemo(
-    () => columns.filter((column) => !column.hideable || !hiddenKeys.has(column.key)),
-    [columns, hiddenKeys],
+    () => tableColumns.filter((column) => !column.hideable || !hiddenKeys.has(column.key)),
+    [hiddenKeys, tableColumns],
   );
   const filterOptions = useMemo(() => {
     const options: Record<string, string[]> = {};
-    for (const column of columns) {
+    for (const column of tableColumns) {
       if (!column.filterText) continue;
       const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, columns, filters, { excludeKey: column.key }))
+        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
         : rows;
       options[column.key] = Array.from(
         new Set(baseRows.map((row) => column.filterText?.(row).trim() || "-")),
       ).sort(sortFilterValue);
     }
     return options;
-  }, [columns, filters, rows, showFilters]);
+  }, [filters, rows, showFilters, tableColumns]);
   const filterOptionCounts = useMemo(() => {
     const counts: Record<string, Record<string, number>> = {};
-    for (const column of columns) {
+    for (const column of tableColumns) {
       if (!column.filterText) continue;
       const columnCounts: Record<string, number> = {};
       const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, columns, filters, { excludeKey: column.key }))
+        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
         : rows;
       for (const row of baseRows) {
         const value = column.filterText(row).trim() || "-";
@@ -408,13 +465,13 @@ export function AdvancedDataTable<T>({
       counts[column.key] = columnCounts;
     }
     return counts;
-  }, [columns, filters, rows, showFilters]);
+  }, [filters, rows, showFilters, tableColumns]);
   const filteredRows = useMemo(() => {
     if (!showFilters) return rows;
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
     if (activeFilters.length === 0) return rows;
-    return rows.filter((row) => rowMatchesFilters(row, columns, filters));
-  }, [columns, filters, rows, showFilters]);
+    return rows.filter((row) => rowMatchesFilters(row, tableColumns, filters));
+  }, [filters, rows, showFilters, tableColumns]);
 
   useEffect(() => {
     if (!showFilters || filteredRows.length > 0) return;
@@ -426,8 +483,8 @@ export function AdvancedDataTable<T>({
   }, [filteredRows.length, filters, rows.length, showFilters]);
 
   const orderedRows = useMemo(() => {
-    if (!sortState) return filteredRows;
-    const column = columns.find((item) => item.key === sortState.key);
+    if (!sortable || !sortState) return filteredRows;
+    const column = tableColumns.find((item) => item.key === sortState.key);
     const readValue = column?.sortValue ?? column?.filterText;
     if (!readValue) return filteredRows;
     return filteredRows
@@ -447,7 +504,7 @@ export function AdvancedDataTable<T>({
           : sortState.direction === "asc" ? compared : -compared;
       })
       .map((item) => item.row);
-  }, [columns, filteredRows, sortState]);
+  }, [filteredRows, sortState, sortable, tableColumns]);
   const allRowKeys = useMemo(() => orderedRows.map((row, index) => rowKey(row, index)), [orderedRows, rowKey]);
   const rowItems = useMemo(
     () => orderedRows.map((row, index) => ({ row, index, key: rowKey(row, index) })),
@@ -586,7 +643,7 @@ export function AdvancedDataTable<T>({
   }, [columnWidths, layout.colWidths, setColumnWidth]);
 
   function toggleColumn(key: string) {
-    const column = columns.find((item) => item.key === key);
+    const column = tableColumns.find((item) => item.key === key);
     if (!column?.hideable) return;
     setHiddenKeys((prev) => {
       const next = new Set(prev);
@@ -629,16 +686,15 @@ export function AdvancedDataTable<T>({
   }
 
   function getDropPosition(event: ReactDragEvent<HTMLTableRowElement>): AdvancedDataTableDropPosition {
-    const rect = event.currentTarget.getBoundingClientRect();
-    return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    return getDropPositionFromClientY(event.currentTarget, event.clientY);
   }
 
-  function canDropOnRow(targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean, position: AdvancedDataTableDropPosition) {
+  const canDropOnRow = useCallback((targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean, position: AdvancedDataTableDropPosition) => {
     if (!draggableRows || dragDisabled || !draggedRowKey || draggedRowKey === targetKey) return false;
     const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === draggedRowKey);
     if (sourceIndex < 0) return false;
     return rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true;
-  }
+  }, [draggableRows, draggedRowKey, orderedRows, rowDropAllowed, rowKey]);
 
   function handleRowDragOver(event: ReactDragEvent<HTMLTableRowElement>, row: T, index: number, key: string, dragDisabled: boolean) {
     const position = getDropPosition(event);
@@ -647,13 +703,82 @@ export function AdvancedDataTable<T>({
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
       }
-      if (key !== draggedRowKey) setDragTarget(null);
       return;
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     setDragTarget({ key, position });
   }
+
+  const getRowItemByKey = useCallback((key: string) => {
+    const targetIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === key);
+    const targetRow = targetIndex >= 0 ? orderedRows[targetIndex] : undefined;
+    return targetRow ? { row: targetRow, index: targetIndex, key } : null;
+  }, [orderedRows, rowKey]);
+
+  const getGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+
+    const element = document.elementFromPoint(clientX, clientY);
+    const rowElementFromPoint = element instanceof Element
+      ? element.closest<HTMLElement>("[data-advanced-row-key]")
+      : null;
+    if (rowElementFromPoint && viewport.contains(rowElementFromPoint)) {
+      const key = rowElementFromPoint.dataset.advancedRowKey;
+      const item = key ? getRowItemByKey(key) : null;
+      return item
+        ? { ...item, position: getDropPositionFromClientY(rowElementFromPoint, clientY) }
+        : null;
+    }
+
+    const viewportRect = viewport.getBoundingClientRect();
+    const rowElements = Array.from(viewport.querySelectorAll<HTMLElement>("[data-advanced-row-key]"));
+    if (rowElements.length === 0) return null;
+
+    const visibleRowElements = rowElements
+      .map((rowElement) => ({ rowElement, rect: rowElement.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.bottom >= viewportRect.top && rect.top <= viewportRect.bottom);
+    if (visibleRowElements.length === 0) return null;
+
+    const edgeTarget = clientY < viewportRect.top
+      ? { rowElement: visibleRowElements[0].rowElement, position: "before" as const }
+      : clientY > viewportRect.bottom
+        ? { rowElement: visibleRowElements[visibleRowElements.length - 1].rowElement, position: "after" as const }
+        : null;
+    if (edgeTarget) {
+      const key = edgeTarget.rowElement.dataset.advancedRowKey;
+      const item = key ? getRowItemByKey(key) : null;
+      return item ? { ...item, position: edgeTarget.position } : null;
+    }
+
+    const nearest = visibleRowElements.reduce((best, candidate) => {
+      const bestDistance = Math.abs(clientY - (best.rect.top + best.rect.height / 2));
+      const candidateDistance = Math.abs(clientY - (candidate.rect.top + candidate.rect.height / 2));
+      return candidateDistance < bestDistance ? candidate : best;
+    });
+    const key = nearest.rowElement.dataset.advancedRowKey;
+    const item = key ? getRowItemByKey(key) : null;
+    return item
+      ? { ...item, position: getDropPositionFromClientY(nearest.rowElement, clientY) }
+      : null;
+  }, [getRowItemByKey]);
+
+  const getAllowedGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
+    if (!draggedRowKey) return null;
+    const target = getGlobalDragTarget(clientX, clientY);
+    if (!target) return null;
+    const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
+    if (!canDropOnRow(target.row, target.index, target.key, dragDisabled, target.position)) return null;
+    return target;
+  }, [canDropOnRow, draggedRowKey, getGlobalDragTarget, rowDragDisabled, sortState, sortable]);
+
+  const updateGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
+    const target = getAllowedGlobalDragTarget(clientX, clientY);
+    if (!target) return false;
+    setDragTarget({ key: target.key, position: target.position });
+    return true;
+  }, [getAllowedGlobalDragTarget]);
 
   function handleRowDragEnd() {
     setDraggedRowKey(null);
@@ -669,22 +794,37 @@ export function AdvancedDataTable<T>({
     return !!selection && !selection.isCollapsed && selection.toString().trim().length > 0;
   }
 
-  function dropOnPreviewTarget(sourceKey: string) {
+  const dropOnPreviewTarget = useCallback((sourceKey: string) => {
     if (!dragTarget) return false;
     const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
     const targetIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === dragTarget.key);
     if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
-    const targetRow = filteredRows[targetIndex];
+    const targetRow = orderedRows[targetIndex];
     const targetDragDisabled = rowDragDisabled?.(targetRow, targetIndex) ?? false;
     if (targetDragDisabled) return false;
     if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position) ?? true)) return false;
     void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position);
     return true;
-  }
+  }, [dragTarget, onRowReorder, orderedRows, rowDropAllowed, rowDragDisabled, rowKey]);
+
+  const dropOnResolvedTarget = useCallback((
+    sourceKey: string,
+    target: RowItem<T> & { position: AdvancedDataTableDropPosition },
+  ) => {
+    const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
+    if (sourceIndex < 0 || sourceIndex === target.index) return false;
+    const sourceRow = orderedRows[sourceIndex];
+    const targetDragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
+    if (targetDragDisabled) return false;
+    if (!(rowDropAllowed?.(sourceRow, target.row, sourceIndex, target.index, target.position) ?? true)) return false;
+    void onRowReorder?.(sourceRow, target.row, sourceIndex, target.index, target.position);
+    return true;
+  }, [onRowReorder, orderedRows, rowDropAllowed, rowDragDisabled, rowKey, sortState, sortable]);
 
   function handleRowDrop(event: ReactDragEvent<HTMLTableRowElement>, targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean) {
     if (!draggableRows || dragDisabled) return;
     event.preventDefault();
+    event.stopPropagation();
     const sourceKey = draggedRowKey ?? event.dataTransfer.getData("text/plain");
     const position = getDropPosition(event);
     dropOnRowAtPosition(event, sourceKey, targetRow, targetIndex, targetKey, dragDisabled, position);
@@ -710,6 +850,35 @@ export function AdvancedDataTable<T>({
     if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
     void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
   }
+
+  useEffect(() => {
+    if (!draggableRows || !draggedRowKey) return;
+
+    const handleGlobalDragOver = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      updateGlobalDragTarget(event.clientX, event.clientY);
+    };
+    const handleGlobalDrop = (event: DragEvent) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      const sourceKey = draggedRowKey;
+      const target = getAllowedGlobalDragTarget(event.clientX, event.clientY);
+      if (target) {
+        dropOnResolvedTarget(sourceKey, target);
+      } else {
+        dropOnPreviewTarget(sourceKey);
+      }
+      handleRowDragEnd();
+    };
+
+    window.addEventListener("dragover", handleGlobalDragOver);
+    window.addEventListener("drop", handleGlobalDrop);
+    return () => {
+      window.removeEventListener("dragover", handleGlobalDragOver);
+      window.removeEventListener("drop", handleGlobalDrop);
+    };
+  }, [draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, updateGlobalDragTarget]);
 
   const selectedCount = effectiveSelectedKeys.size;
   const allSelected = allRowKeys.length > 0 && allRowKeys.every((key) => effectiveSelectedKeys.has(key));
@@ -757,11 +926,27 @@ export function AdvancedDataTable<T>({
                     {t("table.clearFilters")}
                   </button>
                 ) : null}
-                {selectedCount > 0 ? batchActions.map((action) => (
-                  <button key={action.label} type="button" onClick={action.onClick} disabled={action.disabled} className="secondary-button h-7 px-2 text-xs">
-                    {action.label}
-                  </button>
-                )) : null}
+                {selectedCount > 0 ? batchActions.map((action) => {
+                  const icon = inferBatchActionIcon(action);
+                  const title = action.title ?? action.label;
+                  return (
+                    <button
+                      key={action.label}
+                      type="button"
+                      onClick={action.onClick}
+                      disabled={action.disabled}
+                      className={
+                        icon
+                          ? `flex h-6 w-6 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${batchActionToneClass(action.tone ?? (action.label.includes("删除") ? "danger" : "primary"))}`
+                          : "secondary-button h-7 px-2 text-xs"
+                      }
+                      title={title}
+                      aria-label={action.ariaLabel ?? title}
+                    >
+                      {icon ?? action.label}
+                    </button>
+                  );
+                }) : null}
                 {selectedCount > 0 ? batchActionSlot : null}
               </>
             )}
@@ -777,7 +962,7 @@ export function AdvancedDataTable<T>({
                   <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
                     <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
                     <div className="max-h-56 space-y-1 overflow-y-auto">
-                      {columns.map((column) => (
+                      {tableColumns.filter((column) => column.key !== "__row_actions").map((column) => (
                         <label key={column.key} className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${column.hideable ? "cursor-pointer text-slate-700 hover:bg-slate-50" : "text-slate-400"}`}>
                           <input type="checkbox" checked={!hiddenKeys.has(column.key)} disabled={!column.hideable} onChange={() => toggleColumn(column.key)} className="h-3.5 w-3.5 rounded border-slate-300" />
                           <span className="truncate">{column.label}</span>
@@ -890,7 +1075,7 @@ export function AdvancedDataTable<T>({
             ) : null}
             {displayRowItems.length > 0 ? renderedRowItems.map(({ item: { row, index, key }, displayIndex, virtualRow }) => {
               const isSelected = effectiveSelectedKeys.has(key);
-              const dragDisabled = sortState != null || (rowDragDisabled?.(row, index) ?? false);
+              const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(row, index) ?? false);
               const isDragging = draggedRowKey != null;
               const isDraggedRow = draggedRowKey === key;
               const isAllowedDropTarget = dragTarget
@@ -905,6 +1090,7 @@ export function AdvancedDataTable<T>({
                 <tr
                   key={key}
                   data-index={virtualRow?.index}
+                  data-advanced-row-key={key}
                   ref={shouldVirtualizeRows ? rowVirtualizer.measureElement : undefined}
                   onClick={() => {
                     if (suppressNextClickRef.current) {

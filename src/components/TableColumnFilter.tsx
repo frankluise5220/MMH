@@ -57,6 +57,15 @@ export function TableColumnFilter({
 
   useEffect(() => {
     if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      inputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onMouseDown = (e: MouseEvent) => {
       if (!rootRef.current) return;
       if (rootRef.current.contains(e.target as Node)) return;

@@ -85,10 +85,10 @@ export function AddNavButton({
             event.stopPropagation();
             openDialog();
           }}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
           title="手动添加基金净值"
         >
-          <TrendingUp className="w-3.5 h-3.5" />
+          <TrendingUp className="h-3 w-3" />
         </button>
       );
     }

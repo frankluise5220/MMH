@@ -1,4 +1,5 @@
 import { calcLoanScheduledAmountExact } from "@/lib/loan-repayment";
+import { toStatementMonth } from "@/lib/date-utils";
 
 export type CreditCardInstallmentRateType = "annual_interest" | "period_fee";
 
@@ -15,15 +16,6 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-export function addStatementMonths(statementMonth: string, offset: number) {
-  const match = /^(\d{4})-(\d{2})$/.exec(statementMonth);
-  if (!match) throw new Error("账单月份格式不正确");
-  const value = Number(match[1]) * 12 + Number(match[2]) - 1 + offset;
-  const year = Math.floor(value / 12);
-  const month = ((value % 12) + 12) % 12 + 1;
-  return `${year}-${String(month).padStart(2, "0")}`;
-}
-
 function addMonthsUtc(date: Date, offset: number) {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth() + offset;
@@ -38,7 +30,7 @@ export function buildCreditCardInstallmentSchedule(params: {
   totalRuns: number;
   rateType: CreditCardInstallmentRateType;
   rate: number;
-  firstStatementMonth: string;
+  billingDay: number;
   firstDate: Date;
 }): CreditCardInstallmentScheduleRow[] {
   const principal = roundMoney(params.principal);
@@ -64,6 +56,7 @@ export function buildCreditCardInstallmentSchedule(params: {
 
   for (let index = 0; index < totalRuns; index += 1) {
     const isLast = index === totalRuns - 1;
+    const date = addMonthsUtc(params.firstDate, index);
     let principalPart: number;
     let interest: number;
 
@@ -81,8 +74,8 @@ export function buildCreditCardInstallmentSchedule(params: {
     allocatedPrincipal = roundMoney(allocatedPrincipal + principalPart);
     rows.push({
       installmentNo: index + 1,
-      statementMonth: addStatementMonths(params.firstStatementMonth, index),
-      date: addMonthsUtc(params.firstDate, index),
+      statementMonth: toStatementMonth(date, params.billingDay),
+      date,
       principal: principalPart,
       interest,
       payment: roundMoney(principalPart + interest),

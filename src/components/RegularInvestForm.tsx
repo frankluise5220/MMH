@@ -145,7 +145,6 @@ interface RegularInvestFormData {
   intervalUnit: string;
   intervalValue: string;
   startDate: string;
-  nextRunDate: string;
   endDate: string;
   totalRuns: string;
   executionDay: string;
@@ -171,7 +170,6 @@ interface EditData {
   intervalValue: number;
   executionDay: number | null;
   startDate: string;
-  nextRunDate?: string | null;
   lastRunDate?: string | null;
   endDate: string | null;
   totalRuns: number | null;
@@ -313,7 +311,6 @@ export function RegularInvestForm({
         intervalUnit: normalizedInterval.intervalUnit,
         intervalValue: normalizedInterval.intervalValue,
         startDate: toDateInput(editData.startDate) || todayInput(),
-        nextRunDate: toDateInput(editData.nextRunDate) || toDateInput(editData.startDate) || todayInput(),
         endDate: toDateInput(editData.endDate),
         totalRuns: remainingRunsInput(editData.totalRuns, editData.executedRuns),
         executionDay: normalizedInterval.intervalUnit !== "year" && editData.executionDay != null ? String(editData.executionDay) : "",
@@ -338,7 +335,6 @@ export function RegularInvestForm({
       intervalUnit: "day",
       intervalValue: "1",
       startDate: todayInput(),
-      nextRunDate: todayInput(),
       endDate: "",
       totalRuns: "",
       executionDay: "",
@@ -575,7 +571,6 @@ export function RegularInvestForm({
           fd.set("intervalUnit", effectiveIntervalUnit);
           fd.set("intervalValue", effectiveIntervalValue);
           fd.set("startDate", formData.startDate);
-          fd.set("nextRunDate", formData.nextRunDate || "");
           fd.set("endDate", formData.endDate || "");
           fd.set("totalRuns", serializedTotalRuns != null ? String(serializedTotalRuns) : "");
           fd.set("executionDay", formData.executionDay || "");
@@ -606,7 +601,6 @@ export function RegularInvestForm({
             intervalValue: parseInt(effectiveIntervalValue) || 1,
             executionDay: serializedExecutionDay,
             startDate: formData.startDate,
-            nextRunDate: formData.nextRunDate || null,
             endDate: formData.endDate || null,
             totalRuns: serializedTotalRuns,
             cashAccountId: formData.cashAccountId || null,
@@ -1150,8 +1144,8 @@ export function RegularInvestForm({
                 </div>
               </div>
 
-              {/* 生效日期 + 下次日期（仅编辑） */}
-              <div className={`grid gap-3 ${mode === "edit" ? "grid-cols-2" : "grid-cols-1"}`}>
+              {/* 生效日期 */}
+              <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">生效日期</div>
                   <DateStepper
@@ -1159,17 +1153,8 @@ export function RegularInvestForm({
                     onChange={(value) => setFormData(d => ({ ...d, startDate: value }))}
                     disabled={startDateLocked}
                   />
-                  {startDateLocked ? <div className="text-[11px] text-slate-400">已生成记录后不可修改生效日期。</div> : null}
+                  {startDateLocked ? <div className="text-[11px] text-slate-400">已生成记录后不可修改生效日期；后续执行会从最后一笔生成记录后的下一个周期自动继续。</div> : null}
                 </div>
-                {mode === "edit" ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{isInsuranceTask ? "下次缴费日期" : "下次执行日期"}</div>
-                    <DateStepper
-                      value={formData.nextRunDate}
-                      onChange={(value) => setFormData(d => ({ ...d, nextRunDate: value }))}
-                    />
-                  </div>
-                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

@@ -126,7 +126,7 @@ export function MobileFunds({
           {listKind === "active" ? positions.map((position) => (
             <Link
               key={position.fundCode}
-              href={`/?accountId=${encodeURIComponent(selectedAccountId)}&view=investfund&fundCode=${encodeURIComponent(position.fundCode)}`}
+              href={`/funds/${encodeURIComponent(selectedAccountId)}/${encodeURIComponent(position.fundCode)}`}
               onClick={() => setSelectedFundCode(position.fundCode)}
               className="block rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm"
             >

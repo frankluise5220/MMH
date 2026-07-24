@@ -16,6 +16,7 @@ import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
 
 function utcDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -30,6 +31,11 @@ function calcNextRunDate(
 ): Date {
   return calcNextScheduledRunDate(fromDate, intervalUnit as IntervalUnit, intervalValue, executionDay, true);
 }
+
+const BATCH_EXECUTE_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 60_000,
+};
 
 /**
  * 批量执行定投计划：从开始日期到现在，生成所有到期的交易明细
@@ -252,36 +258,103 @@ export async function POST(req: NextRequest) {
     }
 
     // 净值数据从缓存库读取（前端已先调 /api/v1/fund/preload-nav 扩充了净值库）
+    const category = await resolveCategorySnapshot(prisma, householdId, {
+      categoryName: REGULAR_INVEST_CATEGORY_NAME,
+      type: "investment",
+    });
+    const runsToCreate: Array<{
+      runDate: Date;
+      confirmDate: Date;
+      arrivalDate: Date;
+      sgzt: string;
+      feeAmount: number | null;
+      fundNav: number | null;
+      fundUnits: number | null;
+      note: string;
+    }> = [];
+    for (const runDate of datesToProcess) {
+      const runDateStr = formatDateUtc(runDate);
+      let confirmDateStr = navResultMap.get(runDateStr)?.confirmDateStr ?? addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) {
+        logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+        confirmDateStr = runDateStr;
+      }
+      const confirmDate = utcDate(confirmDateStr);
+      const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
+      const arrivalDate = utcDate(arrivalDateStr);
+      const foundNav = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
+      const sgzt = foundNav?.sgzt ?? "";
+      let feeRateRaw = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
+      if (feeRateRaw === 0) {
+        feeRateRaw = await getFundFeeRate(plan.accountId, plan.fundCode, "buy");
+      }
+      const feeRate = feeRateRaw / 100;
+      const feeAmount = feeRate > 0 ? amountNum * feeRate : null;
+      const feeAmountNumber = feeAmount ?? 0;
+      let fundNav: number | null = null;
+      let fundUnits: number | null = null;
+
+      if (foundNav && foundNav.nav > 0) {
+        fundNav = foundNav.nav;
+        fundUnits = calculateConfirmedBuyUnits({
+          grossAmount: amountNum,
+          refundAmount: 0,
+          fee: feeAmountNumber,
+          nav: foundNav.nav,
+          roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+        });
+      }
+
+      let note = regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode);
+      if (sgzt && (sgzt.includes("限制") || sgzt.includes("限额"))) {
+        note += `（${sgzt}，请确认定投金额是否超限）`;
+      }
+
+      runsToCreate.push({
+        runDate,
+        confirmDate,
+        arrivalDate,
+        sgzt,
+        feeAmount,
+        fundNav,
+        fundUnits,
+        note,
+      });
+    }
+
+    let actualCreatedCount = 0;
+    let skippedDuplicateAtCommit = 0;
+
     await prisma.$transaction(async (tx) => {
+      await acquireScheduledTaskPlanLock(tx, planId);
+
+      const existingAtCommit = await tx.txRecord.findMany({
+        where: {
+          regularInvestPlanId: planId,
+          source: "regular_invest",
+          deletedAt: null,
+          date: { in: runsToCreate.map((run) => run.runDate) },
+        },
+        select: { date: true },
+      });
+      const existingDateSet = new Set(existingAtCommit.map((record) => formatDateUtc(record.date)));
+      const actualRunsToCreate = runsToCreate.filter((run) => !existingDateSet.has(formatDateUtc(run.runDate)));
+      skippedDuplicateAtCommit = runsToCreate.length - actualRunsToCreate.length;
+      if (actualRunsToCreate.length === 0) return;
+
       const changedFundEntryIds: string[] = [];
-      for (const runDate of datesToProcess) {
-        // 计算 T+N 确认日期（使用工作日计算）
-        const runDateStr = formatDateUtc(runDate);
-        const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
-        let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
-        if (confirmDateStr < runDateStr) {
-          logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
-          confirmDateStr = runDateStr;
-        }
-        const confirmDate = utcDate(confirmDateStr);
-        const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
-        const arrivalDate = utcDate(arrivalDateStr);
-
-        // 从净值缓存库查询确认日期的净值及申购状态
-        const foundNav = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
-        const sgzt = foundNav?.sgzt ?? "";
-
+      for (const run of actualRunsToCreate) {
         // 暂停申购：创建两条记录，合计对冲为 0
         // 记录1：定投(暂停申购) — 从资金账户向基金账户，金额 -100
         // 记录2：定投(退回) — 从基金账户往资金账户，金额 -100
         // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
         // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
-        if (sgzt === "暂停申购") {
+        if (run.sgzt === "暂停申购") {
           const failedBuy = await tx.txRecord.create({
             data: {
               householdId,
               type: TransactionType.investment,
-              date: runDate,
+              date: run.runDate,
               accountId: cashAcc?.id ?? fundAcc.id,
               accountName: cashAcc?.name ?? fundAcc.name,
               toAccountId: fundAcc.id,
@@ -293,8 +366,8 @@ export async function POST(req: NextRequest) {
               fundSubtype: "buy_failed",
               source: "regular_invest",
               fundFee: null,
-              fundConfirmDate: confirmDate,
-              fundArrivalDate: arrivalDate,
+              fundConfirmDate: run.confirmDate,
+              fundArrivalDate: run.arrivalDate,
               fundNav: null,
               fundUnits: null,
               regularInvestPlanId: planId,
@@ -305,7 +378,7 @@ export async function POST(req: NextRequest) {
             data: {
               householdId,
               type: TransactionType.investment,
-              date: runDate,
+              date: run.runDate,
               accountId: fundAcc.id,
               accountName: fundAcc.name,
               toAccountId: cashAcc?.id ?? fundAcc.id,
@@ -317,8 +390,8 @@ export async function POST(req: NextRequest) {
               fundSubtype: "buy_failed",
               source: "regular_invest_refund",
               fundFee: null,
-              fundConfirmDate: confirmDate,
-              fundArrivalDate: arrivalDate,
+              fundConfirmDate: run.confirmDate,
+              fundArrivalDate: run.arrivalDate,
               fundNav: null,
               fundUnits: null,
               fundSourceEntryId: failedBuy.id,
@@ -330,48 +403,12 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // 从费率库查询手续费率（按申请日期查询）
-        // 费率库存储的是百分数值（0.15 = 0.15%），需除以100转为小数
-        let feeRateRaw = await getFundFeeRateByDate(plan.accountId, plan.fundCode, runDate, "buy");
-        if (feeRateRaw === 0) {
-          feeRateRaw = await getFundFeeRate(plan.accountId, plan.fundCode, "buy");
-        }
-        const feeRate = feeRateRaw / 100;
-        const feeAmount = feeRate > 0 ? amountNum * feeRate : null;
-        const feeAmountNumber = feeAmount ?? 0;
-
-        // 从净值缓存库查找对应确认日期的净值
-        let fundNav: number | null = null;
-        let fundUnits: number | null = null;
-
-        if (foundNav && foundNav.nav > 0) {
-          fundNav = foundNav.nav;
-          fundUnits = calculateConfirmedBuyUnits({
-            grossAmount: amountNum,
-            refundAmount: 0,
-            fee: feeAmountNumber,
-            nav: foundNav.nav,
-            roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
-          });
-        }
-
-        // 构建备注：限制大额申购时记录状态提醒用户
-        let note = regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode);
-        if (sgzt && (sgzt.includes("限制") || sgzt.includes("限额"))) {
-          note += `（${sgzt}，请确认定投金额是否超限）`;
-        }
-
-        const category = await resolveCategorySnapshot(tx, householdId, {
-          categoryName: REGULAR_INVEST_CATEGORY_NAME,
-          type: "investment",
-        });
-
         // 创建 TxRecord，直接包含所有基金字段
         const createdBuy = await tx.txRecord.create({
           data: {
             householdId,
             type: TransactionType.investment,
-            date: runDate,
+            date: run.runDate,
             accountId: cashAcc?.id ?? fundAcc.id,
             accountName: cashAcc?.name ?? fundAcc.name,
             toAccountId: fundAcc.id,
@@ -384,21 +421,21 @@ export async function POST(req: NextRequest) {
             source: "regular_invest",
             categoryId: category?.id ?? null,
             categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
-            fundFee: feeAmount,
-            fundConfirmDate: confirmDate,
-            fundArrivalDate: arrivalDate,
-            fundNav: fundNav,
-            fundUnits: fundUnits,
+            fundFee: run.feeAmount,
+            fundConfirmDate: run.confirmDate,
+            fundArrivalDate: run.arrivalDate,
+            fundNav: run.fundNav,
+            fundUnits: run.fundUnits,
             regularInvestPlanId: planId,
-            note,
+            note: run.note,
           },
         });
         changedFundEntryIds.push(createdBuy.id);
       }
 
       // 更新定投计划状态
-      const finalExecutedRuns = plan.executedRuns + newRecordsCount;
-      const finalLastRunDate = datesToProcess[datesToProcess.length - 1];
+      const finalExecutedRuns = plan.executedRuns + actualRunsToCreate.length;
+      const finalLastRunDate = actualRunsToCreate[actualRunsToCreate.length - 1]!.runDate;
       const nextRunDate = calcNextRunDate(finalLastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
 
       const willComplete =
@@ -415,7 +452,29 @@ export async function POST(req: NextRequest) {
         },
       });
       await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
-    });
+      actualCreatedCount = actualRunsToCreate.length;
+    }, BATCH_EXECUTE_TRANSACTION_OPTIONS);
+
+    if (actualCreatedCount === 0) {
+      const updatedPlan = await prisma.regularInvestPlan.findUnique({
+        where: { id: planId },
+      });
+      return NextResponse.json({
+        ok: true,
+        message: "所有到期的交易明细已存在，无需重复生成",
+        executedCount: 0,
+        skippedCount: skippedCount + skippedDuplicateAtCommit,
+        completed: false,
+        stats: {
+          plan: updatedPlan ? {
+            executedRuns: updatedPlan.executedRuns,
+            lastRunDate: updatedPlan.lastRunDate?.toISOString() ?? null,
+            nextRunDate: updatedPlan.nextRunDate?.toISOString() ?? null,
+            status: updatedPlan.status,
+          } : null,
+        },
+      });
+    }
 
     await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
@@ -444,10 +503,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: `已执行基金定投 ${plan.fundCode}，生成 ${newRecordsCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount > 0 ? `（跳过 ${skippedCount} 个无净值间隙日期）` : ""}`,
-      executedCount: newRecordsCount,
-      skippedCount,
-      completed: plan.totalRuns && plan.executedRuns + newRecordsCount >= plan.totalRuns,
+      message: `已执行基金定投 ${plan.fundCode}，生成 ${actualCreatedCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount + skippedDuplicateAtCommit > 0 ? `（跳过 ${skippedCount + skippedDuplicateAtCommit} 个已处理或无净值日期）` : ""}`,
+      executedCount: actualCreatedCount,
+      skippedCount: skippedCount + skippedDuplicateAtCommit,
+      completed: plan.totalRuns && plan.executedRuns + actualCreatedCount >= plan.totalRuns,
       stats: {
         executedCount: totalExecutedCount,
         executedAmount: totalExecutedAmount,

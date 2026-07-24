@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Settings,
   TrendingUp,
+  ReceiptText,
 } from "lucide-react";
 
 import { MmhLogo } from "@/components/MmhLogo";
@@ -17,8 +18,8 @@ import { MmhLogo } from "@/components/MmhLogo";
 const NAV_ITEMS = [
   { href: "/overview", label: "总览", icon: Home },
   { href: "/accounts", label: "账户", icon: Landmark },
+  { href: "/transactions", label: "流水", icon: ReceiptText },
   { href: "/investments", label: "投资", icon: TrendingUp },
-  { href: "/settings", label: "我的", icon: Settings },
 ] as const;
 
 function openQuickEntry() {
@@ -41,6 +42,7 @@ export function MobileNavigation() {
   const title = useMemo(() => {
     if (pathname.startsWith("/overview")) return "总览";
     if (pathname.startsWith("/accounts") || pathname === "/") return pathname === "/" ? "账户明细" : "资金账户";
+    if (pathname.startsWith("/transactions")) return "流水";
     if (pathname.startsWith("/invest")) return "投资";
     if (pathname.startsWith("/reports") || pathname.startsWith("/statistics")) return "统计";
     if (pathname.startsWith("/liabilities")) return "往来款";
@@ -61,7 +63,7 @@ export function MobileNavigation() {
   }, [pathname, searchParams]);
 
   const isActive = (href: string) => {
-    if (href === "/investments") return pathname.startsWith("/invest") || pathname.startsWith("/funds");
+    if (href === "/investments") return pathname.startsWith("/invest") || pathname.startsWith("/funds") || pathname.startsWith("/regular-invest");
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
@@ -75,14 +77,19 @@ export function MobileNavigation() {
             <div className="truncate text-sm font-semibold text-slate-900">{title}</div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => router.refresh()}
-          className="flex h-10 w-10 shrink-0 items-center justify-center text-slate-500"
-          aria-label="刷新"
-        >
-          <RefreshCw size={19} />
-        </button>
+        <div className="flex shrink-0 items-center">
+          <Link href="/settings" className="flex h-10 w-10 items-center justify-center text-slate-500" aria-label="我的">
+            <Settings size={19} />
+          </Link>
+          <button
+            type="button"
+            onClick={() => router.refresh()}
+            className="flex h-10 w-10 items-center justify-center text-slate-500"
+            aria-label="刷新"
+          >
+            <RefreshCw size={19} />
+          </button>
+        </div>
       </header>
 
       <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:hidden">
@@ -93,15 +100,28 @@ export function MobileNavigation() {
           <MobileNavLink item={NAV_ITEMS[2]} active={isActive(NAV_ITEMS[2].href)} />
           <MobileNavLink item={NAV_ITEMS[3]} active={isActive(NAV_ITEMS[3].href)} />
         </div>
-        <Link
-          href="/?quickEntry=1"
-          className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
-          aria-label="记一笔"
-        >
-          <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
-            <Plus size={28} />
-          </span>
-        </Link>
+        {pathname === "/transactions" || pathname.startsWith("/accounts/") ? (
+          <button
+            type="button"
+            onClick={openQuickEntry}
+            className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
+            aria-label="记一笔"
+          >
+            <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
+              <Plus size={28} />
+            </span>
+          </button>
+        ) : (
+          <Link
+            href="/?quickEntry=1"
+            className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
+            aria-label="记一笔"
+          >
+            <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
+              <Plus size={28} />
+            </span>
+          </Link>
+        )}
       </nav>
     </>
   );

@@ -3,6 +3,10 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { SettingsInstitutionsClient } from "../institutions/client";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
+import {
+  assertCounterpartyDisplayNamesUnique,
+  isCounterpartyNameUniqueError,
+} from "@/lib/server/counterparty-name-unique";
 import { isInstitutionNameUniqueError } from "@/lib/server/institution-name-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
@@ -24,6 +28,12 @@ async function updateCounterpartyRow(formData: FormData) {
 
   try {
     await prisma.$transaction(async (tx) => {
+      await assertCounterpartyDisplayNamesUnique(tx, {
+        householdId,
+        name,
+        shortName,
+        excludeId: counterpartyId,
+      });
       const updated = await tx.counterparty.update({
         where: { id: counterpartyId },
         data: { name, shortName: shortName || null, type: safeType },
@@ -31,6 +41,7 @@ async function updateCounterpartyRow(formData: FormData) {
       await ensureInstitutionForCounterparty(tx, updated);
     });
   } catch (error) {
+    if (isCounterpartyNameUniqueError(error)) return { ok: false, error: error.message };
     if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };
     return { ok: false, error: error instanceof Error ? error.message : "保存失败" };
   }

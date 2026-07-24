@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, Landmark } from "lucide-react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
+import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
@@ -19,6 +20,7 @@ type DepositEntry = {
   cashAccountLabel: string;
   note: string;
   amount: number;
+  businessTransactionId?: string | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
   edit?: {
@@ -57,50 +59,6 @@ function amountClass(value: number) {
   return "text-slate-500";
 }
 
-function BusinessLinkHeaderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
-      <path
-        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
-}
-
-function BusinessLinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
-  return (
-    <span
-      title={title}
-      className={[
-        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
-        active
-          ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
-          : "border-slate-200 bg-transparent text-slate-300",
-      ].join(" ")}
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
-        <path
-          d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="2"
-        />
-      </svg>
-    </span>
-  );
-}
-
-function stopRowClick(event: React.MouseEvent) {
-  event.stopPropagation();
-}
-
 export function DepositShell({
   accountLabel,
   institutionName,
@@ -114,6 +72,7 @@ export function DepositShell({
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
+  const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
 
   const selectedLot = useMemo(
     () => lots.find((lot) => lot.id === selectedLotId) ?? null,
@@ -143,6 +102,35 @@ export function DepositShell({
     dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
+  async function linkDepositCashFlow(entry: DepositEntry) {
+    const id = String(entry.id ?? "").trim();
+    if (!id || linkingIds.has(id)) return;
+    const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
+    if (!businessTransactionId) {
+      window.alert("这条存款记录缺少业务记录 ID，无法自动建立关联");
+      return;
+    }
+    setLinkingIds((prev) => new Set(prev).add(id));
+    try {
+      const res = await fetch("/api/v1/business-transactions/link-cash-flow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ businessType: "deposit", businessTransactionId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "建立关联失败");
+      dispatchFinanceDataChanged({ reason: "deposit-link-cash-flow", entryIds: [data.data?.cashEntryId, id].filter(Boolean) });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "建立关联失败");
+    } finally {
+      setLinkingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
   const lotColumns = useMemo<AdvancedDataTableColumn<DepositLot>[]>(() => [
     {
       key: "product",
@@ -166,22 +154,6 @@ export function DepositShell({
   ], []);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DepositEntry>[]>(() => [
-    {
-      key: "businessLink",
-      label: <BusinessLinkHeaderIcon />,
-      width: 38,
-      minWidth: 34,
-      align: "center",
-      hideable: true,
-      render: (entry) => {
-        const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
-        const labels = entry.businessLinkLabels ?? [];
-        const title = hasBusinessLink
-          ? `已关联：${labels.join("、") || "业务记录"}`
-          : "未关联业务记录";
-        return <BusinessLinkStatusIcon active={hasBusinessLink} title={title} />;
-      },
-    },
     { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
     { key: "action", label: "动作", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
     { key: "product", label: "产品", width: 190, minWidth: 120, filterText: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
@@ -199,18 +171,6 @@ export function DepositShell({
           {entry.amount >= 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
           {formatMoney(entry.amount)}
         </span>
-      ),
-    },
-    {
-      key: "actions",
-      label: "操作",
-      width: 92,
-      minWidth: 76,
-      align: "right",
-      render: (entry) => (
-        <div onClick={stopRowClick}>
-          <EntryRowActions entryId={entry.id} edit={entry.edit} />
-        </div>
       ),
     },
   ], []);
@@ -269,8 +229,28 @@ export function DepositShell({
             selectable
             selectedKeys={selectedEntryIds}
             onSelectionChange={setSelectedEntryIds}
+            rowActions={(entry) => {
+              const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
+              const labels = entry.businessLinkLabels ?? [];
+              const title = hasBusinessLink
+                ? `已关联：${labels.join("、") || "业务记录"}`
+                : "未关联，点击建立资金侧关联";
+              return (
+                <>
+                  <BusinessLinkActionButton
+                    active={hasBusinessLink}
+                    title={title}
+                    busy={linkingIds.has(entry.id)}
+                    onClick={() => linkDepositCashFlow(entry)}
+                  />
+                  <EntryRowActions entryId={entry.id} edit={entry.edit} />
+                </>
+              );
+            }}
+            rowActionsWidth={112}
+            rowActionsMinWidth={92}
             batchActions={[
-              { label: "批量删除", onClick: batchDeleteEntries },
+              { label: "批量删除", title: "删除按钮", ariaLabel: "删除按钮", tone: "danger", onClick: batchDeleteEntries },
             ]}
           />
         </section>

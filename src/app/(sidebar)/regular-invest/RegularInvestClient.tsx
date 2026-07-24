@@ -17,6 +17,8 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
 
 const INTERVAL_LABELS: Record<string, string> = {
   day: "每天",
@@ -41,7 +43,7 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 };
 
 type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "none";
-type SortKey = "taskContent" | "startDate" | "nextRunDate";
+type SortKey = "taskContent" | "startDate";
 type SortDirection = "asc" | "desc";
 type RegularInvestColumnKey =
   | "taskContent"
@@ -52,7 +54,6 @@ type RegularInvestColumnKey =
   | "amount"
   | "interval"
   | "status"
-  | "nextRunDate"
   | "executedCount";
 type RegularInvestTableColumnKey = RegularInvestColumnKey | "actions";
 
@@ -104,6 +105,17 @@ type RegularInvestPlanView = {
   confirmedAmount?: number;
 };
 
+type ExecutionProgressState = {
+  title: string;
+  status: "running" | "done" | "error";
+  current: number;
+  total: number;
+  currentLabel: string;
+  ok: number;
+  fail: number;
+  messages: string[];
+};
+
 type InsuranceProductOption = {
   id: string;
   label: string;
@@ -124,7 +136,6 @@ const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label
   { key: "amount", label: "金额" },
   { key: "interval", label: "周期" },
   { key: "status", label: "状态" },
-  { key: "nextRunDate", label: "下次执行/缴费" },
   { key: "executedCount", label: "已执行次数" },
 ];
 
@@ -137,12 +148,12 @@ const REGULAR_INVEST_COLUMN_WIDTHS: Record<RegularInvestColumnKey, number> = {
   amount: 104,
   interval: 126,
   status: 104,
-  nextRunDate: 110,
   executedCount: 140,
 };
 
 const REGULAR_INVEST_ACTION_COLUMN_WIDTH = 152;
 const REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY = "regular-invest:main-table:widths";
+const SCHEDULED_TASK_PROGRESS_ID = "scheduled-task-execute";
 const REGULAR_INVEST_TABLE_COLUMN_KEYS: ReadonlyArray<RegularInvestTableColumnKey> = [
   "taskContent",
   "taskType",
@@ -152,7 +163,6 @@ const REGULAR_INVEST_TABLE_COLUMN_KEYS: ReadonlyArray<RegularInvestTableColumnKe
   "amount",
   "interval",
   "status",
-  "nextRunDate",
   "executedCount",
   "actions",
 ];
@@ -165,14 +175,12 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, numb
   amount: 86,
   interval: 92,
   status: 82,
-  nextRunDate: 92,
   executedCount: 120,
   actions: 132,
 };
 const REGULAR_INVEST_SORT_COLUMNS: Partial<Record<RegularInvestColumnKey, SortKey>> = {
   taskContent: "taskContent",
   startDate: "startDate",
-  nextRunDate: "nextRunDate",
 };
 
 function isRegularInvestTableColumnKey(value: string): value is RegularInvestTableColumnKey {
@@ -325,8 +333,6 @@ function sortPlans(
       result = compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
     } else if (sortKey === "startDate") {
       result = compareNullableDate(left.startDate, right.startDate);
-    } else {
-      result = compareNullableDate(left.nextRunDate, right.nextRunDate);
     }
     if (result !== 0) return result * factor;
     return compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
@@ -392,7 +398,7 @@ export function RegularInvestClient({
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupByMode>("fundGroup");
-  const [sortKey, setSortKey] = useState<SortKey>("nextRunDate");
+  const [sortKey, setSortKey] = useState<SortKey>("startDate");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [columnFilterOpen, setColumnFilterOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<RegularInvestColumnKey[]>([]);
@@ -400,6 +406,26 @@ export function RegularInvestClient({
   const [selectedTaskTypes, setSelectedTaskTypes] = useState<string[]>([]);
   const [tableViewportWidth, setTableViewportWidth] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Partial<Record<RegularInvestTableColumnKey, number>>>({});
+  const [executionProgress, setExecutionProgress] = useState<ExecutionProgressState | null>(null);
+  const executionBusy = executionProgress?.status === "running";
+
+  useEffect(() => {
+    if (!executionProgress) {
+      clearBackgroundTaskProgress(SCHEDULED_TASK_PROGRESS_ID);
+      return;
+    }
+    dispatchBackgroundTaskProgress({
+      id: SCHEDULED_TASK_PROGRESS_ID,
+      title: executionProgress.title,
+      status: executionProgress.status,
+      current: executionProgress.current,
+      total: executionProgress.total,
+      currentLabel: executionProgress.currentLabel,
+      ok: executionProgress.ok,
+      fail: executionProgress.fail,
+      messages: executionProgress.messages,
+    });
+  }, [executionProgress]);
 
   useEffect(() => {
     setPlans(initialPlans);
@@ -523,6 +549,50 @@ export function RegularInvestClient({
     await loadRecords(selectedPlan);
   }
 
+  function updatePlanFromExecutionResult(planId: string, data: any) {
+    if (!data?.stats) return;
+    setPlans((prev) => prev.map((plan) => {
+      if (plan.id !== planId) return plan;
+      return {
+        ...plan,
+        executedCount: data.stats.executedCount,
+        executedAmount: data.stats.executedAmount,
+        confirmedCount: data.stats.confirmedCount,
+        confirmedAmount: data.stats.confirmedAmount,
+        executedRuns: data.stats.plan?.executedRuns ?? plan.executedRuns,
+        lastRunDate: data.stats.plan?.lastRunDate ?? plan.lastRunDate,
+        nextRunDate: data.stats.plan?.nextRunDate ?? plan.nextRunDate,
+        status: data.stats.plan?.status ?? plan.status,
+      };
+    }));
+    setSelectedPlan((prev) => {
+      if (!prev || prev.id !== planId) return prev;
+      return {
+        ...prev,
+        executedCount: data.stats.executedCount,
+        executedAmount: data.stats.executedAmount,
+        confirmedCount: data.stats.confirmedCount,
+        confirmedAmount: data.stats.confirmedAmount,
+        executedRuns: data.stats.plan?.executedRuns ?? prev.executedRuns,
+        lastRunDate: data.stats.plan?.lastRunDate ?? prev.lastRunDate,
+        nextRunDate: data.stats.plan?.nextRunDate ?? prev.nextRunDate,
+        status: data.stats.plan?.status ?? prev.status,
+      };
+    });
+  }
+
+  async function refreshAfterScheduledExecution(touchedPlans: RegularInvestPlanView[]) {
+    const accountIds = Array.from(new Set(touchedPlans.flatMap((plan) => [
+      plan.accountId,
+      plan.cashAccountId,
+      plan.taskFromAccountId,
+      plan.taskToAccountId,
+    ]).filter((id): id is string => Boolean(id))));
+    dispatchFinanceDataChanged({ reason: "scheduled-task-execute", accountIds });
+    if (selectedPlan) await refreshRecords();
+    router.refresh();
+  }
+
   async function handleAction(planId: string, action: "pause" | "resume" | "stop") {
     const res = await fetch("/api/v1/regular-invest", {
       method: "PUT",
@@ -546,8 +616,19 @@ export function RegularInvestClient({
     if (!plan) return;
     const taskType = getPlanTaskType(plan);
     if (!window.confirm(`确认执行该${getPlanTaskLabel(plan)}计划吗？\n\n系统会生成所有到期但未执行的交易明细。`)) return;
+    setExecutionProgress({
+      title: "执行计划任务",
+      status: "running",
+      current: 0,
+      total: 1,
+      currentLabel: `准备执行：${getPlanTargetLabel(plan)}`,
+      ok: 0,
+      fail: 0,
+      messages: [],
+    });
     try {
       if (taskType === "fund_regular_invest" && plan?.fundCode) {
+        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: "正在预加载基金净值..." } : prev);
         const startDate = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -563,6 +644,7 @@ export function RegularInvestClient({
         }
       }
 
+      setExecutionProgress((prev) => prev ? { ...prev, currentLabel: "正在生成到期交易明细..." } : prev);
       const res = await fetch(taskType === "fund_regular_invest" ? "/api/v1/regular-invest/batch-execute" : "/api/v1/regular-invest/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -570,28 +652,35 @@ export function RegularInvestClient({
       });
       const data = await readJsonSafe(res);
       if (!res.ok || !data?.ok) {
-        window.alert(data?.error || `执行失败(${res.status})`);
+        setExecutionProgress((prev) => prev ? {
+          ...prev,
+          status: "error",
+          current: 1,
+          fail: 1,
+          currentLabel: "执行失败",
+          messages: [data?.error || `执行失败(${res.status})`],
+        } : prev);
         return;
       }
-      if (data.stats) {
-        setPlans((prev) => prev.map((plan) => {
-          if (plan.id !== planId) return plan;
-          return {
-            ...plan,
-            executedCount: data.stats.executedCount,
-            executedAmount: data.stats.executedAmount,
-            confirmedCount: data.stats.confirmedCount,
-            confirmedAmount: data.stats.confirmedAmount,
-            executedRuns: data.stats.plan?.executedRuns ?? plan.executedRuns,
-            lastRunDate: data.stats.plan?.lastRunDate ?? plan.lastRunDate,
-            nextRunDate: data.stats.plan?.nextRunDate ?? plan.nextRunDate,
-            status: data.stats.plan?.status ?? plan.status,
-          };
-        }));
-      }
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      updatePlanFromExecutionResult(planId, data);
+      await refreshAfterScheduledExecution([plan]);
+      setExecutionProgress((prev) => prev ? {
+        ...prev,
+        status: "done",
+        current: 1,
+        ok: 1,
+        currentLabel: "执行完成，相关数字已刷新",
+        messages: [data.message || "执行完成"],
+      } : prev);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "执行失败");
+      setExecutionProgress((prev) => prev ? {
+        ...prev,
+        status: "error",
+        current: 1,
+        fail: 1,
+        currentLabel: "执行失败",
+        messages: [e instanceof Error ? e.message : "执行失败"],
+      } : prev);
     }
   }
 
@@ -602,10 +691,21 @@ export function RegularInvestClient({
       return;
     }
     if (!window.confirm(`确认批量执行所有 ${activePlans.length} 个执行中的计划任务吗？`)) return;
+    setExecutionProgress({
+      title: "批量执行计划任务",
+      status: "running",
+      current: 0,
+      total: activePlans.length,
+      currentLabel: "准备执行计划任务...",
+      ok: 0,
+      fail: 0,
+      messages: [],
+    });
     try {
       const endDate = todayInput();
       for (const plan of activePlans) {
         if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
+        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: `预加载净值：${getPlanTargetLabel(plan)}` } : prev);
         const preloadStart = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -621,7 +721,16 @@ export function RegularInvestClient({
 
       let ok = 0;
       let fail = 0;
-      for (const plan of activePlans) {
+      const messages: string[] = [];
+      for (let index = 0; index < activePlans.length; index += 1) {
+        const plan = activePlans[index];
+        setExecutionProgress((prev) => prev ? {
+          ...prev,
+          current: index,
+          currentLabel: `正在执行 ${index + 1}/${activePlans.length}：${getPlanTargetLabel(plan)}`,
+          ok,
+          fail,
+        } : prev);
         try {
           const res = await fetch(getPlanTaskType(plan) === "fund_regular_invest" ? "/api/v1/regular-invest/batch-execute" : "/api/v1/regular-invest/execute", {
             method: "POST",
@@ -629,17 +738,44 @@ export function RegularInvestClient({
             body: JSON.stringify({ planId: plan.id }),
           });
           const data = await readJsonSafe(res);
-          if (res.ok && data?.ok) ok++;
-          else fail++;
-        } catch {
+          if (res.ok && data?.ok) {
+            ok++;
+            updatePlanFromExecutionResult(plan.id, data);
+            messages.push(`${getPlanTargetLabel(plan)}：${data.message || "执行完成"}`);
+          } else {
+            fail++;
+            messages.push(`${getPlanTargetLabel(plan)}：${data?.error || `执行失败(${res.status})`}`);
+          }
+        } catch (error) {
           fail++;
+          messages.push(`${getPlanTargetLabel(plan)}：${error instanceof Error ? error.message : "执行失败"}`);
         }
+        setExecutionProgress((prev) => prev ? {
+          ...prev,
+          current: index + 1,
+          currentLabel: `已处理 ${index + 1}/${activePlans.length}`,
+          ok,
+          fail,
+          messages: messages.slice(-6),
+        } : prev);
       }
-      window.alert(fail === 0 ? `批量执行完成，成功执行 ${ok} 个计划` : `批量执行完成，成功 ${ok} 个，失败 ${fail} 个`);
-      router.refresh();
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      await refreshAfterScheduledExecution(activePlans);
+      setExecutionProgress((prev) => prev ? {
+        ...prev,
+        status: fail === 0 ? "done" : "error",
+        current: activePlans.length,
+        currentLabel: fail === 0 ? "批量执行完成，相关数字已刷新" : "批量执行完成，部分计划失败",
+        ok,
+        fail,
+        messages: messages.slice(-8),
+      } : prev);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "批量执行失败");
+      setExecutionProgress((prev) => prev ? {
+        ...prev,
+        status: "error",
+        currentLabel: "批量执行失败",
+        messages: [e instanceof Error ? e.message : "批量执行失败"],
+      } : prev);
     }
   }
 
@@ -937,9 +1073,6 @@ export function RegularInvestClient({
             <span className={STATUS_MAP[plan.status]?.cls || "text-slate-600"}>{STATUS_MAP[plan.status]?.label || plan.status}</span>
           </td>
         ) : null}
-        {isColumnVisible("nextRunDate") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">{formatDate(plan.nextRunDate)}</td>
-        ) : null}
         {isColumnVisible("executedCount") ? (
           <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">
             {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
@@ -949,8 +1082,13 @@ export function RegularInvestClient({
           <div className="flex items-center justify-end gap-1">
             {plan.status === "active" && (
               <>
-                <button onClick={(e) => { e.stopPropagation(); handleBatchExecute(plan.id); }} title="批量执行" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50">
-                  <RefreshCw className="h-3 w-3 text-purple-600" />
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleBatchExecute(plan.id); }}
+                  disabled={executionBusy}
+                  title="批量执行"
+                  className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy ? "animate-spin" : ""}`} />
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); handleAction(plan.id, "pause"); }} title="暂停" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
                   <Pause className="h-3 w-3 text-yellow-600" />
@@ -999,8 +1137,13 @@ export function RegularInvestClient({
                 onOpenChange={setShowCreateForm}
                 apiAction={apiCreateAction}
               />
-              <button onClick={handleBatchExecuteAll} title="批量执行所有计划任务" className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50">
-                <RefreshCw className="h-4 w-4" />执行全部
+              <button
+                onClick={handleBatchExecuteAll}
+                disabled={executionBusy}
+                title="批量执行所有计划任务"
+                className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${executionBusy ? "animate-spin" : ""}`} />执行全部
               </button>
               <button onClick={() => setShowCreateForm(true)} className="flex h-8 items-center gap-1 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
                 <Plus className="h-4 w-4" />新增计划
@@ -1201,7 +1344,6 @@ export function RegularInvestClient({
           intervalValue: editPlan.intervalValue || 1,
           executionDay: editPlan.executionDay ?? null,
           startDate: toDateInput(editPlan.startDate) || todayInput(),
-          nextRunDate: toDateInput(editPlan.nextRunDate) || null,
           lastRunDate: toDateInput(editPlan.lastRunDate) || null,
           endDate: toDateInput(editPlan.endDate) || null,
           totalRuns: editPlan.totalRuns ?? null,

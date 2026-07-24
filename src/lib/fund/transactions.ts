@@ -149,15 +149,40 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
       },
     });
 
+    const fallbackRefundDateFilters = [main.fundArrivalDate, main.fundConfirmDate, main.date]
+      .filter((date): date is Date => !!date)
+      .flatMap((date) => [{ date }, { fundConfirmDate: date }, { fundArrivalDate: date }]);
     const refunds = await client.txRecord.findMany({
       where: {
-        fundSourceEntryId: main.id,
         fundSubtype: FundSubtype.buy_failed,
         source: "regular_invest_refund",
         deletedAt: null,
+        OR: [
+          { fundSourceEntryId: main.id },
+          ...(main.fundSubtype === FundSubtype.buy_failed && fallbackRefundDateFilters.length > 0
+            ? [{
+                fundSourceEntryId: null,
+                householdId: main.householdId,
+                fundCode: main.fundCode,
+                accountId: fundAccountId,
+                toAccountId: cashAccountId,
+                ...(main.regularInvestPlanId ? { regularInvestPlanId: main.regularInvestPlanId } : {}),
+                OR: fallbackRefundDateFilters,
+              }]
+            : []),
+        ],
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     });
+    const unlinkedRefundIds = refunds
+      .filter((row) => !row.fundSourceEntryId)
+      .map((row) => row.id);
+    if (unlinkedRefundIds.length > 0) {
+      await client.txRecord.updateMany({
+        where: { id: { in: unlinkedRefundIds }, fundSourceEntryId: null },
+        data: { fundSourceEntryId: main.id },
+      });
+    }
     const cashRows = linkedCashRows.length > 0 ? [...linkedCashRows, ...refunds] : [main, ...refunds];
 
     await client.fundTransactionCashFlow.deleteMany({ where: { fundTransactionId: ft.id } });
@@ -214,7 +239,11 @@ export async function loadFundTransactionEntryLike(params: {
       cashFlows: true,
       EntryBusinessLink: {
         where: { deletedAt: null },
-        select: { businessType: true },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
       },
     },
     orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
@@ -223,7 +252,10 @@ export async function loadFundTransactionEntryLike(params: {
   const entries: any[] = [];
   for (const row of rows) {
     const mainFlow = row.cashFlows.find((flow) => flow.txRecordId === row.cashEntryId) ?? row.cashFlows[0];
-    const businessLinkLabels = Array.from(new Set(row.EntryBusinessLink.map((link) => entryBusinessTypeLabel(link.businessType))));
+    const validBusinessLinks = row.EntryBusinessLink.filter((link) => (
+      !!link.cashEntryId && !!link.CashEntry && link.CashEntry.deletedAt == null
+    ));
+    const businessLinkLabels = Array.from(new Set(validBusinessLinks.map((link) => entryBusinessTypeLabel(link.businessType))));
     entries.push({
       id: row.cashEntryId ?? row.id,
       fundTransactionId: row.id,
@@ -251,7 +283,7 @@ export async function loadFundTransactionEntryLike(params: {
       realizedProfit: row.realizedProfit,
       note: row.note,
       cashFlowId: mainFlow?.id ?? null,
-      businessLinkCount: row.EntryBusinessLink.length,
+      businessLinkCount: validBusinessLinks.length,
       businessLinkLabels,
     });
 
@@ -283,7 +315,7 @@ export async function loadFundTransactionEntryLike(params: {
         realizedProfit: null,
         note: row.note,
         fundCashFlowOnly: true,
-        businessLinkCount: row.EntryBusinessLink.length,
+        businessLinkCount: validBusinessLinks.length,
         businessLinkLabels,
       });
     }

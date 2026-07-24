@@ -31,6 +31,12 @@ export type CreditBillCumulative = {
   cumulativeOverpaid: number;
 };
 
+export type CreditBillFlowEntry = {
+  accountId?: string | null;
+  toAccountId?: string | null;
+  amount?: unknown;
+};
+
 export type CreditCardCyclePersistRow = {
   statementMonth: string;
   periodStart: Date;
@@ -48,6 +54,10 @@ export type CreditCardCyclePersistRow = {
   lockSource: string | null;
 };
 
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 export function creditCardDisplayBalanceFromCurrentCycle(
   cycle: { effectiveBill?: unknown; cumulativeRemain?: unknown; cumulativeOverpaid?: unknown } | null | undefined,
   fallback = 0,
@@ -55,6 +65,40 @@ export function creditCardDisplayBalanceFromCurrentCycle(
   if (!cycle) return fallback;
   if (cycle.effectiveBill != null) return toNumber(cycle.effectiveBill);
   return toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid);
+}
+
+export function signedCreditBillAmountFromCardSide(
+  entry: CreditBillFlowEntry,
+  billAccountIdSet: ReadonlySet<string>,
+) {
+  const fromBillAccount = billAccountIdSet.has(entry.accountId ?? "");
+  const toBillAccount = billAccountIdSet.has(entry.toAccountId ?? "");
+  if (fromBillAccount && toBillAccount) return 0;
+  const amount = toNumber(entry.amount);
+  if (fromBillAccount) return amount;
+  if (toBillAccount) return -amount;
+  return null;
+}
+
+export function summarizeCreditBillSignedFlows(
+  entries: readonly CreditBillFlowEntry[],
+  billAccountIdSet: ReadonlySet<string>,
+) {
+  let expenseAbs = 0;
+  let income = 0;
+  for (const entry of entries) {
+    const signedAmount = signedCreditBillAmountFromCardSide(entry, billAccountIdSet);
+    if (signedAmount == null || signedAmount === 0) continue;
+    if (signedAmount < 0) expenseAbs += -signedAmount;
+    else income += signedAmount;
+  }
+  const roundedExpenseAbs = roundMoney(expenseAbs);
+  const roundedIncome = roundMoney(income);
+  return {
+    expenseAbs: roundedExpenseAbs,
+    income: roundedIncome,
+    bill: roundMoney(roundedExpenseAbs - roundedIncome),
+  };
 }
 
 export function cycleForStatementMonth(
@@ -130,9 +174,8 @@ export function computeCreditBillCascade(params: {
   monthsForCascade: string[];
   summaryByMonth: Map<string, Pick<CreditBillSummary, "bill" | "paid" | "expenseAbs" | "income">>;
   overrides: CreditBillOverrideInput[];
-  postOverrideAdjustmentByMonth?: ReadonlyMap<string, number>;
 }) {
-  const { monthsForCascade, summaryByMonth, overrides, postOverrideAdjustmentByMonth } = params;
+  const { monthsForCascade, summaryByMonth, overrides } = params;
 
   const overrideByMonth = new Map<string, number>(
     overrides
@@ -157,7 +200,7 @@ export function computeCreditBillCascade(params: {
   for (const row of allMonthsForCascade) {
     const override = overrideByMonth.get(row.month);
     const effective = override !== undefined
-      ? override - (postOverrideAdjustmentByMonth?.get(row.month) ?? 0)
+      ? override
       : previousBill + (row.billDelta ?? row.bill);
     effectiveBillByMonth.set(row.month, effective);
     previousBill = effective;

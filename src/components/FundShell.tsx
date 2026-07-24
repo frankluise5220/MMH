@@ -183,7 +183,7 @@ const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
   amount: "金额",
   profit: "收益",
   status: "状态",
-  actions: "操作",
+  actions: "",
 };
 
 const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
@@ -298,6 +298,7 @@ export function FundShell(props: Props) {
   const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
   const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
+  const positionEntryDefaultsRef = useRef<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [detailEditSignal, setDetailEditSignal] = useState<{ id: string; value: number } | null>(null);
   const openDetailEdit = useCallback((entryId: string) => {
@@ -405,6 +406,7 @@ export function FundShell(props: Props) {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [singleDeletingIds, setSingleDeletingIds] = useState<Set<string>>(new Set());
+  const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
 
   const [batchDeleteMessage, setBatchDeleteMessage] = useState("");
 
@@ -1077,13 +1079,15 @@ export function FundShell(props: Props) {
   function openPositionEntryModal(position: any) {
     const code = String(position?.fundCode ?? "").trim();
     if (!code) return;
-    setPositionEntryDefaults({
+    const nextDefaults = {
       fundCode: code,
       fundName: String(position?.name ?? code),
       fundUnits: position?.units != null ? toNumber(position.units) : null,
       confirmDays: d.confirmDaysMap[code] ?? selectedAccount?.defaultConfirmDays ?? undefined,
       feeRate: d.feeRateMap[`${code}:buy`] ?? null,
-    });
+    };
+    positionEntryDefaultsRef.current = nextDefaults;
+    setPositionEntryDefaults(nextDefaults);
     setPositionEntryOpenSignal((value) => value + 1);
   }
 
@@ -1797,6 +1801,54 @@ export function FundShell(props: Props) {
     }
   }
 
+  async function linkDetailCashFlow(entry: any) {
+    const id = String(entry?.id ?? "");
+    const businessType =
+      entry?.fundProductType === "wealth" || isWealthAccount
+        ? "wealth"
+        : entry?.fundProductType === "deposit"
+          ? "deposit"
+          : entry?.fundProductType === "metal"
+            ? "metal"
+            : "fund";
+    const businessTransactionId = String(
+      businessType === "fund" ? entry?.fundTransactionId ?? entry?.businessTransactionId ?? "" : entry?.businessTransactionId ?? "",
+    ).trim();
+    if (!id || linkingIds.has(id)) return;
+    if (!businessTransactionId) {
+      window.alert(`这条${businessType === "wealth" ? "理财" : "基金"}记录缺少业务记录 ID，无法自动建立关联`);
+      return;
+    }
+
+    setLinkingIds((prev) => new Set(prev).add(id));
+    setBatchDeleteMessage("");
+    try {
+      const res = await fetch("/api/v1/business-transactions/link-cash-flow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ businessType, businessTransactionId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "建立关联失败");
+      }
+      setBatchDeleteMessage("已建立资金侧关联");
+      dispatchFinanceDataChanged({
+        reason: "business-link-cash-flow",
+        accountIds: [entry.accountId, entry.toAccountId].filter(Boolean),
+        entryIds: [data.data?.cashEntryId, id].filter(Boolean),
+      });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "建立关联失败");
+    } finally {
+      setLinkingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
 
 
   const renderColumnFilter = (column: FundFilterColumn, label: string) => {
@@ -1861,7 +1913,7 @@ export function FundShell(props: Props) {
               mode="create"
               accountId={accountId}
               accountProductType={selectedAccount?.investProductType ?? null}
-              defaults={positionEntryDefaults ?? undefined}
+              defaults={positionEntryDefaultsRef.current ?? positionEntryDefaults ?? undefined}
               cashAccounts={cashAccounts}
               investmentAccounts={investmentAccounts}
               cashAccountSSOptions={cashAccountSSOptions}
@@ -1889,6 +1941,13 @@ export function FundShell(props: Props) {
           </div>
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
+
+            <Link
+              href={`/?accountId=${encodeURIComponent(accountId)}&view=detail&detailAll=1`}
+              className="secondary-button h-7 px-2 text-xs"
+            >
+              全部交易
+            </Link>
 
             {!showCleared ? (<>
 
@@ -1944,7 +2003,7 @@ export function FundShell(props: Props) {
                   <SortHead sk="marketValue" label="市值" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="marketValue" width={colWidth("positions", "marketValue", 112)} minWidth={78} />
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    未确认
+                    未确认金额
                     <ResizeGrip table="positions" colKey="pending" width={colWidth("positions", "pending", 78)} minWidth={58} />
                   </th>
 
@@ -1955,7 +2014,7 @@ export function FundShell(props: Props) {
                   <SortHead sk="historicalProfit" label="历史收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="historical" width={colWidth("positions", "historical", 108)} minWidth={78} />
 
                   <th className="relative select-none text-center text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    操作
+                    <span className="sr-only">Action buttons</span>
                     <ResizeGrip table="positions" colKey="actions" width={colWidth("positions", "actions", 112)} minWidth={88} />
                   </th>
 
@@ -2002,21 +2061,21 @@ export function FundShell(props: Props) {
 
                     >
 
-                      <td className="px-4 py-2 border-b border-slate-100"><span className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`} title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}>{p.name}{!isWealthAccount && p.fundCode !== p.name && <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span>}</span></td>
+                      <td className="px-4 py-1.5 border-b border-slate-100"><span className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`} title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}>{p.name}{!isWealthAccount && p.fundCode !== p.name && <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span>}</span></td>
 
                       {isWealthAccount ? (
-                        <td className="px-3 py-2 border-b border-slate-100 text-left text-xs tabular-nums text-slate-600">{p.holdingDate || "-"}</td>
+                        <td className="px-3 py-1.5 border-b border-slate-100 text-left text-xs tabular-nums text-slate-600">{p.holdingDate || "-"}</td>
                       ) : null}
 
-                      <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
+                      <td className="px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
                         {isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : formatFundUnits(p.units)}
                       </td>
 
-                      <td className="px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
+                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
                         {isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : p.avgCost.toFixed(4)}
                       </td>
 
-                      <td className="overflow-hidden px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">
+                      <td className="overflow-hidden px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
 
                         <div className="flex min-w-0 items-center justify-end gap-0.5">
 
@@ -2026,20 +2085,20 @@ export function FundShell(props: Props) {
 
                       </td>
 
-                      <td className="px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
+                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
 
-                      <td className={`px-2 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
+                      <td className={`px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
 
-                      <td className="px-2 py-2 border-b border-slate-100 text-right text-[11px] tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
+                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-[11px] tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
 
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnL)}`}>{formatMoney(displayPnL)}</td>
+                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnL)}`}>{formatMoney(displayPnL)}</td>
 
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</td>
+                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</td>
 
-                      <td className={`px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(p.historicalProfit)}`}>{formatMoney(p.historicalProfit)}</td>
+                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(p.historicalProfit)}`}>{formatMoney(p.historicalProfit)}</td>
 
-                      <td className="px-2 py-2 border-b border-slate-100" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1">
+                      <td className="px-2 py-1 border-b border-slate-100" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-0.5">
                           {regularPlanByFundCode.get(p.fundCode) ? (
                             (() => {
                               const plan = regularPlanByFundCode.get(p.fundCode);
@@ -2055,7 +2114,7 @@ export function FundShell(props: Props) {
                                       event.stopPropagation();
                                       setRegularPlanMenu(menuOpen ? null : plan);
                                     }}
-                                    className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
+                                    className={`relative inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
                                       isPaused
                                         ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
                                         : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
@@ -2064,21 +2123,21 @@ export function FundShell(props: Props) {
                                     aria-haspopup="menu"
                                     aria-expanded={menuOpen}
                                   >
-                                    <CalendarSync className="h-3.5 w-3.5" />
+                                    <CalendarSync className="h-3 w-3" />
                                     {isPaused ? (
-                                      <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
+                                      <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
                                         <span className="h-1 w-[1px] rounded-full bg-white" />
                                         <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
                                       </span>
                                     ) : (
-                                      <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex h-2 w-2 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
-                                        <span className="ml-[1px] h-0 w-0 border-y-[2px] border-l-[3px] border-y-transparent border-l-white" />
+                                      <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
+                                        <span className="ml-px h-0 w-0 border-y-[1.5px] border-l-[2.5px] border-y-transparent border-l-white" />
                                       </span>
                                     )}
                                   </button>
                                   {menuOpen ? (
                                     <div
-                                      className="absolute right-0 top-8 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                                      className="absolute right-0 top-7 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
                                       role="menu"
                                       onClick={(event) => event.stopPropagation()}
                                     >
@@ -2868,6 +2927,8 @@ export function FundShell(props: Props) {
 
                       targetLabel="已勾选"
 
+                      buttonTitle="编辑按钮"
+
                       buttonClassName="h-7 w-7 rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
 
                       onApply={applyBatch}
@@ -2884,9 +2945,9 @@ export function FundShell(props: Props) {
 
                       className="h-7 w-7 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
 
-                      title={batchTargetIds.length === 0 ? "请先勾选记录" : `批量删除已勾选 ${batchTargetIds.length} 条记录`}
+                      title={batchTargetIds.length === 0 ? "请先勾选记录" : "删除按钮"}
 
-                      aria-label={batchTargetIds.length === 0 ? "请先勾选记录再批量删除" : `批量删除已勾选 ${batchTargetIds.length} 条记录`}
+                      aria-label={batchTargetIds.length === 0 ? "请先勾选记录再批量删除" : "删除按钮"}
 
                     >
 
@@ -3087,7 +3148,7 @@ export function FundShell(props: Props) {
                     {isDetailColumnVisible("profit") ? (
                     <td className={`px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(toNumber(e.realizedProfit))}`}>
 
-                      {e.realizedProfit != null && e.fundSubtype === "redeem" ? formatMoney(toNumber(e.realizedProfit)) : <span className="text-slate-300">-</span>}
+                      {e.realizedProfit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash") ? formatMoney(toNumber(e.realizedProfit)) : <span className="text-slate-300">-</span>}
 
                     </td>
                     ) : null}
@@ -3136,7 +3197,7 @@ export function FundShell(props: Props) {
 
                               id: e.id,
                               transactionId: e.id,
-                              cashEntryId: e.cashEntryId ?? e.id,
+                              cashEntryId: e.cashEntryId ?? null,
                               businessTransactionId: e.businessTransactionId ?? null,
 
                               date: fmtDate(e.date),
@@ -3312,6 +3373,8 @@ export function FundShell(props: Props) {
                             createAction={createAction}
 
                             editAction={editAction}
+                            fundUnitsDecimals={fundUnitsDecimals}
+                            hideTrigger
 
                           />
 
@@ -3319,9 +3382,19 @@ export function FundShell(props: Props) {
 
                         <button
                           type="button"
-                          className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50"
-                          title={businessLinkTitle}
-                          aria-label={businessLinkTitle}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            if (!businessLinkInfo.active) void linkDetailCashFlow(e);
+                          }}
+                          disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
+                          className={[
+                            "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                            businessLinkInfo.active
+                              ? "border-slate-200 text-slate-500"
+                              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
+                          ].join(" ")}
+                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? "正在建立资金侧关联..." : "未关联，点击建立资金侧关联"}
+                          aria-label={businessLinkInfo.active ? businessLinkTitle : "未关联，点击建立资金侧关联"}
                         >
                           <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
                         </button>
@@ -3333,8 +3406,8 @@ export function FundShell(props: Props) {
                             openDetailEdit(e.id);
                           }}
                           className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-                          title="编辑"
-                          aria-label={`编辑${isWealthAccount ? "理财" : "基金"}交易明细`}
+                          title="编辑按钮"
+                          aria-label="编辑按钮"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
@@ -3344,8 +3417,8 @@ export function FundShell(props: Props) {
                           onClick={() => { void deleteDetailEntry(e); }}
                           disabled={singleDeletingIds.has(String(e.id ?? ""))}
                           className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-                          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除"}
-                          aria-label={`删除${isWealthAccount ? "理财" : "基金"}交易明细`}
+                          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
+                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>

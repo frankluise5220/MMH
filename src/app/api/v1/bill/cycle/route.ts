@@ -12,7 +12,7 @@
  * 接受的实体类型: Account.id + CreditCardCycle.statementMonth
  */
 import { NextResponse } from "next/server";
-import { AccountKind, TransactionType } from "@prisma/client";
+import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { addDaysUtc, clampDay, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
@@ -21,6 +21,7 @@ import {
   getCreditBillAccountIds,
   syncCreditCardInstitutionSettings,
 } from "@/lib/server/credit-card-institution-settings";
+import { summarizeCreditBillSignedFlows } from "@/lib/credit/billing";
 
 function parseDateOnly(value: unknown): Date | null {
   const raw = String(value ?? "").trim();
@@ -89,6 +90,7 @@ export async function PATCH(req: Request) {
     });
     if (!account) return NextResponse.json({ ok: false, error: "信用卡账户不存在" }, { status: 404 });
     const billAccountIds = await getCreditBillAccountIds(prisma, account);
+    const billAccountIdSet = new Set(billAccountIds);
     const storageAccountId = billAccountIds[0] ?? account.id;
 
     const cycles = await prisma.creditCardCycle.findMany({
@@ -185,93 +187,45 @@ export async function PATCH(req: Request) {
 
     const overrides = await prisma.billOverride.findMany({ where: { accountId: storageAccountId } });
     const overrideByMonth = new Map(overrides.map((override) => [override.statementMonth, toNumber(override.amount)]));
-    const statementInstallments = await prisma.creditCardInstallmentPlan.findMany({
-      where: {
-        householdId,
-        accountId: { in: billAccountIds },
-        sourceType: "statement",
-        sourceStatementMonth: { not: null },
-        status: "active",
-      },
-      select: { sourceStatementMonth: true, installmentPrincipal: true },
-    });
-    const statementInstallmentByMonth = new Map(
-      statementInstallments.map((plan) => [
-        plan.sourceStatementMonth ?? "",
-        toNumber(plan.installmentPrincipal),
-      ]),
-    );
-
     const recalculated: typeof adjustedCycles = [];
     for (const cycle of adjustedCycles) {
-      const repayEnd = cycle.dueDate && cycle.dueDate.getTime() < today.getTime() ? cycle.dueDate : today;
       const cycleWindow = {
-        OR: [
-          { statementMonth: cycle.statementMonth, deletedAt: null },
-          { statementMonth: null, date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) }, deletedAt: null },
-        ],
+        date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) },
+        deletedAt: null,
       };
-      const [expenseAgg, incomeAgg, transferOutAgg, cycleTransferInAgg, paidAgg] = await Promise.all([
-        prisma.txRecord.aggregate({
-          where: { AND: [cycleWindow, { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] }, { type: TransactionType.expense }] },
-          _sum: { amount: true },
-        }),
-        prisma.txRecord.aggregate({
-          where: { AND: [cycleWindow, { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] }, { type: TransactionType.income }] },
-          _sum: { amount: true },
-        }),
-        prisma.txRecord.aggregate({
-          where: {
-            AND: [
-              cycleWindow,
-              { accountId: { in: billAccountIds } },
-              { type: TransactionType.transfer },
-              { amount: { lt: 0 } },
-            ],
-          },
-          _sum: { amount: true },
-        }),
-        prisma.txRecord.aggregate({
-          where: {
-            AND: [
-              cycleWindow,
-              { toAccountId: { in: billAccountIds } },
-              { type: TransactionType.transfer },
-              { amount: { lt: 0 } },
-            ],
-          },
-          _sum: { amount: true },
-        }),
-        prisma.txRecord.aggregate({
-          where: {
-            AND: [
-              { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
-              { type: TransactionType.transfer },
-              { toAccountId: { in: billAccountIds } },
-              { amount: { lt: 0 } },
-              { date: { gte: addDaysUtc(cycle.periodEnd, 1), lt: addDaysUtc(repayEnd, 1) } },
-            ],
-          },
-          _sum: { amount: true },
-        }),
-      ]);
+      const cycleFlowRows = await prisma.txRecord.findMany({
+        where: {
+          AND: [
+            cycleWindow,
+            { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
+          ],
+        },
+        select: { accountId: true, toAccountId: true, amount: true },
+      });
 
-      const outflow = toNumber(expenseAgg._sum.amount ?? 0) + toNumber(transferOutAgg._sum.amount ?? 0);
-      const expenseAbs = Math.max(0, -outflow);
-      const income = Math.max(0, toNumber(incomeAgg._sum.amount ?? 0)) + Math.max(0, -toNumber(cycleTransferInAgg._sum.amount ?? 0));
-      const netCycle = outflow + toNumber(incomeAgg._sum.amount ?? 0);
-      const rawBill = Math.max(0, -netCycle);
-      const paid = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
+      const flows = summarizeCreditBillSignedFlows(cycleFlowRows, billAccountIdSet);
+      const expenseAbs = flows.expenseAbs;
+      const income = flows.income;
+      const rawBill = flows.bill;
 
-      recalculated.push({ ...cycle, expenseAbs, income, paid, rawBill });
+      recalculated.push({ ...cycle, expenseAbs, income, paid: 0, rawBill });
+    }
+
+    const incomeByMonth = new Map(recalculated.map((cycle) => [cycle.statementMonth, cycle.income]));
+    for (const cycle of recalculated) {
+      const parsed = statementMonthDate(cycle.statementMonth);
+      if (!parsed) continue;
+      const nextDate = new Date(Date.UTC(parsed.year, parsed.monthIndex + 1, 1));
+      const nextMonth = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      cycle.paid = incomeByMonth.get(nextMonth) ?? 0;
     }
 
     let previousBalance = 0;
     for (const cycle of recalculated) {
       const override = overrideByMonth.get(cycle.statementMonth);
       const effectiveBill = override !== undefined
-        ? Math.max(0, override - (statementInstallmentByMonth.get(cycle.statementMonth) ?? 0))
-        : Math.max(0, previousBalance + cycle.rawBill);
+        ? override
+        : previousBalance + cycle.rawBill;
       const afterPaid = effectiveBill - cycle.paid;
       previousBalance = afterPaid;
       cycle.effectiveBill = effectiveBill;

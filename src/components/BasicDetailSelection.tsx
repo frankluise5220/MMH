@@ -205,6 +205,7 @@ export function BasicDetailBatchReplaceButton({
       fields={fieldConfigs}
       targetCount={selectedCount}
       targetLabel={targetLabel}
+      buttonTitle="编辑按钮"
       buttonClassName="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-3.5 [&_svg]:w-3.5"
       onApply={applyReplace}
     />
@@ -250,8 +251,8 @@ export function BasicDetailBatchDeleteButton({ recordLabel = "资金明细" }: {
       onClick={applyDelete}
       disabled={disabled}
       className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-      title={selectedCount === 0 ? "请先勾选记录" : `批量删除已选 ${selectedCount} 条${recordLabel}`}
-      aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : `批量删除已选 ${selectedCount} 条${recordLabel}`}
+      title={selectedCount === 0 ? "请先勾选记录" : "删除按钮"}
+      aria-label={selectedCount === 0 ? "请先勾选记录再批量删除" : "删除按钮"}
     >
       <Trash2 className="h-3.5 w-3.5" />
     </button>

@@ -12,8 +12,9 @@
 
 - 正式远程访问应通过 HTTPS 反向代理，例如 Caddy、Nginx、NAS 自带反代或可信网关。
 - 如果只允许固定域名或固定内网地址访问，请在系统设置里的“访问白名单”中维护允许访问的域名或 IP。开启后，未列入白名单的 Host 会被应用层直接拒绝。
-- 生产环境下，登录 Cookie 默认使用 `HttpOnly`、`SameSite=Lax`、`Secure`。
-- 如果只是可信内网 HTTP 测试，可以临时设置 `MMH_INSECURE_COOKIES=1`，不要用于公网。
+- 生产环境下，登录 Cookie 默认使用 `HttpOnly`、`SameSite=Lax`；通过 HTTPS 访问时会使用 `Secure`。
+- 可信内网 HTTP 访问不会设置 `Secure`，否则浏览器会拒收登录 Cookie，表现为登录后又回到登录页。
+- 如果反向代理让应用无法识别原始请求协议，可以临时设置 `MMH_INSECURE_COOKIES=1`，不要用于公网。
 - 确认站点永远通过 HTTPS 访问后，可以设置 `MMH_ENABLE_HSTS=1` 开启 HSTS。
 
 ## 账簿隔离

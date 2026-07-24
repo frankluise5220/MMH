@@ -61,7 +61,30 @@ export function InsuranceOverviewCard({
       </div>
       <div className="border-t border-slate-100 px-4 pb-4">
         {insuranceRows.length > 0 && coverageColumns.length > 0 ? (
-          <div className="overflow-x-auto">
+          <>
+          <div className="divide-y divide-slate-100 sm:hidden">
+            {insuranceRows.slice(0, 8).map((person) => (
+              <div key={person.insuredPersonKey} className="py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 truncate text-sm font-semibold text-slate-800">{person.insuredPersonName}</div>
+                  <div className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{formatCompactMoney(person.coverage)}</div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                  {coverageColumns.map((column) => {
+                    const coverage = person.categories.find((category) => category.key === column.key)?.coverage ?? 0;
+                    if (coverage <= 0) return null;
+                    return (
+                      <span key={column.key} className="inline-flex items-center gap-1">
+                        <span>{column.label}</span>
+                        <span className="font-medium tabular-nums text-slate-700">{formatCompactMoney(coverage)}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto sm:block">
             <table className="min-w-[520px] w-full border-separate border-spacing-0 text-xs">
               <thead>
                 <tr className="text-slate-500">
@@ -101,6 +124,7 @@ export function InsuranceOverviewCard({
               </tbody>
             </table>
           </div>
+          </>
         ) : (
           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-400">
             暂无保险数据

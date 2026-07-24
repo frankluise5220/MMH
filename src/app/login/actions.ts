@@ -1,6 +1,6 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -53,8 +53,9 @@ export async function login(_prev: LoginState | undefined, formData: FormData): 
   }
 
   const cookieStore = await cookies();
+  const headerStore = await headers();
   const maxAge = resolveSessionMaxAge(cookieStore);
-  const cookieOptions = sessionCookieOptions(maxAge);
+  const cookieOptions = sessionCookieOptions(maxAge, { headers: headerStore });
   cookieStore.set(VERIFIED_COOKIE, "ok", cookieOptions);
   if (username) {
     cookieStore.set(USERNAME_COOKIE, username, cookieOptions);
@@ -92,8 +93,9 @@ export async function setupPassword(_prev: SetupState | undefined, formData: For
 
   // 直接写入 cookie 并跳转
   const cookieStore = await cookies();
+  const headerStore = await headers();
   const maxAge = resolveSessionMaxAge(cookieStore);
-  const cookieOptions = sessionCookieOptions(maxAge);
+  const cookieOptions = sessionCookieOptions(maxAge, { headers: headerStore });
   cookieStore.set(VERIFIED_COOKIE, "ok", cookieOptions);
   cookieStore.set(USERNAME_COOKIE, username, cookieOptions);
 

@@ -37,6 +37,7 @@ type BasicDetailPanelProps = {
   showBalanceReconcile?: boolean;
   accountLabel?: string;
   currentBalance?: number;
+  focusEntryId?: string;
 };
 
 function clampPage(page: number, totalPages: number) {
@@ -75,6 +76,7 @@ export function BasicDetailPanel({
   showBalanceReconcile = false,
   accountLabel = "",
   currentBalance = 0,
+  focusEntryId,
 }: BasicDetailPanelProps) {
   const router = useRouter();
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
@@ -89,22 +91,27 @@ export function BasicDetailPanel({
   const safePage = detailAll ? 1 : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
+  const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
 
   useEffect(() => {
     setLocalEntries(entries);
     setLocalTotalCount(totalCount);
     setLocalOriginalCount(originalCount);
-    if (lastAccountScopeKeyRef.current !== accountScopeKey) {
+    const nextFocusEntryId = focusEntryId ?? "";
+    const accountScopeChanged = lastAccountScopeKeyRef.current !== accountScopeKey;
+    const focusEntryChanged = lastFocusEntryIdRef.current !== nextFocusEntryId;
+    if (accountScopeChanged || focusEntryChanged) {
       lastAccountScopeKeyRef.current = accountScopeKey;
-      const storedPreference = readStoredDetailPreference(accountId);
-      const nextPageSize = storedPreference?.pageSize ?? normalizedInitialPageSize;
-      const nextDetailAll = storedPreference?.detailAll ?? initialDetailAll;
+      lastFocusEntryIdRef.current = nextFocusEntryId;
+      const storedPreference = nextFocusEntryId ? null : readStoredDetailPreference(accountId);
+      const nextPageSize = nextFocusEntryId ? normalizedInitialPageSize : storedPreference?.pageSize ?? normalizedInitialPageSize;
+      const nextDetailAll = nextFocusEntryId ? initialDetailAll : storedPreference?.detailAll ?? initialDetailAll;
       const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
       setPageSize(nextPageSize);
       setDetailAll(nextDetailAll);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, accountScopeKey, entries, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
+  }, [accountId, accountScopeKey, entries, focusEntryId, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -204,6 +211,7 @@ export function BasicDetailPanel({
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           resetKey={tableResetKey}
+          focusEntryId={focusEntryId}
           toolbarMode="custom"
           toolbarTitle="资金明细"
           toolbarRightContent={

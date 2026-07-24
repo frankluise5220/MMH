@@ -1,3 +1,8 @@
+import type { IntervalUnit } from "@prisma/client";
+
+import { formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
+import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
+
 export function roundLoanMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -5,6 +10,16 @@ export function roundLoanMoney(value: number) {
 export type LoanRateAdjustment = {
   effectiveDate: string;
   annualRate: number;
+};
+
+export type LoanRepaymentSchedulePreviewRow = {
+  period: number;
+  date: string;
+  payment: number;
+  principal: number;
+  interest: number;
+  remainingPrincipal: number;
+  annualRate: number | null;
 };
 
 export function normalizeLoanRateAdjustments(adjustments?: LoanRateAdjustment[] | null) {
@@ -451,4 +466,99 @@ export function calcLoanRunPartsWithRateAdjustments(params: {
     principalExact: parts.principalExact,
     usedDailyInterest: false,
   };
+}
+
+export function buildLoanRepaymentSchedulePreview(params: {
+  principal: number;
+  repaymentMethod?: string | null;
+  baseAnnualRate?: number | null;
+  adjustments?: LoanRateAdjustment[] | null;
+  intervalMonths?: number | null;
+  totalRuns: number;
+  firstRunDate: Date;
+  maxRows?: number | null;
+}): LoanRepaymentSchedulePreviewRow[] {
+  const principal = Math.max(0, Number(params.principal));
+  const totalRuns = Math.floor(Number(params.totalRuns));
+  const firstRunDate = startOfDayUtc(params.firstRunDate);
+  if (
+    principal <= 0 ||
+    !Number.isFinite(totalRuns) ||
+    totalRuns <= 0 ||
+    !Number.isFinite(firstRunDate.getTime())
+  ) {
+    return [];
+  }
+
+  const intervalMonths = Math.max(1, Math.floor(Number(params.intervalMonths) || 1));
+  const maxRows = Math.min(Math.max(1, Math.floor(Number(params.maxRows) || totalRuns)), totalRuns, 600);
+  const adjustments = normalizeLoanRateAdjustments(params.adjustments);
+  const executionDay = firstRunDate.getUTCDate();
+  let runDate = firstRunDate;
+  let previousRunDate = firstRunDate;
+  let remainingPrincipal = roundLoanMoney(principal);
+  let exactRemainingPrincipal = principal;
+  let scheduledAmount = calcLoanScheduledAmountForPeriodStart({
+    repaymentMethod: params.repaymentMethod,
+    baseAnnualRate: params.baseAnnualRate,
+    adjustments,
+    intervalMonths,
+    scheduledAmount: calcLoanScheduledAmount({
+      repaymentMethod: params.repaymentMethod,
+      annualRate: params.baseAnnualRate,
+      principal,
+      totalRuns,
+      intervalMonths,
+    }) ?? principal,
+    remainingPrincipal,
+    remainingRuns: totalRuns,
+    periodStartDate: formatDateUtc(firstRunDate),
+  });
+  let scheduledAmountExact = calcLoanScheduledAmountExact({
+    repaymentMethod: params.repaymentMethod,
+    annualRate: params.baseAnnualRate,
+    principal: exactRemainingPrincipal,
+    totalRuns,
+    intervalMonths,
+  }) ?? scheduledAmount;
+  const rows: LoanRepaymentSchedulePreviewRow[] = [];
+
+  for (let index = 0; index < maxRows && remainingPrincipal > 0.005; index += 1) {
+    const remainingRunsForThisRun = Math.max(1, totalRuns - index);
+    const parts = calcLoanRunPartsWithRateAdjustments({
+      repaymentMethod: params.repaymentMethod,
+      baseAnnualRate: params.baseAnnualRate,
+      adjustments,
+      intervalMonths,
+      scheduledAmount,
+      scheduledAmountExact,
+      remainingPrincipal: exactRemainingPrincipal,
+      remainingRuns: remainingRunsForThisRun,
+      previousRunDate: formatDateUtc(previousRunDate),
+      runDate: formatDateUtc(runDate),
+    });
+    scheduledAmount = parts.scheduledAmount;
+    scheduledAmountExact = parts.scheduledAmountExact ?? scheduledAmount;
+    exactRemainingPrincipal = Math.max(0, exactRemainingPrincipal - (parts.principalExact ?? parts.principal));
+    remainingPrincipal = Math.max(0, roundLoanMoney(remainingPrincipal - parts.principal));
+    rows.push({
+      period: index + 1,
+      date: formatDateUtc(runDate),
+      payment: parts.payment,
+      principal: parts.principal,
+      interest: parts.interest,
+      remainingPrincipal,
+      annualRate: parts.annualRate,
+    });
+    previousRunDate = runDate;
+    runDate = calcNextScheduledRunDate(
+      runDate,
+      "month" as IntervalUnit,
+      intervalMonths,
+      executionDay,
+      false,
+    );
+  }
+
+  return rows;
 }

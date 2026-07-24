@@ -15,7 +15,15 @@ type UndoState = {
   canUndo: boolean;
 } | null;
 
-export function UndoLastOperationButton({ compact = false }: { compact?: boolean }) {
+export function UndoLastOperationButton({
+  compact = false,
+  className,
+  iconSize = 18,
+}: {
+  compact?: boolean;
+  className?: string;
+  iconSize?: number;
+}) {
   const router = useRouter();
   const [state, setState] = useState<UndoState>(null);
   const [loading, setLoading] = useState(false);
@@ -69,11 +77,11 @@ export function UndoLastOperationButton({ compact = false }: { compact?: boolean
         type="button"
         onClick={undo}
         disabled={!state?.canUndo || loading}
-        className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"
+        className={className ?? "flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"}
         title={title}
         aria-label={title}
       >
-        <Undo2 size={18} />
+        <Undo2 size={iconSize} />
       </button>
     );
   }

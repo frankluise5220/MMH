@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFundFeeRate, setFundFeeRate, setFundFeeRateByDate, type FundFeeRateType } from "@/lib/fund/feeRate";
+import { getFundFeeRate, getFundFeeRateByDate, setFundFeeRate, setFundFeeRateByDate, type FundFeeRateType } from "@/lib/fund/feeRate";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId")?.trim();
   const fundCode = searchParams.get("fundCode")?.trim();
   const feeType = parseFeeType(searchParams.get("feeType"));
+  const effectiveDateRaw = searchParams.get("effectiveDate")?.trim();
   if (!accountId || !fundCode) {
     return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
   }
 
-  const rate = await getFundFeeRate(accountId, fundCode, feeType);
+  const effectiveDate = effectiveDateRaw ? utcDate(effectiveDateRaw) : null;
+  if (effectiveDateRaw && (!effectiveDate || Number.isNaN(effectiveDate.getTime()))) {
+    return NextResponse.json({ ok: false, error: "生效日期不正确" }, { status: 400 });
+  }
+
+  const rate = effectiveDate
+    ? await getFundFeeRateByDate(accountId, fundCode, effectiveDate, feeType)
+    : await getFundFeeRate(accountId, fundCode, feeType);
   return NextResponse.json({ ok: true, rate, feeType });
 }
 

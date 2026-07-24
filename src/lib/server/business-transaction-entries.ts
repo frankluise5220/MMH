@@ -4,6 +4,8 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isWealthHoldingCleared, resetWealthHoldingBucket } from "@/lib/invest-balance";
 import { entryBusinessTypeLabel } from "@/lib/server/entry-business-link";
+import { calculateWealthCashDividendProfit, calculateWealthPositionsFromEntries, inferWealthUnitNav } from "@/lib/wealth-position";
+import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 
 function ymd(value: Date | string | null | undefined) {
   if (!value) return "";
@@ -17,10 +19,19 @@ function iso(value: Date | string | null | undefined) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
 }
 
-function linkSummary(rows: Array<{ businessType: string }>) {
+function linkSummary(rows: Array<{
+  businessType: string;
+  cashEntryId?: string | null;
+  CashEntry?: { id: string; deletedAt?: Date | null } | null;
+}>) {
+  const validRows = rows.filter((row) => {
+    if (!("cashEntryId" in row)) return true;
+    if (!row.cashEntryId) return false;
+    return !!row.CashEntry && row.CashEntry.deletedAt == null;
+  });
   return {
-    businessLinkCount: rows.length,
-    businessLinkLabels: Array.from(new Set(rows.map((row) => entryBusinessTypeLabel(row.businessType)))),
+    businessLinkCount: validRows.length,
+    businessLinkLabels: Array.from(new Set(validRows.map((row) => entryBusinessTypeLabel(row.businessType)))),
   };
 }
 
@@ -53,7 +64,11 @@ export async function loadInsuranceTransactionDetailLike(params: {
       InsuranceProduct: true,
       EntryBusinessLink: {
         where: { deletedAt: null },
-        select: { businessType: true },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
       },
     },
     orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
@@ -120,7 +135,11 @@ export async function loadDepositTransactionDetailLike(params: {
       },
       EntryBusinessLink: {
         where: { deletedAt: null },
-        select: { businessType: true },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
       },
     },
     orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
@@ -181,11 +200,45 @@ export async function loadWealthTransactionEntryLike(params: {
       WealthProduct: true,
       EntryBusinessLink: {
         where: { deletedAt: null },
-        select: { businessType: true },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
       },
     },
     orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
   });
+  const profitByTransactionId = new Map<string, number>();
+  const rowsByAccountId = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = rowsByAccountId.get(row.accountId) ?? [];
+    list.push(row);
+    rowsByAccountId.set(row.accountId, list);
+  }
+  for (const accountRows of rowsByAccountId.values()) {
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(accountRows[0]?.Account?.fundUnitsDecimals, 3);
+    const calc = calculateWealthPositionsFromEntries(
+      accountRows.map((row) => ({
+        id: row.id,
+        cashEntryId: row.cashEntryId,
+        productKey: `${row.accountId}:${row.wealthProductId ?? row.productName ?? `wealth:${row.id}`}`,
+        action: row.action,
+        tradeDate: row.tradeDate,
+        createdAt: row.createdAt,
+        grossAmount: row.grossAmount,
+        arrivalAmount: row.arrivalAmount,
+        units: row.units,
+        nav: row.nav,
+        interest: row.interest,
+        fee: row.fee,
+      })),
+      fundUnitsDecimals,
+    );
+    for (const [entryId, profit] of calc.realizedProfitByTransactionId) {
+      profitByTransactionId.set(entryId, profit);
+    }
+  }
   const unitBuckets = new Map<string, { principal: number; units: number; cycleHasUnits: boolean }>();
   const remainingUnitsByTransactionId = new Map<string, number | null>();
   for (const row of rows) {
@@ -219,14 +272,35 @@ export async function loadWealthTransactionEntryLike(params: {
     remainingUnitsByTransactionId.set(row.id, bucket.cycleHasUnits ? Number(Math.max(0, bucket.units).toFixed(6)) : null);
   }
 
+
+  const cashEntryIds = Array.from(
+    new Set(rows.map((row) => row.cashEntryId).filter((id): id is string => Boolean(id))),
+  );
+  const linkedCashEntries = cashEntryIds.length === 0
+    ? []
+    : await prisma.txRecord.findMany({
+        where: { id: { in: cashEntryIds }, deletedAt: null },
+        select: { id: true, date: true },
+      });
+  const cashDateById = new Map(linkedCashEntries.map((entry) => [entry.id, entry.date]));
+
   const projectedRows = rows.map((row) => {
     const isCashIn = isCashInAction(row.action);
     const isDividend = row.action === FundSubtype.dividend_cash;
     const grossAmount = Math.abs(toNumber(row.grossAmount));
     const arrivalAmount = row.arrivalAmount == null ? null : Math.abs(toNumber(row.arrivalAmount));
-    const profit = row.realizedProfit == null
-      ? toNumber(row.interest) - toNumber(row.fee)
-      : toNumber(row.realizedProfit);
+    const displayNav = inferWealthUnitNav({
+      nav: row.nav,
+      grossAmount: grossAmount,
+      arrivalAmount: arrivalAmount,
+      units: row.units,
+    });
+    const profit = profitByTransactionId.get(row.id)
+      ?? (isDividend
+        ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+        : row.realizedProfit == null
+          ? (toNumber(row.interest) - toNumber(row.fee))
+          : toNumber(row.realizedProfit));
     return {
       id: row.cashEntryId ?? row.id,
       cashEntryId: row.cashEntryId,
@@ -246,8 +320,11 @@ export async function loadWealthTransactionEntryLike(params: {
       fundSubtype: row.action,
       fundUnits: row.units == null ? null : toNumber(row.units),
       wealthRemainingUnits: remainingUnitsByTransactionId.get(row.id) ?? null,
-      fundNav: row.nav == null ? null : toNumber(row.nav),
+      fundNav: displayNav == null ? null : displayNav,
       fundArrivalAmount: row.arrivalAmount,
+      fundArrivalDate: ymd(
+        row.arrivalDate ?? (row.cashEntryId ? cashDateById.get(row.cashEntryId) : null),
+      ),
       depositAnnualRate: row.annualRate ?? row.WealthProduct?.annualRate ?? null,
       depositInterest: row.interest,
       realizedProfit: isCashIn ? profit : null,
@@ -284,7 +361,11 @@ export async function loadPreciousMetalTransactionEntryLike(params: {
       CashAccount: true,
       EntryBusinessLink: {
         where: { deletedAt: null },
-        select: { businessType: true },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
       },
     },
     orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],

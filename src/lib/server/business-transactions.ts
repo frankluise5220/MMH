@@ -2,6 +2,7 @@ import { FundSubtype, Prisma, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { calculateWealthCashDividendProfit } from "@/lib/wealth-position";
 import {
   classifyEntryBusinessType,
   upsertEntryBusinessCashFlowLink,
@@ -84,6 +85,9 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
   const principalAmount = isCashInSubtype(subtype) && subtype !== FundSubtype.dividend_cash
     ? Math.max(0, (arrivalAmount ?? absAmount) - toNumber(entry.depositInterest) + toNumber(entry.fundFee))
     : absAmount;
+  const wealthRealizedProfit = subtype === FundSubtype.dividend_cash
+    ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount: principalAmount })
+    : entry.realizedProfit;
   let targetId: string | null = null;
   let targetType: EntryBusinessType = businessType;
 
@@ -150,7 +154,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         interest: entry.depositInterest,
         fee: entry.fundFee,
         annualRate: entry.depositAnnualRate,
-        realizedProfit: entry.realizedProfit,
+        realizedProfit: wealthRealizedProfit,
         note: entry.note,
         deletedAt: entry.deletedAt,
       },
@@ -172,7 +176,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         interest: entry.depositInterest,
         fee: entry.fundFee,
         annualRate: entry.depositAnnualRate,
-        realizedProfit: entry.realizedProfit,
+        realizedProfit: wealthRealizedProfit,
         note: entry.note,
         deletedAt: entry.deletedAt,
       },

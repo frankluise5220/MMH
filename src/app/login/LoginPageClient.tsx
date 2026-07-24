@@ -163,7 +163,20 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    return res.json() as Promise<AuthVerifyResponse>;
+    const contentType = res.headers.get("content-type") ?? "";
+    const data = contentType.includes("application/json")
+      ? await res.json().catch(() => null) as AuthVerifyResponse | null
+      : null;
+    if (!data) {
+      return {
+        ok: false,
+        error: res.ok ? "登录响应异常，请刷新后重试" : `登录接口异常（${res.status}）`,
+      };
+    }
+    if (!res.ok && !data.error) {
+      return { ...data, error: `登录失败（${res.status}）` };
+    }
+    return data;
   }
 
   async function handleLogin() {

@@ -157,7 +157,8 @@ export function EntryRowActions({
           className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
           type="button"
           onClick={onEdit}
-          title="编辑"
+          title="编辑按钮"
+          aria-label="编辑按钮"
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
@@ -167,7 +168,8 @@ export function EntryRowActions({
         disabled={deleting}
         type="button"
         onClick={onDelete}
-        title={deleting ? "删除中…" : "删除"}
+        title={deleting ? "删除中…" : "删除按钮"}
+        aria-label={deleting ? "删除中…" : "删除按钮"}
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>

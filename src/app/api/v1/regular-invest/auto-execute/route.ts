@@ -18,6 +18,12 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
+
+const AUTO_EXECUTE_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 60_000,
+};
 
 export async function POST() {
   try {
@@ -42,7 +48,17 @@ export async function POST() {
     for (const p of allPlans) {
       const task = decodeScheduledTaskMemo(p.memo);
       const isNonFundTask = isNonFundScheduledTask(task.type);
-      if ((!isNonFundTask && p.endDate && p.endDate < now) || (p.totalRuns && p.executedRuns >= p.totalRuns)) {
+      const hasReachedRunLimit = !!(p.totalRuns && p.executedRuns >= p.totalRuns);
+      const hasPassedEndDate = !!(p.endDate && p.endDate < now);
+      const nextRunDate = p.nextRunDate ?? calcInitialRunDate(
+        p.startDate,
+        p.intervalUnit as IntervalUnit,
+        p.intervalValue,
+        p.executionDay,
+        !isNonFundTask,
+      );
+      const hasNoPendingHistoricalRun = hasPassedEndDate && nextRunDate > p.endDate!;
+      if (hasReachedRunLimit || (!isNonFundTask && hasNoPendingHistoricalRun)) {
         completed.push(p.id);
       } else {
         plansToRun.push(p);
@@ -251,9 +267,25 @@ export async function POST() {
     // ONE transaction: create all records + update all plans
     const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; grossAmount: number; feeAmount: number; fundUnitsDecimals: number }> = [];
     const affectedFunds = new Set<string>();
+    let skippedDuplicate = 0;
 
     await prisma.$transaction(async (tx) => {
       const changedFundEntryIds: string[] = [];
+      const lockedPlanIds = [...new Set(execs.map((e) => e.plan.id))].sort();
+      for (const planId of lockedPlanIds) {
+        await acquireScheduledTaskPlanLock(tx, planId);
+      }
+      const existingAtCommit = await tx.txRecord.findMany({
+        where: {
+          householdId,
+          regularInvestPlanId: { in: lockedPlanIds },
+          source: "regular_invest",
+          deletedAt: null,
+          date: { in: execs.map((e) => e.runDate) },
+        },
+        select: { regularInvestPlanId: true, date: true },
+      });
+      const existingRunKeys = new Set(existingAtCommit.map((record) => `${record.regularInvestPlanId}|${formatDateUtc(record.date)}`));
       // Batch all sgzt & nav checks
       const navChecks = await Promise.all(execs.map(e =>
         tx.fundNavCache.findUnique({ where: { fundCode_navDate: { fundCode: e.plan.fundCode, navDate: e.confirmDate } }, select: { sgzt: true, purchaseLimit: true, nav: true } })
@@ -262,6 +294,13 @@ export async function POST() {
       // Batch all txRecord creates
       for (let i = 0; i < execs.length; i++) {
         const e = execs[i];
+        const runKey = `${e.plan.id}|${formatDateUtc(e.runDate)}`;
+        if (existingRunKeys.has(runKey)) {
+          skippedDuplicate++;
+          skipped.push(e.plan.id);
+          details.push({ planId: e.plan.id, fundCode: e.plan.fundCode, action: "skipped", reason: "该日期已执行" });
+          continue;
+        }
         const navCheck = navChecks[i];
         const sgzt = navCheck?.sgzt ?? "";
         const feeAmount = e.feeAmount > 0 ? e.feeAmount : null;
@@ -322,8 +361,8 @@ export async function POST() {
         }
       }
       await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
-    });
-    logger.info("Phase2 生成记录完成: " + generatedRecords.length + " 条 buy+" + (execs.length - generatedRecords.length) + " 条 buy_failed, 耗时 " + (Date.now() - genStart) + "ms", "auto-execute");
+    }, AUTO_EXECUTE_TRANSACTION_OPTIONS);
+    logger.info("Phase2 生成记录完成: " + generatedRecords.length + " 条 buy+" + (execs.length - generatedRecords.length) + " 条 buy_failed, 跳过重复 " + skippedDuplicate + " 条, 耗时 " + (Date.now() - genStart) + "ms", "auto-execute");
 
     // ── Phase 3: Check cache first, only fetch NAV from API for missing dates ──
     if (generatedRecords.length > 0) {

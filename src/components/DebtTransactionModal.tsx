@@ -23,7 +23,12 @@ import {
   MORTGAGE_BASE_BENCHMARK_RATE,
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
-import { getEffectiveLoanAnnualRate, type LoanRateAdjustment } from "@/lib/loan-repayment";
+import {
+  buildLoanRepaymentSchedulePreview,
+  getEffectiveLoanAnnualRate,
+  normalizeLoanRateAdjustments,
+  type LoanRateAdjustment,
+} from "@/lib/loan-repayment";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 
@@ -88,6 +93,13 @@ function dateInputTime(value: string) {
   return Number.isFinite(time) ? time : null;
 }
 
+function dateInputToUtcDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
 function shouldPromptHistoricalRepayments(params: {
   mode: DebtMode;
   isFixedRepaymentMethod: boolean;
@@ -118,6 +130,15 @@ function parseAbsMoneyText(value: string) {
 
 function roundMoneyValue(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function formatMoneyPreview(value: number) {
+  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatRatePreview(value: number | null) {
+  if (value == null || !Number.isFinite(value)) return "-";
+  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
 function isValidDateInput(value: string) {
@@ -882,6 +903,59 @@ export function DebtTransactionModal({
   const disabled = cashAccounts.length === 0;
   const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
   const isInterestFreeRepaymentMethod = repaymentMethod === INTEREST_FREE_REPAYMENT_METHOD;
+  const loanSchedulePreview = useMemo(() => {
+    if (!showBorrowPlan || !isFixedRepaymentMethod) return null;
+    const firstRunDate = dateInputToUtcDate(firstRepaymentDate);
+    const principalAmount = parseAbsMoneyText(principal);
+    const totalRuns = Number.parseInt(loanTotalRuns || "0", 10);
+    const intervalMonths = Number.parseInt(repaymentIntervalMonths || "1", 10);
+    const baseAnnualRate = isInterestFreeRepaymentMethod ? 0 : Number(annualRate);
+    if (
+      !firstRunDate ||
+      principalAmount <= 0 ||
+      !Number.isFinite(totalRuns) ||
+      totalRuns <= 0 ||
+      (!isInterestFreeRepaymentMethod && (!Number.isFinite(baseAnnualRate) || baseAnnualRate <= 0))
+    ) {
+      return null;
+    }
+    const adjustments = showHistoricalRates
+      ? normalizeLoanRateAdjustments(historicalRateRows.map((row) => ({
+          effectiveDate: row.effectiveDate,
+          annualRate: Number(row.annualRate),
+        })))
+      : [];
+    const rows = buildLoanRepaymentSchedulePreview({
+      principal: principalAmount,
+      repaymentMethod,
+      baseAnnualRate,
+      adjustments,
+      intervalMonths,
+      totalRuns,
+      firstRunDate,
+      maxRows: totalRuns,
+    });
+    if (rows.length === 0) return null;
+    return {
+      rows,
+      totalPrincipal: roundMoneyValue(rows.reduce((sum, row) => sum + row.principal, 0)),
+      totalInterest: roundMoneyValue(rows.reduce((sum, row) => sum + row.interest, 0)),
+      totalPayment: roundMoneyValue(rows.reduce((sum, row) => sum + row.payment, 0)),
+      hasRateAdjustments: adjustments.length > 0,
+    };
+  }, [
+    annualRate,
+    firstRepaymentDate,
+    historicalRateRows,
+    isFixedRepaymentMethod,
+    isInterestFreeRepaymentMethod,
+    loanTotalRuns,
+    principal,
+    repaymentIntervalMonths,
+    repaymentMethod,
+    showBorrowPlan,
+    showHistoricalRates,
+  ]);
   const formatRateInput = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
   function computeAnnualRateFromBankExecutionRate(discount: number, baseRate = Number(bankExecutionRate.trim())) {
     if (!Number.isFinite(baseRate) || baseRate <= 0) return;
@@ -1305,6 +1379,67 @@ export function DebtTransactionModal({
                               <div className="form-label">首次还款日 <span className="text-red-500">*</span></div>
                               <DateStepper value={firstRepaymentDate} onChange={setFirstRepaymentDate} />
                             </div>
+
+                            {!isInterestFreeRepaymentMethod ? (
+                              <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div>
+                                  <div className="text-xs font-medium text-slate-700">利率调整</div>
+                                  <div className="mt-0.5 text-[11px] text-slate-500">
+                                    {showHistoricalRates && historicalRateRows.some((row) => row.effectiveDate.trim() || row.annualRate.trim())
+                                      ? `已填写 ${historicalRateRows.filter((row) => row.effectiveDate.trim() || row.annualRate.trim()).length} 条，预览会按生效日更新利息`
+                                      : "可按 LPR 折扣生成，也可手工指定未来或历史生效利率。"}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="secondary-button h-8 shrink-0 px-3 text-xs"
+                                  onClick={() => {
+                                    setShowHistoricalRates(true);
+                                    setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow(firstRepaymentDate, annualRate)]);
+                                    setHistoricalRatesOpen(true);
+                                  }}
+                                >
+                                  利率调整
+                                </button>
+                              </div>
+                            ) : null}
+
+                            {loanSchedulePreview ? (
+                              <div className="rounded-md border border-slate-200">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                                  <span className="font-medium text-slate-700">还款计划预览 · {loanSchedulePreview.rows.length} 期</span>
+                                  <span className="tabular-nums">
+                                    本金 {formatMoneyPreview(loanSchedulePreview.totalPrincipal)} · 利息 {formatMoneyPreview(loanSchedulePreview.totalInterest)} · 合计 {formatMoneyPreview(loanSchedulePreview.totalPayment)}
+                                  </span>
+                                </div>
+                                <div className="max-h-56 overflow-auto">
+                                  <table className="min-w-full text-xs tabular-nums">
+                                    <thead className="sticky top-0 bg-white text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
+                                      <tr>
+                                        <th className="px-2 py-1 text-left font-medium">期数</th>
+                                        <th className="px-2 py-1 text-left font-medium">日期</th>
+                                        <th className="px-2 py-1 text-right font-medium">本金</th>
+                                        <th className="px-2 py-1 text-right font-medium">年利率</th>
+                                        <th className="px-2 py-1 text-right font-medium">利息</th>
+                                        <th className="px-2 py-1 text-right font-medium">应还</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {loanSchedulePreview.rows.map((row) => (
+                                        <tr key={`${row.period}-${row.date}`} className="border-t border-slate-100">
+                                          <td className="px-2 py-1 text-slate-600">{row.period}/{loanTotalRuns}</td>
+                                          <td className="px-2 py-1 text-slate-600">{row.date}</td>
+                                          <td className="px-2 py-1 text-right text-slate-700">{formatMoneyPreview(row.principal)}</td>
+                                          <td className="px-2 py-1 text-right text-slate-700">{row.annualRate == null ? "-" : `${formatRatePreview(row.annualRate)}%`}</td>
+                                          <td className="px-2 py-1 text-right text-slate-700">{formatMoneyPreview(row.interest)}</td>
+                                          <td className="px-2 py-1 text-right font-medium text-slate-800">{formatMoneyPreview(row.payment)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            ) : null}
                           </>
                         ) : (
                           <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
@@ -1454,12 +1589,12 @@ export function DebtTransactionModal({
             document.body,
           )
         : null}
-      {open && historyConfirmOpen && historicalRatesOpen
+      {open && historicalRatesOpen
         ? createPortal(
             <div className="app-modal-backdrop z-[70]">
               <div className="app-modal-panel max-w-xl">
                 <div className="modal-header shrink-0">
-                  <div className="text-sm font-semibold text-slate-800">历史利率调整</div>
+                  <div className="text-sm font-semibold text-slate-800">利率调整</div>
                   <button
                     type="button"
                     onClick={() => setHistoricalRatesOpen(false)}

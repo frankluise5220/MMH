@@ -19,6 +19,11 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 
 type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
 
+const NON_FUND_SCHEDULED_TASK_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 60_000,
+};
+
 export type NonFundScheduledTaskResult = {
   ok: true;
   taskType: NonFundTaskType;
@@ -389,7 +394,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
         status: nextStatus,
       },
     });
-  });
+  }, NON_FUND_SCHEDULED_TASK_TRANSACTION_OPTIONS);
 
   for (const accountId of affectedAccountIds) {
     await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("balance", "scheduled-task-executor"));
