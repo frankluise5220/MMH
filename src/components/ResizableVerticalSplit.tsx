@@ -25,6 +25,8 @@ export function ResizableVerticalSplit({
   minPaneHeight = DEFAULT_MIN_PANE_HEIGHT,
   separatorLabel = "调整上下表高度",
   separatorTitle = "拖动调整上下表高度",
+  stackOnMobile = false,
+  stackLowerFirstOnMobile = false,
 }: {
   storageKey: string;
   hasLowerPane: boolean;
@@ -33,14 +35,29 @@ export function ResizableVerticalSplit({
   minPaneHeight?: number;
   separatorLabel?: string;
   separatorTitle?: string;
+  stackOnMobile?: boolean;
+  stackLowerFirstOnMobile?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [upperHeight, setUpperHeight] = useState(defaultUpperHeight);
   const [minimumUpperHeight, setMinimumUpperHeight] = useState(minPaneHeight);
+  const [isMobileStacked, setIsMobileStacked] = useState(false);
   const sections = Children.toArray(children);
   const upper = sections[0] ?? null;
   const lower = sections.length > 1 ? sections[sections.length - 1] : null;
   const floatingChildren = sections.length > 2 ? sections.slice(1, -1) : [];
+
+  useEffect(() => {
+    if (!stackOnMobile) {
+      setIsMobileStacked(false);
+      return;
+    }
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobileStacked(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [stackOnMobile]);
 
   useEffect(() => {
     const stored = Number(window.localStorage.getItem(storageKey));
@@ -104,6 +121,18 @@ export function ResizableVerticalSplit({
       window.localStorage.setItem(storageKey, String(next));
       return next;
     });
+  }
+
+  if (stackOnMobile && isMobileStacked) {
+    const first = stackLowerFirstOnMobile && hasLowerPane ? lower : upper;
+    const second = stackLowerFirstOnMobile && hasLowerPane ? upper : lower;
+    return (
+      <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain pb-28 md:pb-4">
+        <div className="shrink-0 overflow-visible">{first}</div>
+        {hasLowerPane && second ? <div className="shrink-0 overflow-visible">{second}</div> : null}
+        {floatingChildren}
+      </div>
+    );
   }
 
   return (

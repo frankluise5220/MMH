@@ -72,6 +72,7 @@ export async function POST(req: NextRequest) {
     const kind = (typeof body?.kind === "string" ? body.kind.trim() : "other") as any;
     const requestedGroupId = String(body.groupId ?? "").trim() || null;
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
+    const requestedCounterpartyId = String(body.counterpartyId ?? "").trim() || null;
     const requestedUserId = String(body.userId ?? "").trim() || null;
     const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
@@ -92,6 +93,10 @@ export async function POST(req: NextRequest) {
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    const counterparty = requestedCounterpartyId
+      ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
+      : null;
+    if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
 
     const owner = requestedUserId
       ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
@@ -125,6 +130,7 @@ export async function POST(req: NextRequest) {
       householdId,
       groupId: ensuredGroup.id,
       institutionId: institution?.id ?? null,
+      counterpartyId: counterparty?.id ?? null,
       kind,
       name,
       numberMasked,
@@ -135,9 +141,11 @@ export async function POST(req: NextRequest) {
         name,
         kind,
         debtDirection: kind === "bank_credit" ? "payable" : null,
+        ...(kind === "loan" && counterparty?.id ? { debtDirection: "receivable" } : {}),
         currency,
         groupId: ensuredGroup.id,
         institutionId: institution?.id ?? null,
+        counterpartyId: counterparty?.id ?? null,
         userId: owner?.id ?? null,
         householdId,
         isActive: true,
@@ -155,6 +163,7 @@ export async function POST(req: NextRequest) {
       include: {
         AccountGroup: { select: { id: true, name: true } },
         Institution: { select: { id: true, name: true, shortName: true, type: true } },
+        Counterparty: { select: { id: true, name: true, shortName: true, type: true } },
       },
     });
     if (isCreditLike) {
@@ -171,7 +180,7 @@ export async function POST(req: NextRequest) {
             select: { id: true },
           })
         : [{ id: account.id }];
-      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id));
+      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id), { deleteManualCycles: true });
     }
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, account });
@@ -203,13 +212,19 @@ export async function PUT(req: NextRequest) {
     if (body.currency !== undefined) data.currency = String(body.currency ?? "CNY").trim() || "CNY";
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
+    if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;
 
     if (body.fundUnitsDecimals !== undefined) {
       data.fundUnitsDecimals = normalizeFundUnitsDecimals(body.fundUnitsDecimals ?? existing.fundUnitsDecimals);
     }
 
     const nextKind = String(data.kind ?? existing.kind);
-    data.debtDirection = nextKind === "bank_credit" ? "payable" : null;
+    const nextCounterpartyId = data.counterpartyId === undefined ? existing.counterpartyId : (data.counterpartyId ? String(data.counterpartyId) : null);
+    const nextCounterparty = nextCounterpartyId
+      ? await prisma.counterparty.findFirst({ where: { id: nextCounterpartyId, householdId } })
+      : null;
+    if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    data.debtDirection = nextKind === "bank_credit" ? "payable" : nextKind === "loan" && nextCounterparty ? "receivable" : null;
     if (nextKind === "bank_credit") {
       data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
       data.repaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
@@ -228,6 +243,11 @@ export async function PUT(req: NextRequest) {
           : existing.numberMasked
         : null;
       data.creditBillMode = normalizeCreditBillMode(null);
+    }
+    if (nextKind !== "loan") {
+      data.counterpartyId = null;
+    } else if (data.counterpartyId === undefined) {
+      data.counterpartyId = nextCounterparty?.id ?? existing.counterpartyId ?? null;
     }
     if (nextKind === "investment") {
       if (body.investProductType !== undefined || existing.kind !== "investment") data.investProductType = normalizeFundProductType(body.investProductType ?? existing.investProductType) as any;
@@ -267,11 +287,22 @@ export async function PUT(req: NextRequest) {
       householdId,
       groupId: nextGroupId,
       institutionId: nextInstitutionId,
+      counterpartyId: (data.counterpartyId === undefined ? existing.counterpartyId : data.counterpartyId) as string | null,
       kind: nextKind,
       name: nextName,
       numberMasked: nextNumberMasked,
       excludeId: existing.id,
     });
+
+    const creditCycleRuleChanged =
+      nextKind === "bank_credit" &&
+      (
+        existing.kind !== "bank_credit" ||
+        nextInstitutionId !== existing.institutionId ||
+        (body.billingDay !== undefined && data.billingDay !== existing.billingDay) ||
+        (body.repaymentDay !== undefined && data.repaymentDay !== existing.repaymentDay) ||
+        (body.creditBillMode !== undefined && data.creditBillMode !== existing.creditBillMode)
+      );
 
     const updated = await prisma.account.update({ where: { id }, data });
     if (updated.kind === "bank_credit") {
@@ -288,7 +319,10 @@ export async function PUT(req: NextRequest) {
             select: { id: true },
           })
         : [{ id: updated.id }];
-      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id));
+      await invalidateCreditCardCycleCacheForAccountIds(
+        institutionCards.map((item) => item.id),
+        { deleteManualCycles: creditCycleRuleChanged },
+      );
     }
     return NextResponse.json({ ok: true });
   } catch (e) {

@@ -27,6 +27,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Favor direct implementation over long planning once the requirement is clear.
 - Keep Web as the dense, detailed primary workspace.
 - Shared calculations and display semantics must stay consistent across views.
+- Web and Android settings must use the shared settings catalog in `shared/settings/catalog.json` for common grouping, labels, route identity, and preference identity. Web imports it through `src/lib/settings/catalog.ts`; Android includes the same JSON as an asset and may also fetch `/api/v1/settings/catalog`.
 
 ### Encoding And Text
 
@@ -49,6 +50,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Sidebar grouping is a major workflow surface and must be easy to scan.
 - Do not redundantly repeat account type labels under account names when the parent group already expresses the type.
 - Account lists should stay compact, readable, and scrollable when long.
+- Mobile bottom navigation "账户" should expose clear module entries for money accounts, credit cards, insurance, and settlements/liabilities, so users do not need desktop sidebar knowledge or hidden URLs to enter those surfaces.
 - Sticky controls such as top-level filters or add buttons should not drift awkwardly with page scroll unless there is a clear workflow reason.
 - The user wants stronger grouping control in sidebar views, especially for accounts, institutions, insurance, credit cards, debt, and deposits.
 - Grouping and display mode are separate concerns. Do not mix "how accounts are grouped" with "how one account label is rendered".
@@ -77,9 +79,10 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card bill amount is a rolling statement amount: previous bill amount plus current-cycle outflow minus current-cycle inflow. It may cross below zero when inflow exceeds the rolling bill; the UI should show that as an overpaid/credit-balance state instead of clamping it to zero. Repayments affect settled status and remaining balance, but must not be mixed with the outflow/inflow column labels.
 - Credit card billed-cycle settled status and paid amount should be derived from the next statement cycle's card-side inflow covering the current bill amount. If the next cycle's inflow is greater than or equal to the current cycle's bill amount, the current cycle shows "已还款". The inflow still remains displayed in the next cycle's inflow column.
 - Credit card billing day is the first day of the next statement cycle. For example, billing day 10 means the cycle runs from the 10th through the 9th of the next month, and transactions on the 10th belong to the next statement month.
+- Manually edited credit-card cycle boundaries are durable database facts on `CreditCardCycle`. Transaction or installment recalculation may refresh amounts and current-cycle flags, but must preserve rows marked as manual cycles instead of deleting them and regenerating dates from `Account.billingDay`.
 - Credit card account balance/used amount should show the rolling current card balance: issued current bill amount plus unbilled current-cycle spending minus unbilled current-cycle income/refunds/repayments. In code this is the current credit-card cycle `effectiveBill`; do not use `cumulativeRemain - cumulativeOverpaid` as the general account balance.
 - Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
-- Credit cards may also be the source side of an ordinary transfer. When the credit card is the source account, the row belongs to that credit card's statement month and counts as an outflow; only debit/e-wallet/cash transfers into a credit card should be labeled as credit-card repayment.
+- Credit cards may be selected in ordinary transfer account selectors when the user is recording a real transfer involving a credit card. When a credit card is involved, bill calculation still treats the credit-card side by card-side signed amount and statement cycle.
 - 信用卡与借记卡共用支出、收入、代付、转账四种记账语义。信用卡支出和收入沿用相同分类及正负方向；信用卡代付属于信用卡转出并进入对应账期；信用卡还款属于借记卡/现金/电子钱包转入信用卡的转账，分类为“信用卡还款”，不计入收支统计。
 - 代付窗口金额按用户输入正负表达业务方向：正数表示替往来对象垫付，保存为资金账户流出、往来应收增加；负数表示往来对象返还，保存为往来账户流出、资金账户流入、往来应收减少。两者都保存为 `type=transfer`、`source=advance`，并保留代付分类和往来对象快照。
 - 信用卡账单列表和账单周期缓存默认只显示/生成到当前日期所属账期。未来分期还款流水可以保留在明细中，但不能把账单列表延展到未来年份。
@@ -90,7 +93,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card statement import uses the label "入账日期" for posting date. The value should be date-only (`YYYY-MM-DD`), default to the transaction date when missing, and remain editable in the import preview.
 - Ordinary transfer records are same-currency only. If two accounts use different currencies, the app should require a dedicated foreign-exchange/cross-currency flow that records both-side amounts and exchange rate instead of silently saving one amount.
 - 普通转账编辑窗口打开时金额永远显示正值，含义是“从转出账户转到转入账户”的业务金额；允许用户输入负值，负值表示把当前表单里的转出/转入方向反过来保存。落库后仍统一为 `accountId` 实际转出方、`toAccountId` 实际转入方、`amount` 为转出方负值。
+- 普通转账和往来款的“转出账户/转入账户”选择应允许信用卡账户；涉及信用卡的一侧仍按信用卡账期和卡侧金额规则计算。
 - When changing a record between income/expense/advance and transfer in any edit or import-preview flow, preserve the account on the correct cash-flow side: income accounts become transfer target accounts, expense and advance accounts become transfer source accounts, transfer-to-income uses the target account, and transfer-to-expense/advance uses the source account.
+- A borrow/lend settlement record with no interest or fee can be converted back to an ordinary transfer. When the edited transfer no longer involves a settlement/loan account, clear `source=debt_*` / `source=advance` and all debt principal/interest/fee fields so the row is no longer treated as 借入借出.
 - Insurance cash value should be treated like balance/value; coverage amount should remain a separate non-cash metric.
 - Expense entries may use a negative input amount to represent a refund or reduction within the same expense category. Store it as `type=expense` with a positive cash-flow amount, not as income, so category statistics can offset the original expense.
 - Expense entries may have a separate posting date (`postedAt`) when spending is recorded later than it happened. User-facing labels should say "入账日期", values should be date-only (`YYYY-MM-DD`), and the UI must not expose a `00:00` time. `TxRecord.date` remains the business/occurred date for category statistics and existing detail ordering unless a specific view explicitly switches to posting-date sorting.
@@ -133,6 +138,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - 在往来款明细中删除任何一笔记录都只软删除所选记录。删除首笔借入/借出记录不能删除往来账户、后续明细、还款计划或利率调整；删除整个往来项目必须使用独立的项目/账户删除入口。
 - 往来款本金输入允许负数，便于修正和按用户习惯录入；普通借入、借出、收回应保留本金正负并同步影响资金流水方向、往来余额和再次编辑回显。贷款还款、提前还款、固定还款计划仍以本金绝对值参与计划校验和重算，避免负数破坏银行贷款计划。
 - 基金、理财、存款卖出/赎回/支取收益不应额外生成一条现金收入流水。现金账户只体现真实到账金额；基金已实现收益保存在投资交易 `realizedProfit` 中。有份额的理财赎回应按被赎回份额对应的持仓成本计算 `realizedProfit`；无份额理财和存款收益按 `depositInterest - fundFee` 计算，手续费必须扣入净收益。投资买入本身属于资产转换，不应作为收支支出统计；收支报表/统计应只映射收益、亏损、分红、利息等结果项。
+- `TxRecord.realizedProfit` 是通用业务收益/损失字段，不属于某一个业务模板。往来款、投资、存款、理财等业务如果一条资金流水同时包含本金和收益，现金账户只记录真实资金流动总额，本金/持仓余额按业务本金字段计算，收益/损失通过 `realizedProfit` 投影到收入或支出统计。
 - 统计项应优先挂接到收支分类树的分类 ID。普通交易使用保存的 `categoryId`，旧数据可按 `categoryName` 回挂；基金收益/亏损、理财收益/亏损、存款利息/手续费等派生统计项也必须解析到系统内置分类节点。分类名称只是显示兜底，不应成为长期统计主键。
 
 ### Table Column Filters
@@ -266,6 +272,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 - Loan creation distinguishes `资金到账` from `消费分期`. Cash-disbursed loans create a transfer into the selected cash account. Financed purchases such as vehicle loans establish the payable principal directly on the loan account and use the selected cash account only for future repayments; they must never increase that cash account balance.
 - Vehicle and other financed purchases remain loan liabilities with normal repayment plans, not credit-card installment plans. Their initial source is `debt_financed_purchase`; principal is recognized when the financed purchase occurs, while later repayments reduce the liability without counting principal again.
+- Vehicle and other financed-purchase loan creation must not bulk-generate repayment `TxRecord` rows. Saving the loan creates the liability and a `loan_repayment` scheduled task; repayment transaction rows are created only when the scheduled task executes for due periods.
+- Old auto-generated financed-purchase repayment rows can be corrected through the internal cleanup endpoint `/api/v1/cleanup/financed-purchase-repayments`; it defaults to dry-run and only targets generated `scheduled_task` rows linked to financed-purchase loan plans.
 - Interest-free vehicle and other standalone financed purchases may use the explicit repayment method `免息分期还本`. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
 
 - Debt/claim displays should match the user mental model for personal/family finance, not corporate finance wording.
@@ -351,6 +359,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Investments And Precious Metals
 
+- Mobile investment/fund pages should have one visible product home under bottom navigation "投资". Do not keep a separate mobile fund-holding implementation under account-like routes when the FundShell investment detail already owns the active fund card, chart, and transaction-card workflow.
 - Precious metals should use dedicated dictionaries for metal type and unit. The UI should let users select "黄金/白银/铂金/钯金" and "克/千克/盎司/钱" style entries instead of asking users to type a fund-like code.
 - Precious metal transaction create/edit flows must round-trip the selected type ID, unit ID, quantity, unit price, and fee through dedicated metal fields. Do not store precious-metal identity or quantity in fund fields such as `fundCode`, `fundName`, `fundUnits`, or `fundNav`.
 - Precious metal buy/sell account SS must only show investment accounts whose `investProductType` is `metal`; fund, money-fund, wealth, and deposit accounts must not appear in that selector.

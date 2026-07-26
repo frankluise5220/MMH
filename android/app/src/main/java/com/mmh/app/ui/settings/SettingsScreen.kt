@@ -39,6 +39,9 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val serverItem = uiState.catalog.item("server")
+    val displayGroup = uiState.catalog.group("display")
+    val colorSchemeItem = uiState.catalog.item("color-scheme")
 
     Column(
         modifier = Modifier
@@ -71,7 +74,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.size(10.dp))
                 Text(
-                    text = "服务器设置",
+                    text = serverItem?.label ?: "服务器设置",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f)
@@ -84,9 +87,9 @@ fun SettingsScreen(
             }
         }
 
-        SettingsSectionCard(title = "显示偏好") {
+        SettingsSectionCard(title = displayGroup?.label ?: "显示偏好") {
             Text(
-                text = "涨跌颜色",
+                text = colorSchemeItem?.label ?: "涨跌颜色",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium
             )

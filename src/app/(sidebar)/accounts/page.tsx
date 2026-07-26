@@ -69,6 +69,12 @@ function neutralMoneyClass(value: number) {
   return value < 0 ? "text-slate-700" : "text-slate-900";
 }
 
+function debtMoneyClass(value: number, isRedUp: boolean) {
+  if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-700";
+  if (value < 0) return isRedUp ? "text-emerald-700" : "text-red-700";
+  return "text-slate-900";
+}
+
 function liabilityMoneyClass(value: number, isRedUp: boolean) {
   if (value > 0) return isRedUp ? "text-emerald-700" : "text-red-700";
   if (value < 0) return isRedUp ? "text-red-700" : "text-emerald-700";
@@ -89,11 +95,14 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const isRedUp = colorScheme === "red_up_green_down";
 
-  const accounts = await prisma.account.findMany({
-    where: { isActive: true, isPlaceholder: { not: true }, kind: { in: [...MONEY_KINDS, ...CREDIT_KINDS] }, ...hidFilter },
-    include: { AccountGroup: true, Institution: true },
-    orderBy: [{ kind: "asc" }, { name: "asc" }],
-  });
+  const [accounts, insuranceProductCount] = await Promise.all([
+    prisma.account.findMany({
+      where: { isActive: true, isPlaceholder: { not: true }, kind: { in: [...MONEY_KINDS, ...CREDIT_KINDS] }, ...hidFilter },
+      include: { AccountGroup: true, Institution: true },
+      orderBy: [{ kind: "asc" }, { name: "asc" }],
+    }),
+    prisma.insuranceProduct.count({ where: hidFilter }),
+  ]);
 
   const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id);
   const currentCyclesPromise: Promise<CurrentCreditCycle[]> =
@@ -218,6 +227,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
           accounts: group.accounts.map((account) => ({ ...account, kind: String(account.kind) })),
         }))}
         creditAccounts={creditAccounts.map((account) => ({ ...account, kind: String(account.kind) }))}
+        activeTab={tab}
+        insuranceCount={insuranceProductCount}
+        liabilityCount={moneyAccounts.filter((account) => account.kind === AccountKind.loan).length}
         isRedUp={isRedUp}
       />
     </div>
@@ -345,7 +357,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium text-slate-700">{group.label}</div>
-                          <div className={`text-base font-semibold tabular-nums ${neutralMoneyClass(total)}`}>{formatMoney(total)}</div>
+                          <div className={`text-base font-semibold tabular-nums ${group.kind === AccountKind.loan ? debtMoneyClass(total, isRedUp) : neutralMoneyClass(total)}`}>{formatMoney(total)}</div>
                         </div>
                         <div className="text-xs text-slate-400">{group.accounts.length} 个</div>
                       </div>
@@ -385,7 +397,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
                           </div>
                         </div>
-                        <div className={`shrink-0 text-sm font-semibold tabular-nums ${neutralMoneyClass(account.balance)}`}>
+                        <div className={`shrink-0 text-sm font-semibold tabular-nums ${account.kind === AccountKind.loan ? debtMoneyClass(account.balance, isRedUp) : neutralMoneyClass(account.balance)}`}>
                           {formatMoney(account.balance)}
                         </div>
                       </Link>

@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
+import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
+import { SmartSelect } from "@/components/SmartSelect";
 
-type AccountOption = { id: string; name: string; kind: string };
+type AccountOption = AccountDisplaySource;
 type CategoryOption = { id: string; name: string; type: string };
 type TransactionDraft = {
   id?: string;
@@ -33,15 +36,39 @@ const EMPTY_DRAFT: TransactionDraft = {
 };
 
 export function MobileTransactionForm({ accounts, categories, defaultAccountId = "" }: Props) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<TransactionDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const scrollYRef = useRef(0);
 
   const availableCategories = useMemo(
     () => categories.filter((category) => category.type === draft.type),
     [categories, draft.type],
   );
+  const accountOptions = useMemo(
+    () => buildGroupedAccountOptions(accounts.map((account) => buildAccountDisplayOption(account))),
+    [accounts],
+  );
+  const transferAccountOptions = useMemo(
+    () => accountOptions.filter((option) => option.isHeader || option.id !== draft.accountId),
+    [accountOptions, draft.accountId],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    scrollYRef.current = window.scrollY;
+    const previousOverflow = document.body.style.overflow;
+    const previousOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = "hidden";
+    document.body.style.overscrollBehavior = "none";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.overscrollBehavior = previousOverscroll;
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollYRef.current, left: 0 }));
+    };
+  }, [open]);
 
   useEffect(() => {
     const openCreate = () => {
@@ -85,7 +112,9 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   }, [accounts, defaultAccountId]);
 
   function close() {
-    if (!saving) setOpen(false);
+    if (saving) return;
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setOpen(false);
   }
 
   function update<K extends keyof TransactionDraft>(key: K, value: TransactionDraft[K]) {
@@ -124,7 +153,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.ok) throw new Error(result?.error ?? "保存失败");
       setOpen(false);
-      window.location.reload();
+      router.refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "保存失败");
     } finally {
@@ -135,8 +164,9 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-end bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? "编辑流水" : "记一笔"}>
-      <div className="w-full rounded-t-2xl bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
+    <div className="fixed inset-0 z-[1000] flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? "编辑流水" : "记一笔"}>
+      <div className="flex h-[min(86dvh,42rem)] max-h-[calc(100dvh-max(0.75rem,env(safe-area-inset-top)))] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl">
+        <div className="shrink-0 px-4 pt-3">
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200" />
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-slate-900">{draft.id ? "编辑流水" : "记一笔"}</h2>
@@ -144,7 +174,9 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
             <X size={20} />
           </button>
         </div>
+        </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1">
           {(["expense", "income", "transfer"] as const).map((type) => (
             <button
@@ -171,19 +203,31 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
         <label className="mt-3 block">
           <span className="text-xs text-slate-500">{draft.type === "transfer" ? "转出账户" : "账户"}</span>
-          <select className="form-input mt-1" value={draft.accountId} onChange={(event) => update("accountId", event.target.value)}>
-            <option value="">请选择账户</option>
-            {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-          </select>
+          <div className="mt-1 [&>[role=button]]:h-11">
+            <SmartSelect
+              mode="single"
+              value={draft.accountId}
+              onChange={(value) => update("accountId", value)}
+              options={accountOptions}
+              placeholder="请选择账户"
+              behavior={{ search: true, hierarchy: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320 }}
+            />
+          </div>
         </label>
 
         {draft.type === "transfer" ? (
           <label className="mt-3 block">
             <span className="text-xs text-slate-500">转入账户</span>
-            <select className="form-input mt-1" value={draft.toAccountId} onChange={(event) => update("toAccountId", event.target.value)}>
-              <option value="">请选择账户</option>
-              {accounts.filter((account) => account.id !== draft.accountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-            </select>
+            <div className="mt-1 [&>[role=button]]:h-11">
+              <SmartSelect
+                mode="single"
+                value={draft.toAccountId}
+                onChange={(value) => update("toAccountId", value)}
+                options={transferAccountOptions}
+                placeholder="请选择账户"
+                behavior={{ search: true, hierarchy: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320 }}
+              />
+            </div>
           </label>
         ) : (
           <label className="mt-3 block">
@@ -203,6 +247,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         <button type="button" disabled={saving} onClick={save} className="primary-button mt-4 h-11 w-full disabled:opacity-60">
           {saving ? "保存中..." : "保存"}
         </button>
+        </div>
       </div>
     </div>
   );

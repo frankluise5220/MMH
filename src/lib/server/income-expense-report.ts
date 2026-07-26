@@ -9,7 +9,7 @@ import {
 } from "@/lib/default-categories";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
-import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 
 export type IncomeExpenseGroupBy = "month" | "year";
 
@@ -217,7 +217,7 @@ export async function getIncomeExpenseReport(
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [categories, records, investmentRecords, wealthStatisticRecords] = await Promise.all([
+  const [categories, records, investmentRecords, businessResultRecords, wealthStatisticRecords] = await Promise.all([
     prisma.category.findMany({
       where: {
         ...hidFilter,
@@ -291,6 +291,39 @@ export async function getIncomeExpenseReport(
         fundName: true,
         accountId: true,
         accountName: true,
+        note: true,
+        createdAt: true,
+      },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+    }),
+    prisma.txRecord.findMany({
+      where: {
+        ...hidFilter,
+        deletedAt: null,
+        type: TransactionType.transfer,
+        date: { gte: rangeStart, lt: endExclusive },
+        AND: [
+          ...(params.accountIds?.length ? [accountFilter] : []),
+          {
+            OR: [
+              { realizedProfit: { not: null } },
+              { debtInterestAmount: { not: null } },
+            ],
+          },
+        ],
+      },
+      select: {
+        id: true,
+        date: true,
+        type: true,
+        source: true,
+        amount: true,
+        realizedProfit: true,
+        debtInterestAmount: true,
+        accountId: true,
+        accountName: true,
+        toAccountId: true,
+        toAccountName: true,
         note: true,
         createdAt: true,
       },
@@ -429,6 +462,27 @@ export async function getIncomeExpenseReport(
         accountId: record.accountId,
         accountName: record.accountName,
         counterpartyName: investmentName || item.label,
+        note: record.note,
+        createdAt: record.createdAt,
+      });
+    }
+  }
+
+  for (const record of businessResultRecords) {
+    for (const item of getBusinessResultStatisticItems(record)) {
+      const category = findCategoryByName(item.type, item.categoryCandidates);
+      statisticRecords.push({
+        id: `${record.id}:${item.idSuffix}`,
+        entryId: record.id,
+        canEdit: false,
+        date: record.date,
+        type: item.type,
+        amount: item.amount,
+        categoryId: category?.id ?? null,
+        categoryName: category?.name ?? item.categoryName,
+        accountId: item.type === "income" ? record.toAccountId ?? record.accountId : record.accountId,
+        accountName: item.type === "income" ? record.toAccountName ?? record.accountName : record.accountName,
+        counterpartyName: item.label,
         note: record.note,
         createdAt: record.createdAt,
       });

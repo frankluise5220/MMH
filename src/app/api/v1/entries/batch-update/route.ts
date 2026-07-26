@@ -35,6 +35,7 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
  *     accountName?: string;    // 兼容旧调用：来源账户名称
  *   }>;
  *   contextAccountId?: string; // 当前明细页账户。批量改“对向账户”时用于保留收入/支出的资金方向。
+ *   contextAccountIds?: string[]; // 当前明细页账户范围。信用卡合并账单等多账户视图用于判断哪一侧是当前侧。
  * }
  *   返回 { ok: true, updatedCount, changed, notFoundIds? }
  *   如果所有 ID 都未匹配到记录，返回 { ok: false, error }
@@ -84,6 +85,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const updates: BatchUpdateItem[] = body.updates;
     const contextAccountId = String(body.contextAccountId ?? "").trim() || null;
+    const contextAccountIds = Array.isArray(body.contextAccountIds)
+      ? Array.from(new Set(body.contextAccountIds.map((id: unknown) => String(id ?? "").trim()).filter(Boolean)))
+      : [];
+    const contextAccountIdSet = new Set(contextAccountIds.length > 0 ? contextAccountIds : (contextAccountId ? [contextAccountId] : []));
 
     if (!Array.isArray(updates) || updates.length === 0) {
       return NextResponse.json({ ok: false, error: "没有更新数据" }, { status: 400 });
@@ -193,8 +198,8 @@ export async function POST(req: NextRequest) {
         const finalTypeForAccountSide = String(data.type ?? existing.type);
         const amountN = Number(existing.amount);
         const amountAbs = Number.isFinite(amountN) ? Math.abs(amountN) : null;
-        const contextIsSource = !!contextAccountId && existing.accountId === contextAccountId;
-        const contextIsTarget = !!contextAccountId && existing.toAccountId === contextAccountId;
+        const contextIsSource = !!existing.accountId && contextAccountIdSet.has(existing.accountId);
+        const contextIsTarget = !!existing.toAccountId && contextAccountIdSet.has(existing.toAccountId);
         const currentAccountId = contextIsTarget
           ? existing.toAccountId
           : contextIsSource

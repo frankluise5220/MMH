@@ -10,13 +10,15 @@ import Link from "next/link";
 
 import { startTransition } from "react";
 
+import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+
 import { formatMoney } from "@/lib/format";
 
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
-import { CalendarSync, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { CalendarSync, ChartLine, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -31,7 +33,6 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/compo
 
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 
-import { RefreshNavButton } from "@/components/RefreshNavButton";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 import { AddNavButton } from "@/components/AddNavButton";
@@ -97,6 +98,29 @@ function LinkStatusIcon({ active, title }: { active: boolean; title?: string }) 
         />
       </svg>
     </span>
+  );
+}
+
+function FundMobileDetailItem({
+  label,
+  value,
+  alignRight = false,
+  wide = false,
+  valueClassName = "text-slate-700",
+}: {
+  label: string;
+  value: string;
+  alignRight?: boolean;
+  wide?: boolean;
+  valueClassName?: string;
+}) {
+  return (
+    <div className={wide ? "col-span-2 min-w-0" : "min-w-0"}>
+      <div className="text-[11px] text-slate-400">{label}</div>
+      <div className={`mt-0.5 min-w-0 ${alignRight ? "text-right" : ""} break-words text-xs tabular-nums ${valueClassName}`}>
+        {value}
+      </div>
+    </div>
   );
 }
 
@@ -215,6 +239,365 @@ function minFundTableWidth(table: FundTableKey, cols: readonly (readonly [string
   return cols.reduce((sum, [key]) => sum + minFundColWidth(table, key), 0);
 }
 
+type FundChartMode = "profit" | "nav" | "cumNav";
+type FundChartRange = "month" | "quarter" | "halfYear" | "oneYear" | "sinceBuy";
+
+type FundNavHistoryPoint = {
+  date: string;
+  nav: number;
+  cumNav: number | null;
+};
+
+type FundChartEntry = {
+  id: string;
+  date: string;
+  fundConfirmDate: string;
+  fundSubtype: string;
+  source: string;
+  amount: number;
+  units: number | null;
+  fee: number;
+};
+
+type FundChartPoint = {
+  date: string;
+  value: number;
+  nav: number;
+  cumNav: number | null;
+  units: number;
+  cost: number;
+  marketValue: number;
+  hasPosition: boolean;
+};
+
+const FUND_CHART_RANGE_LABELS: Record<FundChartRange, string> = {
+  month: "本月",
+  quarter: "三月",
+  halfYear: "半年",
+  oneYear: "一年",
+  sinceBuy: "购买以来",
+};
+
+function localYmd(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseYmdDay(value: string | null | undefined) {
+  const raw = String(value ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const [year, month, day] = raw.split("-").map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+}
+
+function ymdFromDay(day: number) {
+  return new Date(day * 86400000).toISOString().slice(0, 10);
+}
+
+function addDaysYmd(value: string, days: number) {
+  const base = parseYmdDay(value);
+  if (base == null) return "";
+  return ymdFromDay(base + days);
+}
+
+function monthStartYmd(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value.slice(0, 8)}01` : value;
+}
+
+function formatChartMonthDay(value: string) {
+  const date = String(value ?? "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}-${date.slice(8, 10)}` : date;
+}
+
+function chartValueText(value: number, mode: FundChartMode) {
+  if (mode === "profit") return formatMoney(value);
+  return Math.abs(value) >= 100 ? value.toFixed(2) : value.toFixed(4);
+}
+
+function isFundBuyLikeEntry(entry: FundChartEntry) {
+  return !entry.fundSubtype || entry.fundSubtype === "buy" || entry.fundSubtype === "regular_invest" || entry.fundSubtype === "dividend_reinvest" || entry.fundSubtype === "switch_in";
+}
+
+function firstFundBuyDate(entries: FundChartEntry[]) {
+  return entries
+    .filter(isFundBuyLikeEntry)
+    .map((entry) => String(entry.date ?? "").slice(0, 10))
+    .filter(Boolean)
+    .sort()[0] ?? "";
+}
+
+function effectiveFundEntryDate(entry: FundChartEntry, confirmDays: number) {
+  if (entry.fundConfirmDate) return entry.fundConfirmDate;
+  const baseDate = String(entry.date ?? "").slice(0, 10);
+  if (!baseDate) return "";
+  return isFundBuyLikeEntry(entry) ? addDaysYmd(baseDate, Math.max(0, confirmDays)) : baseDate;
+}
+
+function availableFundChartRanges(history: FundNavHistoryPoint[], firstBuyDate: string): FundChartRange[] {
+  const latest = history.at(-1)?.date ?? localYmd();
+  const earliest = history[0]?.date ?? "";
+  const canShow = (start: string) => !earliest || earliest <= start;
+  const ranges: FundChartRange[] = ["month"];
+  if (canShow(addDaysYmd(latest, -90))) ranges.push("quarter");
+  if (canShow(addDaysYmd(latest, -180))) ranges.push("halfYear");
+  if (canShow(addDaysYmd(latest, -365))) ranges.push("oneYear");
+  if (firstBuyDate) ranges.push("sinceBuy");
+  return Array.from(new Set(ranges));
+}
+
+function filterFundHistoryByRange(history: FundNavHistoryPoint[], range: FundChartRange, firstBuyDate: string) {
+  if (history.length === 0) return history;
+  const latest = history.at(-1)?.date ?? localYmd();
+  const start = range === "month"
+    ? monthStartYmd(latest)
+    : range === "quarter"
+      ? addDaysYmd(latest, -90)
+      : range === "halfYear"
+        ? addDaysYmd(latest, -180)
+        : range === "oneYear"
+          ? addDaysYmd(latest, -365)
+          : firstBuyDate || history[0]!.date;
+  return history.filter((point) => point.date >= start);
+}
+
+function buildFundProfitChartPoints(history: FundNavHistoryPoint[], entries: FundChartEntry[], confirmDays: number): FundChartPoint[] {
+  const effectiveEntries = entries
+    .map((entry) => ({ entry, day: parseYmdDay(effectiveFundEntryDate(entry, confirmDays)) }))
+    .filter((item): item is { entry: FundChartEntry; day: number } => item.day != null)
+    .sort((a, b) => a.day - b.day || String(a.entry.id).localeCompare(String(b.entry.id)));
+
+  let entryIndex = 0;
+  let units = 0;
+  let cost = 0;
+
+  return history.map((item) => {
+    const navDay = parseYmdDay(item.date);
+    if (navDay != null) {
+      while (entryIndex < effectiveEntries.length && effectiveEntries[entryIndex]!.day <= navDay) {
+        const entry = effectiveEntries[entryIndex]!.entry;
+        const entryUnits = entry.units ?? 0;
+        const entryAmount = Math.abs(entry.amount);
+        if (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out") {
+          const reducingUnits = entryUnits > 0 ? entryUnits : 0;
+          const avgCost = units > 0 ? cost / units : 0;
+          units = Math.max(0, units - reducingUnits);
+          cost = Math.max(0, cost - avgCost * reducingUnits);
+        } else if (entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "buy_failed") {
+          // No share position is created by cash dividends or failed buys.
+        } else if (entryUnits > 0) {
+          units += entryUnits;
+          cost += entryAmount + entry.fee;
+        }
+        entryIndex += 1;
+      }
+    }
+    const hasPosition = units > 0;
+    const marketValue = hasPosition ? item.nav * units : 0;
+    return {
+      date: item.date,
+      value: hasPosition ? marketValue - cost : 0,
+      nav: item.nav,
+      cumNav: item.cumNav,
+      units: hasPosition ? units : 0,
+      cost: hasPosition ? cost : 0,
+      marketValue,
+      hasPosition,
+    };
+  });
+}
+
+function compactFundSubtypeLabel(entry: any, fallback: string) {
+  const subtype = String(entry?.fundSubtype ?? "");
+  const source = String(entry?.source ?? "");
+  if (subtype === "buy_failed" && source === "regular_invest_refund") return "退回";
+  if (subtype === "buy_failed") return source === "regular_invest" ? "暂停" : "退回";
+  if (subtype === "buy" && source === "regular_invest") return "定投";
+  if (subtype === "buy") return "申购";
+  if (subtype === "redeem") return "赎回";
+  if (subtype === "dividend_cash") return "现金红利";
+  if (subtype === "dividend_reinvest" || source === "dividend") return "红利再投";
+  if (subtype === "switch_in") return "转入";
+  if (subtype === "switch_out") return "转出";
+  return fallback.replace(/^基金/, "").replace(/^定期/, "定投");
+}
+
+function FundTrendChart({
+  fundName,
+  fundCode,
+  history,
+  entries,
+  confirmDays,
+  loading,
+  error,
+  mode,
+  range,
+  upClassName,
+  downClassName,
+  onModeChange,
+  onRangeChange,
+  embedded = false,
+}: {
+  fundName: string;
+  fundCode: string;
+  history: FundNavHistoryPoint[];
+  entries: FundChartEntry[];
+  confirmDays: number;
+  loading: boolean;
+  error: string;
+  mode: FundChartMode;
+  range: FundChartRange;
+  upClassName: string;
+  downClassName: string;
+  onModeChange: (mode: FundChartMode) => void;
+  onRangeChange: (range: FundChartRange) => void;
+  embedded?: boolean;
+}) {
+  const firstBuyDate = firstFundBuyDate(entries);
+  const ranges = availableFundChartRanges(history, firstBuyDate);
+  const activeRange = ranges.includes(range) ? range : ranges[0] ?? "month";
+  const filteredHistory = filterFundHistoryByRange(history, activeRange, firstBuyDate);
+  const profitPoints = buildFundProfitChartPoints(filteredHistory, entries, confirmDays);
+  const hasCumNav = filteredHistory.some((point) => point.cumNav != null);
+  const activeMode = mode === "cumNav" && !hasCumNav ? "nav" : mode;
+  const points = activeMode === "profit"
+    ? profitPoints
+    : filteredHistory.map((item) => ({
+        date: item.date,
+        value: activeMode === "cumNav" ? item.cumNav ?? item.nav : item.nav,
+        nav: item.nav,
+        cumNav: item.cumNav,
+        units: 0,
+        cost: 0,
+        marketValue: 0,
+        hasPosition: false,
+      }));
+  const lineClass = activeMode === "profit" && (points.at(-1)?.value ?? 0) < 0 ? downClassName : activeMode === "profit" ? upClassName : "text-blue-600";
+  const stroke = lineClass.includes("red") ? "#dc2626" : lineClass.includes("emerald") ? "#047857" : "#2563eb";
+  const latestPoint = points.at(-1);
+
+  useEffect(() => {
+    if (activeRange !== range) onRangeChange(activeRange);
+  }, [activeRange, onRangeChange, range]);
+
+  useEffect(() => {
+    if (activeMode !== mode) onModeChange(activeMode);
+  }, [activeMode, mode, onModeChange]);
+
+  return (
+    <section
+      className={embedded ? "mt-3 overflow-hidden border-t border-slate-100 pt-3" : "panel-surface shrink-0 overflow-hidden"}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <div className={embedded ? "flex flex-wrap items-start justify-between gap-2" : "flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 bg-white px-4 py-3"}>
+        <div className={embedded ? "hidden" : "min-w-0"}>
+          <div className="truncate text-sm font-semibold text-slate-800">{fundName || fundCode}</div>
+          <div className="text-xs tabular-nums text-slate-400">{fundCode}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1 rounded-md bg-slate-100 p-0.5 text-xs">
+          {([
+            ["profit", "收益走势"],
+            ["nav", "净值走势"],
+            ...(hasCumNav ? [["cumNav", "累计净值"] as const] : []),
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onModeChange(key)}
+              className={`h-7 rounded px-2 ${activeMode === key ? "bg-white font-medium text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={embedded ? "space-y-2 pt-2" : "space-y-2 px-4 py-3"}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1">
+            {ranges.map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => onRangeChange(item)}
+                className={`h-6 rounded border px-2 text-xs ${activeRange === item ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
+              >
+                {FUND_CHART_RANGE_LABELS[item]}
+              </button>
+            ))}
+          </div>
+          {latestPoint ? (
+            <div className={`text-xs tabular-nums ${activeMode === "profit" ? lineClass : "text-slate-600"}`}>
+              {chartValueText(latestPoint.value, activeMode)}
+            </div>
+          ) : null}
+        </div>
+
+        <div className={`${embedded ? "h-[180px]" : "h-[210px]"} w-full`}>
+          {loading ? (
+            <div className="flex h-full items-center justify-center text-xs text-slate-400">正在加载历史净值</div>
+          ) : error ? (
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-rose-500">{error}</div>
+          ) : points.length < 2 ? (
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">历史净值不足，至少需要两个净值点才能绘制走势</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <RechartsLineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11, fill: "#64748b" }}
+                  tickLine={false}
+                  axisLine={{ stroke: "#e2e8f0" }}
+                  minTickGap={28}
+                  tickFormatter={formatChartMonthDay}
+                />
+                <YAxis
+                  width={58}
+                  tick={{ fontSize: 11, fill: "#64748b" }}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={["auto", "auto"]}
+                  tickFormatter={(value) => chartValueText(Number(value), activeMode)}
+                />
+                <Tooltip
+                  cursor={{ stroke: "#94a3b8", strokeWidth: 1 }}
+                  content={({ active, payload }: any) => {
+                    const point = payload?.[0]?.payload as FundChartPoint | undefined;
+                    if (!active || !point) return null;
+                    return (
+                      <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg">
+                        <div className="mb-1 font-medium text-slate-700">{point.date}</div>
+                        <div className="tabular-nums text-slate-600">
+                          {activeMode === "profit" ? "收益" : activeMode === "cumNav" ? "累计净值" : "净值"} {chartValueText(point.value, activeMode)}
+                        </div>
+                        <div className="tabular-nums text-slate-400">单位净值 {point.nav.toFixed(4)}</div>
+                        {activeMode === "profit" ? (
+                          point.hasPosition ? (
+                            <>
+                              <div className="tabular-nums text-slate-400">份额 {point.units.toFixed(2)}</div>
+                              <div className="tabular-nums text-slate-400">成本 {formatMoney(point.cost)} · 市值 {formatMoney(point.marketValue)}</div>
+                            </>
+                          ) : (
+                            <div className="text-slate-400">未确认持仓</div>
+                          )
+                        ) : null}
+                      </div>
+                    );
+                  }}
+                />
+                <Line type="monotone" dataKey="value" stroke={stroke} strokeWidth={2} dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />
+              </RechartsLineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 
 
 export function FundShell(props: Props) {
@@ -269,6 +652,7 @@ export function FundShell(props: Props) {
 
 
   const [fundCode, setFundCode] = useState(initialFundCode);
+  const [fundChartOpen, setFundChartOpen] = useState(false);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
 
@@ -315,6 +699,15 @@ export function FundShell(props: Props) {
   const [needsDetailHorizontalScroll, setNeedsDetailHorizontalScroll] = useState(false);
   const [detailColumnMenuOpen, setDetailColumnMenuOpen] = useState(false);
   const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(new Set());
+  const [detailCollapsed, setDetailCollapsed] = useState(false);
+  const [fundChartMode, setFundChartMode] = useState<FundChartMode>("profit");
+  const [fundChartRange, setFundChartRange] = useState<FundChartRange>("month");
+  const [fundNavHistoryState, setFundNavHistoryState] = useState<{
+    code: string;
+    loading: boolean;
+    error: string;
+    data: FundNavHistoryPoint[];
+  }>({ code: "", loading: false, error: "", data: [] });
 
   // Shadow props with reactive local state
   const d = localData;
@@ -459,13 +852,16 @@ export function FundShell(props: Props) {
     return Math.max(minWidth, Number.isFinite(width) ? Number(width) : fallback);
   }, [columnWidths]);
 
+  const isSingleNormalFundScope = Boolean(fundCode && !isMetalAccount && !isWealthAccount);
+
   const visibleDetailCols = useMemo(
     () => DETAIL_COLS.filter(([key]) =>
       !(isWealthAccount && key === "status") &&
       !(!isWealthAccount && key === "remainingUnits") &&
+      !(isSingleNormalFundScope && key === "fund") &&
       !hiddenDetailColumns.has(key)
     ),
-    [hiddenDetailColumns, isWealthAccount],
+    [hiddenDetailColumns, isSingleNormalFundScope, isWealthAccount],
   );
   const visibleOptionalDetailColumnCount = visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)).length;
   const detailMinTableWidth = useMemo(
@@ -476,8 +872,9 @@ export function FundShell(props: Props) {
     (key: DetailColumnKey) =>
       !(isWealthAccount && key === "status") &&
       !(!isWealthAccount && key === "remainingUnits") &&
+      !(isSingleNormalFundScope && key === "fund") &&
       !hiddenDetailColumns.has(key),
-    [hiddenDetailColumns, isWealthAccount],
+    [hiddenDetailColumns, isSingleNormalFundScope, isWealthAccount],
   );
 
   useEffect(() => {
@@ -974,6 +1371,7 @@ export function FundShell(props: Props) {
   function toggleCleared(on: boolean) {
 
     setShowCleared(on);
+    setFundChartOpen(false);
 
     const q = new URLSearchParams(baseQuery); q.set("view", view);
 
@@ -1187,7 +1585,75 @@ export function FundShell(props: Props) {
     () => (d.positions || []).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, fundCode, positionAssetKey],
   );
+  const selectedAnyPosition = useMemo(
+    () => ([...(d.positions || []), ...(d.clearedPositions || [])] as any[]).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
+    [d.positions, d.clearedPositions, fundCode, positionAssetKey],
+  );
   const selectedFundCodeCls = selectedPosition ? pnl(toNumber(selectedPosition.historicalProfit ?? selectedPosition.floatingPnL ?? 0)) : "text-slate-500";
+  const selectedFundChartEntries = useMemo<FundChartEntry[]>(() => {
+    if (!fundCode || isMetalAccount || isWealthAccount) return [];
+    return filtered.map((entry: any) => ({
+      id: String(entry?.id ?? ""),
+      date: fundApplyDateOf(entry),
+      fundConfirmDate: fmtDate(entry?.fundConfirmDate),
+      fundSubtype: String(entry?.fundSubtype ?? ""),
+      source: String(entry?.source ?? ""),
+      amount: toNumber(entry?.amount),
+      units: displayUnitsOfPlain(entry),
+      fee: toNumber(entry?.fundFee ?? entry?.fee ?? 0),
+    }));
+  }, [displayUnitsOfPlain, filtered, fundApplyDateOf, fundCode, isMetalAccount, isWealthAccount]);
+  const selectedFundFirstBuyDate = useMemo(() => firstFundBuyDate(selectedFundChartEntries), [selectedFundChartEntries]);
+  const selectedFundChartStartDate = useMemo(() => {
+    const oneYearAgo = addDaysYmd(localYmd(), -365);
+    return selectedFundFirstBuyDate && selectedFundFirstBuyDate < oneYearAgo ? selectedFundFirstBuyDate : oneYearAgo;
+  }, [selectedFundFirstBuyDate]);
+  const showSelectedFundChart = Boolean(fundChartOpen && fundCode && !isMetalAccount && !isWealthAccount);
+  const selectedFundNameForChart = String(selectedAnyPosition?.name ?? "").trim() || fundNameByCode.get(fundCode) || fetchedFundNames[fundCode] || fundCode;
+  const selectedFundConfirmDays = Number(d.confirmDaysMap?.[fundCode] ?? selectedAccount?.defaultConfirmDays ?? 0) || 0;
+
+  useEffect(() => {
+    if (!showSelectedFundChart) {
+      setFundNavHistoryState({ code: "", loading: false, error: "", data: [] });
+      return;
+    }
+    const controller = new AbortController();
+    setFundNavHistoryState((prev) => ({
+      code: fundCode,
+      loading: true,
+      error: "",
+      data: prev.code === fundCode ? prev.data : [],
+    }));
+    const params = new URLSearchParams({
+      code: fundCode,
+      start: selectedFundChartStartDate,
+      end: localYmd(),
+    });
+    fetch(`/api/v1/fund/nav/history?${params.toString()}`, { cache: "no-store", signal: controller.signal })
+      .then((res) => res.json())
+      .then((json) => {
+        if (controller.signal.aborted) return;
+        if (!json?.ok || !Array.isArray(json.data)) {
+          setFundNavHistoryState({ code: fundCode, loading: false, error: String(json?.error ?? "历史净值加载失败"), data: [] });
+          return;
+        }
+        const data = json.data
+          .map((item: any) => ({
+            date: String(item?.date ?? "").slice(0, 10),
+            nav: toNumber(item?.nav),
+            cumNav: item?.cumNav == null ? null : toNumber(item.cumNav),
+          }))
+          .filter((item: FundNavHistoryPoint) => item.date && Number.isFinite(item.nav) && item.nav > 0)
+          .sort((a: FundNavHistoryPoint, b: FundNavHistoryPoint) => a.date.localeCompare(b.date));
+        setFundNavHistoryState({ code: fundCode, loading: false, error: "", data });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setFundNavHistoryState({ code: fundCode, loading: false, error: error instanceof Error ? error.message : "历史净值加载失败", data: [] });
+      });
+    return () => controller.abort();
+  }, [fundCode, selectedFundChartStartDate, showSelectedFundChart]);
+
   const loadRegularPlans = useCallback(async () => {
     if (!accountId) {
       setRegularPlans([]);
@@ -1308,6 +1774,7 @@ export function FundShell(props: Props) {
     if (available.length === 0) {
 
       if (fundCode) setFundCode("");
+      if (fundChartOpen) setFundChartOpen(false);
 
       q.delete("fundCode");
       q.delete("wealthProductId");
@@ -1338,17 +1805,18 @@ export function FundShell(props: Props) {
       const next = available[0]!;
 
       setFundCode(next);
+      setFundChartOpen(false);
 
       setFundPage(1);
 
-      q.set("fundCode", next);
+      q.delete("fundCode");
       q.delete("wealthProductId");
 
       window.history.replaceState(null, "", `/?${q.toString()}`);
 
     }
 
-  }, [baseQuery, view, showCleared, fundCode, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
+  }, [baseQuery, view, showCleared, fundCode, fundChartOpen, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
 
 
 
@@ -1902,6 +2370,8 @@ export function FundShell(props: Props) {
         defaultUpperHeight={360}
         separatorLabel={`调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
         separatorTitle={`拖动调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
+        stackOnMobile
+        stackLowerFirstOnMobile={false}
       >
 
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
@@ -1913,7 +2383,7 @@ export function FundShell(props: Props) {
               mode="create"
               accountId={accountId}
               accountProductType={selectedAccount?.investProductType ?? null}
-              defaults={positionEntryDefaultsRef.current ?? positionEntryDefaults ?? undefined}
+              defaults={positionEntryDefaults ?? undefined}
               cashAccounts={cashAccounts}
               investmentAccounts={investmentAccounts}
               cashAccountSSOptions={cashAccountSSOptions}
@@ -1949,17 +2419,106 @@ export function FundShell(props: Props) {
               全部交易
             </Link>
 
-            {!showCleared ? (<>
-
-              {!isMetalAccount && !isWealthAccount && d.positions.length > 0 && <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />}
-
-            </>) : null}
-
           </div>
 
         </div>
 
-        <div ref={summaryTableViewportRef} className="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
+        <div ref={summaryTableViewportRef} className="flex-1 min-h-0 overflow-hidden">
+          <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">
+            {!showCleared ? (
+              sortedPositions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">暂无持仓数据</div>
+              ) : (
+                <div className="space-y-2.5">
+                  {sortedPositions.map((p: any) => {
+                    const positionKey = positionAssetKey(p);
+                    const active = positionKey === fundCode;
+                    const adj = adjustedNavByCode[p.fundCode];
+                    const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
+                    const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
+                    const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
+                    return (
+                      <article
+                        key={positionKey || p.fundCode}
+                        className={`rounded-lg border bg-white px-3 py-3 shadow-sm ${
+                          active ? "border-blue-200 bg-blue-50/70" : "border-slate-200"
+                        }`}
+                        onClick={() => switchFund(positionKey)}
+                        onDoubleClick={() => {
+                          if (!isWealthAccount) openPositionEntryModal(p);
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}>
+                              {p.name}
+                            </div>
+                            {!isWealthAccount && p.fundCode !== p.name ? (
+                              <div className={`mt-1 text-[11px] tabular-nums ${pnl(displayPnL)}`}>{p.fundCode}</div>
+                            ) : null}
+                            {isWealthAccount ? <div className="mt-1 text-[11px] text-slate-400">{p.holdingDate || "持仓日期 -"}</div> : null}
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <div className={`text-base font-semibold tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</div>
+                            <div className={`mt-0.5 text-[11px] tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-4 gap-x-2">
+                          <FundMobileDetailItem label={isMetalAccount ? "数量" : "份额"} value={isWealthAccount && !p.hasUnits ? "-" : formatFundUnits(p.units)} alignRight />
+                          <FundMobileDetailItem label="均价" value={isWealthAccount && !p.hasUnits ? "-" : p.avgCost.toFixed(4)} alignRight />
+                          <FundMobileDetailItem label="成本" value={formatMoney(p.cost)} alignRight />
+                          <FundMobileDetailItem label="收益" value={formatMoney(displayPnL)} valueClassName={pnl(displayPnL)} alignRight />
+                        </div>
+
+                      </article>
+                    );
+                  })}
+                </div>
+              )
+            ) : (
+              sortedClearedPositions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">{noClearedText}</div>
+              ) : (
+                <div className="space-y-2.5">
+                  {sortedClearedPositions.map((c: any) => {
+                    const clearedKey = positionAssetKey(c);
+                    const active = clearedKey === fundCode;
+                    return (
+                      <article
+                        key={clearedKey || c.fundCode}
+                        className={`rounded-lg border bg-white px-3 py-3 shadow-sm ${
+                          active ? "border-blue-200 bg-blue-50/70" : "border-slate-200"
+                        }`}
+                        onClick={() => switchFund(clearedKey)}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={isWealthAccount ? c.name : `${c.name} ${c.fundCode}`}>
+                              {c.name}
+                            </div>
+                            {!isWealthAccount && c.fundCode ? <div className="mt-1 text-[11px] tabular-nums text-slate-400">{c.fundCode}</div> : null}
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <div className={`text-base font-semibold tabular-nums ${pnl(c.historicalProfit)}`}>{formatMoney(c.historicalProfit)}</div>
+                            <div className={`mt-0.5 text-[11px] tabular-nums ${pnl(c.returnRate)}`}>{(c.returnRate * 100).toFixed(2)}%</div>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2">
+                          <FundMobileDetailItem label="初次购买" value={c.firstBuyDate || "-"} />
+                          <FundMobileDetailItem label="清仓时间" value={c.clearedDate || "-"} />
+                          <FundMobileDetailItem label="申购金额" value={formatMoney(c.totalBuyAmount)} alignRight />
+                          <FundMobileDetailItem label="回收金额" value={formatMoney(c.totalRedeemAmount)} alignRight />
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )
+            )}
+          </div>
+
+          <div className="hidden h-full overflow-x-auto overflow-y-auto md:block">
 
           {!showCleared ? (
 
@@ -2179,7 +2738,29 @@ export function FundShell(props: Props) {
                               );
                             })()
                           ) : null}
-                          {!isMetalAccount && !isWealthAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" /> : null}
+                          {!isMetalAccount && !isWealthAccount ? (
+                            <>
+                              <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  switchFund(positionKey || p.fundCode);
+                                  setFundChartOpen(true);
+                                }}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                                  active && fundChartOpen
+                                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                                    : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                                }`}
+                                title="查看基金曲线图"
+                                aria-label="查看基金曲线图"
+                              >
+                                <ChartLine className="h-3 w-3" />
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
 
@@ -2349,6 +2930,7 @@ export function FundShell(props: Props) {
 
           )}
 
+          </div>
         </div>
 
       </div>
@@ -2395,15 +2977,69 @@ export function FundShell(props: Props) {
         />
       ) : null}
 
+      {showSelectedFundChart ? (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/10 p-4"
+          onClick={() => setFundChartOpen(false)}
+        >
+          <div
+            className="w-[min(720px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-white px-3 py-2">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-slate-800">{selectedFundNameForChart || fundCode}</div>
+                <div className="text-xs tabular-nums text-slate-400">{fundCode}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFundChartOpen(false)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 hover:text-slate-700"
+                title="收起曲线图"
+                aria-label="收起曲线图"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <FundTrendChart
+              fundName={selectedFundNameForChart}
+              fundCode={fundCode}
+              history={fundNavHistoryState.code === fundCode ? fundNavHistoryState.data : []}
+              entries={selectedFundChartEntries}
+              confirmDays={selectedFundConfirmDays}
+              loading={fundNavHistoryState.code === fundCode && fundNavHistoryState.loading}
+              error={fundNavHistoryState.code === fundCode ? fundNavHistoryState.error : ""}
+              mode={fundChartMode}
+              range={fundChartRange}
+              upClassName={upCls}
+              downClassName={downCls}
+              onModeChange={setFundChartMode}
+              onRangeChange={setFundChartRange}
+              embedded
+            />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+
       {/* 交易明细 */}
 
-      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
+      <div className={`panel-surface flex min-h-0 flex-col overflow-hidden ${detailCollapsed ? "shrink-0" : "flex-1"}`}>
 
         <div className="panel-header shrink-0">
 
-          <div className="text-sm font-semibold text-slate-800">
+          <button
+            type="button"
+            onClick={() => setDetailCollapsed((value) => !value)}
+            className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800"
+            title={detailCollapsed ? "展开交易明细" : "收起交易明细"}
+          >
+            {detailCollapsed ? <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" /> : <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />}
+            <span className="shrink-0">交易明细</span>
 
-            交易明细{fundCode && (
+            {fundCode && (
               <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
                 {isWealthAccount ? selectedPosition?.name ?? "" : fundCode}
               </span>
@@ -2411,9 +3047,9 @@ export function FundShell(props: Props) {
 
             <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
 
-          </div>
+          </button>
 
-          <div className="flex items-center gap-1 text-xs">
+          <div className={`${detailCollapsed ? "hidden" : "flex"} min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0`}>
 
             {isWealthAccount ? (
               <button
@@ -2483,6 +3119,7 @@ export function FundShell(props: Props) {
                     {DETAIL_COLS.filter(([key]) =>
                       !(isWealthAccount && key === "status") &&
                       !(!isWealthAccount && key === "remainingUnits") &&
+                      !(isSingleNormalFundScope && key === "fund") &&
                       !FIXED_DETAIL_COLUMNS.has(key)
                     ).map(([key]) => {
                       const checked = isDetailColumnVisible(key);
@@ -2630,9 +3267,163 @@ export function FundShell(props: Props) {
 
         </div>
 
+        {detailCollapsed ? null : (
+        <>
+        <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2 md:hidden">
+          {paged.length > 0 ? (
+            <div className="space-y-2.5">
+              {paged.map((e: any) => {
+                const units = displayUnitsOf(e);
+                const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
+                const amount = detailAmountOf(e);
+                const info = fl(e.fundSubtype, e.source);
+                const detailSubtypeLabel = isSingleNormalFundScope ? (info as { shortLabel?: string }).shortLabel ?? info.label : info.label;
+                const cashInfo = cashAccountInfoOf(e);
+                const status = statusOf(e);
+                const profit = e.realizedProfit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash")
+                  ? toNumber(e.realizedProfit)
+                  : null;
+                const selected = selectedIds.has(e.id);
+                const businessLinkInfo = entryBusinessLinkInfo(e);
+                const businessLinkTitle = businessLinkInfo.active
+                  ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : "已关联资金流水")
+                  : "未关联";
+
+                return (
+                  <article
+                    key={e.id}
+                    className={`rounded-lg border bg-white shadow-sm transition-colors ${
+                      selected ? "border-blue-200 bg-blue-50/70" : "border-slate-200"
+                    }`}
+                    onClick={() => setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(e.id)) next.delete(e.id);
+                      else next.add(e.id);
+                      return next;
+                    })}
+                    onDoubleClick={() => openDetailEdit(e.id)}
+                  >
+                    <div className="flex items-start justify-between gap-3 px-3 pt-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                            e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls
+                          }`}>
+                            {detailSubtypeLabel}
+                          </span>
+                          <span className="truncate text-sm font-semibold text-slate-900" title={displayFundName(e)}>
+                            {displayFundName(e)}
+                          </span>
+                        </div>
+                        {!isWealthAccount && e.fundCode && !isSingleNormalFundScope ? (
+                          <div className="mt-1 truncate text-[11px] tabular-nums text-slate-400">{e.fundCode}</div>
+                        ) : null}
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-base font-semibold tabular-nums text-slate-900">
+                          {e.source === "dividend" || e.fundSubtype === "dividend_cash" ? (
+                            <span className={upCls}>+{formatMoney(Math.abs(amount))}</span>
+                          ) : formatMoney(Math.abs(amount))}
+                        </div>
+                        <div className={`mt-0.5 text-[11px] ${status === "确认" || status === "买入退回" ? "text-emerald-700" : status === "暂停申购" ? "text-rose-600" : "text-amber-600"}`}>
+                          {status}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 px-3 text-xs">
+                      <FundMobileDetailItem label="申请日期" value={fundApplyDateOf(e) || "-"} />
+                      <FundMobileDetailItem label="到账日期" value={e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : "-"} />
+                      <FundMobileDetailItem label={navColumnLabel} value={nav != null ? nav.toFixed(4) : "-"} alignRight />
+                      <FundMobileDetailItem label={isMetalAccount ? "数量" : "份额"} value={units != null ? formatFundUnits(units) : "-"} alignRight />
+                      {isWealthAccount ? (
+                        <FundMobileDetailItem
+                          label="剩余份额"
+                          value={e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : "-"}
+                          alignRight
+                        />
+                      ) : null}
+                      {profit != null ? (
+                        <FundMobileDetailItem label="收益" value={formatMoney(profit)} valueClassName={pnl(profit)} alignRight />
+                      ) : null}
+                      <FundMobileDetailItem label="资金账户" value={cashInfo?.label && cashInfo.label !== "(空)" ? cashInfo.label : "-"} wide />
+                    </div>
+
+                    <div
+                      className="mt-3 flex items-center justify-between border-t border-slate-100 px-3 py-2"
+                      onClick={(ev) => ev.stopPropagation()}
+                      onDoubleClick={(ev) => ev.stopPropagation()}
+                    >
+                      <label className="flex h-8 items-center gap-2 text-xs text-slate-500">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => setSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(e.id)) next.delete(e.id);
+                            else next.add(e.id);
+                            return next;
+                          })}
+                          className="h-4 w-4 accent-blue-600"
+                          aria-label={`选择${isWealthAccount ? "理财" : "基金"}交易明细`}
+                        />
+                        选择
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
+                          <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} />
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!businessLinkInfo.active) void linkDetailCashFlow(e);
+                          }}
+                          disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
+                          className={[
+                            "flex h-8 w-8 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                            businessLinkInfo.active
+                              ? "border-slate-200 text-slate-500"
+                              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
+                          ].join(" ")}
+                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? "正在建立资金侧关联..." : "未关联，点击建立资金侧关联"}
+                          aria-label={businessLinkInfo.active ? businessLinkTitle : "未关联，点击建立资金侧关联"}
+                        >
+                          <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openDetailEdit(e.id)}
+                          className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+                          title="编辑按钮"
+                          aria-label="编辑按钮"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void deleteDetailEntry(e); }}
+                          disabled={singleDeletingIds.has(String(e.id ?? ""))}
+                          className="flex h-8 w-8 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
+                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
+              {fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+            </div>
+          )}
+        </div>
         <div
           ref={detailTableViewportRef}
-          className={`flex-1 min-h-0 ${needsDetailHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-auto`}
+          className={`hidden flex-1 min-h-0 pb-10 md:block ${needsDetailHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-auto overscroll-contain`}
         >
 
             <table
@@ -2976,6 +3767,7 @@ export function FundShell(props: Props) {
                 const units = displayUnitsOf(e);
 
                 const info = fl(e.fundSubtype, e.source);
+                const detailSubtypeLabel = isSingleNormalFundScope ? compactFundSubtypeLabel(e, info.label) : info.label;
 
                 const selected = selectedIds.has(e.id);
                 const isRegularInvestRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
@@ -3126,7 +3918,7 @@ export function FundShell(props: Props) {
                     ) : null}
 
                     {isDetailColumnVisible("subtype") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs"><span className={`px-1 py-0.5 rounded text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>{info.label}</span></td>
+                    <td className="px-3 py-1 border-b border-slate-100 text-xs"><span className={`px-1 py-0.5 rounded text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>{detailSubtypeLabel}</span></td>
                     ) : null}
 
                     {isDetailColumnVisible("amount") ? (
@@ -3438,6 +4230,10 @@ export function FundShell(props: Props) {
           </table>
 
         </div>
+        </>
+        )}
+
+      </div>
 
       </div>
 

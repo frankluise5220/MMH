@@ -212,7 +212,7 @@ export function OverviewDashboard({
                 <PiggyBank className="h-4 w-4 text-emerald-500" />
                 投资总览
               </div>
-              <Link href="/invest" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
+              <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
             </div>
             <div className="space-y-4 px-4 py-4">
               <InvestmentCostProfitBar
@@ -231,7 +231,7 @@ export function OverviewDashboard({
                 topPositions.slice(0, 5).map((item) => (
                   <Link
                     key={item.accountId ?? item.fundCode}
-                    href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/invest"}
+                    href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/investments"}
                     prefetch={false}
                     scroll={false}
                     className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
@@ -328,7 +328,7 @@ export function OverviewDashboard({
                 <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
               </div>
               <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-3">
-                <MetricCard label="我欠别人" value={formatMoneyYuan(totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
+                <MetricCard label="我欠别人" value={formatMoneyYuan(-totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
                 <MetricCard label="别人欠我" value={formatMoneyYuan(totals.loanReceivable)} valueClass={directionalClass(totals.loanReceivable, isRedUp)} />
                 <MetricCard label="账户数" value={`${debtAccounts.length} 个`} />
               </div>
@@ -343,7 +343,7 @@ export function OverviewDashboard({
                   >
                     <div className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
                     <div className="mt-3 text-[11px] text-slate-400">{account.balance >= 0 ? "别人欠我" : "我欠别人"}</div>
-                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(Math.abs(account.balance))}</div>
+                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(account.balance)}</div>
                   </Link>
                 ))}
               </div>

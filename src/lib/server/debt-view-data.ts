@@ -123,6 +123,7 @@ export type DebtDetailEntry = {
     defaultDate: string;
     defaultPrincipal: number;
     defaultInterest: number;
+    defaultNote?: string | null;
     defaultPenalty?: number;
     defaultRecalculateStartDate?: string | null;
     defaultPrepayStrategy?: string;
@@ -564,6 +565,7 @@ export function buildDebtDetailEntriesViewData({
             defaultDate: entryDateKey,
             defaultPrincipal: displayAmount,
             defaultInterest: interestAmount,
+            defaultNote: entry.note ?? "",
             defaultPenalty: Math.abs(toNumber(entry.debtFeeAmount)),
             defaultRecalculateStartDate,
             defaultPrepayStrategy: entry.source === "debt_prepay_out"

@@ -125,8 +125,8 @@
 - `GET /api/v1/statistics` 返回年度收支、月度收支和分类/标签汇总。
 - 支出统计使用交易的业务符号：普通支出计为正支出；以正向现金流保存的退款或冲减支出计为负支出，不转换为绝对值。
 - `totalExpense`、`monthData[].expense`、`expenseCategories[].value` 和 `expenseTagGroups[].value` 使用同一统计口径。
-- 投资类收益统计不额外生成现金收入流水：基金赎回使用 `realizedProfit`，理财和存款赎回/支取使用 `depositInterest - fundFee`，并分别归入基金、理财、存款对应的系统统计类别。投资买入本身是资产转换，不应计入收支支出统计。
-- 统计分类项优先返回并使用分类树节点 ID；普通交易按 `categoryId` 归集，旧数据可按 `categoryName` 回挂，投资收益/亏损等派生统计项会解析到系统内置分类节点。
+- 业务收益统计不额外生成现金收入流水：基金赎回、往来款利息等使用通用 `realizedProfit`，理财和存款赎回/支取可由 `depositInterest - fundFee` 推导，并归入对应系统统计类别。投资买入、本金归还等资产/债权转换不应计入收支支出统计。
+- 统计分类项优先返回并使用分类树节点 ID；普通交易按 `categoryId` 归集，旧数据可按 `categoryName` 回挂，收益/亏损/利息等派生统计项会解析到系统内置分类节点。
 - `incomeCategories[]` 和 `expenseCategories[]` 返回 `{ id, name, value, pct }`；`id` 为分类树节点 ID，只有旧数据或兜底项无法解析时才可能为空。
 
 ### Accounts
@@ -544,6 +544,7 @@ Notes:
 相关路径示例：
 
 - `/api/v1/settings/users`
+- `/api/v1/settings/catalog`：GET 返回 Web 和 Android 共用的设置目录；可用 `?surface=web` 或 `?surface=android` 过滤客户端可用项。返回 `{ ok: true, data }`，目录源头为 `shared/settings/catalog.json`。
 - `/api/v1/settings/app-preferences`
 - `/api/v1/settings/color-scheme`
 - `/api/v1/settings/email`
@@ -567,6 +568,8 @@ Notes:
 移动端聚合接口可以减少请求次数，但不应复制 Web 的业务计算逻辑。聚合数据应来自同一套服务模块或统一查询口径。
 
 贷款初始记录有两种资金语义：`source = debt_borrow_in` 表示贷款资金实际进入 `toAccountId`；`source = debt_financed_purchase` 表示车贷等消费融资，只在 `accountId` 对应的贷款账户建立负债，`toAccountId` 为 `null`。后者选择的还款账户属于还款计划，不代表收到贷款资金。客户端不得把消费融资本金显示为资金账户收入。
+
+车贷等 `debt_financed_purchase` 保存时只创建贷款负债记录和 `loan_repayment` 计划任务，不批量生成还款交易。移动端同步到的还款 `TxRecord` 应表示计划任务已到期并实际生成的记录；未到期或未执行的还款安排应从计划任务数据展示，不应伪装成交易流水。
 
 交易同步项包含 `accountKind`、`toAccountKind`、`categoryId` 和 `categoryName`。信用卡还款应显示为“类型：转账、分类：信用卡还款”；移动端使用账户类型校验该语义，不要依赖账户名称或备注文本猜测。
 

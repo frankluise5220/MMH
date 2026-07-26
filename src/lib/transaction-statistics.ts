@@ -40,9 +40,12 @@ type InvestmentProductKind = "fund" | "wealth" | "deposit";
 export type InvestmentStatisticEntryLike = {
   id: string;
   amount: unknown;
+  type?: TransactionType | string | null;
+  source?: string | null;
   fundSubtype?: FundSubtype | string | null;
   fundProductType?: FundProductType | string | null;
   realizedProfit?: unknown | null;
+  debtInterestAmount?: unknown | null;
   depositInterest?: unknown | null;
   fundFee?: unknown | null;
   fundCode?: string | null;
@@ -284,4 +287,44 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
   }
 
   return items;
+}
+
+function debtResultProfitFallback(entry: InvestmentStatisticEntryLike) {
+  if (entry.realizedProfit !== null && entry.realizedProfit !== undefined) return toNumber(entry.realizedProfit);
+  if (entry.debtInterestAmount === null || entry.debtInterestAmount === undefined) return 0;
+  const interest = Math.abs(toNumber(entry.debtInterestAmount));
+  if (interest === 0) return 0;
+  const source = String(entry.source ?? "");
+  if (source === "debt_collect_in") return interest;
+  if (source === "debt_repay_out" || source === "debt_prepay_out" || source === "scheduled_task" || source === "debt_lend_out") {
+    return -interest;
+  }
+  return 0;
+}
+
+/**
+ * Converts any business row that carries a realized result into statistics
+ * items. `realizedProfit` is the generic economic-result field: cash flow still
+ * uses the real movement amount, while reports use this field for the yield,
+ * interest, gain, or loss portion.
+ */
+export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryLike): InvestmentStatisticItem[] {
+  if (entry.type === TransactionType.investment || entry.type === "investment") {
+    return getInvestmentStatisticItems(entry);
+  }
+  if (entry.type !== TransactionType.transfer && entry.type !== "transfer") return [];
+
+  const profit = debtResultProfitFallback(entry);
+  if (profit === 0) return [];
+  const positive = profit > 0;
+  return [{
+    idSuffix: "realized-profit",
+    type: positive ? "income" : "expense",
+    amount: Math.abs(profit),
+    categoryName: positive ? "利息" : "贷款利息",
+    categoryCandidates: positive
+      ? ["利息", "投资收益", "投资收入"]
+      : ["贷款利息", "利息支出"],
+    label: positive ? "利息收入" : "利息支出",
+  }];
 }

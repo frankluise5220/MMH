@@ -1,68 +1,51 @@
 import Link from "next/link";
-import {
-  BookOpen,
-  Building2,
-  Cpu,
-  Database,
-  HeartHandshake,
-  ShieldCheck,
-  Handshake,
-  Mail,
-  Palette,
-  Shield,
-  Tag,
-  Users,
-} from "lucide-react";
 
-const quickSettings = [
-  { href: "/settings/accounts", label: "账户", desc: "账户、所有人、账户类型", icon: Users },
-  { href: "/settings/institutions", label: "机构", desc: "银行、保险、券商和支付机构", icon: Building2 },
-  { href: "/settings/counterparties", label: "往来对象", desc: "往来人员和往来组织", icon: Handshake },
-  { href: "/settings/family-members", label: "家庭成员", desc: "投保人、被保险人等家庭资料", icon: HeartHandshake },
-  { href: "/settings/insurance-products", label: "保险产品", desc: "保单、缴费和保险资料", icon: ShieldCheck },
-  { href: "/settings/categories", label: "分类管理", desc: "收入、支出、代付、转账和投资分类", icon: Tag },
-  { href: "/settings/tags", label: "标签管理", desc: "给流水和业务记录添加标签", icon: Tag },
-  { href: "/settings/email", label: "邮箱账户", desc: "账单读取和发件账户", icon: Mail },
-  { href: "/settings/password-recovery", label: "密码找回", desc: "找回密码开关和发件设置", icon: Shield },
-  { href: "/settings/display", label: "显示", desc: "颜色、时间和界面偏好", icon: Palette },
-  { href: "/settings/ai", label: "AI 模型", desc: "识别和分析模型配置", icon: Cpu },
-  { href: "/settings/ledgers", label: "账簿", desc: "当前账簿和基础资料", icon: BookOpen },
-  { href: "/settings/database", label: "数据库", desc: "备份、维护和数据连接", icon: Database },
-];
+import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
+import { getSettingsCatalogForSurface } from "@/lib/settings/catalog";
 
 export default function SettingsPage() {
+  const catalog = getSettingsCatalogForSurface("web");
+
   return (
     <div className="mx-auto max-w-4xl space-y-3 md:space-y-4">
       <div className="rounded-xl border border-slate-200 bg-white px-4 py-4">
-        <h2 className="text-sm font-semibold text-slate-800">系统设置</h2>
+        <h2 className="text-sm font-semibold text-slate-800">{catalog.title}</h2>
         <p className="mt-1 text-xs text-slate-500">
-          选择左侧菜单或下方快捷入口进入具体设置。此页不预加载账户明细，打开会更快。
+          选择左侧菜单或下方快捷入口进入具体设置。设置目录来自共享 catalog，Web 和 Android 使用同一套分组与入口语义。
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {quickSettings.map((item) => {
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              prefetch={false}
-              className="group rounded-xl border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-blue-200 hover:bg-blue-50/40"
-            >
-              <div className="flex items-center gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-colors group-hover:bg-blue-100 group-hover:text-blue-600">
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-slate-800">{item.label}</span>
-                  <span className="mt-0.5 block truncate text-xs text-slate-500">{item.desc}</span>
-                </span>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
+      {catalog.groups.map((group) => (
+        <section key={group.id} className="space-y-2">
+          <div className="px-1">
+            <h3 className="text-xs font-semibold text-slate-700">{group.label}</h3>
+            <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {group.items.map((item) => {
+              if (!item.webHref) return null;
+              return (
+                <Link
+                  key={item.id}
+                  href={item.webHref}
+                  prefetch={false}
+                  className="group rounded-xl border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-blue-200 hover:bg-blue-50/40"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-colors group-hover:bg-blue-100 group-hover:text-blue-600">
+                      <SettingsCatalogIcon icon={item.icon} className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-slate-800">{item.label}</span>
+                      <span className="mt-0.5 block truncate text-xs text-slate-500">{item.description}</span>
+                    </span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, TrendingUp } from "lucide-react";
+import { Database, Plus } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 
 type HoldingItem = {
@@ -10,6 +10,29 @@ type HoldingItem = {
   navDate?: string;
   nav?: number;
 };
+
+function ManualGrabMark() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-2.5 w-2.5">
+      <path
+        d="M14 5.2H6.3M6.3 5.2 4.8 4.1M6.3 5.2 4.8 6.3M13.5 7.5H6.9M6.9 7.5 5.6 6.5M6.9 7.5 5.6 8.6M12.4 9.7H7.8M7.8 9.7 6.9 9"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.35"
+      />
+      <path
+        d="M3 4.6c-.8.7-1.1 1.6-.9 2.7.3 1.6 1.4 2.6 3.2 3.1l2 .5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.35"
+      />
+    </svg>
+  );
+}
 
 export function AddNavButton({
   accountId,
@@ -85,10 +108,13 @@ export function AddNavButton({
             event.stopPropagation();
             openDialog();
           }}
-          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+          className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
           title="手动添加基金净值"
         >
-          <TrendingUp className="h-3 w-3" />
+          <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />
+          <span className="absolute bottom-1 right-1 text-amber-800">
+            <ManualGrabMark />
+          </span>
         </button>
       );
     }

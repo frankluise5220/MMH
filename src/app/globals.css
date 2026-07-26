@@ -363,8 +363,16 @@ html {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
+  .mobile-transaction-modal {
+    height: min(86dvh, 44rem);
+    max-height: calc(100dvh - max(0.75rem, env(safe-area-inset-top)));
+    border-top-left-radius: 18px;
+    border-top-right-radius: 18px;
+  }
+
   .mobile-transaction-modal form {
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    padding-bottom: max(5.5rem, calc(1rem + env(safe-area-inset-bottom)));
   }
 }
 

@@ -176,7 +176,6 @@ export function CreditBillDetailPanel({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           toolbarTitle={title}
-          sortable={false}
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
               {periodLabel ? <span className="hidden whitespace-nowrap md:inline">{periodLabel}</span> : null}

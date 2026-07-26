@@ -46,6 +46,22 @@ export function useBasicDetailSelection() {
   return ctx;
 }
 
+export function usePruneBasicDetailSelection(validIds: string[]) {
+  const { selectedIds, setSelection } = useBasicDetailSelection();
+
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const validIdSet = new Set(validIds);
+    let changed = false;
+    const next = new Set<string>();
+    for (const id of selectedIds) {
+      if (validIdSet.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelection(next);
+  }, [selectedIds, setSelection, validIds]);
+}
+
 export function BasicDetailSelectionProvider({
   children,
   resetKey,
@@ -133,12 +149,14 @@ export function BasicDetailBatchReplaceButton({
   fields = defaultBatchReplaceFields,
   targetLabel = "已选",
   contextAccountId,
+  contextAccountIds,
 }: {
   accountOptions: AccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
   fields?: BatchReplaceField[];
   targetLabel?: string;
   contextAccountId?: string | null;
+  contextAccountIds?: string[];
 }) {
   const { selectedIds, clear } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
@@ -193,7 +211,7 @@ export function BasicDetailBatchReplaceButton({
 
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);
-    const result = await batchReplaceEntries({ ids: entryIds, field, value, contextAccountId });
+    const result = await batchReplaceEntries({ ids: entryIds, field, value, contextAccountId, contextAccountIds });
     if (!result.ok) throw new Error(result.error ?? "批量替换失败");
     clear();
     dispatchFinanceDataChanged({ reason: "entry-batch-replace", entryIds });

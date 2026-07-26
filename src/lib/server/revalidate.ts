@@ -18,6 +18,7 @@ export function revalidateAfterInvestChange() {
   revalidateTag("invest-account-data", "max");
   revalidateTag("fund-holding", "max");
   revalidatePath("/invest");
+  revalidatePath("/investments");
   revalidatePath("/funds");
   revalidatePath("/regular-invest");
 }

@@ -335,6 +335,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
               debtPrincipalAmount: Math.abs(parts.principal),
               debtInterestAmount: Math.abs(parts.interest),
               debtFeeAmount: 0,
+              realizedProfit: parts.interest > 0 ? -Math.abs(parts.interest) : null,
               source: "scheduled_task",
               regularInvestPlanId: plan.id,
               note: getTaskNote(task.type),

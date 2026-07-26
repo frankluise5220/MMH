@@ -918,10 +918,18 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     // If type is transfer but the category explicitly says income and there is no
     // counter account, the "转账" keyword likely describes how money arrived rather
     // than a true account-to-account transfer. Respect the category.
+    const explicitFlowDirection: "in" | "out" | null =
+      rawInflow > 0 && rawOutflow <= 0 ? "in"
+      : rawOutflow > 0 && rawInflow <= 0 ? "out"
+      : null;
     const type: ParsedItem["type"] =
-      rawInferredType === "transfer" && !counterAccount && /收入/.test(category)
+      explicitFlowDirection === "in" && rawInferredType !== "transfer" && !businessType
         ? "income"
-        : rawInferredType;
+        : explicitFlowDirection === "out" && rawInferredType !== "transfer" && !businessType
+          ? "expense"
+          : rawInferredType === "transfer" && !counterAccount && /收入/.test(category)
+            ? "income"
+            : rawInferredType;
     const onlyAmountFlow = !hasExplicitFlow && rawAmount > 0
       ? normalizeFlowFields(type, rawAmount, type === "income" ? rawAmount : 0, type === "income" ? 0 : rawAmount, type === "transfer" ? "out" : undefined)
       : null;
@@ -930,6 +938,8 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     const transferDirection = type === "transfer"
       ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
         ? "out"
+        : explicitFlowDirection
+          ? explicitFlowDirection
         : onlyAmountFlow
           ? "out"
           : inferTransferDirection(source, inflow, outflow)
@@ -944,18 +954,14 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     const previewFromAccount = type === "transfer"
       ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
         ? counterAccount
-        : majorType === "transfer"
-          ? account
-          : transferDirection === "in"
+        : transferDirection === "in"
             ? counterAccount
             : account
       : "";
     const previewToAccount = type === "transfer"
       ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE && importMode === "credit_card"
         ? account
-        : majorType === "transfer"
-          ? counterAccount
-          : transferDirection === "in"
+        : transferDirection === "in"
             ? account
             : counterAccount
       : "";
@@ -984,8 +990,7 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       remark,
       secondRemark: type === "transfer" ? (secondRemark || remark) : "",
       transferDirection:
-        businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ||
-        (type === "transfer" && majorType === "transfer")
+        businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
           ? "out"
           : transferDirection,
     };
@@ -2594,7 +2599,7 @@ export default function BatchImportPage() {
       }));
       setImportCompletion({
         count: success,
-        href: "/invest",
+        href: "/investments",
         accountIds: selectedItems.map((item) => item.fundAccountId).filter((id): id is string => Boolean(id)),
         kind: "fund",
       });

@@ -23,6 +23,7 @@ import {
   BasicDetailBatchReplaceButton,
   BasicDetailSelectionProvider,
   useBasicDetailSelection,
+  usePruneBasicDetailSelection,
 } from "./BasicDetailSelection";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import {
@@ -398,6 +399,8 @@ function InsuranceEntryRecordsTable({
   rowActions: (entry: InsuranceEntry) => ReactNode;
 }) {
   const { selectedIds, setSelection } = useBasicDetailSelection();
+  const currentEntryIds = useMemo(() => rows.map((entry) => entry.id), [rows]);
+  usePruneBasicDetailSelection(currentEntryIds);
   const accountOptions = useMemo(
     () => cashAccounts.map((account) => ({ id: account.id, label: account.label })),
     [cashAccounts],

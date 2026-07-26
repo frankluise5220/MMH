@@ -54,8 +54,71 @@ export type CreditCardCyclePersistRow = {
   lockSource: string | null;
 };
 
+export const CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE = "manual_cycle";
+
+export function hasCreditCardCycleLockSource(
+  lockSource: string | null | undefined,
+  source: string,
+) {
+  return String(lockSource ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .includes(source);
+}
+
+export function mergeCreditCardCycleLockSources(
+  ...sources: Array<string | null | undefined>
+) {
+  const merged = new Set<string>();
+  for (const source of sources) {
+    for (const item of String(source ?? "").split(",")) {
+      const normalized = item.trim();
+      if (normalized) merged.add(normalized);
+    }
+  }
+  return merged.size > 0 ? Array.from(merged).join(",") : null;
+}
+
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+export function nextCreditBillStatementMonth(statementMonth: string) {
+  const match = statementMonth.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null;
+  const nextDate = new Date(Date.UTC(year, month, 1));
+  return `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function paidFromNextCycleIncome(
+  statementMonth: string,
+  incomeByMonth: ReadonlyMap<string, number>,
+) {
+  const nextMonth = nextCreditBillStatementMonth(statementMonth);
+  return nextMonth ? incomeByMonth.get(nextMonth) ?? 0 : 0;
+}
+
+export function applyNextCyclePaidToCreditBillSummaries<T extends { month: string; income: number }>(
+  summaries: readonly T[],
+) {
+  const incomeByMonth = new Map(summaries.map((summary) => [summary.month, summary.income]));
+  return summaries.map((summary) => ({
+    ...summary,
+    paid: paidFromNextCycleIncome(summary.month, incomeByMonth),
+  }));
+}
+
+export function creditBillUnpaidAmount(row: { effectiveBill?: unknown; paid?: unknown }) {
+  return Math.max(0, roundMoney(toNumber(row.effectiveBill) - toNumber(row.paid)));
+}
+
+export function isCreditBillSettled(row: { isCurrentCycle?: boolean; effectiveBill?: unknown; paid?: unknown }) {
+  const effectiveBill = toNumber(row.effectiveBill);
+  if (row.isCurrentCycle || effectiveBill <= 0) return false;
+  return roundMoney(toNumber(row.paid)) + 0.005 >= roundMoney(effectiveBill);
 }
 
 export function creditCardDisplayBalanceFromCurrentCycle(
@@ -76,7 +139,7 @@ export function signedCreditBillAmountFromCardSide(
   if (fromBillAccount && toBillAccount) return 0;
   const amount = toNumber(entry.amount);
   if (fromBillAccount) return amount;
-  if (toBillAccount) return -amount;
+  if (toBillAccount) return Math.abs(amount);
   return null;
 }
 
@@ -262,7 +325,7 @@ export function buildCreditCardCyclePersistRows(params: {
     now,
   } = params;
 
-  return months
+  const rows = months
     .map((row) => {
       const summary = summaryByMonth.get(row.month);
       const cycle = summary ?? cycleForStatementMonth(row.month, billingDay, repaymentDay ?? null, now);
@@ -290,4 +353,5 @@ export function buildCreditCardCyclePersistRows(params: {
       } satisfies CreditCardCyclePersistRow;
     })
     .filter((row): row is CreditCardCyclePersistRow => !!row);
+  return Array.from(new Map(rows.map((row) => [row.statementMonth, row])).values());
 }

@@ -262,6 +262,12 @@ export function SidebarClient({
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
   const selectedView = (searchParams.get("view") ?? "").trim();
+  const isRootInvestmentView =
+    pathname === "/" &&
+    (selectedView === "investfund" ||
+      selectedView === "investmoney" ||
+      selectedView === "investwealth" ||
+      selectedView === "regularinvest");
 
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
@@ -803,7 +809,7 @@ export function SidebarClient({
               <Plus size={18} />
             </button>
           ) : null}
-          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || pathname === "/")} title={t("nav.accounts")}>
+          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && !isRootInvestmentView))} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
           <Link
@@ -813,7 +819,7 @@ export function SidebarClient({
           >
             <CreditCard size={18} />
           </Link>
-          <Link href="/investments" className={collapsedNavCls(pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title={t("nav.investments")}>
+          <Link href="/investments" className={collapsedNavCls(isRootInvestmentView || pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title={t("nav.investments")}>
             <BarChart3 size={18} />
           </Link>
           <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title={t("nav.liabilities")}>

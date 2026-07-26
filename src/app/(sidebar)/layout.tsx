@@ -41,7 +41,7 @@ export default async function SidebarLayout({
           <Sidebar />
         </Suspense>
       </div>
-      <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-background pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-[calc(3.5rem+env(safe-area-inset-top))] md:p-0">
+      <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-background pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-[calc(2.5rem+env(safe-area-inset-top))] md:p-0">
         {children}
       </main>
       <div className="hidden h-dvh shrink-0 xl:block">

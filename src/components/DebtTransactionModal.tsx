@@ -33,6 +33,7 @@ import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalc
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+type SimpleTransferDirection = "transfer_in" | "transfer_out";
 type PrepayStrategy = LoanPrepayStrategy;
 type LoanFundingMode = "cash_disbursement" | "financed_purchase";
 
@@ -40,6 +41,7 @@ type AccountOption = {
   id: string;
   label: string;
   subLabel?: string;
+  kind?: string | null;
   institutionId?: string | null;
   counterpartyId?: string | null;
   institutionType?: string | null;
@@ -186,6 +188,18 @@ function canSwitchDebtEditMode(currentMode: DebtMode, nextMode: DebtMode) {
   return canCreateDebtItemForMode(currentMode) && canCreateDebtItemForMode(nextMode);
 }
 
+function simpleTransferDirectionForMode(mode: DebtMode): SimpleTransferDirection {
+  return mode === "borrow_in" || mode === "collect_in" ? "transfer_in" : "transfer_out";
+}
+
+function debtModeForSimpleTransferDirection(
+  direction: SimpleTransferDirection,
+  debtDirection?: "payable" | "receivable" | null,
+): DebtMode {
+  if (direction === "transfer_in") return debtDirection === "receivable" ? "collect_in" : "borrow_in";
+  return debtDirection === "payable" ? "repay_out" : "lend_out";
+}
+
 function normalizeDebtObjectValue(value: string | undefined, data?: NestedFieldData) {
   const id = String(value ?? "").trim();
   if (!id || isDebtObjectRef(id)) return id;
@@ -301,7 +315,7 @@ export function DebtTransactionModal({
     [localNestedFieldData, nestedFieldData],
   );
   const cashOptions: SmartSelectOption[] = useMemo(
-    () => cashAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel })),
+    () => cashAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel, kind: item.kind })),
     [cashAccounts],
   );
   const {
@@ -326,6 +340,7 @@ export function DebtTransactionModal({
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState("");
+  const [debtAccountNestedOpen, setDebtAccountNestedOpen] = useState(false);
   const [mode, setMode] = useState<DebtMode>("borrow_in");
   const [loanFundingMode, setLoanFundingMode] = useState<LoanFundingMode>("cash_disbursement");
   const [date, setDate] = useState(today);
@@ -388,6 +403,11 @@ export function DebtTransactionModal({
         type: counterparty.type ?? "organization",
       })),
     });
+  }
+
+  function openDebtAccountCreate() {
+    if (!selectedDebtObjectIsCounterparty) return;
+    setDebtAccountNestedOpen(true);
   }
 
   const resetDraft = useCallback(() => {
@@ -473,29 +493,25 @@ export function DebtTransactionModal({
         ? localDebtAccounts.find((account) => account.id === detail.defaultDebtAccountId)
         : undefined;
       const eventDebtObject = debtObjectValueForAccount(eventDebtAccount);
-      if (detail?.mode && !canCreateDebtItemForMode(detail.mode)) {
-        setDebtInstitutionId("");
-      } else if (detail?.defaultDebtInstitutionId) {
+      if (detail?.defaultDebtInstitutionId) {
         setDebtInstitutionId(normalizeDebtObjectValue(detail.defaultDebtInstitutionId, localNestedFieldData ?? nestedFieldData));
       } else if (eventDebtObject) {
         setDebtInstitutionId(eventDebtObject);
       }
-      if (detail?.defaultDebtAccountId && (!canCreateDebtItemForMode(detail?.mode ?? "borrow_in") || detail.defaultDebtInstitutionId || eventDebtObject)) {
-        setDebtAccountId(detail.defaultDebtAccountId);
-      }
+      if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
       if (detail?.defaultPrincipal != null) {
-        const nextPrincipal = String(detail.defaultPrincipal);
+        const nextPrincipal = String(parseAbsMoneyText(String(detail.defaultPrincipal)));
         setPrincipal(nextPrincipal);
         setOriginalPrincipalForEdit(nextPrincipal);
       }
       if (detail?.defaultRecalculateStartDate) setEditRecalculateStartDate(detail.defaultRecalculateStartDate);
-      if (detail?.defaultInterest != null) setInterest(String(detail.defaultInterest));
+      if (detail?.defaultInterest != null) setInterest(String(parseAbsMoneyText(String(detail.defaultInterest))));
       if (detail?.defaultPenalty != null) {
-        const nextPenalty = String(detail.defaultPenalty);
+        const nextPenalty = String(parseAbsMoneyText(String(detail.defaultPenalty)));
         setPenalty(nextPenalty);
         if (detail?.mode === "prepay_out") {
-          setPrepayTotal(roundMoneyValue(parseMoneyText(String(detail.defaultPrincipal ?? "")) + parseMoneyText(nextPenalty)).toFixed(2));
+          setPrepayTotal(roundMoneyValue(parseAbsMoneyText(String(detail.defaultPrincipal ?? "")) + parseMoneyText(nextPenalty)).toFixed(2));
           setPrepayTotalManual(false);
         }
       }
@@ -575,11 +591,11 @@ export function DebtTransactionModal({
   function findDebtAccountForObject(objectValue: string, direction: "payable" | "receivable") {
     if (!isDebtObjectRef(objectValue)) return null;
     const rawId = rawDebtObjectId(objectValue);
-    return localDebtAccounts.find((account) => {
+    const matchedAccounts = localDebtAccounts.filter((account) => {
       if (objectValue.startsWith("counterparty:")) return account.counterpartyId === rawId;
-      if (account.debtDirection !== direction) return false;
       return account.institutionId === rawId;
-    }) ?? null;
+    });
+    return matchedAccounts.find((account) => account.debtDirection === direction) ?? matchedAccounts[0] ?? null;
   }
 
   function debtObjectValueForAccount(account: AccountOption | undefined) {
@@ -604,6 +620,9 @@ export function DebtTransactionModal({
       return;
     }
     const existingAccount = findDebtAccountForObject(id, debtDirectionForMode(mode));
+    if (id.startsWith("counterparty:") && existingAccount) {
+      setMode(debtModeForSimpleTransferDirection(simpleTransferDirectionForMode(mode), existingAccount.debtDirection));
+    }
     setDebtInstitutionId(id);
     setDebtAccountId(existingAccount?.id ?? "");
     setDebtItemName("");
@@ -612,8 +631,20 @@ export function DebtTransactionModal({
   function handleModeSelect(nextMode: DebtMode) {
     if (editingEntryId && !canSwitchDebtEditMode(mode, nextMode)) return;
     setMode(nextMode);
+    if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
     if (!canCreateDebtItemForMode(nextMode)) {
       setDebtInstitutionId("");
+    }
+  }
+
+  function handleSimpleTransferDirectionSelect(direction: SimpleTransferDirection) {
+    const account = localDebtAccounts.find((item) => item.id === debtAccountId);
+    const nextMode = debtModeForSimpleTransferDirection(direction, account?.debtDirection);
+    setMode(nextMode);
+    if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
+    if (account) {
+      const objectValue = debtObjectValueForAccount(account);
+      if (objectValue) setDebtInstitutionId(objectValue);
     }
   }
 
@@ -658,6 +689,7 @@ export function DebtTransactionModal({
     if (
       !options?.skipHistoryPrompt &&
       showBorrowPlan &&
+      loanFundingMode !== "financed_purchase" &&
       shouldPromptHistoricalRepayments({
         mode,
         isFixedRepaymentMethod,
@@ -711,15 +743,15 @@ export function DebtTransactionModal({
     formData.set("mode", mode);
     formData.set("loanFundingMode", loanFundingMode);
     formData.set("date", date);
-    const shouldUseDebtObject = !editingEntryId && canCreateDebtItemForMode(mode) && !!debtInstitutionId && !debtAccountId;
+    const shouldUseDebtObject = !editingEntryId && canSelectDebtObject && !!debtInstitutionId && !debtAccountId;
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
     formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
     formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
     formData.set("debtItemName", debtItemName);
     formData.set("cashAccountId", cashAccountId);
-    formData.set("principal", principal);
-    formData.set("interest", interest);
-    formData.set("penalty", penaltyForSubmit);
+    formData.set("principal", String(parseAbsMoneyText(principal)));
+    formData.set("interest", showSimpleTransferMode ? "0" : interest);
+    formData.set("penalty", showSimpleTransferMode ? "0" : penaltyForSubmit);
     formData.set("prepayStrategy", prepayStrategy);
     formData.set("annualRate", annualRate);
     formData.set("mortgageLprDiscount", mortgageLprDiscount);
@@ -728,7 +760,10 @@ export function DebtTransactionModal({
     formData.set("loanTotalRuns", loanTotalRuns);
     formData.set("firstRepaymentDate", firstRepaymentDate);
     formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod ? "true" : "false");
-    formData.set("createHistoricalRepaymentRecords", createHistoricalRepaymentRecords ? "true" : "false");
+    formData.set(
+      "createHistoricalRepaymentRecords",
+      loanFundingMode === "financed_purchase" ? "false" : createHistoricalRepaymentRecords ? "true" : "false",
+    );
     formData.set("historicalLoanRates", historicalRates.text);
     if (acceptedLprAdjustment) {
       formData.set("acceptedLprRateEffectiveDate", acceptedLprAdjustment.effectiveDate);
@@ -826,17 +861,25 @@ export function DebtTransactionModal({
     await saveDebtTransaction(pendingKeepAdding, { skipHistoryPrompt: true });
   }
 
-  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
-  const showPrepayment = mode === "prepay_out";
-  const canCreateDebtItem = canCreateDebtItemForMode(mode);
   const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
   const selectedDebtObject = debtObjectById.get(debtInstitutionId);
   const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
   const selectedDebtObjectIsBankInstitution =
     (debtInstitutionId.startsWith("institution:") && selectedDebtObject?.type === "bank") ||
     (!!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank");
+  const showSimpleTransferMode = selectedDebtObjectIsCounterparty && mode !== "prepay_out";
+  const simpleTransferDirection = simpleTransferDirectionForMode(mode);
+  const showInterest = !showSimpleTransferMode && (mode === "repay_out" || mode === "collect_in" || mode === "lend_out");
+  const showPrepayment = mode === "prepay_out";
+  const canCreateDebtItem = canCreateDebtItemForMode(mode);
+  const canSelectDebtObject = !!editingEntryId || canCreateDebtItem || showSimpleTransferMode;
   const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && selectedDebtObjectIsBankInstitution;
   const showBorrowPlan = showLoanBorrowOptions;
+  useEffect(() => {
+    if (selectedDebtObjectIsCounterparty && mode === "prepay_out") {
+      setMode("repay_out");
+    }
+  }, [mode, selectedDebtObjectIsCounterparty]);
   useEffect(() => {
     if (!showLoanBorrowOptions && loanFundingMode !== "cash_disbursement") {
       setLoanFundingMode("cash_disbursement");
@@ -846,13 +889,15 @@ export function DebtTransactionModal({
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
-  const cashAccountLabel = mode === "borrow_in"
-    ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
-    : mode === "repay_out" || mode === "prepay_out"
-      ? "支出账户"
-      : mode === "collect_in"
-        ? "收入账户"
-        : "支出账户";
+  const cashAccountLabel = showSimpleTransferMode
+    ? simpleTransferDirection === "transfer_in" ? "转入账户" : "转出账户"
+    : mode === "borrow_in"
+      ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "还款账户" : "入账账户")
+      : mode === "repay_out" || mode === "prepay_out"
+        ? "支出账户"
+        : mode === "collect_in"
+          ? "收入账户"
+          : "支出账户";
   const debtAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
@@ -869,7 +914,7 @@ export function DebtTransactionModal({
   const debtObjectAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
-        if (!canCreateDebtItem) return debtAccountOptions.some((option) => option.id === account.id);
+        if (!canSelectDebtObject) return debtAccountOptions.some((option) => option.id === account.id);
         if (!isDebtObjectRef(debtInstitutionId)) return false;
         const rawId = rawDebtObjectId(debtInstitutionId);
         if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
@@ -883,7 +928,7 @@ export function DebtTransactionModal({
           subLabel: [directionLabel, account.subLabel].filter(Boolean).join(" · "),
         };
       }),
-    [canCreateDebtItem, debtAccountOptions, debtInstitutionId, localDebtAccounts],
+    [canSelectDebtObject, debtAccountOptions, debtInstitutionId, localDebtAccounts],
   );
   const debtItemSuggestions = useMemo(
     () => Array.from(new Set(localDebtAccounts
@@ -898,7 +943,7 @@ export function DebtTransactionModal({
     [debtInstitutionId, localDebtAccounts],
   );
   const selectedDebtObjectName = debtObjectById.get(debtInstitutionId)?.name?.trim() || "往来对象";
-  const editingExistingDebtItem = !!editingEntryId && canCreateDebtItem;
+  const editingExistingDebtItem = !!editingEntryId && canSelectDebtObject;
   const selectedExistingDebtItem = editingExistingDebtItem || !!debtAccountId;
   const disabled = cashAccounts.length === 0;
   const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
@@ -1046,19 +1091,37 @@ export function DebtTransactionModal({
                   </div>
 
                   <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-                    <div className="grid grid-cols-5 gap-2">
-                      {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
-                        <button
-                          key={item}
-                          type="button"
-                          onClick={() => handleModeSelect(item)}
-                          disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
-                          className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
-                        >
-                          {MODE_LABELS[item]}
-                        </button>
-                      ))}
-                    </div>
+                    {showSimpleTransferMode ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          ["transfer_in", "转入"],
+                          ["transfer_out", "转出"],
+                        ] as const).map(([direction, label]) => (
+                          <button
+                            key={direction}
+                            type="button"
+                            onClick={() => handleSimpleTransferDirectionSelect(direction)}
+                            className={`segment-button h-9 ${simpleTransferDirection === direction ? "segment-button-active" : ""}`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-5 gap-2">
+                        {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => handleModeSelect(item)}
+                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
+                            className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
+                          >
+                            {MODE_LABELS[item]}
+                          </button>
+                        ))}
+                      </div>
+                    )}
 
                     {showLoanBorrowOptions ? (
                       <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 border-y border-slate-100 py-2">
@@ -1106,7 +1169,7 @@ export function DebtTransactionModal({
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
-                      {canCreateDebtItem ? (
+                      {canSelectDebtObject ? (
                         <div className="space-y-1">
                           <div className="form-label">往来对象</div>
                           <SmartSelect
@@ -1126,7 +1189,7 @@ export function DebtTransactionModal({
                           />
                         </div>
                       ) : null}
-                      {canCreateDebtItem ? (
+                      {canSelectDebtObject ? (
                         <div className="space-y-1">
                           <div className="form-label">往来账户</div>
                           <SmartSelect
@@ -1135,6 +1198,8 @@ export function DebtTransactionModal({
                             onChange={handleDebtAccountChange}
                             options={debtObjectAccountOptions}
                             placeholder={debtInstitutionId ? "保存时自动复用或新建" : "请先选择往来对象"}
+                            onCreateClick={selectedDebtObjectIsCounterparty ? () => { void openDebtAccountCreate(); } : undefined}
+                            createLabel="新增账户"
                             behavior={{
                               hierarchy: false,
                               search: true,
@@ -1180,7 +1245,7 @@ export function DebtTransactionModal({
                       )}
                     </div>
 
-                    {canCreateDebtItem && !debtAccountId ? (
+                    {canSelectDebtObject && !debtAccountId ? (
                       <div className="space-y-1">
                         <div className="form-label">新账户名称 <span className="text-slate-400">可选</span></div>
                           <input
@@ -1206,7 +1271,7 @@ export function DebtTransactionModal({
                     {!showPrepayment ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
+                        <div className="form-label">{showSimpleTransferMode ? "金额" : mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="金额" precision={2} />
                       </div>
                       {showInterest ? (
@@ -1767,6 +1832,53 @@ export function DebtTransactionModal({
                 setDebtInstitutionId(option.id);
                 setDebtAccountId("");
                 setDebtObjectNestedOpen(false);
+              }}
+            />,
+            document.body,
+          )
+        : null}
+      {open && debtAccountNestedOpen
+        ? createPortal(
+            <EntityCreateForm
+              mode="compact"
+              entityType="account"
+              open={debtAccountNestedOpen}
+              onClose={() => setDebtAccountNestedOpen(false)}
+              title="新增往来账户"
+              nameLabel="往来账户名称"
+              namePlaceholder="例如：京宁的往来款"
+              defaultType="loan"
+              hiddenFields={[
+                "kind",
+                "groupId",
+                "institutionId",
+                "currency",
+                "billingDay",
+                "repaymentDay",
+                "creditLimit",
+                "creditBillMode",
+                "numberMasked",
+                "investProductType",
+                "fundUnitsDecimals",
+                "tradingCalendar",
+                "costBasisMethod",
+                "defaultFundQueryApiId",
+              ]}
+              extraFields={{
+                kind: "loan",
+                counterpartyId: rawDebtObjectId(debtInstitutionId),
+              }}
+              onCreated={(id, name, extra) => {
+                const nextOption: AccountOption = {
+                  id,
+                  label: name,
+                  subLabel: extra?.counterpartyName ? `往来款 · ${extra.counterpartyName}` : "往来款",
+                  counterpartyId: extra?.counterpartyId ?? rawDebtObjectId(debtInstitutionId),
+                  debtDirection: "receivable" as const,
+                };
+                setLocalDebtAccounts((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, nextOption]));
+                setDebtAccountId(id);
+                setDebtAccountNestedOpen(false);
               }}
             />,
             document.body,

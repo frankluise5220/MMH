@@ -331,6 +331,7 @@ Select-String -Path .codex-logs/batch-import.debug.log -Pattern "traceId"
 - 新增信用卡选择机构后，从该机构已有信用卡带出账单日、还款日、额度和账单模式。额度仅作为新卡默认值，不覆盖已有卡额度。
 - 合并模式下，交易仍属于具体信用卡；账单汇总、明细、还款、周期和手工覆盖金额按组内所有卡计算。
 - `CreditCardCycle` 和 `BillOverride` 使用组内按 ID 排序后的第一张信用卡作为稳定存储账户；停用卡仍保留在组内以保证历史账单不变化。接口和页面必须通过统一 helper 解析，不能直接假设当前点中的卡就是存储账户。
+- 手工修改某一期账单周期后，受影响的 `CreditCardCycle` 行使用 `lockSource=manual_cycle` 标记。交易、分期或金额重算可以更新这些行的金额与当前期状态，但不得删除这些行后按 `Account.billingDay` 重新生成周期日期。
 - 当前不建模共享授信、总授信或银行额度占用规则；额度仍是每个账户自己的字段。
 
 

@@ -47,9 +47,8 @@ export function MobileInvestments({
 
   return (
     <div className="h-full overflow-y-auto bg-slate-100">
-      <div className="sticky top-0 z-10 grid grid-cols-3 border-b border-slate-200 bg-slate-50/96 px-2 backdrop-blur">
+      <div className="sticky top-0 z-10 grid grid-cols-2 border-b border-slate-200 bg-slate-50/96 px-2 backdrop-blur">
         <MobileTab href="/investments" label="投资总览" active />
-        <MobileTab href="/funds" label="基金持仓" />
         <MobileTab href="/regular-invest" label="定投计划" />
       </div>
 

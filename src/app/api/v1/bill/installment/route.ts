@@ -16,10 +16,11 @@
 import { AccountKind, CreditCardInstallmentSourceType } from "@prisma/client";
 import { NextResponse } from "next/server";
 
+import { creditBillUnpaidAmount } from "@/lib/credit/billing";
 import { type CreditCardInstallmentRateType } from "@/lib/credit/installment";
 import { prisma } from "@/lib/db/prisma";
 import { ensureBankInstallmentExpenseCategory } from "@/lib/default-categories";
-import { toNumber, toStatementMonth } from "@/lib/date-utils";
+import { toStatementMonth } from "@/lib/date-utils";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
@@ -148,7 +149,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "这一期账单已经创建过账单分期" }, { status: 409 });
     }
 
-    const referenceUnpaidAmount = roundMoney(Math.max(0, toNumber(cycle.effectiveBill) - toNumber(cycle.paid)));
+    const referenceUnpaidAmount = creditBillUnpaidAmount(cycle);
     const originalAmount = Math.max(referenceUnpaidAmount, amount);
     const adjustmentDate = installmentDate;
 

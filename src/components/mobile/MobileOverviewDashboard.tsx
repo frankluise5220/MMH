@@ -99,8 +99,8 @@ export function MobileOverviewDashboard({
             <CompactMetric label="借记卡" value={amount(totals.bankDebit)} />
             <CompactMetric label="第三方" value={amount(totals.ewallet)} align="right" />
             <CompactMetric label="存款" value={amount(totals.deposit)} />
-            <CompactMetric label="债权" value={amount(totals.loanReceivable)} />
-            <CompactMetric label="负债" value={amount(totals.liabilities)} className="text-red-600" align="right" />
+            <CompactMetric label="债权" value={amount(totals.loanReceivable)} className={valueClass(totals.loanReceivable)} />
+            <CompactMetric label="负债" value={amount(-totals.liabilities)} className={valueClass(-totals.liabilities)} align="right" />
           </div>
         </section>
 
@@ -151,7 +151,7 @@ export function MobileOverviewDashboard({
                 >
                   <AccountIcon kind={account.kind} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{account.name}</span>
-                  <span className={`shrink-0 text-sm font-semibold tabular-nums ${account.balance < 0 ? "text-red-600" : "text-slate-900"}`}>{amount(account.balance)}</span>
+                  <span className={`shrink-0 text-sm font-semibold tabular-nums ${account.kind === "loan" ? valueClass(account.balance) : account.balance < 0 ? "text-red-600" : "text-slate-900"}`}>{amount(account.balance)}</span>
                   <ChevronRight size={18} className="shrink-0 text-slate-400" />
                 </Link>
               ))}

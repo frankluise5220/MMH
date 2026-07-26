@@ -96,6 +96,7 @@ export async function assertAccountIdentityUnique(
     householdId: string;
     groupId: string;
     institutionId: string | null;
+    counterpartyId?: string | null;
     kind: string;
     name: unknown;
     numberMasked?: unknown;
@@ -112,6 +113,7 @@ export async function assertAccountIdentityUnique(
       householdId: input.householdId,
       groupId: input.groupId,
       institutionId: input.institutionId,
+      ...(input.counterpartyId !== undefined ? { counterpartyId: input.counterpartyId } : {}),
       kind: kind as AccountKind,
       isPlaceholder: { not: true },
       ...(input.excludeId ? { id: { not: input.excludeId } } : {}),

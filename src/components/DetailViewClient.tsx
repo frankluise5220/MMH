@@ -13,6 +13,7 @@ import {
   BasicDetailBatchReplaceButton,
   type BasicDetailBatchCategoryOption,
   useBasicDetailSelection,
+  usePruneBasicDetailSelection,
 } from "./BasicDetailSelection";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
@@ -82,6 +83,7 @@ export type DetailEntry = {
   debtPrincipalAmount?: number | null;
   debtInterestAmount?: number | null;
   debtFeeAmount?: number | null;
+  realizedProfit?: number | null;
   cashAccountId?: string | null;
   coverageAmount?: number | null;
   paymentTermYears?: number | null;
@@ -130,6 +132,7 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? undefined,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? undefined,
     fromAccountId: entry.type === "transfer" ? entry.accountId ?? undefined : undefined,
+    fromAccountName: entry.type === "transfer" ? entry.accountName ?? undefined : undefined,
     toAccountId: entry.toAccountId ?? undefined,
     toAccountName: entry.toAccountName ?? undefined,
     tagIds: entry.entryTags?.map((item) => item.tagId) ?? [],
@@ -598,6 +601,18 @@ export function DetailViewClient({
     () => new Set((reorderAccountIds?.length ? reorderAccountIds : [accountId]).filter(Boolean)),
     [accountId, reorderAccountIds],
   );
+  const accountColumnScopeIdList = useMemo(
+    () => Array.from(accountColumnScopeIds),
+    [accountColumnScopeIds],
+  );
+  const relatedAccountTarget = useCallback((entry: DetailEntry) => {
+    const sourceInScope = !!entry.accountId && accountColumnScopeIds.has(entry.accountId);
+    const targetInScope = !!entry.toAccountId && accountColumnScopeIds.has(entry.toAccountId);
+    if (targetInScope && !sourceInScope) return { id: entry.accountId, name: entry.accountName };
+    if (sourceInScope && !targetInScope) return { id: entry.toAccountId, name: entry.toAccountName };
+    if (targetInScope) return { id: entry.accountId, name: entry.accountName };
+    return { id: entry.toAccountId, name: entry.toAccountName };
+  }, [accountColumnScopeIds]);
   const accountColumnTarget = useCallback((entry: DetailEntry) => {
     if (accountColumnMode === "cardLast4") {
       if (entry.accountId && accountColumnScopeIds.has(entry.accountId)) {
@@ -840,7 +855,7 @@ export function DetailViewClient({
     const debtMode = inferDebtMode(e, accountOptionById);
     const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
     const debtPrincipalAmount = e.debtPrincipalAmount == null ? Math.abs(toNumber(e.amount)) : toNumber(e.debtPrincipalAmount);
-    const debtInterestAmount = Math.abs(toNumber(e.debtInterestAmount ?? 0));
+    const debtInterestAmount = Math.abs(toNumber(e.realizedProfit ?? e.debtInterestAmount ?? 0));
     const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
     const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
     const debtAccountIdForEdit = isDebtAccountFromSide ? (e.accountId ?? "") : (e.toAccountId ?? "");
@@ -859,6 +874,7 @@ export function DetailViewClient({
               defaultPrincipal: debtPrincipalAmount,
               defaultInterest: debtInterestAmount,
               defaultPenalty: debtFeeAmount,
+              defaultNote: e.note ?? "",
               defaultPrepayStrategy: e.source === "debt_prepay_out"
                 ? parseLoanPrepayStrategy(e.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
                 : undefined,
@@ -877,6 +893,8 @@ export function DetailViewClient({
   const outflowCls = pnlColor(-1, colorScheme);
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
+  const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  usePruneBasicDetailSelection(currentEntryIds);
   const detailRefreshSeqRef = useRef(0);
   const lastResetKeyRef = useRef<string | undefined>(resetKey);
 
@@ -1177,38 +1195,26 @@ export function DetailViewClient({
       hideable: true,
       defaultHidden: relatedAccountDefaultHidden,
       filterText: (e) => {
-        const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
-        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
-        return isToAccount ? sourceAccount.label : targetAccount?.label ?? "";
+        const related = relatedAccountTarget(e);
+        return accountDisplayFallback(related.id, related.name).label;
       },
       filterTitle: (e) => {
-        const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
-        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
-        return isToAccount ? sourceAccount.title : targetAccount?.title ?? "";
+        const related = relatedAccountTarget(e);
+        return accountDisplayFallback(related.id, related.name).title;
       },
       filterSearchText: (e) => {
-        const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
-        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
-        const selected = isToAccount ? sourceAccount : targetAccount;
+        const related = relatedAccountTarget(e);
+        const selected = accountDisplayFallback(related.id, related.name);
         return [
-          selected?.label,
-          selected?.title,
-          isToAccount ? e.accountName : e.toAccountName,
+          selected.label,
+          selected.title,
+          related.name,
         ].filter(Boolean).join(" ");
       },
       render: (e) => {
-        const isToAccount = !!accountId && e.toAccountId === accountId;
-        const sourceAccount = accountDisplayFallback(e.accountId, e.accountName);
-        const targetAccount = e.toAccountId ? accountDisplayFallback(e.toAccountId, e.toAccountName) : null;
-        const sourceAccountLabel = sourceAccount.label;
-        const targetAccountLabel = targetAccount?.label ?? null;
-        const relatedAccountLabel = isToAccount ? sourceAccountLabel : targetAccountLabel;
-        const relatedAccountTitle = isToAccount ? sourceAccount.title : targetAccount?.title ?? "";
-        const relatedAccountId = isToAccount ? e.accountId : e.toAccountId;
-        return renderNavigableAccountLabel(e, relatedAccountId, relatedAccountLabel, relatedAccountTitle, "block truncate text-slate-500");
+        const related = relatedAccountTarget(e);
+        const display = accountDisplayFallback(related.id, related.name);
+        return renderNavigableAccountLabel(e, related.id, display.label, display.title, "block truncate text-slate-500");
       },
     },
     ...(showRunningBalance ? [{
@@ -1258,13 +1264,13 @@ export function DetailViewClient({
       },
     },
     { key: "attachment", label: t("detail.column.attachment"), width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
       {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
       {selectedCount > 0 ? <span className="text-xs text-slate-500">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
     </div>
   ) : undefined;
@@ -1304,8 +1310,10 @@ export function DetailViewClient({
                       : getInsuranceDetailCategoryName(entry))
                   ) || "未分类";
                   const note = displayDetailRemark(entry, accountId);
+                  const related = relatedAccountTarget(entry);
+                  const relatedDisplay = accountDisplayFallback(related.id, related.name);
                   const counterpart = entry.type === "transfer"
-                    ? (entry.accountId === accountId ? entry.toAccountName : entry.accountName)
+                    ? relatedDisplay.label
                     : entry.fundName || note;
                   const { edit, customEditEvent } = buildEntryEditRequest(entry);
                   return (
@@ -1396,7 +1404,7 @@ export function DetailViewClient({
       rowActionsMinWidth={92}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} />
+          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

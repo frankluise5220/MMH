@@ -5,6 +5,7 @@ export type BatchReplaceRequest = {
   field: BatchReplaceField;
   value: string;
   contextAccountId?: string | null;
+  contextAccountIds?: string[];
 };
 
 export type BatchReplaceResult = {
@@ -26,7 +27,11 @@ export async function batchReplaceEntries(request: BatchReplaceRequest): Promise
   const res = await fetch("/api/v1/entries/batch-update", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ updates, contextAccountId: request.contextAccountId ?? undefined }),
+    body: JSON.stringify({
+      updates,
+      contextAccountId: request.contextAccountId ?? undefined,
+      contextAccountIds: request.contextAccountIds?.length ? request.contextAccountIds : undefined,
+    }),
   });
   const data = await res.json().catch(() => ({ ok: false, error: "批量替换失败" }));
   return data;

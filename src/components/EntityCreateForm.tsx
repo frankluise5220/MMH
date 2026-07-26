@@ -20,6 +20,8 @@ type EntityCreatedExtra = {
   institutionId?: string;
   institutionName?: string;
   institutionShortName?: string;
+  counterpartyId?: string;
+  counterpartyName?: string;
   currency?: string;
 };
 
@@ -551,6 +553,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           institutionId: entityType === "account" ? created.institutionId ?? form.institutionId ?? undefined : undefined,
           institutionName: entityType === "account" ? created.Institution?.name : undefined,
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
+          counterpartyId: entityType === "account" ? created.counterpartyId ?? form.counterpartyId ?? undefined : undefined,
+          counterpartyName: entityType === "account" ? created.Counterparty?.name : undefined,
           currency: entityType === "account" ? created.currency ?? form.currency ?? undefined : undefined,
           type: entityType === "institution" || entityType === "counterparty" || entityType === "category" ? selectedTypeValue : undefined,
         });

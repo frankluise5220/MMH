@@ -4,7 +4,7 @@ import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 export type MonthlySummaryRow = {
@@ -59,6 +59,7 @@ export async function getMonthlySummary(
       fundSubtype: true,
       fundProductType: true,
       realizedProfit: true,
+      debtInterestAmount: true,
       depositInterest: true,
       fundFee: true,
       fundCode: true,
@@ -105,6 +106,10 @@ export async function getMonthlySummary(
       })) continue;
       if (isToSelf && !isFromSelf) row.income += Math.abs(amount);
       else if (isFromSelf && !isToSelf) row.expense += Math.abs(amount);
+      for (const item of getBusinessResultStatisticItems(e)) {
+        if (item.type === "income") row.income += item.amount;
+        else row.expense += item.amount;
+      }
     } else if (e.type === TransactionType.investment) {
       if (e.source === "insurance") {
         const value = Math.abs(amount);

@@ -3,6 +3,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { formatDateLocal } from "@/lib/date-utils";
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +19,10 @@ export default async function TransactionsPage() {
         date: true,
         amount: true,
         type: true,
+        accountId: true,
         categoryName: true,
         accountName: true,
+        toAccountId: true,
         toAccountName: true,
         note: true,
       },
@@ -27,7 +30,16 @@ export default async function TransactionsPage() {
     prisma.account.findMany({
       where: { ...hidFilter, isActive: true, isPlaceholder: { not: true } },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, kind: true },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        numberMasked: true,
+        groupId: true,
+        investProductType: true,
+        Institution: { select: { name: true, shortName: true } },
+        AccountGroup: { select: { id: true, name: true } },
+      },
     }),
     prisma.category.findMany({
       where: { ...hidFilter, type: { in: ["expense", "income"] } },
@@ -36,14 +48,20 @@ export default async function TransactionsPage() {
     }),
   ]);
 
+  const accountDisplayById = new Map(
+    accounts.map((account) => {
+      const option = buildAccountDisplayOption({ ...account, kind: String(account.kind) });
+      return [account.id, option.fullLabel || option.selectorLabel || option.label] as const;
+    }),
+  );
   const rows: MobileTransactionRow[] = entries.map((entry) => ({
     id: entry.id,
     date: formatDateLocal(entry.date),
     amount: Number(entry.amount),
     type: entry.type,
     categoryName: entry.categoryName ?? "",
-    accountName: entry.accountName ?? "",
-    toAccountName: entry.toAccountName ?? "",
+    accountName: accountDisplayById.get(entry.accountId) ?? entry.accountName ?? "",
+    toAccountName: entry.toAccountId ? accountDisplayById.get(entry.toAccountId) ?? entry.toAccountName ?? "" : entry.toAccountName ?? "",
     note: entry.note ?? "",
   }));
 
@@ -52,7 +70,7 @@ export default async function TransactionsPage() {
       <div className="h-full md:hidden">
         <MobileTransactions entries={rows} />
         <MobileTransactionForm
-          accounts={accounts.map((account) => ({ id: account.id, name: account.name, kind: String(account.kind) }))}
+          accounts={accounts.map((account) => ({ ...account, kind: String(account.kind) }))}
           categories={categories}
         />
       </div>

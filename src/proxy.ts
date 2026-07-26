@@ -11,6 +11,7 @@ const PUBLIC_PATHS = [
   "/api/v1/ai/import",
   "/api/v1/ai/models",
   "/api/v1/auth",
+  "/api/v1/settings/catalog",
   "/api/v1/settings/system",
   "/api/v1/test-prompt",
   "/test-results",
@@ -102,7 +103,7 @@ function extractHostname(req: NextRequest): string | null {
   return req.nextUrl.hostname || null;
 }
 
-const ORIGIN_BYPASS_PATHS = ["/login", "/api/v1/auth", "/api/v1/settings/system"];
+const ORIGIN_BYPASS_PATHS = ["/login", "/api/v1/auth", "/api/v1/settings/catalog", "/api/v1/settings/system"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

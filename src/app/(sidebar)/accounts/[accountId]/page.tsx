@@ -6,6 +6,7 @@ import { MobileTransactions, type MobileTransactionRow } from "@/components/mobi
 import { prisma } from "@/lib/db/prisma";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -32,7 +33,16 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     prisma.account.findMany({
       where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, kind: true },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        numberMasked: true,
+        groupId: true,
+        investProductType: true,
+        Institution: { select: { name: true, shortName: true } },
+        AccountGroup: { select: { id: true, name: true } },
+      },
     }),
     prisma.category.findMany({
       where: { type: { in: ["expense", "income"] }, ...hidFilter },
@@ -73,6 +83,12 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
       : Promise.resolve(null),
   ]);
 
+  const accountDisplayById = new Map(
+    accounts.map((item) => {
+      const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) });
+      return [item.id, option.fullLabel || option.selectorLabel || option.label] as const;
+    }),
+  );
   const rows: MobileTransactionRow[] = entries.map((entry) => {
     const amount = toNumber(entry.amount);
     return {
@@ -82,8 +98,8 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
       flowAmount: entry.accountId === accountId ? amount : -amount,
       type: entry.type,
       categoryName: entry.categoryName ?? "",
-      accountName: entry.accountName ?? "",
-      toAccountName: entry.toAccountName ?? "",
+      accountName: accountDisplayById.get(entry.accountId) ?? entry.accountName ?? "",
+      toAccountName: entry.toAccountId ? accountDisplayById.get(entry.toAccountId) ?? entry.toAccountName ?? "" : entry.toAccountName ?? "",
       note: entry.note ?? "",
     };
   });
@@ -106,7 +122,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
           }}
         />
         <MobileTransactionForm
-          accounts={accounts.map((item) => ({ id: item.id, name: item.name, kind: String(item.kind) }))}
+          accounts={accounts.map((item) => ({ ...item, kind: String(item.kind) }))}
           categories={categories}
           defaultAccountId={account.id}
         />

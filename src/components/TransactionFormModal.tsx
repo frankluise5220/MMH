@@ -453,11 +453,16 @@ export function TransactionFormModal({
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
     const filtered = source.filter((option) => !option.isHeader);
     let merged = mergeSmartSelectOptions(filtered, transferAccountList);
+    const selectedIds = new Set([fromAccountId, toAccountId].filter(Boolean));
+    const selectedOptions = merged.filter((option) => selectedIds.has(option.id));
     if (transferVisibleOptionIds) {
       merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
     }
+    for (const option of selectedOptions) {
+      if (!merged.some((item) => item.id === option.id)) merged.push(option);
+    }
     return sortOptionsByRecent(merged, recentAccountIds);
-  }, [localTransferAccountSSOpts, transferAccountList, transferFiltered, transferVisibleOptionIds, recentAccountIds]);
+  }, [fromAccountId, localTransferAccountSSOpts, recentAccountIds, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
 
   const displayAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(accountSSOptionsFiltered, accountList);
@@ -795,8 +800,11 @@ export function TransactionFormModal({
         accountLabel?: string;
         categoryId?: string;
         counterpartyInstitutionId?: string;
+        accountName?: string;
+        fromAccountName?: string;
         fromAccountId?: string;
         toAccountId?: string;
+        toAccountName?: string;
         fundSubtype?: string;
         hasFundDetail?: boolean;
         cashAccountId?: string;
@@ -834,10 +842,22 @@ export function TransactionFormModal({
         const nextFromAccountId = detail.fromAccountId && detail.fromAccountId !== nextToAccountId
           ? detail.fromAccountId
           : detail.accountId ?? "";
+        const fallbackTransferOption = (id: string, label?: string): AccountOption | null => {
+          if (!id) return null;
+          const existing = transferAccountList.find((opt) => opt.id === id)
+            ?? (transferAccountSSOptions ?? []).find((opt) => opt.id === id && !opt.isHeader && !opt.isGroup) as AccountOption | undefined;
+          if (existing) return existing;
+          const text = (label ?? "").trim();
+          return text ? { id, label: text } : null;
+        };
+        const transferExtras = [
+          fallbackTransferOption(nextFromAccountId, detail.fromAccountName ?? detail.accountName),
+          fallbackTransferOption(nextToAccountId, detail.toAccountName),
+        ].filter((option): option is AccountOption => !!option);
         setLocalTransferAccountSSOpts((prev) => {
-          const extras = transferAccountList.filter((opt) => opt.id === nextFromAccountId || opt.id === nextToAccountId);
-          return mergeSmartSelectOptions(prev ?? transferAccountSSOptions, extras);
+          return mergeSmartSelectOptions(prev ?? transferAccountSSOptions, transferExtras);
         });
+        setTransferAccountList((prev) => mergeSmartSelectOptions(prev, transferExtras));
         setAccountId("");
         setCategoryId("");
         setFromAccountId(nextFromAccountId);
@@ -1629,7 +1649,7 @@ export function TransactionFormModal({
           const groupName = extra?.groupName?.trim();
           const label = institutionLabel ? `${institutionLabel}·${name}` : name;
           const subLabel = kindLabel(kind);
-          const option = { id, label, subLabel };
+          const option = { id, label, subLabel, kind };
           setAccountList(prev => [...prev, option]);
           setTransferAccountList(prev => [...prev, option]);
           setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));

@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
-import { AccountKind, CreditCardInstallmentSourceType, DebtDirection, TransactionType, FundSubtype, RegularInvestStatus, IntervalUnit } from "@prisma/client";
+import { AccountKind, CreditCardInstallmentSourceType, DebtDirection, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
@@ -23,7 +23,7 @@ import { DashboardOverview } from "@/components/DashboardOverview";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { BasicDetailPanel } from "@/components/BasicDetailPanel";
-import { CreditBillSummaryTable, type CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
+import { CreditBillSummaryTable } from "@/components/CreditBillSummaryTable";
 import { CreditBillDetailPanel } from "@/components/CreditBillDetailPanel";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
@@ -31,7 +31,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 import Link from "next/link";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -41,15 +41,15 @@ import {
   buildDebtRepaymentScheduleRows,
   buildDebtRowsViewData,
 } from "@/lib/server/debt-view-data";
+import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
-import { getFundArrivalDays, getFundConfirmDays, normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
-import { setFundFeeRateByDate, getFundFeeRateByDate, setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
+import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
+import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
-import { getFundNav } from "@/lib/fund/navCache";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
@@ -71,21 +71,17 @@ import {
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
 import { getInvestmentAccountView, isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
-import { getAccountFundUnitsDecimals, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
-import { createCreditCardInstallmentPlan, normalizeCreditCardInstallmentStatementMonths } from "@/lib/server/credit-card-installment";
-import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
+import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
+import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
+import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
+import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import {
   listLoanRateAdjustmentsByAccountIds,
-  replaceLoanRateAdjustmentsForAccount,
-  resolveLoanRateAdjustments,
 } from "@/lib/server/loan-rate-adjustments";
-import {
-  encodeLoanPrepayStrategy,
-  normalizeLoanPrepayStrategy,
-} from "@/lib/loan-prepay-strategy";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
@@ -100,33 +96,11 @@ import {
   normalizeDetailPage,
   normalizeDetailPageSize,
 } from "@/lib/detail-pagination-preference";
-import {
-  calcLoanScheduledAmountForPeriodStart,
-  calcLoanRunPartsWithRateAdjustments,
-  calcLoanScheduledAmount,
-  normalizeLoanRateAdjustments,
-} from "@/lib/loan-repayment";
-import {
-  buildMortgageLprRateAdjustments,
-  MORTGAGE_BASE_BENCHMARK_RATE,
-} from "@/lib/loan-lpr";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
-import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
-import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
-import {
-  buildCreditCardCyclePersistRows,
-  computeCreditBillCascade,
-  cycleForStatementMonth,
-  fillMissingCreditBillSummaries,
-  mergeCreditBillSummariesWithCascade,
-  signedCreditBillAmountFromCardSide,
-  summarizeCreditBillSignedFlows,
-} from "@/lib/credit/billing";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 
 export const dynamic = "force-dynamic";
 
-import { addDaysUtc, formatDateLocal, formatDateUtc, toStatementMonth, creditCardCycle, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { formatDateLocal, toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
 
 function dateFromYmd(value: string | null | undefined): Date | null {
   const text = String(value ?? "").trim();
@@ -269,212 +243,11 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
   return Number.isFinite(discount) && discount > 0 ? discount : null;
 }
 
-async function resolveOrCreateDebtAccount(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  householdId: string,
-  debtObjectId: string,
-  direction: "payable" | "receivable",
-  itemName?: string,
-) {
-  const debtObject = await resolveDebtObject(tx, householdId, debtObjectId);
-
-  const objectName = debtObject.shortName?.trim() || debtObject.name;
-  const accountName = debtObject.kind === "counterparty"
-    ? `${objectName}的往来款`
-    : itemName?.trim() || `${objectName}的往来款`;
-  const objectWhere = debtObject.kind === "counterparty"
-    ? { counterpartyId: debtObject.id, institutionId: null }
-    : { institutionId: debtObject.id, counterpartyId: null };
-  const requestedItemName = debtObject.kind === "counterparty" ? "" : itemName?.trim();
-  let existing;
-  if (debtObject.kind === "counterparty") {
-    existing = await tx.account.findFirst({
-      where: {
-        householdId,
-        ...objectWhere,
-        kind: AccountKind.loan,
-        ...(requestedItemName ? { name: accountName } : {}),
-        isPlaceholder: { not: true },
-      },
-      include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-      orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-    });
-  } else {
-    existing =
-      (await tx.account.findFirst({
-        where: {
-          householdId,
-          ...objectWhere,
-          kind: AccountKind.loan,
-          debtDirection: direction,
-          isPlaceholder: { not: true },
-        },
-        include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-        orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-      })) ??
-      (await tx.account.findFirst({
-        where: {
-          householdId,
-          ...objectWhere,
-          kind: AccountKind.loan,
-          debtDirection: null,
-          isPlaceholder: { not: true },
-        },
-        include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-        orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-      }));
-  }
-  if (existing) {
-    if (!existing.isActive || (debtObject.kind !== "counterparty" && existing.debtDirection !== direction)) {
-      return tx.account.update({
-        where: { id: existing.id },
-        data: {
-          isActive: true,
-          ...(debtObject.kind !== "counterparty" ? { debtDirection: direction } : {}),
-        },
-        include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-      });
-    }
-    return existing;
-  }
-
-  const group =
-    (await tx.accountGroup.findFirst({ where: { householdId, name: { in: ["往来款", "借入/借出", "负债"] } }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] })) ??
-    (await tx.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }));
-  if (!group) throw new Error("缺少账户分组，无法创建往来款账户");
-
-  return tx.account.create({
-    data: {
-      name: accountName,
-      kind: AccountKind.loan,
-      debtDirection: debtObject.kind === "counterparty" ? "receivable" : direction,
-      currency: "CNY",
-      groupId: group.id,
-      institutionId: debtObject.kind === "institution" ? debtObject.id : null,
-      counterpartyId: debtObject.kind === "counterparty" ? debtObject.id : null,
-      householdId,
-      isActive: true,
-    },
-    include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-  });
-}
-
-async function resolveDebtObject(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  householdId: string,
-  debtObjectId: string,
-) {
-  const refMatch = /^(counterparty|institution):(.+)$/.exec(debtObjectId);
-  const sourceKind = refMatch?.[1] ?? "counterparty";
-  const sourceId = refMatch?.[2] ?? debtObjectId;
-  if (sourceKind === "institution") {
-    const institution = await tx.institution.findFirst({
-      where: { id: sourceId, householdId, type: "bank" },
-      select: { id: true, name: true, shortName: true, type: true },
-    });
-    if (!institution) throw new Error("贷款机构只能选择银行");
-    return { ...institution, kind: "institution" as const };
-  }
-
-  const counterparty = await tx.counterparty.findFirst({
-    where: { id: sourceId, householdId },
-    select: { id: true, name: true, shortName: true, type: true },
-  });
-  if (!counterparty) throw new Error("请选择往来对象");
-  return { ...counterparty, kind: "counterparty" as const };
-}
-
-function parseDateOnlyUtc(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month - 1 ||
-    date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-  return date;
-}
-
-function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
-  if (!a || !b) return a == null && b == null;
-  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
-}
-
-const INTEREST_FREE_LOAN_REPAYMENT_METHOD = "免息分期还本";
-const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "先还利息一次性还本"]);
-
-function parseOptionalPositiveNumber(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const parsed = typeof value === "number" ? value : parseFloat(String(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parsePositiveInteger(value: unknown, fallback = 1): number {
-  const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function parseLoanRateAdjustmentsText(value: unknown) {
-  const text = String(value ?? "").trim();
-  if (!text) return [];
-  const rows = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const parsed = rows.map((line) => {
-    const match = /^(\d{4}-\d{2}-\d{2})\s*[,，\s]\s*([0-9]+(?:\.[0-9]+)?)%?$/.exec(line);
-    if (!match) throw new Error(`历史利率格式不正确：${line}`);
-    return {
-      effectiveDate: match[1],
-      annualRate: Number(match[2]),
-    };
-  });
-  const invalid = parsed.find((item) => !Number.isFinite(item.annualRate) || item.annualRate <= 0);
-  if (invalid) throw new Error(`历史利率不正确：${invalid.effectiveDate}`);
-  return normalizeLoanRateAdjustments(parsed);
-}
-
-function calculateLoanPlanAmount(params: {
-  principal: number;
-  annualRate: number | null;
-  totalRuns: number;
-  intervalMonths: number;
-  repaymentMethod: string;
-}) {
-  return calcLoanScheduledAmount(params);
-}
 
 import { subtypeDisplay } from "@/lib/investment-config";
 import { LinkDateRangeFilter, LinkNumberRangeFilter, LinkTableColumnFilter } from "@/components/TableColumnFilter";
 
 type DetailFilterColumn = "date" | "flow" | "type" | "category" | "related" | "remark";
-
-function normalizeIntervalUnitValue(value: string): IntervalUnit {
-  if (value === "day" || value === "week" || value === "biweek" || value === "month" || value === "year") {
-    return value;
-  }
-  return IntervalUnit.month;
-}
-
-function normalizeIntervalScheduleValue(unit: IntervalUnit, value: number): { unit: IntervalUnit; value: number } {
-  const safeValue = Number.isFinite(value) && value > 0 ? value : 1;
-  if (unit === "biweek") return { unit: "week", value: safeValue * 2 };
-  return { unit, value: safeValue };
-}
-
-function parseExecutionDayValue(raw: string, intervalUnit: IntervalUnit): number | null {
-  if (intervalUnit === "year") return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const parsed = parseInt(trimmed, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
 
 const DETAIL_EMPTY_VALUE = "(空)";
 const DETAIL_FILTER_SEPARATOR = "\u001F";
@@ -1564,460 +1337,6 @@ async function createTransaction(formData: FormData) {
   }
 }
 
-async function createDebtTransaction(formData: FormData) {
-  "use server";
-
-  const mode = String(formData.get("mode") ?? "").trim();
-  const loanFundingMode = String(formData.get("loanFundingMode") ?? "cash_disbursement").trim();
-  const editEntryId = String(formData.get("editEntryId") ?? "").trim();
-  const debtAccountId = String(formData.get("debtAccountId") ?? "").trim();
-  const debtObjectId = String(formData.get("debtObjectId") ?? formData.get("debtInstitutionId") ?? "").trim();
-  const debtItemName = String(formData.get("debtItemName") ?? "").trim();
-  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
-  const dateStr = String(formData.get("date") ?? "").trim();
-  const principal = parseMoneyInput(formData.get("principal"));
-  const principalAbs = Math.abs(principal);
-  const rawInterest = parseMoneyInput(formData.get("interest"));
-  const penalty = parseMoneyInput(formData.get("penalty"));
-  const prepayStrategyRaw = String(formData.get("prepayStrategy") ?? "").trim();
-  const prepayStrategy = normalizeLoanPrepayStrategy(prepayStrategyRaw);
-  const annualRateRaw = String(formData.get("annualRate") ?? "").trim();
-  const mortgageLprDiscountRaw = String(formData.get("mortgageLprDiscount") ?? "").trim();
-  const repaymentMethod = String(formData.get("repaymentMethod") ?? "").trim() || "自由还款";
-  const isInterestFreeRepayment = repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD;
-  const loanYearsRaw = parseInt(String(formData.get("loanYears") ?? ""), 10);
-  const repaymentIntervalMonthsRaw = parseInt(String(formData.get("repaymentIntervalMonths") ?? "1"), 10);
-  const loanTotalRunsRaw = parseInt(String(formData.get("loanTotalRuns") ?? ""), 10);
-  const firstRepaymentDateStr = String(formData.get("firstRepaymentDate") ?? "").trim();
-  const createRepaymentPlan = String(formData.get("createRepaymentPlan") ?? "false") === "true";
-  const createHistoricalRepaymentRecords = String(formData.get("createHistoricalRepaymentRecords") ?? "false") === "true";
-  const historicalLoanRatesText = String(formData.get("historicalLoanRates") ?? "").trim();
-  const acceptedLprRateEffectiveDateStr = String(formData.get("acceptedLprRateEffectiveDate") ?? "").trim();
-  const acceptedLprAnnualRateRaw = String(formData.get("acceptedLprAnnualRate") ?? "").trim();
-  const note = String(formData.get("note") ?? "").trim();
-  const { householdId } = await getHouseholdScope();
-  let recalculateAfterSave: { accountId: string; startDate: string } | null = null;
-  const isFinancedPurchase = mode === "borrow_in" && loanFundingMode === "financed_purchase";
-
-  if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
-    return { ok: false as const, error: "操作类型不正确" };
-  }
-  if ((!debtAccountId && !debtObjectId) || !cashAccountId) {
-    return { ok: false as const, error: "请选择往来对象和资金账户" };
-  }
-  if (debtAccountId && debtAccountId === cashAccountId) {
-    return { ok: false as const, error: "往来对象账户与资金账户不能相同" };
-  }
-  if (principalAbs <= 0) {
-    return { ok: false as const, error: "请输入正确的金额" };
-  }
-  const interest = mode === "prepay_out" ? 0 : rawInterest;
-  if (interest < 0) {
-    return { ok: false as const, error: "利息不能小于 0" };
-  }
-  if (penalty < 0) {
-    return { ok: false as const, error: "手续费不能小于 0" };
-  }
-  const debtPrincipalForRecord = mode === "repay_out" || mode === "prepay_out" ? principalAbs : principal;
-
-  const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-  const mortgageLprDiscount = isInterestFreeRepayment
-    ? null
-    : mortgageLprDiscountRaw
-      ? parseFloat(mortgageLprDiscountRaw)
-      : null;
-  if (
-    !isInterestFreeRepayment &&
-    mortgageLprDiscountRaw &&
-    (mortgageLprDiscount == null || !Number.isFinite(mortgageLprDiscount) || mortgageLprDiscount <= 0)
-  ) {
-    return { ok: false as const, error: "LPR 利率折扣不正确" };
-  }
-  const annualRate = isInterestFreeRepayment
-    ? 0
-    : annualRateRaw
-      ? parseFloat(annualRateRaw)
-      : mortgageLprDiscount != null
-        ? Math.round(MORTGAGE_BASE_BENCHMARK_RATE * mortgageLprDiscount * 1000) / 1000
-        : null;
-  if (!isInterestFreeRepayment && annualRateRaw && (annualRate == null || !Number.isFinite(annualRate) || annualRate <= 0)) {
-    return { ok: false as const, error: "年利率不正确" };
-  }
-  const acceptedLprRateEffectiveDate = acceptedLprRateEffectiveDateStr
-    ? parseDateOnlyUtc(acceptedLprRateEffectiveDateStr)
-    : null;
-  const acceptedLprAnnualRate = acceptedLprAnnualRateRaw ? parseFloat(acceptedLprAnnualRateRaw) : null;
-  if (acceptedLprRateEffectiveDateStr && !acceptedLprRateEffectiveDate) {
-    return { ok: false as const, error: "接受的 LPR 利率生效日期不正确" };
-  }
-  if (
-    acceptedLprAnnualRateRaw &&
-    (acceptedLprAnnualRate == null || !Number.isFinite(acceptedLprAnnualRate) || acceptedLprAnnualRate <= 0)
-  ) {
-    return { ok: false as const, error: "接受的 LPR 年利率不正确" };
-  }
-  const firstRepaymentDate = firstRepaymentDateStr ? parseDateOnlyUtc(firstRepaymentDateStr) : null;
-  if (firstRepaymentDateStr && !firstRepaymentDate) return { ok: false as const, error: "首次还款日不正确" };
-  const repaymentIntervalMonths =
-    Number.isFinite(repaymentIntervalMonthsRaw) && repaymentIntervalMonthsRaw > 0 ? repaymentIntervalMonthsRaw : 1;
-  const loanTotalRuns =
-    Number.isFinite(loanTotalRunsRaw) && loanTotalRunsRaw > 0
-      ? loanTotalRunsRaw
-      : Number.isFinite(loanYearsRaw) && loanYearsRaw > 0
-        ? loanYearsRaw * 12
-        : NaN;
-  const isFixedRepaymentMethod = FIXED_LOAN_REPAYMENT_METHODS.has(repaymentMethod);
-  const calculatedPlanAmount = calculateLoanPlanAmount({
-    principal: principalAbs,
-    annualRate,
-    totalRuns: loanTotalRuns,
-    intervalMonths: repaymentIntervalMonths,
-    repaymentMethod,
-  });
-  const repaymentPlanAmount = calculatedPlanAmount;
-
-  if (mode === "borrow_in" && isFixedRepaymentMethod) {
-    if (!isInterestFreeRepayment && (annualRate == null || !Number.isFinite(annualRate) || annualRate <= 0)) {
-      return { ok: false as const, error: "固定还款方式需要填写年利率" };
-    }
-    if (!Number.isFinite(repaymentIntervalMonths) || repaymentIntervalMonths <= 0) {
-      return { ok: false as const, error: "固定还款方式需要填写还款周期" };
-    }
-    if (!Number.isFinite(loanTotalRuns) || loanTotalRuns <= 0) {
-      return { ok: false as const, error: "固定还款方式需要填写总期数" };
-    }
-    if (!firstRepaymentDate) {
-      return { ok: false as const, error: "固定还款方式需要填写首次还款日" };
-    }
-    if (!repaymentPlanAmount || repaymentPlanAmount <= 0) {
-      return { ok: false as const, error: "无法计算计划还款金额，请检查借款总额、利率和期数" };
-    }
-  }
-  let historicalLoanRateAdjustments: ReturnType<typeof parseLoanRateAdjustmentsText> = [];
-  try {
-    historicalLoanRateAdjustments = isInterestFreeRepayment ? [] : parseLoanRateAdjustmentsText(historicalLoanRatesText);
-  } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "历史利率格式不正确" };
-  }
-  if (!isInterestFreeRepayment && historicalLoanRateAdjustments.length === 0 && mortgageLprDiscount != null && mortgageLprDiscount > 0) {
-    historicalLoanRateAdjustments = buildMortgageLprRateAdjustments({
-      discount: mortgageLprDiscount,
-      throughDate: formatDateUtc(new Date()),
-    });
-  }
-
-  try {
-    let resolvedDebtAccountId = debtAccountId;
-    let createdRepaymentPlanId: string | null = null;
-    const affectedAccountIds = new Set<string>();
-    await prisma.$transaction(async (tx) => {
-      const debtDirection = mode === "borrow_in" || mode === "repay_out" || mode === "prepay_out" ? "payable" : "receivable";
-      const cashAccount = await tx.account.findUnique({ where: { id: cashAccountId } });
-      const debtAccount = debtObjectId
-        ? await resolveOrCreateDebtAccount(tx, householdId, debtObjectId, debtDirection, debtItemName)
-        : await tx.account.findUnique({
-            where: { id: debtAccountId },
-            include: { Institution: { select: { id: true, name: true, type: true } }, Counterparty: { select: { id: true, name: true, type: true } } },
-          });
-
-      if (!debtAccount || debtAccount.kind !== AccountKind.loan) {
-        throw new Error("往来对象账户不存在");
-      }
-      if (!cashAccount || isPureInvestmentAccount(cashAccount) || cashAccount.kind === AccountKind.loan) {
-        throw new Error("资金账户不正确");
-      }
-      const isCounterpartyDebtAccount = !!debtAccount.counterpartyId && !debtAccount.institutionId;
-      if (!isCounterpartyDebtAccount && (mode === "repay_out" || mode === "prepay_out") && debtAccount.debtDirection !== "payable") {
-        throw new Error("还款只能选择已有借款项");
-      }
-      if (!isCounterpartyDebtAccount && mode === "lend_out" && debtAccount.debtDirection !== "receivable") {
-        throw new Error("借出只能选择已有借出项或往来对象");
-      }
-      if (!isCounterpartyDebtAccount && mode === "collect_in" && debtAccount.debtDirection !== "receivable") {
-        throw new Error("收回只能选择已有借出项");
-      }
-      const settlementTransferCategory = await ensureSettlementTransferCategory(tx, householdId);
-      resolvedDebtAccountId = debtAccount.id;
-      if (
-        acceptedLprRateEffectiveDate &&
-        acceptedLprAnnualRate != null &&
-        mode === "repay_out"
-      ) {
-        const repaymentPlan = await tx.regularInvestPlan.findFirst({
-          where: {
-            householdId,
-            accountId: debtAccount.id,
-            fundCode: "loan_repayment",
-            status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused] },
-          },
-          orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
-          select: { id: true },
-        });
-        await tx.loanRateAdjustment.deleteMany({
-          where: {
-            householdId,
-            accountId: debtAccount.id,
-            effectiveDate: acceptedLprRateEffectiveDate,
-          },
-        });
-        await tx.loanRateAdjustment.create({
-          data: {
-            householdId,
-            accountId: debtAccount.id,
-            regularInvestPlanId: repaymentPlan?.id ?? null,
-            effectiveDate: acceptedLprRateEffectiveDate,
-            annualRate: acceptedLprAnnualRate,
-          },
-        });
-      }
-      const outstandingPrincipalBefore = Math.abs(toNumber(debtAccount.balance));
-      if (!editEntryId && mode === "prepay_out" && principalAbs - outstandingPrincipalBefore > 0.005) {
-        throw new Error(`提前还本金不能超过当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
-      }
-      if (!editEntryId && mode === "prepay_out" && prepayStrategy === "settle" && Math.abs(principalAbs - outstandingPrincipalBefore) > 0.005) {
-        throw new Error(`全部结清时，提前还本金应等于当前贷款本金余额 ${outstandingPrincipalBefore.toFixed(2)}`);
-      }
-      const isInstitutionBorrow =
-        mode === "borrow_in" &&
-        !!debtAccount.institutionId &&
-        !!debtAccount.Institution &&
-        debtAccount.Institution.type === "bank";
-      const isFinancedPurchaseForRecord = isInstitutionBorrow && isFinancedPurchase;
-      if (editEntryId) {
-        if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
-          throw new Error("只能在借入、借出、还款、提前还款或收回界面编辑往来款记录");
-        }
-        const original = await tx.txRecord.findFirst({
-          where: {
-            id: editEntryId,
-            householdId,
-            deletedAt: null,
-            type: TransactionType.transfer,
-          },
-        });
-        if (!original) throw new Error("原还款记录不存在");
-        affectedAccountIds.add(original.accountId);
-        if (original.toAccountId) affectedAccountIds.add(original.toAccountId);
-        affectedAccountIds.add(cashAccount.id);
-        affectedAccountIds.add(debtAccount.id);
-
-        const isDebtAccountFromSide = mode === "borrow_in" || mode === "collect_in";
-        const transferFromAccount = isDebtAccountFromSide ? debtAccount : cashAccount;
-        const transferToAccount = isFinancedPurchaseForRecord ? null : isDebtAccountFromSide ? cashAccount : debtAccount;
-        const transferStatementMonth =
-          transferToAccount &&
-          (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
-          transferToAccount.billingDay
-            ? toStatementMonth(date, transferToAccount.billingDay)
-            : null;
-        await tx.txRecord.update({
-          where: { id: original.id },
-          data: {
-            accountId: transferFromAccount.id,
-            accountName: transferFromAccount.name,
-            toAccountId: transferToAccount?.id ?? null,
-            toAccountName: transferToAccount?.name ?? null,
-            amount: mode === "repay_out" || mode === "prepay_out"
-              ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
-              : mode === "collect_in"
-                ? debtPrincipalForRecord + interest
-                : -debtPrincipalForRecord,
-            debtPrincipalAmount: debtPrincipalForRecord,
-            debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : 0,
-            debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : 0,
-            date,
-            note: note || null,
-            toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : original.toNote,
-            statementMonth: transferStatementMonth,
-            source: isFinancedPurchaseForRecord ? "debt_financed_purchase" : `debt_${mode}`,
-            categoryId: settlementTransferCategory?.id ?? null,
-            categoryName: settlementTransferCategory?.name ?? "借入借出",
-          },
-        });
-        if (mode === "prepay_out" && transferToAccount?.id) {
-          recalculateAfterSave = {
-            accountId: transferToAccount.id,
-            startDate: formatDateUtc(date),
-          };
-        }
-
-        await tx.txRecord.updateMany({
-          where: {
-            householdId,
-            id: { not: original.id },
-            accountId: original.accountId,
-            toAccountId: original.toAccountId,
-            date: original.date,
-            deletedAt: null,
-            type: { not: TransactionType.transfer },
-            OR: [
-              { source: { in: ["debt_repay_out_interest", "debt_prepay_out_interest", "debt_collect_in_interest", "debt_prepay_out_fee"] } },
-              { categoryName: { contains: "利息" } },
-              { note: { contains: "利息" } },
-              { categoryName: { contains: "手续费" } },
-              { note: { contains: "违约金" } },
-            ],
-          },
-          data: { deletedAt: new Date() },
-        });
-        return;
-      }
-      const shouldCreateRepaymentPlan =
-        mode === "borrow_in" &&
-        isInstitutionBorrow &&
-        createRepaymentPlan &&
-        !!firstRepaymentDate &&
-        !!repaymentPlanAmount &&
-        repaymentPlanAmount > 0 &&
-        Number.isFinite(loanTotalRuns) &&
-        loanTotalRuns > 0;
-
-      const transferFromAccount = mode === "borrow_in" || mode === "collect_in" ? debtAccount : cashAccount;
-      const transferToAccount = isFinancedPurchaseForRecord ? null : mode === "borrow_in" || mode === "collect_in" ? cashAccount : debtAccount;
-      const transferStatementMonth =
-        transferToAccount &&
-        (transferToAccount.kind === AccountKind.bank_credit || transferToAccount.kind === AccountKind.loan) &&
-        transferToAccount.billingDay
-          ? toStatementMonth(date, transferToAccount.billingDay)
-          : null;
-
-      await tx.txRecord.create({
-        data: {
-          accountId: transferFromAccount.id,
-          accountName: transferFromAccount.name,
-          toAccountId: transferToAccount?.id ?? null,
-          toAccountName: transferToAccount?.name ?? null,
-          amount: mode === "repay_out" || mode === "prepay_out"
-            ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
-            : mode === "collect_in"
-              ? debtPrincipalForRecord + interest
-              : -debtPrincipalForRecord,
-          debtPrincipalAmount: debtPrincipalForRecord,
-          debtInterestAmount: ["repay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : null,
-          debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : null,
-          type: TransactionType.transfer,
-          date,
-          note: mode === "borrow_in"
-            ? isInstitutionBorrow
-              ? [
-                  note || (isFinancedPurchaseForRecord ? "消费分期" : "机构借入"),
-                  `还款方式：${repaymentMethod}`,
-                  isFixedRepaymentMethod && Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
-                    ? `周期：每${repaymentIntervalMonths === 1 ? "月" : `${repaymentIntervalMonths}个月`}`
-                    : "",
-                  isFixedRepaymentMethod && Number.isFinite(loanTotalRuns) && loanTotalRuns > 0 ? `期数：${loanTotalRuns}` : "",
-                  isFixedRepaymentMethod && annualRate != null ? `年利率：${annualRate}%` : "",
-                  isFixedRepaymentMethod && mortgageLprDiscount != null ? `LPR折扣：${mortgageLprDiscount}` : "",
-                ].filter(Boolean).join("；")
-              : note || "借入"
-            : note || null,
-          toNote: mode === "prepay_out" ? encodeLoanPrepayStrategy(prepayStrategy) : null,
-          statementMonth: transferStatementMonth,
-          source: isFinancedPurchaseForRecord ? "debt_financed_purchase" : `debt_${mode}`,
-          categoryId: settlementTransferCategory?.id ?? null,
-          categoryName: settlementTransferCategory?.name ?? "借入借出",
-          householdId,
-        },
-      });
-
-      if (shouldCreateRepaymentPlan && firstRepaymentDate) {
-        const totalRuns = loanTotalRuns;
-        const executionDay = firstRepaymentDate.getUTCDate();
-        const title = `还款：${debtAccount.Institution?.name ?? debtAccount.Counterparty?.name ?? debtAccount.name}`;
-        const plan = await tx.regularInvestPlan.create({
-          data: {
-            accountId: debtAccount.id,
-            accountName: debtAccount.name,
-            cashAccountId: cashAccount.id,
-            cashAccountName: cashAccount.name,
-            fundCode: "loan_repayment",
-            fundName: title,
-            fundProductType: null,
-            amount: repaymentPlanAmount,
-            intervalUnit: IntervalUnit.month,
-            intervalValue: repaymentIntervalMonths,
-            executionDay,
-            startDate: firstRepaymentDate,
-            nextRunDate: calcInitialScheduledRunDate(firstRepaymentDate, IntervalUnit.month, repaymentIntervalMonths, executionDay, false),
-            endDate: null,
-            totalRuns,
-            status: RegularInvestStatus.active,
-            feeRate: 0,
-            confirmDays: 0,
-            arrivalDays: 0,
-            memo: encodeScheduledTaskMemo({
-              type: "loan_repayment",
-              title,
-              fromAccountId: cashAccount.id,
-              toAccountId: debtAccount.id,
-              annualRate: annualRate ?? null,
-              mortgageLprDiscount: mortgageLprDiscount ?? null,
-              repaymentMethod,
-              repaymentIntervalMonths,
-              originalTotalRuns: totalRuns,
-            }),
-            skipPendingPreceding: false,
-            householdId,
-          },
-        });
-        await replaceLoanRateAdjustmentsForAccount(tx, {
-          householdId,
-          accountId: debtAccount.id,
-          regularInvestPlanId: plan.id,
-          adjustments: historicalLoanRateAdjustments,
-        });
-        createdRepaymentPlanId = plan.id;
-      }
-
-      if (mode === "prepay_out") {
-        recalculateAfterSave = {
-          accountId: debtAccount.id,
-          startDate: formatDateUtc(date),
-        };
-      }
-    });
-
-    await Promise.all([
-      ...Array.from(new Set([resolvedDebtAccountId, cashAccountId, ...affectedAccountIds].filter(Boolean)))
-        .map((id) => recalcAndSaveAccountBalance(id).catch(() => {})),
-    ]);
-    await invalidateCreditCardCycleCacheForAccountIds([
-      resolvedDebtAccountId,
-      cashAccountId,
-      ...affectedAccountIds,
-    ]).catch(() => {});
-    let historicalGenerationWarning: string | null = null;
-    if (createdRepaymentPlanId && createHistoricalRepaymentRecords) {
-      const createdPlan = await prisma.regularInvestPlan.findFirst({
-        where: { id: createdRepaymentPlanId, householdId },
-      });
-      if (createdPlan) {
-        try {
-          await executeNonFundScheduledTaskPlan({
-            householdId,
-            plan: createdPlan,
-            task: decodeScheduledTaskMemo(createdPlan.memo),
-            initialLoanPrincipal: principalAbs,
-          });
-        } catch (error) {
-          historicalGenerationWarning = error instanceof Error ? error.message : "历史还款记录补生成失败";
-        }
-      }
-    }
-    revalidateAfterTxChange();
-    if (historicalGenerationWarning) {
-      return {
-        ok: true as const,
-        warning: `借款和还款计划已保存，但历史还款记录没有补生成：${historicalGenerationWarning}`,
-        recalculateAfterSave,
-      };
-    }
-    return { ok: true as const, recalculateAfterSave };
-  } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "借还款失败" };
-  }
-}
-
 async function editSplitWealthTransaction(formData: FormData, householdId: string) {
   const entryId = String(formData.get("entryId") ?? "").trim();
   if (!entryId) throw new Error("缺少参数");
@@ -2749,603 +2068,6 @@ async function editInvestment(formData: FormData) {
   }
 }
 
-async function fillFundNavFromCache(formData: FormData) {
-  "use server";
-
-  const entryId = String(formData.get("entryId") ?? "").trim();
-  if (!entryId) return { ok: false as const, error: "缺少 entryId" };
-
-  try {
-    const txRecord = await prisma.txRecord.findUnique({
-      where: { id: entryId },
-      select: {
-        id: true,
-        accountId: true,
-        toAccountId: true,
-        fundCode: true,
-        fundSourceEntryId: true,
-        source: true,
-        createdAt: true,
-        fundArrivalDate: true,
-        fundConfirmDate: true,
-        date: true,
-        amount: true,
-        fundSubtype: true,
-        fundFee: true,
-      },
-    });
-
-    if (!txRecord) return { ok: false as const, error: "基金记录不存在" };
-    if (!txRecord.fundCode) return { ok: false as const, error: "该记录无基金代码" };
-
-    // 买入类：accountId=资金账户, toAccountId=投资账户
-    // 赎回类：accountId=投资账户, toAccountId=资金账户
-    const isRedeemFill = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out";
-    const investmentAccId = isRedeemFill ? txRecord.accountId : txRecord.toAccountId;
-    if (!investmentAccId) return { ok: false as const, error: "该记录没有关联投资账户" };
-
-    const applyDate = ymdUtc(txRecord.date);
-    const confirmDate = txRecord.fundConfirmDate
-      ? ymdUtc(txRecord.fundConfirmDate)
-      : addWorkdaysUtc(applyDate, await getFundConfirmDays(investmentAccId, txRecord.fundCode));
-    const navDate = new Date(`${confirmDate}T00:00:00.000Z`);
-    const navData = await getFundNav(txRecord.fundCode, navDate, investmentAccId);
-
-    if (!navData) {
-      return { ok: false as const, error: `API 未能获取 ${txRecord.fundCode} 在 ${confirmDate} 的净值，确认日期可能是非交易日，或基金查询API未配置` };
-    }
-    if (!navData.dateMatch) {
-      return { ok: false as const, error: `${txRecord.fundCode} 在 ${confirmDate} 无净值，该日期可能是非交易日，请检查确认日期是否正确` };
-    }
-
-    const nav = navData.nav;
-    const amount = Math.abs(toNumber(txRecord.amount));
-
-    // 从费率库查询费率（按确认日期）
-    const arrivalDays = await getFundArrivalDays(investmentAccId, txRecord.fundCode);
-    const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDate, arrivalDays) : confirmDate;
-    const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
-    const feeType = isRedeemFill ? "redeem" : "buy";
-    const feeRateRaw = await getFundFeeRateByDate(investmentAccId, txRecord.fundCode, navDate, feeType);
-    const feeRate = feeRateRaw / 100;
-    const fundUnitsDecimals = await getAccountFundUnitsDecimals(investmentAccId);
-    let refundAmount = 0;
-    if (txRecord.fundSubtype === "buy") {
-      const linkedEntries = await prisma.txRecord.findMany({
-        where: {
-          deletedAt: null,
-          fundCode: txRecord.fundCode,
-          OR: [
-            { id: txRecord.id },
-            { fundSourceEntryId: txRecord.id },
-            {
-              fundSubtype: FundSubtype.buy_failed,
-              source: "regular_invest_refund",
-              accountId: investmentAccId,
-            },
-          ],
-        },
-        select: {
-          id: true,
-          date: true,
-          createdAt: true,
-          fundConfirmDate: true,
-          fundArrivalDate: true,
-          accountId: true,
-          toAccountId: true,
-          fundCode: true,
-          fundSubtype: true,
-          source: true,
-          amount: true,
-          fundSourceEntryId: true,
-        },
-      });
-      const { refundAmountByBuyId } = allocateBuyFailedRefunds(linkedEntries.map((entry) => ({
-        id: entry.id,
-        date: entry.date,
-        createdAt: entry.createdAt,
-        fundConfirmDate: entry.fundConfirmDate,
-        fundArrivalDate: entry.fundArrivalDate,
-        accountId: entry.accountId,
-        toAccountId: entry.toAccountId,
-        fundCode: entry.fundCode,
-        fundSubtype: entry.fundSubtype,
-        source: entry.source,
-        amount: toNumber(entry.amount),
-        fundSourceEntryId: entry.fundSourceEntryId,
-      })));
-      refundAmount = refundAmountByBuyId.get(txRecord.id) ?? 0;
-    }
-    const confirmedAmount = txRecord.fundSubtype === "buy"
-      ? Math.max(0, amount - refundAmount)
-      : amount;
-    const fee = confirmedAmount * feeRate;
-    const units = calculateConfirmedBuyUnits({
-      grossAmount: amount,
-      refundAmount,
-      fee,
-      nav,
-      roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
-    });
-
-    // 更新净值、确认日期、手续费、份额
-    const updateData: {
-      fundConfirmDate: Date;
-      fundNav: number;
-      fundFee: number;
-      fundUnits?: number;
-      fundName?: string;
-      fundArrivalDate?: Date;
-    } = {
-      fundConfirmDate: navDate,
-      fundNav: nav,
-      fundFee: fee,
-      fundArrivalDate: arrivalDate,
-    };
-    if (units != null) {
-      updateData.fundUnits = units;
-    }
-    if (navData.name) {
-      updateData.fundName = navData.name;
-    }
-
-    await prisma.txRecord.update({
-      where: { id: entryId },
-      data: updateData,
-    });
-
-    await recalcFundPositions(investmentAccId, [txRecord.fundCode]).catch(() => {});
-    // revalidation handled by FundShell optimistic update
-
-
-    return { ok: true as const, nav, units, fee, confirmDate, arrivalDate: arrivalDateStr };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "获取净值失败" };
-  }
-}
-
-
-
-async function createRegularInvest(formData: FormData) {
-  "use server";
-  const { householdId } = await getHouseholdScope();
-  const intent = String(formData.get("intent") ?? "").trim();
-  if (intent !== "createRegularInvest") return { ok: false as const, error: "intent 不匹配" };
-
-  const taskType = normalizeScheduledTaskType(formData.get("taskType"));
-  const isFundTask = taskType === "fund_regular_invest";
-  const accountId = String(formData.get("accountId") ?? "").trim();
-  const fundCodeRaw = String(formData.get("fundCode") ?? "").trim();
-  const fundCode = isFundTask ? fundCodeRaw : taskType;
-  const fundName = String(formData.get("fundName") ?? "").trim() || (isFundTask ? fundCode : scheduledTaskTypeLabel(taskType));
-  const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || null;
-  const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
-  const intervalUnit = String(formData.get("intervalUnit") ?? "month").trim();
-  const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
-  const startDateStr = String(formData.get("startDate") ?? "").trim();
-  const endDateStr = String(formData.get("endDate") ?? "").trim();
-  const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
-  const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
-  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
-  const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
-  const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
-  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
-  const annualRate = parseOptionalPositiveNumber(formData.get("annualRate"));
-  const repaymentMethod = String(formData.get("repaymentMethod") ?? "").trim() || "自由还款";
-  const repaymentIntervalMonths = parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1);
-  const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
-
-  if (!accountId || !amountRaw || !startDateStr || (isFundTask && !fundCode)) {
-    return { ok: false as const, error: "缺少必填字段" };
-  }
-  if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
-    return { ok: false as const, error: "金额不正确" };
-  }
-  if (!isFundTask && !cashAccountId) {
-    return { ok: false as const, error: "计划任务缺少资金账户" };
-  }
-  if (taskType === "insurance_premium" && !insuranceProductId) {
-    return { ok: false as const, error: "缴费计划缺少保险产品" };
-  }
-
-  const targetAcc = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
-  if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
-
-  const cashAcc = cashAccountId
-    ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
-    : null;
-  if (cashAcc && householdId && cashAcc.householdId !== householdId) return { ok: false as const, error: "资金账户不属于当前账簿" };
-
-  const parsedStartDate = parseDateOnlyUtc(startDateStr);
-  if (!parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
-
-  const feeRate = feeRateRaw ? parseFloat(feeRateRaw) : null;
-  const confirmDays = confirmDaysRaw ? normalizeNonNegativeDays(confirmDaysRaw, 0) : null;
-  const arrivalDays = arrivalDaysRaw ? normalizeNonNegativeDays(arrivalDaysRaw, 2) : null;
-  const normalizedInterval = normalizeIntervalScheduleValue(
-    normalizeIntervalUnitValue(intervalUnit),
-    Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : 1,
-  );
-  const intervalValue = normalizedInterval.value;
-  const intervalUnitValue = normalizedInterval.unit;
-  const executionDay = parseExecutionDayValue(executionDayRaw, intervalUnitValue);
-  const startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-  const nextRunDate = calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
-  const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
-  if (endDateStr && !endDate) return { ok: false as const, error: "结束日期不正确" };
-  const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
-
-  try {
-    await prisma.$transaction(async (tx) => {
-      await tx.regularInvestPlan.create({
-        data: {
-          accountId,
-          accountName: targetAcc.name,
-          cashAccountId: cashAccountId || null,
-          cashAccountName: cashAcc?.name || null,
-          fundCode,
-          fundName,
-          fundProductType: isFundTask ? (targetAcc.investProductType || null) : null,
-          amount: amountRaw,
-          intervalUnit: intervalUnitValue,
-          intervalValue,
-          executionDay: executionDay != null && Number.isFinite(executionDay) ? executionDay : null,
-          startDate,
-          nextRunDate,
-          endDate: endDate && Number.isFinite(endDate.getTime()) ? endDate : null,
-          totalRuns: totalRuns && Number.isFinite(totalRuns) && totalRuns > 0 ? totalRuns : null,
-          status: RegularInvestStatus.active,
-          feeRate: isFundTask && feeRate != null && Number.isFinite(feeRate) ? feeRate : isFundTask ? null : 0,
-          confirmDays: isFundTask ? confirmDays : 0,
-          arrivalDays: isFundTask ? arrivalDays : 0,
-          memo: encodeScheduledTaskMemo({
-            type: taskType,
-            title: fundName,
-            fromAccountId: cashAccountId || null,
-            toAccountId: accountId,
-            insuranceProductId,
-            annualRate: taskType === "loan_repayment" ? annualRate : null,
-            repaymentMethod: taskType === "loan_repayment" ? repaymentMethod : null,
-            repaymentIntervalMonths: taskType === "loan_repayment" ? repaymentIntervalMonths : null,
-          }),
-          skipPendingPreceding: isFundTask ? skipPendingPreceding : false,
-          ...{ householdId },
-        },
-      });
-
-      // 同步更新确认天数和手续费率统一库（与 API Route 保持一致）
-      const newDays = confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : 0;
-      const newRate = feeRate != null && Number.isFinite(feeRate) ? feeRate : 0;
-      if (isFundTask && accountId && fundCode) {
-        await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
-        await setFundFeeRateByDateInTx(tx, accountId, fundCode, newRate, startDate, "buy");
-        const newArrivalDays = arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : 2;
-        await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
-      }
-    });
-
-
-
-
-
-
-
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "创建失败" };
-  }
-}
-
-async function regularInvestAction(formData: FormData) {
-  "use server";
-  const { householdId } = await getHouseholdScope();
-  const intent = String(formData.get("intent") ?? "").trim();
-  if (intent !== "regularInvestAction") return { ok: false as const, error: "intent 不匹配" };
-
-  const planId = String(formData.get("planId") ?? "").trim();
-  const actionType = String(formData.get("action") ?? "").trim();
-
-  if (!planId) return { ok: false as const, error: "缺少 planId" };
-
-  const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
-  if (!plan) return { ok: false as const, error: "计划不存在" };
-  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
-
-  try {
-    if (actionType === "pause") {
-      if (plan.status !== RegularInvestStatus.active) {
-        return { ok: false as const, error: "只有活跃状态的计划才能暂停" };
-      }
-      await prisma.regularInvestPlan.update({
-        where: { id: planId },
-        data: { status: RegularInvestStatus.paused },
-      });
-    } else if (actionType === "resume") {
-      if (plan.status !== RegularInvestStatus.paused) {
-        return { ok: false as const, error: "只有暂停状态的计划才能恢复" };
-      }
-      const task = decodeScheduledTaskMemo(plan.memo);
-      const usesBusinessDays = task.type === "fund_regular_invest";
-      const now = new Date();
-      const nextRun = plan.lastRunDate
-        ? calcNextScheduledRunDate(plan.lastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
-        : calcInitialScheduledRunDate(plan.startDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays);
-      const actualNextRun = nextRun < now
-        ? calcInitialScheduledRunDate(now, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
-        : nextRun;
-
-      await prisma.regularInvestPlan.update({
-        where: { id: planId },
-        data: { status: RegularInvestStatus.active, nextRunDate: actualNextRun },
-      });
-    } else if (actionType === "stop") {
-      if (plan.status === RegularInvestStatus.stopped || plan.status === RegularInvestStatus.completed) {
-        return { ok: false as const, error: "计划已终止或已完成" };
-      }
-      await prisma.regularInvestPlan.update({
-        where: { id: planId },
-        data: { status: RegularInvestStatus.stopped },
-      });
-    } else {
-      return { ok: false as const, error: "未知操作类型" };
-    }
-
-    // Client-side handles page refresh via mmh finance refresh events.
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "操作失败" };
-  }
-}
-
-async function updateRegularInvest(formData: FormData) {
-  "use server";
-  const { householdId } = await getHouseholdScope();
-  const intent = String(formData.get("intent") ?? "").trim();
-  if (intent !== "updateRegularInvest") return { ok: false as const, error: "intent 不匹配" };
-
-  const planId = String(formData.get("planId") ?? "").trim();
-  if (!planId) return { ok: false as const, error: "缺少 planId" };
-
-  const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
-  if (!plan) return { ok: false as const, error: "计划不存在" };
-  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
-
-  const existingTask = decodeScheduledTaskMemo(plan.memo);
-  const existingTaskType = normalizeScheduledTaskType(plan.taskType ?? existingTask.type);
-  const taskType = normalizeScheduledTaskType(formData.get("taskType") || existingTaskType);
-  const isFundTask = taskType === "fund_regular_invest";
-  const accountId = String(formData.get("accountId") ?? plan.accountId).trim();
-  const fundCodeRaw = String(formData.get("fundCode") ?? plan.fundCode).trim();
-  const fundCode = isFundTask ? fundCodeRaw : taskType;
-  const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || existingTask.insuranceProductId || null;
-  const fundName = String(formData.get("fundName") ?? "").trim();
-  const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
-  const intervalUnit = String(formData.get("intervalUnit") ?? "").trim();
-  const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
-  const startDateStr = String(formData.get("startDate") ?? "").trim();
-  const endDateStr = String(formData.get("endDate") ?? "").trim();
-  const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
-  const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
-  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
-  const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
-  const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
-  const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
-  const nextAnnualRate = formData.has("annualRate")
-    ? parseOptionalPositiveNumber(formData.get("annualRate"))
-    : existingTask.annualRate ?? null;
-  const nextRepaymentMethod = formData.has("repaymentMethod") && String(formData.get("repaymentMethod") ?? "").trim()
-    ? String(formData.get("repaymentMethod") ?? "").trim()
-    : existingTask.repaymentMethod ?? "自由还款";
-  const nextRepaymentIntervalMonths = formData.has("repaymentIntervalMonths")
-    ? parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1)
-    : existingTask.repaymentIntervalMonths ?? 1;
-
-  if (!accountId || (isFundTask && !fundCode)) return { ok: false as const, error: "缺少必填字段" };
-  if (!isFundTask && !cashAccountId) return { ok: false as const, error: "计划任务缺少资金账户" };
-  if (taskType === "insurance_premium" && !insuranceProductId) return { ok: false as const, error: "缴费计划缺少保险产品" };
-
-  const updateData: any = {};
-  const displayName = fundName || (isFundTask ? plan.fundName || fundCode : scheduledTaskTypeLabel(taskType));
-  updateData.accountId = accountId;
-  updateData.fundCode = fundCode;
-  updateData.fundName = displayName;
-  updateData.memo = encodeScheduledTaskMemo({
-    type: taskType,
-    title: displayName,
-    fromAccountId: cashAccountId || null,
-    toAccountId: accountId,
-    insuranceProductId,
-    annualRate: taskType === "loan_repayment" ? nextAnnualRate : null,
-    repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
-    repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
-  });
-  if (accountId !== plan.accountId || formData.has("accountId")) {
-    const targetAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true, householdId: true, investProductType: true } });
-    if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
-    if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
-    updateData.accountName = targetAcc.name;
-    updateData.fundProductType = isFundTask ? (targetAcc.investProductType || plan.fundProductType || null) : null;
-  } else if (!isFundTask) {
-    updateData.fundProductType = null;
-  }
-  if (Number.isFinite(amountRaw) && amountRaw > 0) updateData.amount = amountRaw;
-  const normalizedEffectiveInterval = normalizeIntervalScheduleValue(
-    normalizeIntervalUnitValue(intervalUnit || plan.intervalUnit),
-    Number.isFinite(intervalValueRaw) && intervalValueRaw > 0 ? intervalValueRaw : plan.intervalValue,
-  );
-  const effectiveIntervalUnit = normalizedEffectiveInterval.unit;
-  const effectiveIntervalValue = normalizedEffectiveInterval.value;
-  const effectiveExecutionDay = effectiveIntervalUnit === "year"
-    ? null
-    : executionDayRaw
-      ? parseExecutionDayValue(executionDayRaw, effectiveIntervalUnit)
-      : formData.has("executionDay")
-        ? null
-        : plan.executionDay;
-  if (intervalUnit || (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0)) {
-    updateData.intervalUnit = effectiveIntervalUnit;
-    updateData.intervalValue = effectiveIntervalValue;
-  }
-  const parsedStartDate = startDateStr ? parseDateOnlyUtc(startDateStr) : null;
-  if (startDateStr && !parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
-  const nextStoredStartDate = parsedStartDate
-    ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
-    : plan.startDate;
-  const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
-  const taskTypeChanged = taskType !== existingTaskType;
-  let linkedRecordCount: number | null = null;
-  const getLinkedRecordCount = async () => {
-    if (linkedRecordCount == null) {
-      linkedRecordCount = await prisma.txRecord.count({ where: { regularInvestPlanId: plan.id, deletedAt: null } });
-    }
-    return linkedRecordCount;
-  };
-  const hasGeneratedRecords = (plan.executedRuns ?? 0) > 0 || !!plan.lastRunDate;
-  if (startDateChanged && hasGeneratedRecords) {
-    return { ok: false as const, error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" };
-  }
-  if (taskTypeChanged && hasGeneratedRecords) {
-    return { ok: false as const, error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" };
-  }
-  if (startDateChanged) {
-    if (await getLinkedRecordCount() > 0) {
-      return { ok: false as const, error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" };
-    }
-  }
-  if (taskTypeChanged && await getLinkedRecordCount() > 0) {
-    return { ok: false as const, error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" };
-  }
-  if (parsedStartDate) updateData.startDate = nextStoredStartDate;
-  if (effectiveIntervalUnit === "year") updateData.executionDay = null;
-  else if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
-  updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
-    id: plan.id,
-    householdId,
-    taskType,
-    startDate: nextStoredStartDate,
-    lastRunDate: plan.lastRunDate,
-    intervalUnit: effectiveIntervalUnit,
-    intervalValue: effectiveIntervalValue,
-    executionDay: effectiveExecutionDay,
-  });
-  if (endDateStr) {
-    const endDate = parseDateOnlyUtc(endDateStr);
-    if (!endDate) return { ok: false as const, error: "结束日期不正确" };
-    updateData.endDate = endDate;
-  } else if (formData.has("endDate")) {
-    updateData.endDate = null;
-  }
-  if (totalRunsRaw) {
-    const totalRuns = parseInt(totalRunsRaw, 10);
-    if (Number.isFinite(totalRuns) && totalRuns > 0) updateData.totalRuns = totalRuns;
-  } else if (formData.has("totalRuns")) {
-    updateData.totalRuns = null;
-  }
-  if (cashAccountId != null) {
-    updateData.cashAccountId = cashAccountId;
-    if (cashAccountId) {
-      const cashAcc = await prisma.account.findUnique({ where: { id: cashAccountId }, select: { name: true, householdId: true } });
-      if (cashAcc && householdId && cashAcc.householdId !== householdId) return { ok: false as const, error: "资金账户不属于当前账簿" };
-      updateData.cashAccountName = cashAcc?.name || null;
-    } else {
-      updateData.cashAccountName = null;
-    }
-  }
-  if (isFundTask && feeRateRaw) {
-    const feeRate = parseFloat(feeRateRaw);
-    if (Number.isFinite(feeRate)) updateData.feeRate = feeRate;
-  } else if (isFundTask && formData.has("feeRate")) {
-    updateData.feeRate = null;
-  }
-  if (isFundTask && confirmDaysRaw) {
-    updateData.confirmDays = normalizeNonNegativeDays(confirmDaysRaw, 0);
-  } else if (isFundTask && formData.has("confirmDays")) {
-    updateData.confirmDays = null;
-  }
-
-  if (isFundTask && arrivalDaysRaw) {
-    updateData.arrivalDays = normalizeNonNegativeDays(arrivalDaysRaw, 2);
-  } else if (isFundTask && formData.has("arrivalDays")) {
-    updateData.arrivalDays = null;
-  }
-  if (!isFundTask) {
-    updateData.fundProductType = null;
-    updateData.confirmDays = 0;
-    updateData.arrivalDays = 0;
-    updateData.feeRate = 0;
-    updateData.skipPendingPreceding = false;
-  } else if (formData.has("skipPendingPreceding")) {
-    updateData.skipPendingPreceding = formData.get("skipPendingPreceding") !== "false";
-  }
-
-  try {
-    await prisma.regularInvestPlan.update({
-      where: { id: planId },
-      data: updateData,
-    });
-
-    if (isFundTask && updateData.confirmDays != null) {
-      await setFundConfirmDays(accountId, fundCode, updateData.confirmDays).catch(() => {});
-    }
-    if (isFundTask && updateData.arrivalDays != null) {
-      await setFundArrivalDays(accountId, fundCode, updateData.arrivalDays).catch(() => {});
-    }
-
-    // Client-side handles page refresh
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "更新失败" };
-  }
-}
-
-async function deleteRegularInvest(formData: FormData) {
-  "use server";
-  const { householdId } = await getHouseholdScope();
-  const intent = String(formData.get("intent") ?? "").trim();
-  if (intent !== "deleteRegularInvest") return { ok: false as const, error: "intent 不匹配" };
-
-  const planId = String(formData.get("planId") ?? "").trim();
-  if (!planId) return { ok: false as const, error: "缺少 planId" };
-
-  const plan = await prisma.regularInvestPlan.findUnique({ where: { id: planId } });
-  if (!plan) return { ok: false as const, error: "计划不存在" };
-  if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
-
-  const deleteRecords = formData.get("deleteRecords") === "1";
-
-  try {
-    if (deleteRecords && plan.accountId) {
-      // 软删除关联的交易记录
-      await prisma.txRecord.updateMany({
-        where: { regularInvestPlanId: planId, deletedAt: null },
-        data: { deletedAt: new Date() },
-      });
-    }
-
-    await prisma.regularInvestPlan.delete({ where: { id: planId } });
-
-    if (plan.accountId && plan.fundCode) {
-      await recalcFundPositions(plan.accountId, [plan.fundCode]).catch(() => {});
-    }
-
-    // Client-side handles page refresh
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "删除失败" };
-  }
-}
-
-/** 定投操作的统一入口：根据 intent 分发到不同的 Server Action */
-async function regularInvestFormAction(formData: FormData) {
-  "use server";
-  const intent = String(formData.get("intent") ?? "").trim();
-  if (intent === "createRegularInvest") return createRegularInvest(formData);
-  if (intent === "regularInvestAction") return regularInvestAction(formData);
-  if (intent === "updateRegularInvest") return updateRegularInvest(formData);
-  if (intent === "deleteRegularInvest") return deleteRegularInvest(formData);
-  return { ok: false as const, error: "未知 intent" };
-}
 
 async function updateTransactionFromDialog(formData: FormData) {
   "use server";
@@ -3412,6 +2134,13 @@ async function updateTransactionFromDialog(formData: FormData) {
             ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
             : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
+        if (
+          !debtMode &&
+          String(entry.source ?? "").startsWith("debt_") &&
+          (Math.abs(toNumber(entry.debtInterestAmount)) > 0.005 || Math.abs(toNumber(entry.debtFeeAmount)) > 0.005)
+        ) {
+          throw new Error("有利息或手续费的借入借出记录不能直接改为普通转账");
+        }
         const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
@@ -3444,7 +2173,7 @@ async function updateTransactionFromDialog(formData: FormData) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : entry.source,
+            source: debtMode ? `debt_${debtMode}` : "manual",
             debtPrincipalAmount: debtMode ? amountAbs : null,
             debtInterestAmount: debtMode ? 0 : null,
             debtFeeAmount: debtMode ? 0 : null,
@@ -4524,6 +3253,7 @@ export default async function Home({
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
+  const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   const debtCounterpartyOptions = counterparties;
   const debtSourceInstitutions = institutions.filter((institution) => institution.type === "bank");
   const debtObjectOptions: SSOpt[] = [
@@ -4553,6 +3283,21 @@ export default async function Home({
   // Flat lists for components that don't use SS hierarchy (backward compat)
   const cashAccountList = accountOptions
     .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet")
+    .map(a => ({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      groupId: a.groupId ?? "",
+      institutionId: a.institutionId || null,
+      institutionType: a.institutionType || null,
+      label: a.label,
+      title: a.hoverTitle,
+      hoverTitle: a.hoverTitle,
+      subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      currency: a.currency,
+    }));
+  const debtTransferAccountList = accountOptions
+    .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit")
     .map(a => ({
       id: a.id,
       name: a.name,
@@ -4747,630 +3492,38 @@ export default async function Home({
       })
     : null;
 
-  const billScope = selectedAccount
-    ? {
-        OR: [
-          { accountId: { in: billAccountIds } },
-          { toAccountId: { in: billAccountIds } },
-          ...legacyNames.map((n) => ({ accountName: n })),
-        ],
-      }
-    : undefined;
-
-  const creditBillNow = new Date();
-  const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
-  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 6, 24, 13, 35, 0));
-  const currentStatementMonth = (() => {
-    if (!isBillAccount || !selectedAccount?.billingDay) return "";
-    const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
-    if (!base) return "";
-    return toStatementMonth(base.end, selectedAccount.billingDay ?? 1);
-  })();
-  const normalizedCreditInstallments =
-    isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && selectedAccount.billingDay && billAccountIds.length > 0
-      ? await prisma.$transaction((tx) =>
-          normalizeCreditCardInstallmentStatementMonths(tx, {
-            householdId,
-            accountIds: billAccountIds,
-            billingDay: selectedAccount.billingDay ?? 1,
-          }),
-        )
-      : { updatedEntries: 0, updatedPlans: 0 };
-  if (normalizedCreditInstallments.updatedEntries > 0 || normalizedCreditInstallments.updatedPlans > 0) {
-    await invalidateCreditCardCycleCacheForAccountIds(billAccountIds);
-  }
-  const isDisplayableBillMonth = (month: string) => !currentStatementMonth || month <= currentStatementMonth;
-  const persistedCyclesInitial = isBillAccount && selectedAccount
-    ? await prisma.creditCardCycle.findMany({
-        where: {
-          accountId: billStorageAccountId,
-          ...(currentStatementMonth ? { statementMonth: { lte: currentStatementMonth } } : {}),
-        },
-        orderBy: { statementMonth: "desc" },
-      })
-    : [];
-  const activeStatementInstallments = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit
-    ? await prisma.creditCardInstallmentPlan.findMany({
-        where: {
-          householdId,
-          accountId: { in: billAccountIds },
-          sourceType: CreditCardInstallmentSourceType.statement,
-          sourceStatementMonth: { not: null },
-          status: "active",
-        },
-        select: { sourceStatementMonth: true, installmentPrincipal: true },
-      })
-    : [];
-  const statementInstallmentPrincipalByMonth = new Map(
-    activeStatementInstallments.map((plan) => [
-      plan.sourceStatementMonth ?? "",
-      toNumber(plan.installmentPrincipal),
-    ]),
-  );
-  const billOverrides = isBillAccount && selectedAccount
-    ? await prisma.billOverride.findMany({
-        where: { accountId: billStorageAccountId },
-        orderBy: { statementMonth: "desc" },
-      })
-    : [];
-  const persistedCycleByMonth = new Map(persistedCyclesInitial.map((cycle) => [cycle.statementMonth, cycle]));
-  const latestBillTxUpdatedAt = isBillAccount && selectedAccount && billScope
-    ? await prisma.txRecord.findFirst({
-        where: { AND: [billScope] },
-        orderBy: { updatedAt: "desc" },
-        select: { updatedAt: true },
-      })
-    : null;
-  const activeBillTxCount = isBillAccount && selectedAccount && billScope
-    ? await prisma.txRecord.count({
-        where: { AND: [billScope, { deletedAt: null }] },
-      })
-    : 0;
-  const latestCycleUpdatedAt = persistedCyclesInitial.reduce<Date | null>(
-    (latest, cycle) => (!latest || cycle.updatedAt > latest ? cycle.updatedAt : latest),
-    null,
-  );
-  const latestOverrideUpdatedAt = billOverrides.reduce<Date | null>(
-    (latest, override) => (!latest || override.updatedAt > latest ? override.updatedAt : latest),
-    null,
-  );
-  const creditCycleCacheStale = !!(
-    isBillAccount &&
-    selectedAccount &&
-    (
-      persistedCyclesInitial.length === 0 ||
-      (
-        activeBillTxCount === 0 &&
-        persistedCyclesInitial.some((cycle) =>
-          toNumber(cycle.expenseAbs) !== 0 ||
-          toNumber(cycle.income) !== 0 ||
-          toNumber(cycle.paid) !== 0 ||
-          toNumber(cycle.rawBill) !== 0 ||
-          toNumber(cycle.effectiveBill) !== 0 ||
-          toNumber(cycle.cumulativeRemain) !== 0 ||
-          toNumber(cycle.cumulativeOverpaid) !== 0
-        )
-      ) ||
-      !latestCycleUpdatedAt ||
-      latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
-      latestCycleUpdatedAt < todayUtcStart ||
-      (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
-      (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)
-    )
-  );
-
-  const availableBillMonths =
-    isBillAccount && selectedAccount
-      ? (!creditCycleCacheStale && persistedCyclesInitial.length > 0
-          ? persistedCyclesInitial.map((cycle) => cycle.statementMonth).filter(isDisplayableBillMonth)
-          : await prisma.txRecord
-          .groupBy({
-            by: ["statementMonth"],
-            where: {
-              statementMonth: { not: null },
-              deletedAt: null,
-              AND: [...(billScope ? [billScope] : [])],
-            },
-            _count: { _all: true },
-            orderBy: { statementMonth: "desc" },
-          })
-          .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m && isDisplayableBillMonth(m))))
-      : [];
-
-  const showAllCreditBillDetails = billMonthParam === "all";
-  const selectedBillMonth =
-    !showAllCreditBillDetails && /^(\d{4})-(\d{2})$/.test(billMonthParam) && isDisplayableBillMonth(billMonthParam)
-      ? billMonthParam
-      : "";
-
-  const creditCardBill =
-    isBillAccount && selectedAccount?.billingDay
-      ? await (async () => {
-          const base = selectedBillMonth
-            ? (() => {
-                const persisted = persistedCycleByMonth.get(selectedBillMonth);
-                if (persisted) {
-                  const today = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
-                  return {
-                    start: persisted.periodStart,
-                    end: persisted.periodEnd,
-                    due: persisted.dueDate,
-                    today,
-                    isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
-                  };
-                }
-                return cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
-              })()
-            : creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
-          if (!base) return null;
-
-          const { start, end, due, today, isCurrentCycle } = base;
-          const repayEnd = due && due.getTime() < today.getTime() ? due : today;
-          const statementMonth = selectedBillMonth || toStatementMonth(end, selectedAccount.billingDay ?? 1);
-          const cachedCycle = !creditCycleCacheStale
-            ? persistedCyclesInitial.find((cycle) => cycle.statementMonth === statementMonth)
-            : null;
-          if (cachedCycle) {
-            return {
-              start: cachedCycle.periodStart,
-              end: cachedCycle.periodEnd,
-              due: cachedCycle.dueDate,
-              repayEnd,
-              bill: Number(cachedCycle.rawBill),
-              paid: Number(cachedCycle.paid),
-              remain: Number(cachedCycle.cumulativeRemain),
-              overpaid: Number(cachedCycle.cumulativeOverpaid),
-              statementMonth,
-              isCurrentCycle: cachedCycle.isCurrentCycle,
-            };
-          }
-
-          const cycleMatch = {
-            date: { gte: start, lt: addDaysUtc(end, 1) },
-            deletedAt: null,
-          };
-          const repaymentMatch = {
-            amount: { lt: 0 },
-            toAccountId: { in: billAccountIds },
-            type: TransactionType.transfer,
-            deletedAt: null,
-            date: { gte: addDaysUtc(end, 1), lt: addDaysUtc(repayEnd, 1) },
-          };
-          const [cycleFlowRows, paidAgg] = await Promise.all([
-            prisma.txRecord.findMany({
-              where: {
-                AND: [
-                  cycleMatch,
-                  ...(billScope ? [billScope] : []),
-                  { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
-                ],
-              },
-              select: { accountId: true, toAccountId: true, amount: true },
-            }),
-            prisma.txRecord.aggregate({
-              where: {
-                AND: [repaymentMatch, ...(billScope ? [billScope] : [])],
-              },
-              _sum: { amount: true },
-            }),
-          ]);
-
-          const flows = summarizeCreditBillSignedFlows(cycleFlowRows, billAccountIdSet);
-          const bill = flows.bill;
-          const income = flows.income;
-          const expenseAbs = flows.expenseAbs;
-          const paid = Math.max(0, -toNumber(paidAgg._sum.amount ?? 0));
-          const remainRaw = bill - paid;
-          const remain = Math.max(0, remainRaw);
-          const overpaid = Math.max(0, -remainRaw);
-
-          return { start, end, due, repayEnd, bill, paid, remain, overpaid, expenseAbs, income, statementMonth, isCurrentCycle };
-        })()
-      : null;
-
-  const settledBillMonth = (() => {
-    if (!currentStatementMonth) return "";
-    const m = currentStatementMonth.match(/^(\d{4})-(\d{2})$/);
-    if (!m) return "";
-    const y = Number(m[1]);
-    const monthIndex = Number(m[2]) - 1;
-    const d = new Date(Date.UTC(y, monthIndex - 1, 1));
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-  })();
-
-  const lastRepayToAccountId = await (async () => {
-    if (!isBillAccount || !selectedAccount) return undefined;
-    const lastEntry = await prisma.txRecord.findFirst({
-      where: {
-        accountId: { in: billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id] },
-        type: TransactionType.transfer,
-        amount: { gt: 0 },
-      },
-      orderBy: { date: "desc" },
-      take: 1,
-    });
-    if (!lastEntry) return undefined;
-    return lastEntry.toAccountId ?? undefined;
-  })();
-
-  const lastRepayFromAccountId = await (async () => {
-    if (!isBillAccount || !selectedAccount) return undefined;
-    const lastEntry = await prisma.txRecord.findFirst({
-      where: {
-        accountId: { in: billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id] },
-        type: TransactionType.transfer,
-        amount: { gt: 0 },
-      },
-      orderBy: { date: "desc" },
-      take: 1,
-    });
-    if (!lastEntry) return undefined;
-    return lastEntry.toAccountId ?? undefined;
-  })();
-
-  const billMonthsForList = (() => {
-    const months = new Set<string>();
-    for (const m of availableBillMonths) months.add(m);
-    if (currentStatementMonth) months.add(currentStatementMonth);
-    if (selectedBillMonth) months.add(selectedBillMonth);
-
-    if (months.size > 0 && !hideZeroBills) {
-      const sorted = Array.from(months).sort((a, b) => a.localeCompare(b));
-      const earliest = sorted[0];
-      const latest = sorted[sorted.length - 1];
-      const [ey, em] = earliest.split("-").map(Number);
-      const [ly, lm] = latest.split("-").map(Number);
-      for (let y = ey; y <= ly; y++) {
-        const startM = y === ey ? em : 1;
-        const endM = y === ly ? lm : 12;
-        for (let m = startM; m <= endM; m++) {
-          months.add(`${y}-${String(m).padStart(2, "0")}`);
-        }
-      }
-    }
-
-    const sortedMonths = Array.from(months).sort((a, b) => b.localeCompare(a));
-    const limitedMonths = sortedMonths.slice(0, billMonthsLimit);
-    if (showRecentBillCycles && selectedBillMonth && !limitedMonths.includes(selectedBillMonth)) {
-      limitedMonths.push(selectedBillMonth);
-    }
-    return limitedMonths;
-  })();
-
-  const billMonthsForCumulative = (() => {
-    const merged = new Set<string>();
-    if (currentStatementMonth) merged.add(currentStatementMonth);
-    if (selectedBillMonth) merged.add(selectedBillMonth);
-    for (const m of availableBillMonths) merged.add(m);
-
-    const arr = Array.from(merged).sort((a, b) => a.localeCompare(b));
-    if (arr.length === 0) return arr;
-    const [ey, em] = arr[0]!.split("-").map(Number);
-    const [ly, lm] = arr[arr.length - 1]!.split("-").map(Number);
-    const full: string[] = [];
-    for (let y = ey; y <= ly; y++) {
-      const startM = y === ey ? em : 1;
-      const endM = y === ly ? lm : 12;
-      for (let m = startM; m <= endM; m++) {
-        full.push(`${y}-${String(m).padStart(2, "0")}`);
-      }
-    }
-    return full;
-  })();
-
-  const creditCycleDefinitions = (() => {
-    const definitions: Array<{
-      month: string;
-      start: Date;
-      end: Date;
-      endExclusive: Date;
-      due: Date | null;
-      isCurrentCycle: boolean;
-    }> = [];
-    const account = selectedAccount;
-    if (!isBillAccount || !account?.billingDay) return definitions;
-
-    for (const month of billMonthsForCumulative) {
-      const persisted = persistedCycleByMonth.get(month);
-      const base = persisted
-        ? (() => {
-            const today = new Date(Date.UTC(
-              creditBillNow.getUTCFullYear(),
-              creditBillNow.getUTCMonth(),
-              creditBillNow.getUTCDate(),
-            ));
-            return {
-              start: persisted.periodStart,
-              end: persisted.periodEnd,
-              due: persisted.dueDate,
-              isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
-            };
-          })()
-        : cycleForStatementMonth(
-            month,
-            account.billingDay,
-            account.repaymentDay ?? null,
-            creditBillNow,
-          );
-      if (!base) continue;
-      definitions.push({
-        month,
-        start: base.start,
-        end: base.end,
-        endExclusive: addDaysUtc(base.end, 1),
-        due: base.due,
-        isCurrentCycle: base.isCurrentCycle,
-      });
-    }
-    return definitions;
-  })();
-
-  const creditCycleDateRange = creditCycleDefinitions.length > 0
-    ? {
-        start: creditCycleDefinitions.reduce(
-          (earliest, cycle) => cycle.start < earliest ? cycle.start : earliest,
-          creditCycleDefinitions[0]!.start,
-        ),
-        endExclusive: creditCycleDefinitions.reduce(
-          (latest, cycle) => cycle.endExclusive > latest ? cycle.endExclusive : latest,
-          creditCycleDefinitions[0]!.endExclusive,
-        ),
-      }
-    : null;
-
-  const creditCycleActivityRows =
-    creditCycleCacheStale &&
-    isBillAccount &&
-    selectedAccount &&
-    billScope &&
-    creditCycleDefinitions.length > 0
-      ? await (() => {
-          const rangeStart = creditCycleDateRange!.start;
-          const rangeEndExclusive = creditCycleDateRange!.endExclusive;
-          return prisma.txRecord.findMany({
-            where: {
-              AND: [
-                billScope,
-                { deletedAt: null },
-                {
-                  OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
-                  date: { gte: rangeStart, lt: rangeEndExclusive },
-                },
-              ],
-            },
-            select: {
-              statementMonth: true,
-              date: true,
-              amount: true,
-              accountId: true,
-              toAccountId: true,
-            },
-          });
-        })()
-      : [];
-
-  const creditCycleActivityByMonth = (() => {
-    const totals = new Map(
-      creditCycleDefinitions.map((cycle) => [
-        cycle.month,
-        { outflow: 0, inflow: 0 },
-      ]),
-    );
-      const findMonthByDate = (date: Date) => {
-        const timestamp = date.getTime();
-        return creditCycleDefinitions.find(
-        (cycle) => timestamp >= cycle.start.getTime() && timestamp < cycle.endExclusive.getTime(),
-      )?.month;
-    };
-
-    for (const row of creditCycleActivityRows) {
-      const signedAmount = signedCreditBillAmountFromCardSide(row, billAccountIdSet);
-      if (signedAmount == null || signedAmount === 0) continue;
-      const month = findMonthByDate(row.date);
-      if (!month) continue;
-      const monthTotals = totals.get(month);
-      if (!monthTotals) continue;
-      if (signedAmount < 0) monthTotals.outflow += -signedAmount;
-      else monthTotals.inflow += signedAmount;
-    }
-    return totals;
-  })();
-
-  const persistedBillSummariesAll = persistedCyclesInitial.map((cycle) => ({
-    month: cycle.statementMonth,
-    start: cycle.periodStart,
-    end: cycle.periodEnd,
-    due: cycle.dueDate,
-    bill: Number(cycle.rawBill),
-    paid: Number(cycle.paid),
-    remain: Number(cycle.cumulativeRemain),
-    overpaid: Number(cycle.cumulativeOverpaid),
-    expenseAbs: Number(cycle.expenseAbs),
-    income: Number(cycle.income),
-    isCurrentCycle: cycle.isCurrentCycle,
-  }));
-
-  const billSummariesAll =
-    !creditCycleCacheStale
-      ? persistedBillSummariesAll.filter((summary) => billMonthsForCumulative.includes(summary.month))
-      : isBillAccount && selectedAccount?.billingDay && creditCycleDefinitions.length
-      ? creditCycleDefinitions.map(({ month, start, end, due, isCurrentCycle }) => {
-          const activity = creditCycleActivityByMonth.get(month) ?? {
-            outflow: 0,
-            inflow: 0,
-          };
-          const expenseAbs = activity.outflow;
-          const income = activity.inflow;
-          const bill = expenseAbs - income;
-          return {
-            month,
-            start,
-            end,
-            due,
-            bill,
-            paid: 0,
-            remain: bill,
-            overpaid: 0,
-            expenseAbs,
-            income,
-            isCurrentCycle,
-          };
-        })
-      : [];
-
-  const billSummariesAllWithNextCyclePaid = (() => {
-    const incomeByMonth = new Map(billSummariesAll.map((summary) => [summary.month, summary.income]));
-    return billSummariesAll.map((summary) => {
-      const [yearText, monthText] = summary.month.split("-");
-      const year = Number(yearText);
-      const month = Number(monthText);
-      if (!Number.isFinite(year) || !Number.isFinite(month)) return summary;
-      const nextDate = new Date(Date.UTC(year, month, 1));
-      const nextMonth = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}`;
-      return {
-        ...summary,
-        paid: incomeByMonth.get(nextMonth) ?? 0,
-      };
-    });
-  })();
-
-  const billSummaryByMonth = new Map(billSummariesAllWithNextCyclePaid.map((s) => [s.month, s]));
-
-  const billSummaries = fillMissingCreditBillSummaries({
-    months: billMonthsForList,
-    summaryByMonth: billSummaryByMonth,
-    billingDay: selectedAccount?.billingDay ?? 1,
-    repaymentDay: selectedAccount?.repaymentDay ?? null,
-    now: creditBillNow,
-  });
-
-  const cachedOverrideByMonth = new Map<string, number>(
-    billOverrides
-      .filter((override) => !!override.statementMonth)
-      .map((override) => [override.statementMonth, Number(override.amount)]),
-  );
-  const cachedEffectiveBillByMonth = new Map<string, number>(
-    persistedCyclesInitial.map((cycle) => [cycle.statementMonth, Number(cycle.effectiveBill)]),
-  );
-  const cachedCumulativeByMonth = new Map<string, { cumulativeRemain: number; cumulativeOverpaid: number }>(
-    persistedCyclesInitial.map((cycle) => [
-      cycle.statementMonth,
-      {
-        cumulativeRemain: Number(cycle.cumulativeRemain),
-        cumulativeOverpaid: Number(cycle.cumulativeOverpaid),
-      },
-    ]),
-  );
-  const creditCascade = !creditCycleCacheStale
-    ? {
-        overrideByMonth: cachedOverrideByMonth,
-        allMonthsForCascade: persistedCyclesInitial
-          .filter((cycle) => billMonthsForCumulative.includes(cycle.statementMonth))
-          .sort((a, b) => a.statementMonth.localeCompare(b.statementMonth))
-          .map((cycle) => ({
-            month: cycle.statementMonth,
-            bill: Number(cycle.rawBill),
-            billDelta: Number(cycle.expenseAbs) - Number(cycle.income),
-            paid: Number(cycle.paid),
-          })),
-        effectiveBillByMonth: cachedEffectiveBillByMonth,
-        cumulativeByMonth: cachedCumulativeByMonth,
-      }
-      : computeCreditBillCascade({
-        monthsForCascade: billMonthsForCumulative,
-        summaryByMonth: billSummaryByMonth,
-        overrides: billOverrides.map((override) => ({
-          statementMonth: override.statementMonth,
-          amount: Number(override.amount),
-        })),
-      });
   const {
-    overrideByMonth,
-    allMonthsForCascade,
-    effectiveBillByMonth,
-    cumulativeByMonth,
-  } = creditCascade;
-  const creditCardCyclePersistRows = buildCreditCardCyclePersistRows({
-    billingDay: selectedAccount?.billingDay ?? 1,
-    repaymentDay: selectedAccount?.repaymentDay ?? null,
-    months: allMonthsForCascade,
-    summaryByMonth: billSummaryByMonth,
-    effectiveBillByMonth,
-    cumulativeByMonth,
-    overrideByMonth,
-    now: creditBillNow,
+    creditCardBill,
+    currentStatementMonth,
+    settledBillMonth,
+    lastRepayToAccountId,
+    lastRepayFromAccountId,
+    creditBillSummaryRows,
+    selectedCreditBillMonth,
+    creditBillBalanceValue,
+    creditCardBillDetails,
+    currentPage,
+    billListPageSize,
+    hasCreditBillSummaries,
+    showAllCreditBillDetails,
+  } = await loadCreditBillPageData({
+    householdId,
+    selectedAccount,
+    isBillAccount,
+    billAccountIds,
+    billStorageAccountId,
+    legacyNames,
+    billMonthParam,
+    billPage,
+    billMonthsLimit,
+    hideZeroBills,
+    hideSettledBills,
+    showRecentBillCycles,
+    view,
+    categoryLabels,
+    isSettlementDebtAccountId,
+    isCreditCardRepaymentForDisplay,
   });
-
-  if (creditCycleCacheStale && isBillAccount && selectedAccount) {
-    await prisma.$transaction(async (tx) => {
-      await tx.creditCardCycle.deleteMany({
-        where: { accountId: billStorageAccountId },
-      });
-      if (creditCardCyclePersistRows.length === 0) return;
-      await tx.creditCardCycle.createMany({
-        data: creditCardCyclePersistRows.map((row) => ({
-          accountId: billStorageAccountId,
-          statementMonth: row.statementMonth,
-          periodStart: row.periodStart,
-          periodEnd: row.periodEnd,
-          dueDate: row.dueDate,
-          expenseAbs: String(row.expenseAbs),
-          income: String(row.income),
-          paid: String(row.paid),
-          rawBill: String(row.rawBill),
-          effectiveBill: String(row.effectiveBill),
-          cumulativeRemain: String(row.cumulativeRemain),
-          cumulativeOverpaid: String(row.cumulativeOverpaid),
-          isCurrentCycle: row.isCurrentCycle,
-          isLocked: row.isLocked,
-          lockSource: row.lockSource,
-        })),
-      });
-    });
-  }
-
-  const billSummariesWithCumulative = mergeCreditBillSummariesWithCascade(
-    billSummaries,
-    effectiveBillByMonth,
-    cumulativeByMonth,
-  );
-
-  const displayBillRows = (() => {
-    return billSummariesWithCumulative
-      .filter((s) => hideZeroBills ? !(s.expenseAbs === 0 && s.income === 0 && s.bill === 0 && s.paid === 0 && !s.isCurrentCycle) : true)
-      .filter((s) => hideSettledBills ? !(s.paid >= s.effectiveBill && s.effectiveBill > 0 && !s.isCurrentCycle) : true);
-  })();
-
-  const billListPageSize = 12;
-  const totalPages = Math.ceil(displayBillRows.length / billListPageSize);
-  const currentPage = Math.min(billPage, totalPages || 1);
-  const creditBillSummaryRows: CreditBillSummaryRow[] = displayBillRows.map((s) => ({
-    month: s.month,
-    periodStart: ymdUtc(s.start),
-    periodEnd: ymdUtc(s.end),
-    dueDate: s.due ? ymdUtc(s.due) : "",
-    periodLabel: `${mdUtcDots(s.start)} ~ ${mdUtcDots(s.end)}`,
-    dueLabel: s.due ? ymdUtc(s.due) : "-",
-    expenseAbs: s.expenseAbs,
-    income: s.income,
-    paid: s.paid,
-    effectiveBill: s.effectiveBill,
-    isCurrentCycle: s.isCurrentCycle,
-    hasOverride: billOverrides.some((o) => o.statementMonth === s.month),
-    statementInstallmentPrincipal: statementInstallmentPrincipalByMonth.get(s.month) ?? null,
-  }));
-
-  const creditBillMonth = creditCardBill?.statementMonth ?? "";
-  const selectedCreditBillMonth = showAllCreditBillDetails ? "" : (selectedBillMonth || creditBillMonth);
-
-  const creditBillBalanceValue = (() => {
-    if (!currentStatementMonth) return (creditCardBill?.remain ?? 0) - (creditCardBill?.overpaid ?? 0);
-    const effective = effectiveBillByMonth.get(currentStatementMonth);
-    if (effective !== undefined) return effective;
-    const cum = cumulativeByMonth.get(currentStatementMonth);
-    if (cum) return cum.cumulativeRemain - cum.cumulativeOverpaid;
-    return (creditCardBill?.remain ?? 0) - (creditCardBill?.overpaid ?? 0);
-  })();
 
   const selectedAccountBalanceValue = selectedAccount
     ? isPureInvestmentAccount(selectedAccount)
@@ -5379,95 +3532,6 @@ export default async function Home({
         ? creditBillBalanceValue
         : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
     : 0;
-
-  const creditCardBillDetails =
-    view === "bill" && !showAllCreditBillDetails && creditCardBill && isBillAccount
-      ? await (async () => {
-          const { start, end } = creditCardBill;
-          const cycleMatch = {
-            type: { in: [TransactionType.expense, TransactionType.income, TransactionType.transfer, TransactionType.investment] },
-            deletedAt: null,
-            date: { gte: start, lt: addDaysUtc(end, 1) },
-          };
-          const cycleEntries = await prisma.txRecord.findMany({
-            where: {
-              AND: [cycleMatch, ...(billScope ? [billScope] : [])],
-            },
-            include: {
-              EntryTag: { include: { Tag: true } },
-              ...entryBusinessLinkSummaryInclude,
-              account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-              toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-            },
-            orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-            take: 500,
-          });
-          const details: DetailEntry[] = cycleEntries.map((e) => ({
-            id: e.id,
-            date: toYmdOrNull(e.date) ?? "",
-            postedAt: toDateOnlyLocalOrNull(e.postedAt),
-            createdAt: toIsoOrNull(e.createdAt),
-            dayOrder: e.dayOrder ?? 0,
-            amount: toNumber(e.type === TransactionType.transfer && billAccountIdSet.has(e.toAccountId ?? "") ? Math.abs(toNumber(e.amount)) : e.amount),
-            runningBalance: null,
-            type: e.type,
-            categoryId: e.categoryId,
-            categoryName:
-              e.type === TransactionType.expense || e.type === TransactionType.income
-                ? e.categoryId
-                  ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
-                  : e.categoryName ?? "未分类"
-                : isCreditCardRepaymentForDisplay(e)
-                  ? "信用卡还款"
-                  : e.categoryName,
-            accountId: e.accountId,
-            accountName: e.accountName,
-            accountKind: e.account?.kind ?? null,
-            accountDebtDirection: e.account?.debtDirection ?? null,
-            accountIsSettlementDebt: isSettlementDebtAccountId(e.accountId),
-            counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
-            counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
-            toAccountId: e.toAccountId,
-            toAccountName: e.toAccountName,
-            toAccountKind: e.toAccount?.kind ?? null,
-            toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-            toAccountIsSettlementDebt: isSettlementDebtAccountId(e.toAccountId),
-            note: e.note,
-            toNote: e.toNote,
-            fundSubtype: e.fundSubtype,
-            fundCode: e.fundCode,
-            fundName: e.fundName,
-            wealthProductId: e.wealthProductId ?? null,
-            source: e.source,
-            insuranceProductId: e.insuranceProductId ?? null,
-            debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
-            debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
-            debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
-            depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
-            depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
-            fundProductType: e.fundProductType,
-            metalTypeId: e.metalTypeId ?? null,
-            metalTypeName: e.metalTypeName ?? null,
-            metalUnitId: e.metalUnitId ?? null,
-            metalUnitName: e.metalUnitName ?? null,
-            metalQuantity: e.metalQuantity != null ? toNumber(e.metalQuantity) : null,
-            metalUnitPrice: e.metalUnitPrice != null ? toNumber(e.metalUnitPrice) : null,
-            metalFee: e.metalFee != null ? toNumber(e.metalFee) : null,
-            fundUnits: e.fundUnits != null ? toNumber(e.fundUnits) : null,
-            fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
-            fundFee: e.fundFee != null ? toNumber(e.fundFee) : null,
-            fundConfirmDate: toIsoOrNull(e.fundConfirmDate),
-            fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
-            fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
-            ...buildEntryBusinessLinkSummary(e),
-            entryTags: (e.EntryTag || []).map((et: any) => ({
-              tagId: et.tagId,
-              Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
-            })),
-          }));
-          return { cycleEntries, details };
-        })()
-      : null;
 
   const investDataParams = JSON.stringify({
     fundSortParam,
@@ -5691,6 +3755,7 @@ export default async function Home({
     debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
     debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
     debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
+    realizedProfit: e.realizedProfit != null ? toNumber(e.realizedProfit) : null,
     depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
     fundProductType: linkedWealth ? "wealth" : e.fundProductType,
@@ -6258,7 +4323,7 @@ export default async function Home({
                 />
               )}
             </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden md:flex" : ""}`}>
               <UnifiedEntryLauncher
                 defaultAction={
                   isDepositView
@@ -6465,16 +4530,16 @@ export default async function Home({
                   institutionId: account.institutionId ?? null,
                   counterpartyId: account.counterpartyId ?? null,
                   institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
-                  isInstitutionLoan: !!account.institutionId,
+                  isInstitutionLoan: !!account.institutionId && account.Institution?.type === "bank",
                   debtDirection: account.debtDirection ?? null,
                 }))}
-                cashAccounts={cashAccountList}
+                cashAccounts={debtTransferAccountList}
                 debtObjectOptions={debtObjectOptions}
-                cashAccountSSOptions={cashAccountSSOptions}
+                cashAccountSSOptions={debtTransferAccountSSOptions}
                 nestedFieldData={nestedFieldData}
                 defaultDebtAccountId={selectedDebtRow?.accountIds?.[0] ?? ""}
                 defaultDebtInstitutionId={selectedDebtObjectValue}
-                defaultCashAccountId={cashAccountList[0]?.id ?? ""}
+                defaultCashAccountId={debtTransferAccountList[0]?.id ?? ""}
                 action={createDebtTransaction}
                 showTriggerButton={false}
               />
@@ -6514,7 +4579,7 @@ export default async function Home({
                   separatorLabel="调整信用卡账单和明细高度"
                   separatorTitle="拖动调整信用卡账单和明细高度"
                 >
-                  {billSummariesWithCumulative.length > 0 ? (
+                  {hasCreditBillSummaries ? (
                     <CreditBillSummaryTable
                       accountId={selectedAccount?.id ?? ""}
                       accountName={selectedAccount?.name ?? ""}
@@ -6597,6 +4662,9 @@ export default async function Home({
               repaymentScheduleRows={finalRepaymentScheduleRows}
               totalPayable={totalDebtPayable}
               totalReceivable={totalDebtReceivable}
+              isRedUp={isRedUp}
+              accountOptions={accountOptions}
+              categoryOptions={categoryBatchReplaceOptions}
             />
           ) : view === "deposit" && selectedAccount ? (
             <DepositShell

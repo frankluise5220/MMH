@@ -21,10 +21,12 @@ export type EditPayload = {
   businessNote?: string | null;
   toNote?: string;
   accountId?: string;
+  accountName?: string;
   accountLabel?: string;
   categoryId?: string;
   counterpartyInstitutionId?: string;
   fromAccountId?: string;
+  fromAccountName?: string;
   toAccountId?: string;
   toAccountName?: string;
   hasFundDetail?: boolean;

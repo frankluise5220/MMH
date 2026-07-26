@@ -11,7 +11,7 @@ import {
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
@@ -111,6 +111,7 @@ export async function GET(req: NextRequest) {
         fundCode: true,
         fundName: true,
         realizedProfit: true,
+        debtInterestAmount: true,
         depositInterest: true,
         fundFee: true,
         categoryId: true,
@@ -195,6 +196,23 @@ export async function GET(req: NextRequest) {
           for (const et of e.EntryTag) {
             const existing = expenseByTag.get(et.tagId);
             expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
+          }
+        }
+        for (const item of getBusinessResultStatisticItems(e)) {
+          if (item.type === "income") {
+            row.income += item.amount;
+            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            for (const et of e.EntryTag) {
+              const existing = incomeByTag.get(et.tagId);
+              incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
+            }
+          } else {
+            row.expense += item.amount;
+            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            for (const et of e.EntryTag) {
+              const existing = expenseByTag.get(et.tagId);
+              expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
+            }
           }
         }
       } else if (e.type === TransactionType.investment) {

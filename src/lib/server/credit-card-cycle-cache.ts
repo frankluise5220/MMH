@@ -1,8 +1,10 @@
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } from "@/lib/credit/billing";
 
 export async function invalidateCreditCardCycleCacheForAccountIds(
   accountIds: Iterable<string | null | undefined>,
+  options: { deleteManualCycles?: boolean } = {},
 ) {
   const ids = Array.from(new Set(Array.from(accountIds).filter((id): id is string => !!id)));
   if (ids.length === 0) return 0;
@@ -18,7 +20,17 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
   if (billAccounts.length === 0) return 0;
 
   const result = await prisma.creditCardCycle.deleteMany({
-    where: { accountId: { in: billAccounts.map((account) => account.id) } },
+    where: {
+      accountId: { in: billAccounts.map((account) => account.id) },
+      ...(options.deleteManualCycles
+        ? {}
+        : {
+            OR: [
+              { lockSource: null },
+              { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
+            ],
+          }),
+    },
   });
   return result.count;
 }

@@ -15,7 +15,7 @@ import {
   summarizeCreditCardInstallments,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
-import { toStatementMonth } from "@/lib/date-utils";
+import { creditBillUnpaidAmount, isCreditBillSettled } from "@/lib/credit/billing";
 import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
@@ -75,7 +75,7 @@ function statementMonthFromDateText(dateText: string, rows: CreditBillSummaryRow
 }
 
 function installmentAvailableAmount(row: CreditBillSummaryRow | null | undefined) {
-  return row ? Math.max(0, row.effectiveBill - row.paid) : 0;
+  return row ? creditBillUnpaidAmount(row) : 0;
 }
 
 export function CreditBillSummaryTable({
@@ -183,7 +183,7 @@ export function CreditBillSummaryTable({
   );
   const defaultInstallmentRow = useMemo(
     () => selectedBillRow
-      ?? localRows.find((row) => !row.isCurrentCycle && row.effectiveBill - row.paid > 0)
+      ?? localRows.find((row) => !row.isCurrentCycle && creditBillUnpaidAmount(row) > 0)
       ?? localRows.find((row) => !row.isCurrentCycle)
       ?? localRows[0]
       ?? null,
@@ -458,7 +458,7 @@ export function CreditBillSummaryTable({
       minWidth: 76,
       hideable: true,
       render: (row) => {
-        const settled = !row.isCurrentCycle && row.effectiveBill > 0 && row.paid >= row.effectiveBill;
+        const settled = isCreditBillSettled(row);
         if (settled) {
           return <span className="whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">已还款</span>;
         }

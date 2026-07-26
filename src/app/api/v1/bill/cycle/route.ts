@@ -21,7 +21,15 @@ import {
   getCreditBillAccountIds,
   syncCreditCardInstitutionSettings,
 } from "@/lib/server/credit-card-institution-settings";
-import { summarizeCreditBillSignedFlows } from "@/lib/credit/billing";
+import {
+  CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
+  applyNextCyclePaidToCreditBillSummaries,
+  buildCreditCardCyclePersistRows,
+  computeCreditBillCascade,
+  mergeCreditCardCycleLockSources,
+  summarizeCreditBillSignedFlows,
+  type CreditBillSummary,
+} from "@/lib/credit/billing";
 
 function parseDateOnly(value: unknown): Date | null {
   const raw = String(value ?? "").trim();
@@ -139,6 +147,13 @@ export async function PATCH(req: Request) {
     }
 
     const changedCycles = adjustedCycles.slice(startIndex);
+    for (const cycle of changedCycles) {
+      cycle.isLocked = true;
+      cycle.lockSource = mergeCreditCardCycleLockSources(
+        cycle.lockSource,
+        CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
+      );
+    }
     const oldChangedCycles = cycles.slice(startIndex);
     const minDate = new Date(Math.min(
       ...changedCycles.map((cycle) => cycle.periodStart.getTime()),
@@ -186,8 +201,7 @@ export async function PATCH(req: Request) {
     });
 
     const overrides = await prisma.billOverride.findMany({ where: { accountId: storageAccountId } });
-    const overrideByMonth = new Map(overrides.map((override) => [override.statementMonth, toNumber(override.amount)]));
-    const recalculated: typeof adjustedCycles = [];
+    const recalculatedSummaries: CreditBillSummary[] = [];
     for (const cycle of adjustedCycles) {
       const cycleWindow = {
         date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) },
@@ -208,38 +222,53 @@ export async function PATCH(req: Request) {
       const income = flows.income;
       const rawBill = flows.bill;
 
-      recalculated.push({ ...cycle, expenseAbs, income, paid: 0, rawBill });
+      recalculatedSummaries.push({
+        month: cycle.statementMonth,
+        start: cycle.periodStart,
+        end: cycle.periodEnd,
+        due: cycle.dueDate,
+        bill: rawBill,
+        paid: 0,
+        remain: 0,
+        overpaid: 0,
+        expenseAbs,
+        income,
+        isCurrentCycle: today >= cycle.periodStart && today < addDaysUtc(cycle.periodEnd, 1),
+      });
     }
 
-    const incomeByMonth = new Map(recalculated.map((cycle) => [cycle.statementMonth, cycle.income]));
-    for (const cycle of recalculated) {
-      const parsed = statementMonthDate(cycle.statementMonth);
-      if (!parsed) continue;
-      const nextDate = new Date(Date.UTC(parsed.year, parsed.monthIndex + 1, 1));
-      const nextMonth = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}`;
-      cycle.paid = incomeByMonth.get(nextMonth) ?? 0;
-    }
-
-    let previousBalance = 0;
-    for (const cycle of recalculated) {
-      const override = overrideByMonth.get(cycle.statementMonth);
-      const effectiveBill = override !== undefined
-        ? override
-        : previousBalance + cycle.rawBill;
-      const afterPaid = effectiveBill - cycle.paid;
-      previousBalance = afterPaid;
-      cycle.effectiveBill = effectiveBill;
-      cycle.cumulativeRemain = Math.max(0, afterPaid);
-      cycle.cumulativeOverpaid = Math.max(0, -afterPaid);
-      cycle.isCurrentCycle = today >= cycle.periodStart && today < addDaysUtc(cycle.periodEnd, 1);
-      cycle.isLocked = override !== undefined;
-      cycle.lockSource = override !== undefined ? "override" : null;
-    }
+    const summariesWithPaid = applyNextCyclePaidToCreditBillSummaries(recalculatedSummaries);
+    const summaryByMonth = new Map(summariesWithPaid.map((summary) => [summary.month, summary]));
+    const creditCascade = computeCreditBillCascade({
+      monthsForCascade: adjustedCycles.map((cycle) => cycle.statementMonth),
+      summaryByMonth,
+      overrides: overrides.map((override) => ({
+        statementMonth: override.statementMonth,
+        amount: toNumber(override.amount),
+      })),
+    });
+    const cycleRows = buildCreditCardCyclePersistRows({
+      billingDay,
+      repaymentDay,
+      months: creditCascade.allMonthsForCascade,
+      summaryByMonth,
+      effectiveBillByMonth: creditCascade.effectiveBillByMonth,
+      cumulativeByMonth: creditCascade.cumulativeByMonth,
+      overrideByMonth: creditCascade.overrideByMonth,
+      now: new Date(),
+    });
+    const cycleIdByMonth = new Map(adjustedCycles.map((cycle) => [cycle.statementMonth, cycle.id]));
+    const adjustedCycleByMonth = new Map(adjustedCycles.map((cycle) => [cycle.statementMonth, cycle]));
 
     await prisma.$transaction(async (tx) => {
-      for (const cycle of recalculated) {
+      for (const cycle of cycleRows) {
+        const id = cycleIdByMonth.get(cycle.statementMonth);
+        if (!id) continue;
+        const adjustedCycle = adjustedCycleByMonth.get(cycle.statementMonth);
+        const lockSource = mergeCreditCardCycleLockSources(cycle.lockSource, adjustedCycle?.lockSource);
+        const isLocked = cycle.isLocked || Boolean(adjustedCycle?.isLocked);
         await tx.creditCardCycle.update({
-          where: { id: cycle.id },
+          where: { id },
           data: {
             periodStart: cycle.periodStart,
             periodEnd: cycle.periodEnd,
@@ -252,8 +281,8 @@ export async function PATCH(req: Request) {
             cumulativeRemain: String(cycle.cumulativeRemain),
             cumulativeOverpaid: String(cycle.cumulativeOverpaid),
             isCurrentCycle: cycle.isCurrentCycle,
-            isLocked: cycle.isLocked,
-            lockSource: cycle.lockSource,
+            isLocked,
+            lockSource,
           },
         });
       }

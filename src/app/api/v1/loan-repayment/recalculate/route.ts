@@ -157,18 +157,21 @@ export async function POST(req: Request) {
         accountId: plan.accountId,
       },
       orderBy: { date: "asc" },
-      select: { note: true },
+      select: { note: true, source: true },
     });
+    const isFinancedPurchaseLoan = originalBorrow?.source === "debt_financed_purchase";
     const originalTotalRuns = memo.originalTotalRuns ?? parseLoanTotalRunsFromNote(originalBorrow?.note);
     const remainingPrincipal = Math.abs(toNumber(plan.Account_RegularInvestPlan_accountIdToAccount.balance));
     const executedRuns = Math.max(0, plan.executedRuns ?? 0);
     const remainingRuns = plan.totalRuns == null ? null : Math.max(0, plan.totalRuns - executedRuns);
     const originalRemainingRuns = originalTotalRuns == null ? null : Math.max(0, originalTotalRuns - executedRuns);
     const intervalMonths = memo.repaymentIntervalMonths ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : 1);
-    const rawRecalculateStartDate = requestedStartDate ?? plan.nextRunDate;
-    const recalculateStartDate = requestedStartDate
+    const requestedRecalculateStartDate = requestedStartDate
       ? alignToRepaymentRunDate(requestedStartDate, plan)
       : plan.nextRunDate;
+    const shouldSkipHistoricalBackfill = isFinancedPurchaseLoan && formatDateUtc(requestedRecalculateStartDate) < formatDateUtc(plan.nextRunDate);
+    const rawRecalculateStartDate = shouldSkipHistoricalBackfill ? plan.nextRunDate : requestedStartDate ?? plan.nextRunDate;
+    const recalculateStartDate = shouldSkipHistoricalBackfill ? plan.nextRunDate : requestedRecalculateStartDate;
     const strategy =
       await getPrepaymentStrategyForStartDate({
         householdId,
@@ -218,6 +221,20 @@ export async function POST(req: Request) {
       let historicalGuard = 0;
       while (formatDateUtc(historicalRunDate) < formatDateUtc(plan.nextRunDate)) {
         const existing = historicalExistingByDate.get(formatDateUtc(historicalRunDate));
+        if (isFinancedPurchaseLoan && !existing) {
+          historicalRunDate = calcNextScheduledRunDate(
+            historicalRunDate,
+            plan.intervalUnit,
+            plan.intervalValue,
+            plan.executionDay,
+            false,
+          );
+          historicalGuard += 1;
+          if (historicalGuard > 1200) {
+            return NextResponse.json({ ok: false, error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
+          }
+          continue;
+        }
         historicalRuns.push({
           date: historicalRunDate,
           source: existing?.source === LOCKED_LOAN_REPAYMENT_SOURCE ? LOCKED_LOAN_REPAYMENT_SOURCE : AUTO_LOAN_REPAYMENT_SOURCE,

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import {
   Home,
   Landmark,
@@ -12,8 +12,6 @@ import {
   TrendingUp,
   ReceiptText,
 } from "lucide-react";
-
-import { MmhLogo } from "@/components/MmhLogo";
 
 const NAV_ITEMS = [
   { href: "/overview", label: "总览", icon: Home },
@@ -38,18 +36,12 @@ export function MobileNavigation() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-
-  const title = useMemo(() => {
-    if (pathname.startsWith("/overview")) return "总览";
-    if (pathname.startsWith("/accounts") || pathname === "/") return pathname === "/" ? "账户明细" : "资金账户";
-    if (pathname.startsWith("/transactions")) return "流水";
-    if (pathname.startsWith("/invest")) return "投资";
-    if (pathname.startsWith("/reports") || pathname.startsWith("/statistics")) return "统计";
-    if (pathname.startsWith("/liabilities")) return "往来款";
-    if (pathname.startsWith("/regular-invest")) return "计划任务";
-    if (pathname.startsWith("/settings")) return "我的";
-    return "MoneyMoneyHome";
-  }, [pathname]);
+  const rootView = pathname === "/" ? searchParams.get("view") ?? "" : "";
+  const isRootInvestmentView =
+    rootView === "investfund" ||
+    rootView === "investmoney" ||
+    rootView === "investwealth" ||
+    rootView === "regularinvest";
 
   useEffect(() => {
     if (pathname !== "/" || searchParams.get("quickEntry") !== "1") return;
@@ -63,28 +55,25 @@ export function MobileNavigation() {
   }, [pathname, searchParams]);
 
   const isActive = (href: string) => {
-    if (href === "/investments") return pathname.startsWith("/invest") || pathname.startsWith("/funds") || pathname.startsWith("/regular-invest");
+    if (href === "/investments") return isRootInvestmentView || pathname.startsWith("/invest") || pathname.startsWith("/funds") || pathname.startsWith("/regular-invest");
+    if (href === "/accounts") return pathname.startsWith("/accounts") || pathname.startsWith("/insurance") || pathname.startsWith("/liabilities");
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
   return (
     <>
-      <header className="fixed inset-x-0 top-0 z-50 flex h-[calc(3.5rem+env(safe-area-inset-top))] items-end border-b border-slate-200 bg-slate-50/96 px-4 pb-2 backdrop-blur md:hidden">
-        <div className="flex h-10 min-w-0 flex-1 items-center gap-2.5">
-          <MmhLogo size={28} />
-          <div className="min-w-0">
-            <div className="truncate text-[11px] font-medium text-slate-400">MoneyMoneyHome</div>
-            <div className="truncate text-sm font-semibold text-slate-900">{title}</div>
-          </div>
+      <header className="fixed inset-x-0 top-0 z-50 flex h-[calc(2.5rem+env(safe-area-inset-top))] items-end border-b border-slate-200 bg-slate-50/96 px-3 pb-1 backdrop-blur md:hidden">
+        <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5">
+          <span className="sr-only">移动端导航</span>
         </div>
         <div className="flex shrink-0 items-center">
-          <Link href="/settings" className="flex h-10 w-10 items-center justify-center text-slate-500" aria-label="我的">
+          <Link href="/settings" className="flex h-9 w-9 items-center justify-center text-slate-500" aria-label="我的">
             <Settings size={19} />
           </Link>
           <button
             type="button"
             onClick={() => router.refresh()}
-            className="flex h-10 w-10 items-center justify-center text-slate-500"
+            className="flex h-9 w-9 items-center justify-center text-slate-500"
             aria-label="刷新"
           >
             <RefreshCw size={19} />
@@ -95,7 +84,7 @@ export function MobileNavigation() {
       <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="absolute inset-x-0 bottom-0 grid h-[calc(4.5rem+env(safe-area-inset-bottom))] grid-cols-[1fr_1fr_0.72fr_1fr_1fr] border-t border-slate-200 bg-white/97 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur">
           <MobileNavLink item={NAV_ITEMS[0]} active={isActive(NAV_ITEMS[0].href)} />
-          <MobileNavLink item={NAV_ITEMS[1]} active={isActive(NAV_ITEMS[1].href) || pathname === "/"} />
+          <MobileNavLink item={NAV_ITEMS[1]} active={isActive(NAV_ITEMS[1].href) || (pathname === "/" && !isRootInvestmentView)} />
           <span aria-hidden="true" />
           <MobileNavLink item={NAV_ITEMS[2]} active={isActive(NAV_ITEMS[2].href)} />
           <MobileNavLink item={NAV_ITEMS[3]} active={isActive(NAV_ITEMS[3].href)} />

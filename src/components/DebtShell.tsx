@@ -6,10 +6,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
-import { EntryRowActions } from "./EntryRowActions";
+import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  BasicDetailBatchDeleteButton,
+  BasicDetailBatchDeleteMessage,
+  BasicDetailBatchReplaceButton,
+  BasicDetailSelectionProvider,
+  useBasicDetailSelection,
+  usePruneBasicDetailSelection,
+  type BasicDetailBatchCategoryOption,
+} from "./BasicDetailSelection";
 import { formatMoney } from "@/lib/format";
 import {
   buildMortgageLprRateAdjustments,
@@ -71,6 +78,7 @@ type DebtEntry = {
     defaultDate: string;
     defaultPrincipal: number;
     defaultInterest: number;
+    defaultNote?: string | null;
     defaultPenalty?: number;
     defaultRecalculateStartDate?: string | null;
     defaultPrepayStrategy?: string;
@@ -108,9 +116,11 @@ type RateAdjustmentDraft = {
   annualRate: string;
 };
 
-function amountClass(value: number) {
-  if (value > 0) return "text-emerald-700";
-  if (value < 0) return "text-rose-700";
+type AccountOption = { id: string; label: string; title?: string | null; hoverTitle?: string | null };
+
+function amountClass(value: number, isRedUp: boolean) {
+  if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-700";
+  if (value < 0) return isRedUp ? "text-emerald-700" : "text-red-700";
   return "text-slate-500";
 }
 
@@ -136,15 +146,14 @@ function makeDraftId() {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function stopRowClick(event: React.MouseEvent) {
-  event.stopPropagation();
-}
-
 export function DebtShell({
   rows,
   selectedKey,
   entries,
   repaymentScheduleRows,
+  isRedUp,
+  accountOptions,
+  categoryOptions,
 }: {
   rows: DebtRow[];
   selectedKey: string;
@@ -152,9 +161,11 @@ export function DebtShell({
   repaymentScheduleRows: RepaymentScheduleRow[];
   totalPayable: number;
   totalReceivable: number;
+  isRedUp: boolean;
+  accountOptions: AccountOption[];
+  categoryOptions: BasicDetailBatchCategoryOption[];
 }) {
   const router = useRouter();
-  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [detailTab, setDetailTab] = useState<"entries" | "schedule">("entries");
   const [showPaidScheduleRows, setShowPaidScheduleRows] = useState(false);
   const [rateCardOpen, setRateCardOpen] = useState(false);
@@ -190,7 +201,7 @@ export function DebtShell({
     paidPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
     paidInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
     remainingInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
-    net: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.net), 0),
+    net: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.net, 0),
   }), [visibleRows]);
   useEffect(() => {
     return () => {
@@ -212,23 +223,6 @@ export function DebtShell({
       setDetailTab("entries");
     }
   }, [detailTab, isSelectedBankLoan]);
-
-  async function batchDeleteEntries() {
-    if (selectedEntryIds.size === 0) return;
-    const entryIds = Array.from(selectedEntryIds);
-    const data = await deleteEntriesWithLinkedPrompt({
-      entryIds,
-      confirmMessage: `确认删除选中的 ${selectedEntryIds.size} 条往来明细吗？`,
-    });
-    if (!data.ok) {
-      if (data.error === "已取消删除") return;
-      window.alert(data?.error || "批量删除失败");
-      return;
-    }
-    setSelectedEntryIds(new Set());
-    const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
-  }
 
   function openRepayment(row: DebtRow) {
     if (rowClickTimerRef.current) {
@@ -409,7 +403,7 @@ export function DebtShell({
       minWidth: 84,
       filterText: (row) => row.objectType,
       render: (row) => (
-        <span className={row.net >= 0 ? "text-emerald-700" : "text-slate-700"}>
+        <span className={amountClass(row.net, isRedUp)}>
           {row.objectType}
         </span>
       ),
@@ -449,7 +443,7 @@ export function DebtShell({
       width: 150,
       minWidth: 110,
       filterText: (row) => row.itemType,
-      render: (row) => <span className={row.net >= 0 ? "text-emerald-700" : "text-slate-700"}>{row.itemType}</span>,
+      render: (row) => <span className={amountClass(row.net, isRedUp)}>{row.itemType}</span>,
     },
     {
       key: "repaymentMethod",
@@ -511,9 +505,9 @@ export function DebtShell({
       width: 130,
       minWidth: 96,
       align: "right",
-      render: (row) => <span className="font-semibold tabular-nums text-slate-800">{formatMoney(Math.abs(row.net))}</span>,
+      render: (row) => <span className={`font-semibold tabular-nums ${amountClass(row.net, isRedUp)}`}>{formatMoney(row.net)}</span>,
     },
-  ], []);
+  ], [isRedUp]);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
     { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
@@ -566,25 +560,9 @@ export function DebtShell({
         </span>
       ),
     },
-    { key: "balance", label: "往来余额", width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance)}`}>{formatMoney(entry.balance)}</span> },
+    { key: "balance", label: "往来余额", width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
     { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
-    {
-      key: "actions",
-      label: "",
-      width: 92,
-      minWidth: 76,
-      align: "right",
-      render: (entry) => (
-        <div onClick={stopRowClick}>
-          <EntryRowActions
-            entryId={entry.id}
-            edit={entry.edit}
-            customEditEvent={entry.debtEdit ? { name: "mmh:debt:create", detail: entry.debtEdit } : undefined}
-          />
-        </div>
-      ),
-    },
-  ], [isSelectedBankLoan]);
+  ], [isRedUp, isSelectedBankLoan]);
 
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {
@@ -669,7 +647,7 @@ export function DebtShell({
                 paidPrincipal: <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(debtRowSummary.paidPrincipal)}</span>,
                 paidInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.paidInterest)}</span>,
                 remainingInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.remainingInterest)}</span>,
-                net: <span className="font-semibold tabular-nums text-slate-800">{formatMoney(debtRowSummary.net)}</span>,
+                net: <span className={`font-semibold tabular-nums ${amountClass(debtRowSummary.net, isRedUp)}`}>{formatMoney(debtRowSummary.net)}</span>,
               },
             }}
           />
@@ -728,23 +706,16 @@ export function DebtShell({
               请先选择上方往来账户
             </div>
           ) : detailTab === "entries" || !isSelectedBankLoan ? (
-            <AdvancedDataTable
-              storageKey="mmh_debt_entries_table_v1"
-              columns={entryColumns}
-              rows={entries}
-              rowKey={(entry) => entry.id}
-              minTableWidth={1240}
-              emptyText="暂无明细"
-              fillHeight
-              compactRows
-              toolbarTitle="交易明细"
-              selectable
-              selectedKeys={selectedEntryIds}
-              onSelectionChange={setSelectedEntryIds}
-              batchActions={[
-                { label: "批量删除", title: "删除按钮", ariaLabel: "删除按钮", tone: "danger", onClick: batchDeleteEntries },
-              ]}
-            />
+            <BasicDetailSelectionProvider resetKey={`debt-entries:${selectedRow.key}`}>
+              <BasicDetailBatchDeleteMessage />
+              <DebtEntriesTable
+                accountOptions={accountOptions}
+                categoryOptions={categoryOptions}
+                contextAccountId={selectedRow.accountId}
+                columns={entryColumns}
+                entries={entries}
+              />
+            </BasicDetailSelectionProvider>
           ) : (
             <AdvancedDataTable
               storageKey="mmh_debt_repayment_schedule_table_v1"
@@ -991,5 +962,78 @@ export function DebtShell({
           </div>
         ) : null}
       </div>
+  );
+}
+
+function DebtEntriesTable({
+  accountOptions,
+  categoryOptions,
+  contextAccountId,
+  columns,
+  entries,
+}: {
+  accountOptions: AccountOption[];
+  categoryOptions: BasicDetailBatchCategoryOption[];
+  contextAccountId?: string | null;
+  columns: AdvancedDataTableColumn<DebtEntry>[];
+  entries: DebtEntry[];
+}) {
+  const { selectedIds, setSelection } = useBasicDetailSelection();
+  const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  usePruneBasicDetailSelection(currentEntryIds);
+  const normalizedAccountOptions = useMemo(
+    () => accountOptions.map((account) => ({
+      id: account.id,
+      label: account.label,
+      title: account.title ?? account.hoverTitle ?? undefined,
+    })),
+    [accountOptions],
+  );
+
+  return (
+    <AdvancedDataTable
+      storageKey="mmh_debt_entries_table_v1"
+      resetKey={`debt-entries:${contextAccountId ?? "all"}`}
+      columns={columns}
+      rows={entries}
+      rowKey={(entry) => entry.id}
+      minTableWidth={1240}
+      emptyText="暂无明细"
+      fillHeight
+      compactRows
+      toolbarTitle="交易明细"
+      toolbarRightContent={<span className="text-xs text-slate-500">共 {entries.length} 条</span>}
+      selectable
+      selectOnRowClick
+      selectedKeys={selectedIds}
+      onSelectionChange={setSelection}
+      onRowDoubleClick={(entry) => {
+        dispatchEntryEdit({
+          entryId: entry.id,
+          edit: entry.edit,
+          customEditEvent: entry.debtEdit ? { name: "mmh:debt:create", detail: entry.debtEdit } : undefined,
+        });
+      }}
+      rowClassName={() => "hover:bg-blue-50/40"}
+      rowActions={(entry) => (
+        <EntryRowActions
+          entryId={entry.id}
+          edit={entry.edit}
+          customEditEvent={entry.debtEdit ? { name: "mmh:debt:create", detail: entry.debtEdit } : undefined}
+        />
+      )}
+      rowActionsWidth={92}
+      rowActionsMinWidth={76}
+      batchActionSlot={(
+        <>
+          <BasicDetailBatchReplaceButton
+            accountOptions={normalizedAccountOptions}
+            categoryOptions={categoryOptions}
+            contextAccountId={contextAccountId}
+          />
+          <BasicDetailBatchDeleteButton recordLabel="往来明细" />
+        </>
+      )}
+    />
   );
 }

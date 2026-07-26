@@ -1177,6 +1177,7 @@ export async function GET(req: Request) {
         debtPrincipalAmount: record.debtPrincipalAmount ? toNumber(record.debtPrincipalAmount) : null,
         debtInterestAmount: record.debtInterestAmount ? toNumber(record.debtInterestAmount) : null,
         debtFeeAmount: record.debtFeeAmount ? toNumber(record.debtFeeAmount) : null,
+        realizedProfit: record.realizedProfit ? toNumber(record.realizedProfit) : null,
         fundProductType: record.fundProductType,
         metalTypeId: record.metalTypeId ?? null,
         metalTypeName: record.metalTypeName ?? null,
@@ -1315,9 +1316,10 @@ export async function GET(req: Request) {
       insuranceProductId: e.insuranceProductId ?? null,
       insuranceAction: e.insuranceAction ?? null,
       insuranceProductName: e.insuranceProductName ?? e.fundName ?? null,
-      debtPrincipalAmount: e.debtPrincipalAmount ? toNumber(e.debtPrincipalAmount) : null,
-      debtInterestAmount: e.debtInterestAmount ? toNumber(e.debtInterestAmount) : null,
-      debtFeeAmount: e.debtFeeAmount ? toNumber(e.debtFeeAmount) : null,
+    debtPrincipalAmount: e.debtPrincipalAmount ? toNumber(e.debtPrincipalAmount) : null,
+    debtInterestAmount: e.debtInterestAmount ? toNumber(e.debtInterestAmount) : null,
+    debtFeeAmount: e.debtFeeAmount ? toNumber(e.debtFeeAmount) : null,
+    realizedProfit: e.realizedProfit ? toNumber(e.realizedProfit) : null,
       fundProductType: e.fundProductType,
       metalTypeId: e.metalTypeId ?? null,
       metalTypeName: e.metalTypeName ?? null,
@@ -2442,6 +2444,13 @@ export async function PUT(req: Request) {
             ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
             : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
+        if (
+          !debtMode &&
+          String(entry.source ?? "").startsWith("debt_") &&
+          (Math.abs(toNumber(entry.debtInterestAmount)) > 0.005 || Math.abs(toNumber(entry.debtFeeAmount)) > 0.005)
+        ) {
+          throw new Error("有利息或手续费的借入借出记录不能直接改为普通转账");
+        }
         const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
@@ -2474,7 +2483,7 @@ export async function PUT(req: Request) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : entry.source,
+            source: debtMode ? `debt_${debtMode}` : "manual",
             fundCode: null,
             fundName: null,
             fundProductType: null,
