@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
+const { describePathAliases, resolvePathAlias } = require("./codex-path-aliases.cjs");
 
 function printHelp() {
   console.error(`Usage:
@@ -9,6 +10,11 @@ function printHelp() {
 PowerShell-safe ripgrep wrapper for Codex/debug sessions.
 Default search is fixed-string, so patterns like type === "income" do not need
 regex escaping. Always pass paths as separate arguments.
+
+Path aliases:
+${describePathAliases()}
+
+Use the alias instead of typing paths that contain parentheses in PowerShell.
 `);
 }
 
@@ -38,7 +44,8 @@ if (positional.length === 0) {
   process.exit(2);
 }
 
-const [pattern, ...paths] = positional;
+const [pattern, ...rawPaths] = positional;
+const paths = rawPaths.map(resolvePathAlias);
 const rgArgs = ["-n"];
 if (!regex) rgArgs.push("-F");
 if (ignoreCase) rgArgs.push("-i");

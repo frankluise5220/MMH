@@ -215,6 +215,8 @@
 
 - 搜索优先使用 `rg` / `rg --files`。
 - 在 PowerShell 里搜索包含括号、引号、`|`、`$`、正则分组或中文的复杂内容时，优先使用 `npm run codex:rg -- <pattern> <path...>`，默认固定字符串搜索，避免 PowerShell 把参数拆坏。
+- 查看或暂存带路径的 Git 变更时，优先使用 `npm run codex:git -- <git 参数...>`。例如 `npm run codex:git -- diff -- sidebar/page.tsx` 会把 `sidebar/...` 安全展开为 `src/app/(sidebar)/...`，避免 PowerShell 先解析括号。
+- 不在 PowerShell 命令里裸写 `src/app/(sidebar)`；搜索、diff、add 等常见操作统一用 `sidebar/...` 路径别名。
 - 需要临时查询 Prisma 数据时，不要写长 `node -e`；把查询写入被 Git 忽略的 `_tmp_query.cjs` / `.tmp-query.cjs`，再运行 `npm run codex:prisma -- _tmp_query.cjs`，由脚本统一加载 `.env`、Prisma adapter 和 `$disconnect`。
 - 读取源码文件时优先显式按 UTF-8 读取。
 - 修改源码文件时优先使用 `apply_patch`。
