@@ -15,8 +15,23 @@ import { inferMortgageLprDiscountFromRateAdjustments } from "@/lib/loan-lpr";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
+import {
+  BALANCE_INITIALIZATION_SOURCE,
+  BALANCE_RECONCILE_SOURCE,
+  getBalanceReconcileTarget,
+} from "@/lib/balance-reconcile";
 
 export const ACTIVE_DEBT_EPSILON = 0.005;
+
+function roundDebtDisplayMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function signedRemainingTotal(net: number, remainingPrincipal: number, remainingInterest: number) {
+  const total = roundDebtDisplayMoney(Math.abs(remainingPrincipal) + Math.abs(remainingInterest));
+  if (Math.abs(net) < ACTIVE_DEBT_EPSILON) return 0;
+  return net < 0 ? -total : total;
+}
 
 export type DebtViewAccount = {
   id: string;
@@ -75,6 +90,7 @@ export type DebtViewRow = {
   paidInterest: number;
   remainingPrincipal: number;
   remainingInterest: number;
+  remainingTotal: number;
   nextRepaymentDate: string;
   nextRepaymentPrincipal: number | null;
   nextRepaymentInterest: number | null;
@@ -115,6 +131,13 @@ export type DebtDetailEntry = {
   interest: number;
   paymentTotal: number | null;
   balance: number;
+  balanceReconcileEdit?: {
+    entryId: string;
+    accountId: string;
+    accountName: string;
+    date: string;
+    amount: number;
+  };
   debtEdit?: {
     editEntryId: string;
     mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
@@ -186,6 +209,11 @@ export type DebtMetricEntry = {
   fundConfirmDate?: Date | null;
   fundArrivalDate?: Date | null;
 };
+
+function getDebtBalanceReconcileTarget(entry: DebtMetricEntry) {
+  if (entry.source !== BALANCE_RECONCILE_SOURCE && entry.source !== BALANCE_INITIALIZATION_SOURCE) return null;
+  return getBalanceReconcileTarget(entry);
+}
 
 export function debtPrincipalForAccountSide(
   entry: { amount: unknown; debtPrincipalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
@@ -383,6 +411,7 @@ export function applyDebtRowEntryMetrics({
         );
       }
     }
+    row.remainingTotal = signedRemainingTotal(row.net, row.remainingPrincipal, row.remainingInterest);
   }
 }
 
@@ -455,13 +484,20 @@ export function buildDebtDetailEntriesViewData({
     const key = principalKey(entry);
     debtFeeByPrincipalKey.set(key, (debtFeeByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
   }
-  const filteredDebtPrincipalEntries = filteredDebtEntries.filter((entry) => entry.type === TransactionType.transfer);
+  const filteredDebtPrincipalEntries = filteredDebtEntries.filter(
+    (entry) => entry.type === TransactionType.transfer || getDebtBalanceReconcileTarget(entry) != null,
+  );
   const debtBalanceByEntryId = new Map<string, number>();
+  const debtDisplayAmountByEntryId = new Map<string, number>();
   const debtBalanceTimeline: Array<{ date: string; balance: number }> = [];
   let runningDebtBalance = 0;
   for (const entry of [...filteredDebtPrincipalEntries].sort((a, b) => compareDetailEntriesAsc(a, b, displayAccountId))) {
-    const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-    runningDebtBalance += displayAmount;
+    const reconcileTarget = getDebtBalanceReconcileTarget(entry);
+    const displayAmount = reconcileTarget == null
+      ? debtPrincipalForAccountSide(entry, selectedDebtAccountIds)
+      : reconcileTarget - runningDebtBalance;
+    runningDebtBalance = reconcileTarget == null ? runningDebtBalance + displayAmount : reconcileTarget;
+    debtDisplayAmountByEntryId.set(entry.id, displayAmount);
     debtBalanceByEntryId.set(entry.id, runningDebtBalance);
     debtBalanceTimeline.push({
       date: debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
@@ -479,9 +515,11 @@ export function buildDebtDetailEntriesViewData({
 
   const debtDetailEntries: DebtDetailEntry[] = filteredDebtPrincipalEntries.map((entry) => {
     const amount = toNumber(entry.amount);
+    const reconcileTarget = getDebtBalanceReconcileTarget(entry);
+    const isBalanceReconcile = reconcileTarget != null;
     const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-    const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-    const cashFlowAmount = debtCashFlowForAccountSide(entry, selectedDebtAccountIds);
+    const displayAmount = debtDisplayAmountByEntryId.get(entry.id) ?? debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
+    const cashFlowAmount = isBalanceReconcile ? displayAmount : debtCashFlowForAccountSide(entry, selectedDebtAccountIds);
     const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
     const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
     const isSelectedBankLoan = selectedDebtRow?.objectType === "银行贷款";
@@ -541,21 +579,32 @@ export function buildDebtDetailEntriesViewData({
     return {
       id: entry.id,
       date: entryDateKey,
-      typeLabel: entry.source === "advance"
+      typeLabel: isBalanceReconcile
+        ? (entry.source === BALANCE_INITIALIZATION_SOURCE ? "初始余额" : "余额校准")
+        : entry.source === "advance"
         ? (entry.categoryName || "代付")
         : entry.type === TransactionType.transfer
           ? isSelectedBankLoan
             ? bankDebtTransferTypeLabel(entry.source, debtEditMode)
             : normalizeSettlementTransferCategoryName(entry.categoryName)
           : (entry.categoryName || formatDebtEntryType(entry.type)),
-      relatedAccountLabel: accountLabelById.get(cashSideAccountId) ?? "-",
+      relatedAccountLabel: isBalanceReconcile ? "-" : (accountLabelById.get(cashSideAccountId) ?? "-"),
       note: entry.note ?? "",
       amount: displayAmount,
       principal: cashFlowAmount,
       interest: interestAmount,
-      paymentTotal,
+      paymentTotal: isBalanceReconcile ? null : paymentTotal,
       balance: debtBalanceByEntryId.get(entry.id) ?? 0,
-      debtEdit: entry.type === TransactionType.transfer && entry.source !== "advance"
+      balanceReconcileEdit: isBalanceReconcile
+        ? {
+            entryId: entry.id,
+            accountId: debtSideAccountId,
+            accountName: selectedDebtRow?.name ?? entry.accountId ?? "",
+            date: entryDateKey,
+            amount: reconcileTarget,
+          }
+        : undefined,
+      debtEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
         ? {
             editEntryId: entry.id,
             mode: debtEditMode,
@@ -573,7 +622,9 @@ export function buildDebtDetailEntriesViewData({
               : undefined,
           }
         : undefined,
-      edit: entry.source === "advance"
+      edit: isBalanceReconcile
+        ? undefined
+        : entry.source === "advance"
         ? {
             type: "advance" as const,
             date: entryDateKey,
@@ -797,6 +848,7 @@ export function buildDebtRowsViewData({
       paidInterest: 0,
       remainingPrincipal: 0,
       remainingInterest: 0,
+      remainingTotal: 0,
       nextRepaymentDate: "",
       nextRepaymentPrincipal: null,
       nextRepaymentInterest: null,
@@ -837,6 +889,7 @@ export function buildDebtRowsViewData({
     }
     current.itemType = current.net >= 0 ? "【债权】应收款" : "【债务】应付款";
     current.remainingPrincipal = Math.abs(current.net);
+    current.remainingTotal = signedRemainingTotal(current.net, current.remainingPrincipal, current.remainingInterest);
     debtRowMap.set(accountRowKey, current);
   }
 

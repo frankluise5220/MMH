@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
+import { DebitBalanceReconcileButton } from "./DebitBalanceReconcileButton";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import {
@@ -18,6 +19,7 @@ import {
   type BasicDetailBatchCategoryOption,
 } from "./BasicDetailSelection";
 import { formatMoney } from "@/lib/format";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   buildMortgageLprRateAdjustments,
   calcMortgageLprSpreadFromDiscount,
@@ -45,6 +47,7 @@ type DebtRow = {
   paidInterest: number;
   remainingPrincipal: number;
   remainingInterest: number;
+  remainingTotal: number;
   nextRepaymentDate: string;
   nextRepaymentPrincipal: number | null;
   nextRepaymentInterest: number | null;
@@ -70,6 +73,13 @@ type DebtEntry = {
   interest: number;
   paymentTotal: number | null;
   balance: number;
+  balanceReconcileEdit?: {
+    entryId: string;
+    accountId: string;
+    accountName: string;
+    date: string;
+    amount: number;
+  };
   debtEdit?: {
     editEntryId: string;
     mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
@@ -188,9 +198,15 @@ export function DebtShell({
     visibleRows.find((row) => row.key === selectedKey) ??
     rows.find((row) => row.key === selectedKey) ??
     null;
+  const remainingTotalLabel = selectedRow?.objectType === "银行贷款"
+    ? "待还金额"
+    : selectedRow?.objectType === "银行应收"
+      ? "待收金额"
+      : "待收/还金额";
   const settledCount = rows.filter(isSettledDebtRow).length;
   const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.objectType === "银行贷款";
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
+  const canReconcileSelectedRow = !!selectedRow && !selectedRow.isGroup && !!selectedRow.accountId;
   const canAdjustRateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId;
   const canRecalculateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId && !!selectedRow?.remainingRuns;
   const visibleRepaymentScheduleRows = useMemo(
@@ -200,7 +216,9 @@ export function DebtShell({
   const debtRowSummary = useMemo(() => ({
     paidPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
     paidInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
+    remainingPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingPrincipal), 0),
     remainingInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
+    remainingTotal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingTotal), 0),
     net: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.net, 0),
   }), [visibleRows]);
   useEffect(() => {
@@ -351,7 +369,7 @@ export function DebtShell({
         return;
       }
       setRateCardOpen(false);
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "loan-rate-adjustment", accountIds: [selectedRow.accountId] });
     } finally {
       setRateSaving(false);
     }
@@ -384,7 +402,7 @@ export function DebtShell({
       }
       window.alert(formatLoanRecalculateSuccessMessage(data.data));
       setRecalcOpen(false);
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "loan-repayment-recalculate", accountIds: [selectedRow.accountId] });
     } finally {
       setRecalcSaving(false);
     }
@@ -500,14 +518,23 @@ export function DebtShell({
       render: (row) => <span className="tabular-nums text-amber-700">{formatMoney(Math.abs(row.remainingInterest))}</span>,
     },
     {
-      key: "net",
-      label: "待收/还",
+      key: "remainingPrincipal",
+      label: "剩余本金",
       width: 130,
       minWidth: 96,
       align: "right",
-      render: (row) => <span className={`font-semibold tabular-nums ${amountClass(row.net, isRedUp)}`}>{formatMoney(row.net)}</span>,
+      hideable: true,
+      render: (row) => <span className="tabular-nums text-slate-700">{formatMoney(Math.abs(row.remainingPrincipal))}</span>,
     },
-  ], [isRedUp]);
+    {
+      key: "remainingTotal",
+      label: remainingTotalLabel,
+      width: 150,
+      minWidth: 112,
+      align: "right",
+      render: (row) => <span className={`font-semibold tabular-nums ${amountClass(row.net, isRedUp)}`}>{formatMoney(Math.abs(row.remainingTotal))}</span>,
+    },
+  ], [isRedUp, remainingTotalLabel]);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
     { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
@@ -612,7 +639,7 @@ export function DebtShell({
             columns={rowColumns}
             rows={visibleRows}
             rowKey={(row) => row.key}
-            minTableWidth={1120}
+            minTableWidth={1040}
             emptyText="暂无债务/债权余额"
             fillHeight
             compactRows
@@ -624,6 +651,13 @@ export function DebtShell({
             )}
             toolbarRightContent={(
               <div className="flex items-center gap-3">
+                {canReconcileSelectedRow ? (
+                  <DebitBalanceReconcileButton
+                    accountId={selectedRow.accountId}
+                    accountLabel={selectedRow.name}
+                    currentBalance={selectedRow.net}
+                  />
+                ) : null}
                 <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
                   <input
                     type="checkbox"
@@ -633,7 +667,7 @@ export function DebtShell({
                   />
                   显示已还完{settledCount > 0 ? `(${settledCount})` : ""}
                 </label>
-                <div className="text-xs text-slate-400">流入增加往来余额，流出减少往来余额</div>
+                <div className="text-xs text-slate-400">流入/流出按本金方向影响待收待还</div>
               </div>
             )}
             onRowClick={(row) => openDebtRow(row)}
@@ -647,7 +681,8 @@ export function DebtShell({
                 paidPrincipal: <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(debtRowSummary.paidPrincipal)}</span>,
                 paidInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.paidInterest)}</span>,
                 remainingInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.remainingInterest)}</span>,
-                net: <span className={`font-semibold tabular-nums ${amountClass(debtRowSummary.net, isRedUp)}`}>{formatMoney(debtRowSummary.net)}</span>,
+                remainingPrincipal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(debtRowSummary.remainingPrincipal)}</span>,
+                remainingTotal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(debtRowSummary.remainingTotal)}</span>,
               },
             }}
           />
@@ -989,6 +1024,11 @@ function DebtEntriesTable({
     })),
     [accountOptions],
   );
+  const getCustomEditEvent = (entry: DebtEntry) => entry.balanceReconcileEdit
+    ? { name: "mmh:balance-reconcile:edit", detail: entry.balanceReconcileEdit }
+    : entry.debtEdit
+      ? { name: "mmh:debt:create", detail: entry.debtEdit }
+      : undefined;
 
   return (
     <AdvancedDataTable
@@ -1008,10 +1048,11 @@ function DebtEntriesTable({
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
       onRowDoubleClick={(entry) => {
+        const customEditEvent = getCustomEditEvent(entry);
         dispatchEntryEdit({
           entryId: entry.id,
           edit: entry.edit,
-          customEditEvent: entry.debtEdit ? { name: "mmh:debt:create", detail: entry.debtEdit } : undefined,
+          customEditEvent,
         });
       }}
       rowClassName={() => "hover:bg-blue-50/40"}
@@ -1019,7 +1060,7 @@ function DebtEntriesTable({
         <EntryRowActions
           entryId={entry.id}
           edit={entry.edit}
-          customEditEvent={entry.debtEdit ? { name: "mmh:debt:create", detail: entry.debtEdit } : undefined}
+          customEditEvent={getCustomEditEvent(entry)}
         />
       )}
       rowActionsWidth={92}

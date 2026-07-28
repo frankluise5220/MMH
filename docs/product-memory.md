@@ -57,7 +57,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - When showing grouped account lists, avoid repeating institution names inside child account labels if the parent group already shows the institution.
 - Sidebar debt grouping under "往来款" should keep the left navigation compact: show concrete bank loan/settlement accounts directly, and show one "借入借出" summary item that aggregates ordinary counterparty/person/company settlement accounts. Do not list each ordinary settlement object in the left sidebar; the debt page/table should show those concrete objects after entering "借入借出". Do not hardcode names for this layout; derive it from account kind plus counterparty/institution ownership. Cleared zero-balance bank loans should not clutter the debt group by default.
 - Ordinary counterparty settlement workflow is object-first: the user selects a `Counterparty`/往来对象 first, and settlement accounts are child accounts under that object. A normal person/company counterparty should not get separate same-name accounts solely because one operation is 借入 and another is 借出; borrow/lend are transaction modes on the object-owned account. Institution/bank loan items may still be represented by concrete loan accounts where the account itself is the managed item.
-- Ordinary counterparty borrow/lend dialogs are not bank-loan dialogs. For `Counterparty`-owned settlement accounts, do not show or save loan-only fields such as 资金到账/消费分期、还款方式、还款周期、期数、利率、LPR 折扣 or historical rate settings. Those fields belong only to bank/institution loan items.
+- Selecting a bank institution such as 招行 as the debt object must not by itself switch the borrow/lend dialog into bank-loan mode or auto-pick a loan account. Bank-loan fields such as repayment method and schedule are shown only after a concrete bank-owned loan account is selected.
+- Ordinary counterparty borrow/lend dialogs are not bank-loan dialogs. For `Counterparty`-owned settlement accounts, do not show or save loan-only fields such as 资金到账/消费分期、还款方式、还款周期、期数、利率、LPR 折扣 or historical rate settings. Those fields belong only to bank/institution loan items. Even for bank/institution borrow creation, the ordinary debt modal should not expose a `资金到账/消费分期` toggle; new borrow records created there are cash-disbursed by default, while `消费分期` belongs to the expense/credit-card financed-purchase flow.
 - 往来对象/往来账户没有“所有人”这个显示维度。数据库中的账户分组只是账户表必填字段，不应出现在往来账户名称、悬停标题、SS 下拉分组、导入匹配候选、概览或移动同步的显示 groupName 中；例如应显示“甄宋·债务/债权”，不能显示“张四·甄宋·债务/债权”。
 
 ### Amount And Color Rules
@@ -81,6 +82,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Credit card billing day is the first day of the next statement cycle. For example, billing day 10 means the cycle runs from the 10th through the 9th of the next month, and transactions on the 10th belong to the next statement month.
 - Manually edited credit-card cycle boundaries are durable database facts on `CreditCardCycle`. Transaction or installment recalculation may refresh amounts and current-cycle flags, but must preserve rows marked as manual cycles instead of deleting them and regenerating dates from `Account.billingDay`.
 - Credit card account balance/used amount should show the rolling current card balance: issued current bill amount plus unbilled current-cycle spending minus unbilled current-cycle income/refunds/repayments. In code this is the current credit-card cycle `effectiveBill`; do not use `cumulativeRemain - cumulativeOverpaid` as the general account balance.
+- Overview should show a single net debt metric instead of separate gross payable and receivable cards. Net debt is credit-card payable plus settlement/loan payable minus settlement/loan receivable; when the result is positive, label it "净负债", and when negative, label the absolute value "净债权". Gross payable and receivable can remain available in detail views, but the top-level overview should present only the net conclusion.
+- In the debt/settlement holding table, bank/institution loan rows should use loan wording instead of ordinary settlement wording: show remaining interest, remaining principal, and total payable amount (`remainingPrincipal + remainingInterest`) in that order, and do not show a separate "往来余额" column for the loan row.
 - Credit card summary "refund/income" is the current cycle's inflow display: refunds, income, and transfers into the credit card during that cycle. Credit card repayments still settle the previous bill cycle, whose repayment column should show settled status rather than repeating the paid amount.
 - Credit cards may be selected in ordinary transfer account selectors when the user is recording a real transfer involving a credit card. When a credit card is involved, bill calculation still treats the credit-card side by card-side signed amount and statement cycle.
 - 信用卡与借记卡共用支出、收入、代付、转账四种记账语义。信用卡支出和收入沿用相同分类及正负方向；信用卡代付属于信用卡转出并进入对应账期；信用卡还款属于借记卡/现金/电子钱包转入信用卡的转账，分类为“信用卡还款”，不计入收支统计。
@@ -88,9 +91,13 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - 信用卡账单列表和账单周期缓存默认只显示/生成到当前日期所属账期。未来分期还款流水可以保留在明细中，但不能把账单列表延展到未来年份。
 - Credit card email bill import should mark mail that has local import history as "已导入", but must still allow the user to preview and import it again. Use mailbox UID, envelope hash, and stable parsed statement fingerprint only for marking and user warning, not as a hard duplicate block.
 - Credit card views should expose an import entry in the visible detail/table workflow, not only inside the bill-summary mail-reading control.
+- Credit card page "获取账单" and Settings > email account "获取账单" must use the same email bill reading, parsing, account-matching, and import channel. The credit-card page may provide a contextual shortcut, but it must not force every parsed row into the currently opened card when statement metadata identifies another card/account.
+- Overview credit-card cards must follow bill storage semantics. For cards using consolidated institution billing, show one institution-level summary bill row instead of repeating the same current bill once per card account. The institution-level card title should use the full institution name, such as "招商银行", without adding "汇总账单" or using a short bank nickname.
+- Bill import preview amount colors must use the shared color-scheme rule by money direction, not by hardcoded transaction type color. Income is displayed as inflow, expense as outflow; with `red_up_green_down`, expense/outflow is green.
 - A credit-card statement's card heading is the account identity for every transaction listed under that heading. Parse the institution, card display name, and last four digits from headings such as "平安银行美国运通耀红卡（2222） 主卡", use them to match the existing credit-card account, and do not silently replace that account with whichever account page opened the mail-import window. If a statement contains multiple primary or supplementary-card headings, apply each heading only to its following transaction block.
 - Credit-card statement parsing must not treat debit/repayment account tails as credit-card tails. Four-digit values near "扣款账号", "还款账号", "自动还款", "借记卡", "储蓄卡", or "Debit Account" are repayment-source account hints, not credit-card identity.
 - Credit card statement import uses the label "入账日期" for posting date. The value should be date-only (`YYYY-MM-DD`), default to the transaction date when missing, and remain editable in the import preview.
+- When credit card statement import parses a statement amount such as 本期应还、本期应缴余额、本期账单金额, New Balance, or Total Due, save it as a `BillOverride` for that statement month so the issued bill amount is locked to the bank statement value.
 - Ordinary transfer records are same-currency only. If two accounts use different currencies, the app should require a dedicated foreign-exchange/cross-currency flow that records both-side amounts and exchange rate instead of silently saving one amount.
 - 普通转账编辑窗口打开时金额永远显示正值，含义是“从转出账户转到转入账户”的业务金额；允许用户输入负值，负值表示把当前表单里的转出/转入方向反过来保存。落库后仍统一为 `accountId` 实际转出方、`toAccountId` 实际转入方、`amount` 为转出方负值。
 - 普通转账和往来款的“转出账户/转入账户”选择应允许信用卡账户；涉及信用卡的一侧仍按信用卡账期和卡侧金额规则计算。
@@ -118,6 +125,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Do not add extra always-visible owner header rows above the dropdown body when the cycling control already expresses owner switching.
 - Hierarchical SS dropdowns must distinguish display-only headers from selectable groups. Category selectors and category parent selectors should allow real category nodes at any level, including second-level categories and categories with children, to be selected when the caller enables selectable groups.
 - SS dropdown panels should not be squeezed to the parent input width when that hides important option context. Account SS options must keep institution information visible in the dropdown, either in the main label or in the sublabel, even inside compact dialogs.
+- Account SS option main labels should include the canonical account identity, such as institution short name plus account name/tail. When the main label already contains the institution, the right-side sublabel must not repeat it; use the sublabel only for owner/group and account type context, such as `墨斗鱼 · 借记卡`.
 - When `SmartSelect` is used inside popovers, modals, or batch-edit panels, its portal dropdown must remain scrollable and clickable. Parent outside-click handlers should treat the SmartSelect dropdown portal as part of the active interaction, not as an outside click.
 
 ### Date Inputs
@@ -131,6 +139,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - 分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付、转账类型，也不区分一级、二级、三级或上级分类。二级和三级分类不能在不同父级下使用相同名称。
 - 分类树可以表达层级和归属，但不能靠不同父级来区分同名分类。
 - 批量导入、AI 识别和移动端按分类名称匹配时，应依赖这个全局唯一规则，避免用名称匹配到多个分类。
+- 账单导入和 AI 识别的分类判断应优先从当前账簿历史交易中提取“备注/收支机构/支付渠道 -> 已有分类”的动态规则；兜底关键词只能用于候选提示，最终保存仍必须对齐到分类树中已经存在的分类，不能为单个商户硬造独立识别规则。
+- 从历史交易提取分类识别规则时，只能使用用户手动分类或人工确认来源的记录。未被手动确认的自动导入、AI 识别、计划任务或其他系统生成分类不能进入训练样本，避免一次错误分类在后续导入中被不断放大。
 - 投资、还款、贷款等系统业务类别必须出现在分类管理中并标记为系统内置。用户不能改名、移动或删除这些系统类别，但可以在其下新增自己的子分类。
 - 分类管理包含真正的“转账”系统父分类，“信用卡还款”和“借入借出”是其子分类。分类管理用“转账”类型标题代表该父节点，避免重复显示两层“转账”。借入借出明细的类型/分类显示必须来自分类树中的“转账 > 借入借出”，不能临时显示“往来款”“还款”等动作文案。
 - 分类管理包含真正的“投资”系统父分类，基金投资、理财投资、存款投资、贵金属投资、其他投资是其子分类；基金投资下继续分基金定投、基金买入、基金赎回、现金分红、分红再投资等具体动作分类。所有交易保存时应优先写入分类树中的 `categoryId`，即使是系统分类也不能只作为自由文本写入。投资买入、赎回和定投不计为普通收支，用户自定义的投资分类优先于自动系统分类。保险不统一归为投资：系统收支分类必须包含“保险支出”和“保险回款”，保费按保险支出、理赔/退保/满期领取按保险回款处理，只有未来明确建模的投连险投资账户部分才归投资。
@@ -178,6 +188,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Any account display that does not visibly include owner and account category must expose them in hover text, using an owner-qualified shape such as `墨斗鱼 · 微信·零钱 · 电子钱包`.
 - 收支机构永远只表示银行和第三方支付机构（`bank`、`payment`、`ewallet`），不得包含往来人员、往来组织、家庭成员或其他往来对象。普通收入/支出/转账里的“收支机构”使用机构表；代付、借入借出、还款等往来款流程使用往来对象表和往来对象 SS。
 - 账户显示余额永远只计算到当前日期。账户列表、侧栏、概览、移动同步和账户 API 的余额不得提前纳入未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水；未来记录可以存在于明细或计划中，但不能改变今天的账户显示余额。
+- 概览总资产/总净值应包含资产型或启用现金价值口径的保险余额。保险不因此归入投资分类；投资市值仍只统计基金、理财、货币基金、贵金属等投资账户，保险现金价值作为单独资产项展示。
 
 ### Insurance
 
@@ -270,9 +281,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Debt
 
-- Loan creation distinguishes `资金到账` from `消费分期`. Cash-disbursed loans create a transfer into the selected cash account. Financed purchases such as vehicle loans establish the payable principal directly on the loan account and use the selected cash account only for future repayments; they must never increase that cash account balance.
-- Vehicle and other financed purchases remain loan liabilities with normal repayment plans, not credit-card installment plans. Their initial source is `debt_financed_purchase`; principal is recognized when the financed purchase occurs, while later repayments reduce the liability without counting principal again.
-- Vehicle and other financed-purchase loan creation must not bulk-generate repayment `TxRecord` rows. Saving the loan creates the liability and a `loan_repayment` scheduled task; repayment transaction rows are created only when the scheduled task executes for due periods.
+- Ordinary debt borrow creation no longer exposes `资金到账/消费分期` as a user choice. Cash-disbursed loans create a transfer into the selected cash account. `消费分期` is handled from the expense/credit-card financed-purchase flow, not from the ordinary borrow/lend window; existing `debt_financed_purchase` rows remain supported for compatibility and must round-trip without being accidentally converted.
+- Vehicle and other financed-purchase loan creation must not bulk-generate repayment `TxRecord` rows. Saving the loan creates the liability and a `loan_repayment` scheduled task; repayment transaction rows are created only when the scheduled task executes for due periods. If a historical catch-up is ever offered, it must require explicit user confirmation and must never create future rows.
 - Old auto-generated financed-purchase repayment rows can be corrected through the internal cleanup endpoint `/api/v1/cleanup/financed-purchase-repayments`; it defaults to dry-run and only targets generated `scheduled_task` rows linked to financed-purchase loan plans.
 - Interest-free vehicle and other standalone financed purchases may use the explicit repayment method `免息分期还本`. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
 
@@ -355,6 +365,9 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - When the user repeatedly corrects wording or layout, that preference should be promoted here instead of being left only in chat history.
 - Saving any change that can affect amounts, balances, bill summaries, holdings, or related account totals must trigger a cascade refresh: sidebar account numbers, page-header totals, current list/table rows, and affected summaries should all update together.
 - Every mutation should declare and honor its actual data impact scope. Operations that only affect local ordering, display metadata, or a bounded row range should do the smallest correct recalculation and refresh instead of broadcasting a global finance refresh.
+- Ordinary saves, deletes, imports, scheduled-task execution, undo, and edit-dialog confirmations must not call `router.refresh()` or browser reload as a default success action. They should update local state and broadcast scoped change events so only affected rows, balances, summaries, and selector caches refresh. Full route refresh is reserved for explicit user refresh actions, login/logout, ledger/book switching, database restore/reset, system update, or other global context changes.
+- High-frequency account switching should feel cached. Do not disable route prefetch on account-entry links by default. For long sidebars with many accounts, use hover/focus/touch-triggered `router.prefetch` with dedupe instead of eager prefetching every account at page load; for short overview account lists, allow normal Link prefetch.
+- Master-data mutations such as accounts, owners/account groups, institutions, counterparties, categories, tags, and reusable selector dictionaries must update the database, revalidate server-side common/settings caches, invalidate or prewarm the client settings cache, and broadcast the shared settings-data changed event so open pages, SS dropdowns, and edit dialogs do not require a manual refresh.
 - All create/edit/import-preview windows should expose only one user-facing remark field. `toNote` is an internal compatibility/display field for transfer-like or specialized linked records; it must not appear as a second ordinary remark input.
 
 ### Investments And Precious Metals

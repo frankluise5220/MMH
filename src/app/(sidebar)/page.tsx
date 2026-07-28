@@ -35,6 +35,7 @@ import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import {
   applyDebtRowEntryMetrics,
   buildDebtDetailEntriesViewData,
@@ -61,6 +62,7 @@ import {
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -90,6 +92,7 @@ import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
+import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import {
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
@@ -837,6 +840,18 @@ async function createTransaction(formData: FormData) {
             })
             ? await resolveCreditCardRepaymentCategory(tx, householdId)
             : null;
+        const duplicate = await findRecentManualTransactionDuplicate(tx, {
+          householdId,
+          type: TransactionType.transfer,
+          date,
+          accountId: fromAcc.id,
+          toAccountId: toAcc.id,
+          amount: signedTransferAmount,
+          categoryId: transferCategory?.id ?? null,
+          note,
+          source: debtMode ? `debt_${debtMode}` : "manual",
+        });
+        if (duplicate) return;
 
         const created = await tx.txRecord.create({
           data: {accountId: fromAcc.id,
@@ -887,6 +902,18 @@ async function createTransaction(formData: FormData) {
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(date, acc.billingDay)
             : null;
+        const duplicate = createInstallment
+          ? null
+          : await findRecentManualTransactionDuplicate(tx, {
+              householdId,
+              type: TransactionType.expense,
+              date,
+              accountId: acc.id,
+              amount: amountRaw,
+              categoryId: cat?.id ?? null,
+              note,
+            });
+        if (duplicate) return;
 
         const created = await tx.txRecord.create({
           data: {accountId: acc.id,
@@ -994,6 +1021,18 @@ async function createTransaction(formData: FormData) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(date, acc.billingDay)
             : null;
+        if (acc) {
+          const duplicate = await findRecentManualTransactionDuplicate(tx, {
+            householdId,
+            type: TransactionType.income,
+            date,
+            accountId: acc.id,
+            amount: amountRaw,
+            categoryId: cat?.id ?? null,
+            note,
+          });
+          if (duplicate) return;
+        }
 
         const created = await tx.txRecord.create({
           data: { accountId: acc?.id ?? undefined,
@@ -2407,17 +2446,11 @@ async function backfillStatementMonthForAccount(formData: FormData) {
     if (!acc?.billingDay) return;
     if (acc.kind !== AccountKind.bank_credit && acc.kind !== AccountKind.loan) return;
 
-    const inst = (acc.Institution?.name ?? "").trim();
-    const legacyNames = [acc.name, inst ? `${inst}·${acc.name}` : ""].filter(Boolean);
-
     const rows = await tx.txRecord.findMany({
       where: {
         statementMonth: null,
         deletedAt: null,
-        OR: [
-          { accountId: acc.id },
-          ...(legacyNames.length ? [{ accountName: { in: legacyNames } }] : []),
-        ],
+        accountId: acc.id,
       },
       select: { id: true, date: true },
       take: 20000,
@@ -2646,18 +2679,6 @@ export default async function Home({
   const fundCodeParam = view === "investwealth" ? "" : rawFundCodeParam;
   const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
-  const legacyNames = (() => {
-    if (!selectedAccount) return [];
-    const set = new Set<string>();
-    const scopedAccounts = accounts.filter((account) => billAccountIdSet.has(account.id));
-    for (const account of scopedAccounts.length > 0 ? scopedAccounts : [selectedAccount]) {
-      set.add(account.name);
-      const inst = (account.Institution?.name ?? "").trim();
-      if (inst) set.add(`${inst}·${account.name}`);
-    }
-    return [...set].filter(Boolean);
-  })();
-
   const hid = { householdId };
   const where = accountId
     ? {
@@ -2722,7 +2743,6 @@ export default async function Home({
                 OR: [
                   { accountId: { in: billAccountIds } },
                   { toAccountId: { in: billAccountIds } },
-                  ...legacyNames.map((n) => ({ accountName: n })),
                 ],
               },
               include: {
@@ -3012,7 +3032,7 @@ export default async function Home({
 
   const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
     accounts
-      .filter((account) => !isPureInvestmentAccount(account))
+      .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
       .map((account) => ({
         id: account.id,
         kind: account.kind,
@@ -3021,6 +3041,13 @@ export default async function Home({
       })),
     hidFilter,
   );
+  const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
+    accounts
+      .filter((account) => account.kind === AccountKind.insurance)
+      .map((account) => account.id),
+    hidFilter,
+  );
+  const debtDisplaySummary = await computeDebtDisplaySummary(ctx);
   const investBalByAccountId = new Map(Object.entries(await loadInvestBalances(JSON.stringify(hidFilter))));
 
   const total = filteredEntries.reduce(
@@ -3040,6 +3067,12 @@ export default async function Home({
   const totalNetWorthValue = accounts.reduce((sum, account) => {
     if (isPureInvestmentAccount(account)) {
       return sum + (investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance));
+    }
+    if (account.kind === AccountKind.insurance) {
+      return sum + (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0);
+    }
+    if (account.kind === AccountKind.loan) {
+      return sum + (debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
     }
     return sum + (cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
   }, 0);
@@ -3146,7 +3179,7 @@ export default async function Home({
       .map(a => ({
         id: a.id,
         label: a.label,
-        subLabel: joinSSSubLabel([a.groupName, a.institutionName, a.subLabel]),
+        subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
         title: a.hoverTitle,
         parentId: `group:${a.groupId}`,
         kind: a.kind,
@@ -3161,7 +3194,7 @@ export default async function Home({
     const ungroupedItems: SSOpt[] = ungrouped.map(a => ({
       id: a.id,
       label: a.label,
-      subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      subLabel: joinSSSubLabel([a.subLabel]),
       title: a.hoverTitle,
       kind: a.kind,
       investProductType: a.investProductType ?? null,
@@ -3293,7 +3326,7 @@ export default async function Home({
       label: a.label,
       title: a.hoverTitle,
       hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
       currency: a.currency,
     }));
   const debtTransferAccountList = accountOptions
@@ -3308,7 +3341,7 @@ export default async function Home({
       label: a.label,
       title: a.hoverTitle,
       hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
       currency: a.currency,
     }));
   const investmentAccountList = accountOptions
@@ -3324,7 +3357,7 @@ export default async function Home({
       label: a.label,
       title: a.hoverTitle,
       hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.institutionName, a.subLabel]),
+      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
       currency: a.currency,
     }));
   // NestedAddModal fieldData for groups & institutions
@@ -3405,8 +3438,6 @@ export default async function Home({
     selectedDebtRow,
     selectedDebtObjectValue,
     ordinaryDebtAccountIds,
-    totalDebtPayable,
-    totalDebtReceivable,
   } = buildDebtRowsViewData({
     debtAccounts,
     cashDisplayBalanceByAccountId,
@@ -3512,7 +3543,6 @@ export default async function Home({
     isBillAccount,
     billAccountIds,
     billStorageAccountId,
-    legacyNames,
     billMonthParam,
     billPage,
     billMonthsLimit,
@@ -3530,6 +3560,8 @@ export default async function Home({
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
       : selectedAccount.kind === AccountKind.bank_credit
         ? creditBillBalanceValue
+      : selectedAccount.kind === AccountKind.loan
+        ? debtDisplaySummary.balanceByAccountId.get(selectedAccount.id) ?? cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
         : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
     : 0;
 
@@ -4303,8 +4335,8 @@ export default async function Home({
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
               <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
               {view === "debt" ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(totalDebtReceivable - totalDebtPayable)}`}>
-                  {formatMoney(totalDebtReceivable - totalDebtPayable)}
+                <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummary.net)}`}>
+                  {formatMoney(debtDisplaySummary.net)}
                 </span>
               ) : !selectedAccount ? (
                 <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
@@ -4644,6 +4676,7 @@ export default async function Home({
                 paidInterest: row.paidInterest,
                 remainingPrincipal: row.remainingPrincipal,
                 remainingInterest: row.remainingInterest,
+                remainingTotal: row.remainingTotal,
                 nextRepaymentDate: row.nextRepaymentDate,
                 nextRepaymentPrincipal: row.nextRepaymentPrincipal,
                 nextRepaymentInterest: row.nextRepaymentInterest,
@@ -4660,8 +4693,8 @@ export default async function Home({
               selectedKey={selectedDebtKey}
               entries={debtDetailEntries}
               repaymentScheduleRows={finalRepaymentScheduleRows}
-              totalPayable={totalDebtPayable}
-              totalReceivable={totalDebtReceivable}
+              totalPayable={debtDisplaySummary.totalPayable}
+              totalReceivable={debtDisplaySummary.totalReceivable}
               isRedUp={isRedUp}
               accountOptions={accountOptions}
               categoryOptions={categoryBatchReplaceOptions}

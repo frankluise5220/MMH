@@ -9,6 +9,7 @@ import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
@@ -69,10 +70,12 @@ async function getSidebarData() {
       })
     : Promise.resolve([]);
   const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
-  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+  const debtDisplaySummaryPromise = computeDebtDisplaySummary(ctx);
+  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, debtDisplaySummary] = await Promise.all([
     cashDisplayBalancePromise,
     currentCreditCyclesPromise,
     insuranceDisplayBalancePromise,
+    debtDisplaySummaryPromise,
   ]);
   const currentCreditBalanceByAccountId = new Map<string, number>(
     currentCreditCycles.map((cycle) => [
@@ -91,6 +94,8 @@ async function getSidebarData() {
         ? (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
       : account.kind === AccountKind.bank_credit && account.billingDay
         ? (currentCreditBalanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
+      : account.kind === AccountKind.loan
+        ? (debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
         : (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance));
     const display = buildAccountDisplayOption({
       id: account.id,

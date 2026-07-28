@@ -45,6 +45,7 @@ export type AccountTypeTotals = {
   investmentMarketValue: number;
   investmentCost: number;
   investmentFloatingPnL: number;
+  insuranceAsset: number;
   creditUsed: number;
   creditLimit: number;
   creditAvailable: number;
@@ -94,6 +95,7 @@ const ZERO_TOTALS: AccountTypeTotals = {
   investmentMarketValue: 0,
   investmentCost: 0,
   investmentFloatingPnL: 0,
+  insuranceAsset: 0,
   creditUsed: 0,
   creditLimit: 0,
   creditAvailable: 0,
@@ -151,6 +153,12 @@ export function OverviewDashboard({
   const investFloatingPnL = investmentFloatingPnL ?? totals.investmentFloatingPnL;
   const investFloatingRate = investmentFloatingPnLRate ?? (investCost > 0 ? investFloatingPnL / investCost : 0);
   const monthNet = monthIncome - monthExpense;
+  const netLiabilities = totals.liabilities - totals.loanReceivable;
+  const netDebtLabel = netLiabilities >= 0 ? "净负债" : "净债权";
+  const netDebtAmount = Math.abs(netLiabilities);
+  const netDebtClass = netLiabilities >= 0
+    ? liabilityClass(netDebtAmount, isRedUp)
+    : directionalClass(netDebtAmount, isRedUp);
   const topAccounts = accountList.slice().sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance)).slice(0, 5);
   const creditCards = creditAccountList
     .filter((account) => account.currentBill > 0)
@@ -196,11 +204,11 @@ export function OverviewDashboard({
                 {formatMoneyYuan(netWorth)}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
-              <MetricCard label="总负债" value={formatMoneyYuan(totals.liabilities)} valueClass={liabilityClass(totals.liabilities, isRedUp)} />
+              <MetricCard label={netDebtLabel} value={formatMoneyYuan(netDebtAmount)} valueClass={netDebtClass} />
               <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
-              <MetricCard label="本月净流入" value={formatMoneyYuan(monthNet)} valueClass={directionalClass(monthNet, isRedUp)} />
+              <MetricCard label="保险现金价值" value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
             </div>
           </div>
         </section>
@@ -232,7 +240,6 @@ export function OverviewDashboard({
                   <Link
                     key={item.accountId ?? item.fundCode}
                     href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/investments"}
-                    prefetch={false}
                     scroll={false}
                     className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                   >
@@ -268,7 +275,7 @@ export function OverviewDashboard({
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {topAccounts.length > 0 ? (
                 topAccounts.slice(0, 4).map((account) => (
-                  <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} prefetch={false} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
+                  <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                       <div className="mt-1 text-[11px] text-slate-400">{account.kind}</div>
@@ -301,7 +308,6 @@ export function OverviewDashboard({
                   <Link
                     key={account.id}
                     href={`/?accountId=${account.id}&view=bill`}
-                    prefetch={false}
                     scroll={false}
                     className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50"
                   >
@@ -337,7 +343,6 @@ export function OverviewDashboard({
                   <Link
                     key={account.id}
                     href={`/?accountId=${account.id}&view=detail`}
-                    prefetch={false}
                     scroll={false}
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >

@@ -15,6 +15,7 @@ import { toNumber } from "@/lib/date-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 
@@ -50,7 +51,7 @@ export async function GET(req: Request) {
       },
     });
 
-    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, debtDisplaySummary] = await Promise.all([
       computeInvestBalances(ctx),
       computeAccountDisplayBalances(
         accounts
@@ -74,6 +75,7 @@ export async function GET(req: Request) {
         accounts.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
         hidFilter,
       ),
+      computeDebtDisplaySummary(ctx),
     ]);
     const currentCreditBalanceByAccountId = new Map(
       currentCreditCycles.map((cycle) => [
@@ -90,6 +92,8 @@ export async function GET(req: Request) {
           ? insuranceDisplayBalanceByAccountId.get(a.id) ?? 0
           : a.kind === AccountKind.bank_credit && a.billingDay
             ? currentCreditBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
+          : a.kind === AccountKind.loan
+            ? debtDisplaySummary.balanceByAccountId.get(a.id) ?? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
             : displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance),
       kind: a.kind,
     }));

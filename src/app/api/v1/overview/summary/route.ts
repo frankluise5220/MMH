@@ -14,19 +14,20 @@ export const dynamic = "force-dynamic";
  * {
  *   ok: true,
  *   data: {
- *     netWorth: number,              // dailyNetWorth + investmentMarketValue
+ *     netWorth: number,              // dailyNetWorth + investmentMarketValue + insuranceAsset
  *     dailyNetWorth: number,
  *     investmentMarketValue: number,
  *     investmentCost: number,
  *     investmentFloatingPnL: number,
  *     investmentFloatingPnLRate: number,
+ *     insuranceAsset: number,
  *     topPositions: [{ accountId, name, marketValue, floatingPnL, floatingPnLRate }],
  *     monthIncome: number,
  *     monthExpense: number,
  *     dailyAssetDistribution: [{ kind, label, value, pct }],
  *     dailyAccountList: [{ id, name, kind, balance, groupName, institutionName }],
  *     debtAccountList: [{ id, name, kind, balance, groupName, institutionName }],
- *     creditAccountList: [{
+ *     creditAccountList: [{          // consolidated credit cards are returned once per bill storage group
  *       id, name, kind, balance, groupName, institutionName,
  *       creditLimit, availableLimit, billingDay, repaymentDay, creditBillMode,
  *       currentAmount, currentBill, paid, remain, dueDate

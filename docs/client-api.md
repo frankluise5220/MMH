@@ -153,6 +153,7 @@
 - `/api/v1/accounts`、`/api/v1/accounts/balances` 以及账户相关返回中的 `balance` 表示截至当前日期的展示余额。未来日期的计划任务、贷款/汽车分期、保险缴费或其他未来流水可以存在于明细/计划中，但不能提前计入账户余额。
 - 信用卡账户的 `balance` 与 Web 侧边栏一致，表示当前滚动余额：本期已出账账单金额 + 当前未出账周期支出 - 当前未出账周期收入/退款/还款；服务端取当前信用卡账期的 `effectiveBill`，不是 `cumulativeRemain - cumulativeOverpaid`。
 - `/api/v1/overview/summary` 的 `creditAccountList[].currentAmount` 和 `creditCurrentAmountTotal` 表示当前信用卡账期的“本期金额”，口径为 `expenseAbs - income`，用于展示本期支出扣除本期收入/退款后的净发生额；它不同于用户锁定或滚动后的 `currentBill`/待还金额。
+- `/api/v1/overview/summary` 的 `creditAccountList` 按账单存储口径返回。合并账单信用卡按同一机构/账单存储分组只返回一条机构级账单行，名称使用机构全称（如“招商银行”），客户端不得再按组内每张卡重复展示同一个 `currentBill`。
 - 信用卡账单明细和汇总按账期日期窗口归属。`statementMonth` 是缓存/兼容字段，不能让一条入账日期落在其他周期内的交易进入本期，也不能把本期日期内的交易排除出去。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。

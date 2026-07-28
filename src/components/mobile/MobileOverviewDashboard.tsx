@@ -25,6 +25,7 @@ const ZERO_TOTALS = {
   investmentMarketValue: 0,
   investmentCost: 0,
   investmentFloatingPnL: 0,
+  insuranceAsset: 0,
   creditUsed: 0,
   creditLimit: 0,
   creditAvailable: 0,
@@ -53,6 +54,9 @@ export function MobileOverviewDashboard({
   const totals = { ...ZERO_TOTALS, ...(accountTypeTotals ?? {}) };
   const investMarketValue = investmentMarketValue ?? totals.investmentMarketValue;
   const monthNet = monthIncome - monthExpense;
+  const netLiabilities = totals.liabilities - totals.loanReceivable;
+  const netDebtLabel = netLiabilities >= 0 ? "净负债" : "净债权";
+  const netDebtAmount = Math.abs(netLiabilities);
   const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditAvailable = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.availableLimit), 0);
   const creditBill = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
@@ -63,6 +67,12 @@ export function MobileOverviewDashboard({
     if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
     return "text-slate-700";
   };
+  const liabilityValueClass = (value: number) => {
+    if (value > 0) return isRedUp ? "text-emerald-600" : "text-red-600";
+    if (value < 0) return isRedUp ? "text-red-600" : "text-emerald-600";
+    return "text-slate-700";
+  };
+  const netDebtClass = netLiabilities >= 0 ? liabilityValueClass(netDebtAmount) : valueClass(netDebtAmount);
 
   return (
     <div className="h-full overflow-y-auto bg-slate-100 px-3 py-2">
@@ -80,10 +90,11 @@ export function MobileOverviewDashboard({
             </button>
           </div>
           <div className="mt-1 break-all text-[28px] font-bold tabular-nums">{amount(netWorth)}</div>
-          <div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/15 pt-3">
+          <div className="mt-4 grid grid-cols-4 gap-2 border-t border-white/15 pt-3">
             <HeaderMetric label="日常" value={amount(totals.dailyNetWorth)} />
             <HeaderMetric label="投资" value={amount(investMarketValue)} />
-            <HeaderMetric label="负债" value={amount(totals.liabilities)} liability />
+            <HeaderMetric label="保险" value={amount(totals.insuranceAsset)} />
+            <HeaderMetric label={netDebtLabel} value={amount(netDebtAmount)} liability={netLiabilities > 0} />
           </div>
         </section>
 
@@ -99,8 +110,7 @@ export function MobileOverviewDashboard({
             <CompactMetric label="借记卡" value={amount(totals.bankDebit)} />
             <CompactMetric label="第三方" value={amount(totals.ewallet)} align="right" />
             <CompactMetric label="存款" value={amount(totals.deposit)} />
-            <CompactMetric label="债权" value={amount(totals.loanReceivable)} className={valueClass(totals.loanReceivable)} />
-            <CompactMetric label="负债" value={amount(-totals.liabilities)} className={valueClass(-totals.liabilities)} align="right" />
+            <CompactMetric label={netDebtLabel} value={amount(netDebtAmount)} className={netDebtClass} />
           </div>
         </section>
 

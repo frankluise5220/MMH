@@ -4,7 +4,9 @@ import { buildAccountDisplayOption, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
+import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
@@ -71,6 +73,7 @@ export type AccountTypeTotals = {
   creditCurrentBill: number;
   loan: number;
   loanReceivable: number;
+  insuranceAsset: number;
   other: number;
   liquidAssets: number;
   liabilities: number;
@@ -113,6 +116,7 @@ export type OverviewSummary = {
   investmentCost: number;
   investmentFloatingPnL: number;
   investmentFloatingPnLRate: number;
+  insuranceAsset: number;
 };
 
 function dateToIso(date: Date | null | undefined) {
@@ -177,6 +181,7 @@ export async function computeOverviewSummary(
   const pureInvestmentAccounts = accounts.filter(isPureInvestmentAccount);
   const creditAccounts = accounts.filter((account) => account.kind === AccountKind.bank_credit);
   const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
+  const insuranceAccounts = accounts.filter((account) => account.kind === AccountKind.insurance);
 
   const dailyBaseAccounts = accounts.filter(
     (account) =>
@@ -201,6 +206,7 @@ export async function computeOverviewSummary(
     })),
     hidFilter,
   );
+  const debtDisplaySummary = await computeDebtDisplaySummary(ctx);
 
   let monthIncome = 0;
   let monthExpense = 0;
@@ -299,39 +305,55 @@ export async function computeOverviewSummary(
       : [];
   const cycleByAccountId = new Map(currentCycles.map((cycle) => [cycle.accountId, cycle]));
 
-  const creditAccountList: CreditAccountRow[] = creditAccounts.map((account) => {
+  const creditAccountsByStorageId = new Map<string, typeof creditAccounts>();
+  for (const account of creditAccounts) {
+    const storageId = creditStorageIdByAccountId.get(account.id) ?? account.id;
+    const list = creditAccountsByStorageId.get(storageId) ?? [];
+    list.push(account);
+    creditAccountsByStorageId.set(storageId, list);
+  }
+  const creditAccountList: CreditAccountRow[] = Array.from(creditAccountsByStorageId.entries()).map(([storageId, groupAccounts]) => {
+    const storageAccount = groupAccounts.find((account) => account.id === storageId) ?? groupAccounts[0];
+    const isConsolidatedGroup =
+      groupAccounts.length > 1 ||
+      (storageAccount.creditBillMode === "consolidated" && !!storageAccount.institutionId);
     const display = buildAccountDisplayOption(
       {
-        id: account.id,
-        name: account.name,
-        kind: account.kind,
-        numberMasked: account.numberMasked,
-        groupId: account.groupId,
-        Institution: account.Institution,
-        AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+        id: storageAccount.id,
+        name: storageAccount.name,
+        kind: storageAccount.kind,
+        numberMasked: storageAccount.numberMasked,
+        groupId: storageAccount.groupId,
+        Institution: storageAccount.Institution,
+        AccountGroup: storageAccount.AccountGroup ? { id: "", name: storageAccount.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
     );
-    const creditLimit = toNumber(account.creditLimit);
-    const cycle = cycleByAccountId.get(creditStorageIdByAccountId.get(account.id) ?? account.id);
+    const creditLimit = groupAccounts.reduce((sum, account) => sum + toNumber(account.creditLimit), 0);
+    const cycle = cycleByAccountId.get(storageId);
     const balance = cycle
       ? toNumber(cycle.cumulativeRemain) - toNumber(cycle.cumulativeOverpaid)
-      : toNumber(account.balance);
+      : groupAccounts.reduce((sum, account) => sum + toNumber(account.balance), 0);
     const currentAmount = toNumber(cycle?.expenseAbs) - toNumber(cycle?.income);
+    const institutionName = display.institutionName;
+    const consolidatedInstitutionName =
+      storageAccount.Institution?.name?.trim() ||
+      storageAccount.Institution?.shortName?.trim() ||
+      institutionName;
 
     return {
-      id: account.id,
-      name: display.label,
-      kind: account.kind,
+      id: storageId,
+      name: isConsolidatedGroup && consolidatedInstitutionName ? consolidatedInstitutionName : display.label,
+      kind: storageAccount.kind,
       balance,
-      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
-      institutionName: display.institutionName,
+      groupName: storageAccount.AccountGroup?.name?.trim() || "未设置所有人",
+      institutionName: isConsolidatedGroup ? consolidatedInstitutionName : institutionName,
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
       currentAmount,
-      billingDay: account.billingDay,
-      repaymentDay: account.repaymentDay,
-      creditBillMode: account.creditBillMode,
+      billingDay: storageAccount.billingDay,
+      repaymentDay: storageAccount.repaymentDay,
+      creditBillMode: isConsolidatedGroup ? "consolidated" : storageAccount.creditBillMode,
       currentBill: toNumber(cycle?.effectiveBill),
       paid: toNumber(cycle?.paid),
       remain: toNumber(cycle?.cumulativeRemain),
@@ -356,7 +378,7 @@ export async function computeOverviewSummary(
       id: account.id,
       name: display.label,
       kind: account.kind,
-      balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
+      balance: debtDisplaySummary.balanceByAccountId.get(account.id) ?? dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       groupName: display.groupName,
       institutionName: display.institutionName,
     };
@@ -368,12 +390,8 @@ export async function computeOverviewSummary(
   const deposit = dailyAccountList.filter((account) => account.kind === "deposit").reduce((sum, account) => sum + account.balance, 0);
   const other = dailyAccountList.filter((account) => account.kind === AccountKind.other).reduce((sum, account) => sum + account.balance, 0);
 
-  const loan = debtAccountList
-    .filter((account) => account.balance < 0)
-    .reduce((sum, account) => sum + Math.abs(account.balance), 0);
-  const loanReceivable = debtAccountList
-    .filter((account) => account.balance > 0)
-    .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+  const loan = debtDisplaySummary.totalPayable;
+  const loanReceivable = debtDisplaySummary.totalReceivable;
 
   const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + account.creditLimit, 0);
@@ -422,7 +440,15 @@ export async function computeOverviewSummary(
   const investmentCost = pureInvestmentAccounts.reduce((sum, account) => sum + (investBalByAccountId.get(account.id)?.totalCost ?? 0), 0);
   const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + row.floatingPnL, 0);
   const investmentFloatingPnLRate = investmentCost > 0 ? investmentFloatingPnL / investmentCost : 0;
-  const totalNetWorth = dailyNetWorth + investmentMarketValue;
+  const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
+    insuranceAccounts.map((account) => account.id),
+    hidFilter,
+  );
+  const insuranceAsset = insuranceAccounts.reduce(
+    (sum, account) => sum + (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0),
+    0,
+  );
+  const totalNetWorth = dailyNetWorth + investmentMarketValue + insuranceAsset;
 
   const accountTypeTotals: AccountTypeTotals = {
     cash,
@@ -439,6 +465,7 @@ export async function computeOverviewSummary(
     creditCurrentBill: creditCurrentBillTotal,
     loan,
     loanReceivable,
+    insuranceAsset,
     other,
     liquidAssets,
     liabilities,
@@ -471,5 +498,6 @@ export async function computeOverviewSummary(
     investmentCost,
     investmentFloatingPnL,
     investmentFloatingPnLRate,
+    insuranceAsset,
   };
 }
