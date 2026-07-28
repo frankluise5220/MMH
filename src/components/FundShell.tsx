@@ -1124,7 +1124,7 @@ export function FundShell(props: Props) {
 
       const cashAccLabel = accountLabelByIdLocal.get(String(isR ? e.toAccountId : e.accountId)) ?? "";
 
-      const cashAccName = cashAccLabel ? (cashAccLabel.split("·").pop() ?? cashAccLabel) : "-";
+      const cashAccName = cashAccLabel || "-";
 
       // buy_failed has no actual confirmDate/units — show "-"
 

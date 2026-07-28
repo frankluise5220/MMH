@@ -10,6 +10,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
@@ -96,7 +97,10 @@ type InternalAccountRow = {
   id: string;
   name: string;
   kind?: string | null;
+  numberMasked?: string | null;
   groupId?: string | null;
+  investProductType?: string | null;
+  Institution?: { name?: string | null; shortName?: string | null } | null;
   AccountGroup?: { id?: string | null; name?: string | null } | null;
 };
 
@@ -690,10 +694,30 @@ export function InsuranceFormModal({
         setAccountMetaById(() => {
           const nextMeta: Record<string, AccountMeta> = {};
           for (const item of accounts) {
+            const display = buildAccountDisplayOption({
+              id: item.id,
+              name: item.name,
+              kind: item.kind ?? "other",
+              numberMasked: item.numberMasked ?? null,
+              groupId: item.groupId ?? item.AccountGroup?.id ?? null,
+              investProductType: item.investProductType ?? null,
+              Institution: item.Institution
+                ? {
+                    name: item.Institution.name ?? null,
+                    shortName: item.Institution.shortName ?? null,
+                  }
+                : null,
+              AccountGroup: item.AccountGroup?.id
+                ? {
+                    id: item.AccountGroup.id,
+                    name: item.AccountGroup.name ?? null,
+                  }
+                : null,
+            });
             nextMeta[item.id] = {
               id: item.id,
               name: item.name,
-              label: item.name,
+              label: display.selectorLabel || display.label,
               kind: item.kind,
               groupId: item.groupId ?? item.AccountGroup?.id ?? null,
               groupName: item.AccountGroup?.name ?? null,

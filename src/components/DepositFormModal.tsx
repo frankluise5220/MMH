@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
@@ -140,7 +139,6 @@ export function DepositFormModal({
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const router = useRouter();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
@@ -905,7 +903,6 @@ export function DepositFormModal({
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "deposit-save" });
       });
-      router.refresh();
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "保存失败");
     } finally {

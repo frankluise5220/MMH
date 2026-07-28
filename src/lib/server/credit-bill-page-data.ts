@@ -63,7 +63,6 @@ type LoadCreditBillPageDataParams = {
   isBillAccount: boolean;
   billAccountIds: string[];
   billStorageAccountId: string;
-  legacyNames: string[];
   billMonthParam: string;
   billPage: number;
   billMonthsLimit: number;
@@ -122,7 +121,6 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     isBillAccount,
     billAccountIds,
     billStorageAccountId,
-    legacyNames,
     billMonthParam,
     billPage,
     billMonthsLimit,
@@ -136,12 +134,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   } = params;
 
   const billAccountIdSet = new Set(billAccountIds);
+  const scopedBillAccountIds = billAccountIds.length > 0 ? billAccountIds : selectedAccount ? [selectedAccount.id] : [];
   const billScope: Prisma.TxRecordWhereInput | undefined = selectedAccount
     ? {
         OR: [
-          { accountId: { in: billAccountIds } },
-          { toAccountId: { in: billAccountIds } },
-          ...legacyNames.map((n) => ({ accountName: n })),
+          { accountId: { in: scopedBillAccountIds } },
+          { toAccountId: { in: scopedBillAccountIds } },
         ],
       }
     : undefined;

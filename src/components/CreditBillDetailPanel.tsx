@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Upload } from "lucide-react";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
+import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
@@ -92,7 +91,15 @@ export function CreditBillDetailPanel({
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
-      const deletedEntryIds = (event as CustomEvent<{ deletedEntryIds?: string[] }>).detail?.deletedEntryIds ?? [];
+      const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[]; deletedEntryIds?: string[] }>).detail;
+      if (
+        detail?.reason === "bill-cycle" &&
+        (!detail.accountIds?.length || detail.accountIds.includes(accountId))
+      ) {
+        router.refresh();
+        return;
+      }
+      const deletedEntryIds = detail?.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) return;
       const deletedSet = new Set(deletedEntryIds);
       setLocalEntries((current) => current.filter((entry) => !deletedSet.has(entry.id)));
@@ -103,7 +110,7 @@ export function CreditBillDetailPanel({
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
       window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
     };
-  }, []);
+  }, [accountId, router]);
 
   useEffect(() => {
     if (detailAll || page === safePage) return;
@@ -151,6 +158,7 @@ export function CreditBillDetailPanel({
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
   const tableResetKey = `${scopeKey}:${detailAll ? "all" : safePage}:${pageSize}`;
+  const currentAccountName = accountOptions.find((option) => option.id === accountId)?.label ?? accountId;
 
   return (
     <BasicDetailSelectionProvider resetKey={scopeKey}>
@@ -180,9 +188,7 @@ export function CreditBillDetailPanel({
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
               {periodLabel ? <span className="hidden whitespace-nowrap md:inline">{periodLabel}</span> : null}
               <span className="whitespace-nowrap text-slate-600">共 {localEntries.length} 条</span>
-              <Link href="/batch-import" className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="导入信用卡账单记录">
-                <Upload className="h-3 w-3" />导入
-              </Link>
+              <CreditBillMailImportButton accountId={accountId} accountName={currentAccountName} />
               <span className="text-slate-400">|</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}

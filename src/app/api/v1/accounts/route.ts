@@ -27,6 +27,7 @@ import {
   assertAccountIdentityUnique,
   isAccountIdentityUniqueError,
 } from "@/lib/server/account-identity-unique";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -182,6 +183,7 @@ export async function POST(req: NextRequest) {
         : [{ id: account.id }];
       await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id), { deleteManualCycles: true });
     }
+    revalidateAfterSettingsChange();
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, account });
   } catch (e) {
@@ -305,6 +307,7 @@ export async function PUT(req: NextRequest) {
       );
 
     const updated = await prisma.account.update({ where: { id }, data });
+    let affectedCreditAccountIds: string[] = [];
     if (updated.kind === "bank_credit") {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId: updated.householdId,
@@ -319,12 +322,26 @@ export async function PUT(req: NextRequest) {
             select: { id: true },
           })
         : [{ id: updated.id }];
+      affectedCreditAccountIds = institutionCards.map((item) => item.id);
       await invalidateCreditCardCycleCacheForAccountIds(
-        institutionCards.map((item) => item.id),
-        { deleteManualCycles: creditCycleRuleChanged },
+        affectedCreditAccountIds,
+        { deleteManualCycles: false },
       );
     }
-    return NextResponse.json({ ok: true });
+    revalidateAfterSettingsChange();
+    return NextResponse.json({
+      ok: true,
+      data: {
+        id: updated.id,
+        kind: updated.kind,
+        billingDay: updated.billingDay,
+        repaymentDay: updated.repaymentDay,
+        creditBillMode: updated.creditBillMode,
+        institutionId: updated.institutionId,
+        affectedCreditAccountIds,
+        creditCycleRuleChanged,
+      },
+    });
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
@@ -348,6 +365,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     await prisma.account.update({ where: { id }, data: { isActive: !existing.isActive } });
+    revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
@@ -376,6 +394,7 @@ export async function DELETE(req: NextRequest) {
     if (!hasRecords) {
       // No records → delete directly (cascade handles related tables)
       await prisma.account.delete({ where: { id } });
+      revalidateAfterSettingsChange();
       return NextResponse.json({ ok: true });
     }
 
@@ -439,6 +458,7 @@ export async function DELETE(req: NextRequest) {
 
     // Now safe to delete the account (remaining cascade relations are already cleaned up)
     await prisma.account.delete({ where: { id } });
+    revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });

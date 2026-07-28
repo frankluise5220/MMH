@@ -71,6 +71,7 @@ import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
+import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import {
   buildEntryBusinessLinkSummary,
   entryBusinessLinkSummaryInclude,
@@ -1526,6 +1527,21 @@ export async function POST(req: Request) {
             })
             ? await resolveCreditCardRepaymentCategory(tx, householdId)
             : null;
+        const duplicate = await findRecentManualTransactionDuplicate(tx, {
+          householdId,
+          type: TransactionType.transfer,
+          date,
+          accountId: fromAcc.id,
+          toAccountId: toAcc.id,
+          amount: signedTransferAmount,
+          categoryId: transferCategory?.id ?? null,
+          note,
+          source: debtMode ? `debt_${debtMode}` : "manual",
+        });
+        if (duplicate) {
+          createdId = duplicate.id;
+          return;
+        }
 
         const created = await tx.txRecord.create({
           data: {
@@ -1580,6 +1596,19 @@ export async function POST(req: Request) {
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(date, acc.billingDay)
             : null;
+        const duplicate = await findRecentManualTransactionDuplicate(tx, {
+          householdId,
+          type: TransactionType.expense,
+          date,
+          accountId: acc.id,
+          amount: amountRaw,
+          categoryId: cat?.id ?? null,
+          note,
+        });
+        if (duplicate) {
+          createdId = duplicate.id;
+          return;
+        }
 
         const created = await tx.txRecord.create({
           data: {
@@ -1626,6 +1655,21 @@ export async function POST(req: Request) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(date, acc.billingDay)
             : null;
+        if (acc) {
+          const duplicate = await findRecentManualTransactionDuplicate(tx, {
+            householdId,
+            type: TransactionType.income,
+            date,
+            accountId: acc.id,
+            amount: amountRaw,
+            categoryId: cat?.id ?? null,
+            note,
+          });
+          if (duplicate) {
+            createdId = duplicate.id;
+            return;
+          }
+        }
 
         const created = await tx.txRecord.create({
           data: {

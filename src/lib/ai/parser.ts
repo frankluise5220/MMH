@@ -39,6 +39,12 @@ function hasRelativeDateToken(text: string) {
   return /(今天|昨天|前天|上周|本周|这周|上星期|本星期|这星期|周[一二三四五六日天1-7]|星期\s*[一二三四五六日天1-7])/.test(t);
 }
 
+function normalizeMonthDayDate(month: number, day: number, now: Date) {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  const year = now.getFullYear();
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 export function parseRelativeDateFromText(text: string, now: Date) {
   const t = text.trim();
   if (!t) return null;
@@ -79,6 +85,39 @@ export function parseRelativeDateFromText(text: string, now: Date) {
   }
 
   return null;
+}
+
+export function parseTransactionSuccessReminder(text: string, now: Date): { items: ParsedItem[]; directImport: boolean } | null {
+  const raw = String(text ?? "").replace(/\r/g, "\n");
+  if (!/交易成功提醒|交易时间|交易金额|交易商户/.test(raw)) return null;
+
+  const timeLine = raw.match(/交易时间\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+  const tail = timeLine.match(/尾号\s*([0-9]{4})(?=.*信用卡)|信用卡.*?尾号\s*([0-9]{4})/)?.slice(1).find(Boolean) ?? "";
+  const md = timeLine.match(/(\d{1,2})月(\d{1,2})日/);
+  const amountText = raw.match(/交易金额\s*[:：]\s*([+-]?\d+(?:,\d{3})*(?:\.\d{1,2})?)/)?.[1] ?? "";
+  const amount = Number(amountText.replace(/,/g, ""));
+  const merchant = raw.match(/交易商户\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+  const typeText = raw.match(/交易类型\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+  if (!md || !Number.isFinite(amount) || amount === 0) return null;
+
+  const isIncome = /退款|退货|返还|收入|入账/.test(typeText) && !/消费/.test(typeText);
+  const account = tail ? `尾号${tail}信用卡` : undefined;
+  const counterparty = /支付宝/.test(merchant) ? "支付宝" : /微信/.test(merchant) ? "微信" : /银联/.test(merchant) ? "银联" : undefined;
+  const date = normalizeMonthDayDate(Number(md[1]), Number(md[2]), now);
+  if (!date) return null;
+
+  return {
+    items: [{
+      rawText: raw.slice(0, 200),
+      type: isIncome ? "income" : "expense",
+      date,
+      amount: Math.abs(amount),
+      account,
+      remark: merchant || typeText || undefined,
+      counterparty,
+    }],
+    directImport: true,
+  };
 }
 
 export function normalizeDate(dateInput: unknown, rawText: string, now: Date) {

@@ -62,11 +62,20 @@ function accountUsesOwnerInDisplay(account: { kind?: string | null }) {
   return account.kind !== "loan";
 }
 
+function accountNameContainsInstitution(accountName: string, institution?: { name: string | null; shortName?: string | null } | null) {
+  const account = accountName.trim();
+  const institutionNames = [
+    institution?.shortName?.trim(),
+    institution?.name?.trim(),
+  ].filter((name): name is string => Boolean(name));
+  return institutionNames.some((name) => account === name || account.includes(name));
+}
+
 export function formatAccountDisplayName(accountName: string, institutionName?: string | null) {
   const account = accountName.trim();
   const institution = institutionName?.trim() ?? "";
   if (!institution) return account;
-  if (!account || account === institution || account.startsWith(`${institution}·`)) return account;
+  if (!account || account === institution || account.includes(institution)) return account;
   return `${institution}·${account}`;
 }
 
@@ -88,8 +97,9 @@ export function formatAccountSelectorLabel(input: {
   const accountName = input.accountName.trim();
   const institutionName = input.institution?.shortName?.trim() || input.institution?.name?.trim() || "";
   const last4 = (input.numberMasked ?? "").trim();
-  const parts = [institutionName, accountName];
-  if (last4 && last4 !== accountName) parts.push(last4);
+  const shouldShowInstitution = institutionName && !accountNameContainsInstitution(accountName, input.institution);
+  const parts = [shouldShowInstitution ? institutionName : "", accountName];
+  if (last4 && !accountName.includes(last4)) parts.push(last4);
   return parts.filter(Boolean).join("·").trim() || accountName;
 }
 
@@ -100,7 +110,7 @@ export function formatAccountSelectorCoreLabel(input: {
   const accountName = input.accountName.trim();
   const last4 = (input.numberMasked ?? "").trim();
   const parts = [accountName];
-  if (last4 && last4 !== accountName) parts.push(last4);
+  if (last4 && !accountName.includes(last4)) parts.push(last4);
   return parts.filter(Boolean).join("·").trim() || accountName;
 }
 
@@ -269,7 +279,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+      subLabel: joinAccountSubLabel([account.subLabel]),
       title: account.hoverTitle,
       parentId: `group:${account.groupId}`,
     }));
@@ -279,7 +289,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+      subLabel: joinAccountSubLabel([account.subLabel]),
       title: account.hoverTitle,
     }));
 
@@ -303,7 +313,7 @@ export function buildFlatAccountOptions(
   return accounts.map((account) => ({
     id: account.id,
     label: account.selectorLabel ?? account.label,
-    subLabel: joinAccountSubLabel([account.institutionName, account.subLabel]),
+    subLabel: joinAccountSubLabel([account.groupName, account.subLabel]),
     title: account.hoverTitle ?? account.title ?? formatAccountHoverTitle({
       groupName: accountUsesOwnerInDisplay(account) ? account.groupName : null,
       label: account.selectorLabel ?? account.label,

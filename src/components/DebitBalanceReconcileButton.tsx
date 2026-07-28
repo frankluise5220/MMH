@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Scale } from "lucide-react";
 import { DateStepper } from "./DateStepper";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 function todayYmd() {
   return new Date().toISOString().slice(0, 10);
@@ -86,7 +87,11 @@ export function DebitBalanceReconcileButton({
       const data = await res.json().catch(() => null);
       if (!data?.ok) throw new Error(data?.error || "校准失败");
       setInfo(`${editingEntryId ? "已更新校准" : "已校准"}到 ${formatMoneyValue(Number(data.actualBalance ?? parsedReconcileAmount))}`);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({
+        reason: "balance-reconcile",
+        accountIds: [accountId],
+        entryIds: data.entryId ? [String(data.entryId)] : undefined,
+      });
       setTimeout(() => setOpen(false), 450);
     } catch (err) {
       setError(err instanceof Error ? err.message : "校准失败");
@@ -101,7 +106,7 @@ export function DebitBalanceReconcileButton({
         type="button"
         onClick={openModal}
         className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-amber-50 hover:text-amber-700"
-        title="按银行实际余额生成一条校准流水"
+        title="按实际余额生成一条校准流水"
       >
         <Scale className="h-3 w-3" />
         校准余额

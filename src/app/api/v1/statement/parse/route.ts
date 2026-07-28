@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
@@ -9,6 +11,7 @@ type ParsedItemMeta = {
   creditLimit?: number;
   billingDay?: number;
   repaymentDay?: number;
+  statementAmount?: number;
 };
 
 type ParsedItem = {
@@ -27,6 +30,20 @@ type ParsedItem = {
   _meta?: ParsedItemMeta;
 };
 
+type CategoryOption = {
+  id: string;
+  name: string;
+  type: string;
+};
+
+type HistoricalCategorySample = {
+  type: string;
+  categoryName: string;
+  note: string | null;
+  counterpartyInstitutionName: string | null;
+  paymentChannelName: string | null;
+};
+
 const ALIAS_PATTERNS: Array<{ pattern: RegExp; counterparty: string; category?: string; institution?: string }> = [
   { pattern: /支付宝[^-]*-?(.*)/, counterparty: "支付宝", institution: "支付宝", category: "购物" },
   { pattern: /财付通[^-]*-?(.*)/, counterparty: "微信支付", institution: "微信", category: "购物" },
@@ -38,13 +55,13 @@ const ALIAS_PATTERNS: Array<{ pattern: RegExp; counterparty: string; category?: 
   { pattern: /携程/, counterparty: "携程", institution: "携程", category: "旅游" },
   { pattern: /滴滴出行|打车/, counterparty: "滴滴出行", institution: "滴滴出行", category: "交通" },
   { pattern: /地铁|公交/, counterparty: "公共交通", category: "交通" },
-  { pattern: /停车/, counterparty: "停车场", category: "交通" },
+  { pattern: /停车场|停车费|停车/, counterparty: "停车场", category: "停车费" },
   { pattern: /移动|联通|电信/, counterparty: "运营商", category: "通讯" },
-  { pattern: /(水|电|燃气|天然气|暖气)/, counterparty: "水电燃气", category: "生活缴费" },
+  { pattern: /拼多多|付费通/, counterparty: "拼多多", institution: "拼多多", category: "购物" },
+  { pattern: /(水费|电费|水电费|燃气费|天然气|暖气费|供水|供电|供气|自来水|燃气公司|电力公司)/, counterparty: "水电燃气", category: "生活缴费" },
   { pattern: /(物业|管理费)/, counterparty: "物业", category: "居住" },
   { pattern: /京东(到家)?|网银在线/, counterparty: "京东", institution: "京东", category: "购物" },
   { pattern: /天猫|淘宝/, counterparty: "淘宝/天猫", institution: "淘宝/天猫", category: "购物" },
-  { pattern: /拼多多|付费通/, counterparty: "拼多多", institution: "拼多多", category: "购物" },
   { pattern: /盒马/, counterparty: "盒马鲜生", institution: "盒马鲜生", category: "餐饮" },
   { pattern: /(永辉|沃尔玛|家乐福|大润发)/, counterparty: "超市", category: "购物" },
   { pattern: /(顺丰|圆通|中通|韵达|申通|邮政)/, counterparty: "快递", category: "购物" },
@@ -53,6 +70,8 @@ const ALIAS_PATTERNS: Array<{ pattern: RegExp; counterparty: string; category?: 
   { pattern: /(学费|培训|教育)/, counterparty: "教育", category: "教育" },
   { pattern: /(会员|订阅|自动续费)/, counterparty: "会员", category: "娱乐" },
   { pattern: /(爱奇艺|腾讯视频|优酷|哔哩)/, counterparty: "视频会员", category: "娱乐" },
+  { pattern: /嘟嘟抓饭|抓饭/, counterparty: "嘟嘟抓饭", category: "餐饮" },
+  { pattern: /食品|生鲜|粮油|零食/, counterparty: "食品", category: "食品" },
   { pattern: /(星巴克|瑞幸|喜茶|奈雪)/, counterparty: "咖啡茶饮", category: "餐饮" },
   { pattern: /(麦当劳|肯德基|汉堡王)/, counterparty: "快餐", category: "餐饮" },
   { pattern: /云闪付/, counterparty: "云闪付", institution: "云闪付", category: "购物" },
@@ -76,8 +95,40 @@ function extractMerchant(text: string) {
   return "";
 }
 
+function extractPaymentPrefix(text: string) {
+  return cleanupMerchantName(text.split(/--|－|—/)[0] ?? "");
+}
+
+function inferInstitutionFromPrefix(text: string) {
+  const prefix = extractPaymentPrefix(text);
+  if (/拼多多|付费通/.test(prefix)) return "拼多多";
+  if (/支付宝/.test(prefix)) return "支付宝";
+  if (/财付通|微信支付|微信/.test(prefix)) return "微信";
+  if (/京东|网银在线/.test(prefix)) return "京东";
+  if (/美团/.test(prefix)) return "美团";
+  if (/云闪付|银联/.test(prefix)) return "云闪付";
+  if (/淘宝|天猫/.test(prefix)) return "淘宝/天猫";
+  return "";
+}
+
+function inferCategoryFromRemark(text: string) {
+  const remark = cleanupMerchantName(extractMerchant(text) || text);
+  if (!remark) return "";
+  if (/国网|国家电网|电力|电费|水费|水电费|燃气费|天然气|暖气费|供水|供电|供气|自来水|燃气公司|电力公司/.test(remark)) return "水电燃气";
+  if (/年费|账户管理费|银行卡费|信用卡费|制卡费/.test(remark)) return "银行费用";
+  if (/嘟嘟抓饭|抓饭|外卖|餐饮|饭店|餐厅|食堂|小吃|火锅|烧烤|咖啡|茶饮|奶茶|美食/.test(remark)) return "餐饮";
+  if (/快递|顺丰|圆通|中通|韵达|申通|邮政|取件|寄件/.test(remark)) return "快递";
+  if (/停车场|停车费|停车/.test(remark)) return "停车费";
+  if (/食品|生鲜|粮油|零食|食材|水果|蔬菜|肉类|熟食/.test(remark)) return "食品";
+  if (/车品|汽车用品|汽配|轮胎|机油|洗车|加油|充电桩|ETC/.test(remark)) return "车品";
+  if (/数码|电子|电脑|手机|通讯器材|电器|配件|电工/.test(remark)) return "数码";
+  return "";
+}
+
 function aliasMatch(text: string): { counterparty: string; category: string; institution: string } {
   const normalizedText = cleanupMerchantName(text).replace(/特约商户?/g, "").trim();
+  const prefixInstitution = inferInstitutionFromPrefix(normalizedText);
+  const remarkCategory = inferCategoryFromRemark(normalizedText);
   for (const { pattern, counterparty, category, institution } of ALIAS_PATTERNS) {
     const matchText = pattern.test(normalizedText) ? normalizedText : text;
     if (pattern.test(matchText)) {
@@ -85,12 +136,12 @@ function aliasMatch(text: string): { counterparty: string; category: string; ins
       const extra = cleanupMerchantName(extractMerchant(matchText) || (m && m[1] ? m[1].trim() : ""));
       return {
         counterparty: extra || counterparty,
-        category: category ?? "购物",
-        institution: institution ?? counterparty,
+        category: remarkCategory || category || "购物",
+        institution: prefixInstitution || institution || counterparty,
       };
     }
   }
-  return { counterparty: "", category: "", institution: "" };
+  return { counterparty: "", category: remarkCategory, institution: prefixInstitution };
 }
 
 function isPlaceholderText(value?: string) {
@@ -111,13 +162,167 @@ function enrichKnownMerchant(item: ParsedItem): ParsedItem {
     cleanOptionalText(item.rawText),
   ].filter(Boolean).join(" ");
   const matched = aliasMatch(source);
+  const matchedInstitution = cleanOptionalText(matched.institution);
+  const matchedCounterparty = cleanOptionalText(matched.counterparty);
+  const matchedCategory = cleanOptionalText(matched.category);
+  const preferMerchantRule = Boolean(
+    matchedInstitution &&
+    /拼多多|支付宝|微信|京东|淘宝|天猫|美团|云闪付/.test(matchedInstitution),
+  );
   return {
     ...item,
-    category: cleanOptionalText(item.category) || matched.category || undefined,
-    institution: cleanOptionalText(item.institution) || matched.institution || matched.counterparty || undefined,
-    counterparty: cleanOptionalText(item.counterparty) || matched.counterparty || undefined,
+    category: preferMerchantRule ? matchedCategory : cleanOptionalText(item.category) || matchedCategory || undefined,
+    institution: preferMerchantRule ? matchedInstitution : cleanOptionalText(item.institution) || matchedInstitution || matchedCounterparty || undefined,
+    counterparty: preferMerchantRule ? matchedCounterparty : cleanOptionalText(item.counterparty) || matchedCounterparty || undefined,
     remark: cleanOptionalText(item.remark),
   };
+}
+
+function categoryKeywords(value: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return [];
+  const keywords = new Set<string>([text]);
+  if (/水电燃气|电费|水费|燃气|国网|电力/.test(text)) {
+    ["水电燃气", "生活缴费", "电费", "水费", "燃气", "国网", "电力"].forEach((item) => keywords.add(item));
+  }
+  if (/银行费用|信用卡费用|年费|账户管理费|银行卡费|信用卡费|制卡费|手续费/.test(text)) {
+    ["银行费用", "信用卡费用", "年费", "账户管理费", "银行卡费", "信用卡费", "制卡费", "手续费"].forEach((item) => keywords.add(item));
+  }
+  if (/嘟嘟抓饭|抓饭|餐饮|外卖|美食|饭店|餐厅|咖啡|茶饮/.test(text)) {
+    ["下馆子", "餐饮", "餐饮美食", "餐饮费", "外卖", "美食", "饭店", "餐厅", "咖啡", "茶饮", "嘟嘟抓饭", "抓饭"].forEach((item) => keywords.add(item));
+  }
+  if (/食品|生鲜|粮油|零食|食材|水果|蔬菜|肉类|熟食/.test(text)) {
+    ["食品", "买菜食材", "餐饮美食", "零食饮料", "生鲜", "粮油", "零食", "食材", "水果", "蔬菜", "肉类", "熟食"].forEach((item) => keywords.add(item));
+  }
+  if (/快递|寄件|取件|顺丰|圆通|中通|韵达|申通/.test(text)) {
+    ["快递物流", "快递", "寄件", "取件", "顺丰", "圆通", "中通", "韵达", "申通"].forEach((item) => keywords.add(item));
+  }
+  if (/停车场|停车费|停车/.test(text)) {
+    ["停车费", "停车场", "停车"].forEach((item) => keywords.add(item));
+  }
+  if (/车品|汽车|汽配|洗车|停车|加油|轮胎|机油/.test(text)) {
+    ["车品", "汽车", "汽配", "洗车", "停车", "加油", "轮胎", "机油"].forEach((item) => keywords.add(item));
+  }
+  if (/数码|电子|电脑|手机|电器|配件|电工/.test(text)) {
+    ["数码", "电子", "电脑", "手机", "电器", "配件", "电工"].forEach((item) => keywords.add(item));
+  }
+  return [...keywords].filter(Boolean);
+}
+
+function normalizeRecognitionText(value?: string | null) {
+  return cleanupMerchantName(String(value ?? ""))
+    .replace(/\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日)?/g, " ")
+    .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, " ")
+    .replace(/付款尾号[:：]?\s*\d{2,8}/g, " ")
+    .replace(/尾号[:：]?\s*\d{2,8}/g, " ")
+    .replace(/[￥¥]?\d+(?:,\d{3})*(?:\.\d+)?/g, " ")
+    .replace(/人民币|支付宝|微信支付|财付通|拼多多支付|京东支付|云闪付|银联|入账|交易|消费|付款|支付/g, " ")
+    .replace(/[()（）【】[\]{}《》<>、,，.;；:：/\\|~!！?？"'“”‘’+\-_=—\s]+/g, " ")
+    .trim();
+}
+
+function recognitionTokens(value?: string | null) {
+  const normalized = normalizeRecognitionText(value);
+  if (!normalized) return [];
+  const tokens = new Set<string>();
+  const parts = normalized.split(/\s+/).map((part) => part.trim()).filter(Boolean);
+  for (const part of parts.length > 0 ? parts : [normalized]) {
+    if (part.length >= 2 && !/^\d+$/.test(part)) tokens.add(part);
+    if (/[\u4e00-\u9fa5]/.test(part) && part.length >= 4) {
+      for (let len = Math.min(8, part.length); len >= 4; len--) {
+        for (let i = 0; i <= part.length - len; i++) tokens.add(part.slice(i, i + len));
+      }
+    }
+  }
+  return [...tokens].filter((token) => token.length >= 2);
+}
+
+function matchHistoricalCategoryName(item: ParsedItem, samples: HistoricalCategorySample[]) {
+  const type = item.type === "income" ? "income" : item.type === "expense" ? "expense" : "";
+  if (!type) return undefined;
+
+  const sourceParts = [
+    cleanOptionalText(item.remark),
+    cleanOptionalText(item.counterparty),
+    cleanOptionalText(item.institution),
+    cleanOptionalText(item.rawText),
+  ];
+  const source = sourceParts.filter(Boolean).join(" ");
+  const sourceText = normalizeRecognitionText(source);
+  const sourceTokens = new Set(recognitionTokens(source));
+  if (!sourceText && sourceTokens.size === 0) return undefined;
+
+  const scores = new Map<string, number>();
+  for (const sample of samples) {
+    if (sample.type !== type || !sample.categoryName) continue;
+    const sampleSource = [sample.note, sample.counterpartyInstitutionName, sample.paymentChannelName].filter(Boolean).join(" ");
+    const sampleText = normalizeRecognitionText(sampleSource);
+    const sampleTokens = recognitionTokens(sampleSource);
+    if (!sampleText && sampleTokens.length === 0) continue;
+
+    let score = 0;
+    if (sourceText && sampleText) {
+      if (sourceText === sampleText) score += 40;
+      else if (sourceText.includes(sampleText) || sampleText.includes(sourceText)) {
+        score += Math.min(sourceText.length, sampleText.length) >= 4 ? 18 : 6;
+      }
+    }
+    for (const token of sampleTokens) {
+      if (sourceTokens.has(token)) score += Math.min(12, token.length * 2);
+      else if (token.length >= 4 && sourceText.includes(token)) score += Math.min(10, token.length);
+    }
+    if (score < 12) continue;
+    scores.set(sample.categoryName, Math.max(scores.get(sample.categoryName) ?? 0, score));
+  }
+
+  return [...scores.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function matchExistingCategoryName(item: ParsedItem, categories: CategoryOption[], historicalSamples: HistoricalCategorySample[] = []) {
+  const type = item.type === "income" ? "income" : item.type === "expense" ? "expense" : "";
+  if (!type) return undefined;
+  const scopedCategories = categories.filter((category) => category.type === type);
+  if (scopedCategories.length === 0) return undefined;
+
+  const historicalCategoryName = matchHistoricalCategoryName(item, historicalSamples);
+  if (historicalCategoryName && scopedCategories.some((category) => category.name === historicalCategoryName)) {
+    return historicalCategoryName;
+  }
+
+  const candidate = cleanOptionalText(item.category);
+  if (candidate) {
+    const exact = scopedCategories.find((category) => category.name === candidate);
+    if (exact) return exact.name;
+  }
+
+  const source = [
+    cleanOptionalText(item.category),
+    cleanOptionalText(item.remark),
+    cleanOptionalText(item.counterparty),
+    cleanOptionalText(item.institution),
+    cleanOptionalText(item.rawText),
+  ].filter(Boolean).join(" ");
+  const keywords = categoryKeywords(source);
+  for (const keyword of keywords) {
+    const matched = scopedCategories.find((category) => category.name === keyword);
+    if (matched) return matched.name;
+  }
+  for (const keyword of keywords) {
+    const matched = scopedCategories.find((category) => category.name.includes(keyword) || keyword.includes(category.name));
+    if (matched) return matched.name;
+  }
+  return undefined;
+}
+
+function alignCategoriesToLedger(items: ParsedItem[], categories: CategoryOption[], historicalSamples: HistoricalCategorySample[] = []) {
+  if (categories.length === 0) return items;
+  return items.map((item) => {
+    const matchedCategoryName = matchExistingCategoryName(item, categories, historicalSamples);
+    return {
+      ...item,
+      category: matchedCategoryName,
+    };
+  });
 }
 
 function isNoiseLine(line: string): boolean {
@@ -178,7 +383,21 @@ function normalizeDateTimeCell(value?: string): string | undefined {
 }
 
 function isLikelyTransfer(text: string): boolean {
-  return /转账|还款|还款|转入|转出|汇款|充值|提现/i.test(text);
+  return /转账|还款|转入|转出|汇款|充值|提现|银联入账|付款尾号|扣款尾号|还款尾号|自动扣款/i.test(text);
+}
+
+function extractPaymentTail(text: string) {
+  const match = String(text ?? "").match(/(?:付款|扣款|还款)?尾号[:：]?\s*(\d{2,8})/);
+  return match?.[1] ?? "";
+}
+
+function paymentTailAccountName(text: string) {
+  const tail = extractPaymentTail(text);
+  return tail ? `尾号${tail}` : "";
+}
+
+function isCreditCardRepaymentLike(text: string) {
+  return /银联入账|付款尾号|扣款尾号|还款尾号|自动还款|自动扣款|信用卡还款|还款入账/i.test(text);
 }
 
 function decodeHtmlEntities(value: string) {
@@ -268,6 +487,26 @@ function parseLooseNumber(value?: string) {
   if (!match) return undefined;
   const valueNumber = Number(match[0]);
   return Number.isFinite(valueNumber) ? valueNumber : undefined;
+}
+
+function extractStatementAmount(text: string) {
+  const labels = [
+    "本期应还款金额",
+    "本期应还款总额",
+    "本期应缴余额",
+    "本期应还",
+    "本期余额",
+    "本期账单金额",
+    "New Balance",
+    "Total Due",
+  ];
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(new RegExp(`${escaped}\\s*[:：]?\\s*(?:人民币|RMB|CNY|￥|¥)?\\s*(-?[\\d,]+(?:\\.\\d+)?)`, "i"));
+    const amount = parseLooseNumber(match?.[1]);
+    if (amount !== undefined) return amount;
+  }
+  return undefined;
 }
 
 function parseDateParts(value?: string) {
@@ -371,6 +610,7 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
   const dueDate = parseDateParts(plain.match(/(?:到期还款日|最后还款日|还款日)\s*[:：]?\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})/)?.[1]);
   const billingDay = directBillingDay && directBillingDay >= 1 && directBillingDay <= 31 ? directBillingDay : periodEnd?.day;
   const repaymentDay = dueDate?.day;
+  const statementAmount = extractStatementAmount(plain);
   const accountCore = institutionName ? `${institutionName}信用卡${cardNumberMasked ? `(${cardNumberMasked})` : ""}` : undefined;
   const accountName = ownerName && accountCore ? `${ownerName}的${accountCore}` : accountCore;
 
@@ -381,6 +621,7 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
     creditLimit,
     billingDay,
     repaymentDay,
+    statementAmount,
     accountName,
   };
 }
@@ -399,6 +640,7 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
     creditLimit: meta.creditLimit,
     billingDay: meta.billingDay,
     repaymentDay: meta.repaymentDay,
+    statementAmount: meta.statementAmount,
   };
   const items: ParsedItem[] = [];
   const seen = new Set<string>();
@@ -455,8 +697,16 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
 
     const absAmount = Math.abs(amount);
     const { counterparty, category, institution } = aliasMatch(description);
-    const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免|还款|Payment|Credit/i.test(`${description} ${amountCell.raw}`);
-    const type = isCreditIn ? "income" : isLikelyTransfer(description) ? "transfer" : amount < 0 ? "income" : "expense";
+    const transferText = `${description} ${amountCell.raw}`;
+    const isRepaymentTransfer = isCreditCardRepaymentLike(transferText);
+    const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免|还款|Payment|Credit/i.test(transferText);
+    const type = isRepaymentTransfer || isLikelyTransfer(description) ? "transfer" : isCreditIn ? "income" : amount < 0 ? "income" : "expense";
+    const paymentFromAccount = type === "transfer" ? paymentTailAccountName(transferText) : "";
+    const cardAccount = hasActiveAccountHeader
+      ? activeAccount
+      : rowCardNumberMasked && meta.institutionName
+        ? `${meta.institutionName}信用卡(${rowCardNumberMasked})`
+        : account;
     const key = `${date}|${postDate ?? ""}|${description}|${amount}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -466,11 +716,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: absAmount,
-      account: hasActiveAccountHeader
-        ? activeAccount
-        : rowCardNumberMasked && meta.institutionName
-          ? `${meta.institutionName}信用卡(${rowCardNumberMasked})`
-          : account,
+      account: cardAccount,
+      fromAccount: paymentFromAccount || undefined,
+      toAccount: type === "transfer" ? cardAccount : undefined,
       counterparty: counterparty || undefined,
       institution: institution || undefined,
       category: category || undefined,
@@ -505,6 +753,7 @@ function parseStructuredStatement(text: string): ParsedItem[] {
     const { counterparty, category, institution } = aliasMatch(line);
     const isIncome = /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
     const isTransfer = isLikelyTransfer(line);
+    const paymentFromAccount = isTransfer ? paymentTailAccountName(line) : "";
 
     const type = isTransfer ? "transfer" : isIncome ? "income" : "expense";
 
@@ -516,6 +765,7 @@ function parseStructuredStatement(text: string): ParsedItem[] {
       counterparty: counterparty || undefined,
       institution: institution || undefined,
       category: category || undefined,
+      fromAccount: paymentFromAccount || undefined,
       remark: line,
     });
   }
@@ -529,7 +779,8 @@ function parseNaturalLanguage(text: string): ParsedItem[] {
   const amount = amountM ? Math.abs(parseFloat(amountM[0].replace(/,/g,""))) : 0;
 
   const isIncome = /收到|收入|工资|入账|退款|返现|到账|红包|奖金|报销/i.test(text);
-  const isTransfer = /转账|还款|转入|转出|充值|提现/i.test(text);
+  const isTransfer = isLikelyTransfer(text);
+  const paymentFromAccount = isTransfer ? paymentTailAccountName(text) : "";
 
   const { counterparty, category, institution } = aliasMatch(text);
 
@@ -541,12 +792,14 @@ function parseNaturalLanguage(text: string): ParsedItem[] {
     counterparty: counterparty || undefined,
     institution: institution || undefined,
     category: category || undefined,
+    fromAccount: paymentFromAccount || undefined,
     remark: text,
   }];
 }
 
 export async function POST(req: Request) {
   try {
+    const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null);
     const text = ((body?.text ?? "") as string).trim();
     if (!text) {
@@ -576,6 +829,54 @@ export async function POST(req: Request) {
       parseMethod = "unparsed";
     } else {
       items = items.map(enrichKnownMerchant);
+      const categories = await prisma.category.findMany({
+        where: {
+          OR: [{ householdId }, { householdId: null }],
+        },
+        select: { id: true, name: true, type: true },
+      });
+      const historicalSamples = await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          deletedAt: null,
+          type: { in: ["income", "expense"] },
+          categoryName: { not: null },
+          AND: [
+            {
+              OR: [
+                { source: "manual" },
+                { source: null },
+              ],
+            },
+            {
+              OR: [
+                { note: { not: null } },
+                { counterpartyInstitutionName: { not: null } },
+                { paymentChannelName: { not: null } },
+              ],
+            },
+          ],
+        },
+        select: {
+          type: true,
+          categoryName: true,
+          note: true,
+          counterpartyInstitutionName: true,
+          paymentChannelName: true,
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 5000,
+      });
+      const usableHistoricalSamples: HistoricalCategorySample[] = historicalSamples
+        .filter((sample) => Boolean(sample.categoryName))
+        .map((sample) => ({
+          type: sample.type,
+          categoryName: sample.categoryName ?? "",
+          note: sample.note,
+          counterpartyInstitutionName: sample.counterpartyInstitutionName,
+          paymentChannelName: sample.paymentChannelName,
+        }));
+      items = alignCategoriesToLedger(items, categories, usableHistoricalSamples);
     }
 
     return NextResponse.json({

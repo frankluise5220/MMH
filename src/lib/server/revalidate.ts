@@ -33,4 +33,5 @@ export function revalidateAfterSettingsChange() {
   revalidatePath("/settings/counterparties");
   revalidatePath("/settings/family-members");
   revalidatePath("/settings/categories");
+  revalidatePath("/settings/tags");
 }

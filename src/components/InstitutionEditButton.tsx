@@ -2,7 +2,7 @@
 
 import { Pencil } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 
 type InstitutionType = "family_member" | "person" | "organization" | "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
 const TYPE_LABELS: Record<InstitutionType, string> = {
@@ -24,14 +24,15 @@ export function InstitutionEditButton({
   title = "编辑往来对象",
   nameLabel = "往来对象名称",
   allowedTypes,
+  onSaved,
 }: {
   institution: { id: string; name: string; shortName?: string | null; type: string | null };
   action: (formData: FormData) => void | { ok?: boolean; error?: string } | Promise<void | { ok?: boolean; error?: string }>;
   title?: string;
   nameLabel?: string;
   allowedTypes?: string[];
+  onSaved?: () => void;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(institution.name);
   const [shortName, setShortName] = useState(institution.shortName ?? "");
@@ -56,7 +57,8 @@ export function InstitutionEditButton({
         return;
       }
       setOpen(false);
-      router.refresh();
+      onSaved?.();
+      void notifySettingsDataChanged({ scope: "accounts", reason: "institution:save", prefetch: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {

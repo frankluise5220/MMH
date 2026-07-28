@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 
 export function AccountGroupEditButton({
   group,
@@ -14,7 +14,6 @@ export function AccountGroupEditButton({
   const [name, setName] = useState(group.name);
   const [sortOrder, setSortOrder] = useState(String(group.sortOrder));
   const [saving, setSaving] = useState(false);
-  const router = useRouter();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,7 +26,7 @@ export function AccountGroupEditButton({
       fd.set("sortOrder", sortOrder);
       await action(fd);
       setOpen(false);
-      router.refresh();
+      void notifySettingsDataChanged({ scope: "accounts", reason: "account-group:save", prefetch: true });
     } finally {
       setSaving(false);
     }

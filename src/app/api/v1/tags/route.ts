@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest) {
   const { hidFilter } = await getHouseholdScope();
   const { name, color } = parsed.data;
   const tag = await prisma.tag.create({ data: { name, color: color || null, ...hidFilter } });
+  revalidateAfterSettingsChange();
   // Client-side handles page refresh
   return NextResponse.json({ ok: true, tag });
 }
@@ -49,6 +51,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   await prisma.tag.delete({ where: { id } });
+  revalidateAfterSettingsChange();
   // Client-side handles page refresh
   return NextResponse.json({ ok: true });
 }

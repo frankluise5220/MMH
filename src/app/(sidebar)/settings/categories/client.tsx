@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Trash2, ChevronRight, ChevronDown, Plus, Save, Pencil, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
-import { fetchSettingsCategories, getCachedSettingsCategories, setSettingsCategories } from "@/lib/client/settingsCache";
+import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
 
 type Category = {
   id: string;
@@ -141,6 +141,7 @@ export default function SettingsCategoriesClient({
       setSettingsCategories(next);
       return next;
     });
+    void notifySettingsDataChanged({ scope: "categories", reason: "category:create", prefetch: true });
     if (addingUnder && addingUnder !== "__root__") {
       setExpanded(prev => new Set([...prev, addingUnder]));
     }
@@ -161,6 +162,7 @@ export default function SettingsCategoriesClient({
           setSettingsCategories(next);
           return next;
         });
+        void notifySettingsDataChanged({ scope: "categories", reason: "category:delete", prefetch: true });
         if (selectedId === id) setSelectedId(null);
         setExpanded(prev => { const next = new Set(prev); next.delete(id); return next; });
       } else {
@@ -204,6 +206,7 @@ export default function SettingsCategoriesClient({
         setSettingsCategories(next);
         return next;
       });
+      void notifySettingsDataChanged({ scope: "categories", reason: "category:rename", prefetch: true });
       if (selectedId === id) setEditingName(data.category.name);
       return true;
     } catch {
@@ -239,6 +242,7 @@ export default function SettingsCategoriesClient({
         setSettingsCategories(next);
         return next;
       });
+      void notifySettingsDataChanged({ scope: "categories", reason: "category:move", prefetch: true });
       if (parentId) {
         setExpanded(prev => new Set([...prev, parentId]));
       }
@@ -571,6 +575,7 @@ export default function SettingsCategoriesClient({
                       setSettingsCategories(next);
                       return next;
                     });
+                    void notifySettingsDataChanged({ scope: "categories", reason: "category:create-child", prefetch: true });
                     setExpanded(prev => new Set([...prev, selectedId!]));
                   }}
                   existingNames={allCategoryNamesExcept()}

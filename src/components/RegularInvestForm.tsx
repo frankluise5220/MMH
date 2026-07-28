@@ -3,7 +3,6 @@
 import { ArrowLeftRight, ArrowRight, CalendarPlus } from "lucide-react";
 import { useState, useEffect, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
@@ -267,7 +266,6 @@ export function RegularInvestForm({
   submitMethod?: "serverAction" | "api";
   onSuccess?: () => void;
 }) {
-  const router = useRouter();
   const [internalOpen, setInternalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [nameLoading, setNameLoading] = useState(false);
@@ -627,8 +625,6 @@ export function RegularInvestForm({
 
         setActualOpen(false);
         onSuccess?.();
-        await new Promise(resolve => setTimeout(resolve, 100));
-        router.refresh();
       } else {
         // 新增模式
         if (action) {
@@ -662,8 +658,6 @@ export function RegularInvestForm({
           }
           setActualOpen(false);
           resetForm();
-          await new Promise(resolve => setTimeout(resolve, 100));
-          router.refresh();
         } else if (apiAction) {
           const payload = {
             accountId: formData.accountId,
@@ -695,7 +689,6 @@ export function RegularInvestForm({
           }
           setActualOpen(false);
           resetForm();
-          router.refresh();
         } else {
           window.alert("保存入口未配置");
         }

@@ -7,6 +7,7 @@ import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 
 /* Types */
 
@@ -96,7 +97,10 @@ export function InitModal({
       const res = await fetch("/api/v1/accounts/internal?balances=false");
       const data = await res.json();
       if (data.ok && data.accounts) {
-        const accounts: AccountOption[] = data.accounts.map((a: any) => ({ id: a.id, label: (a.Institution?.name?.trim() || "") + (a.Institution?.name?.trim() ? "·" : "") + a.name, kind: a.kind }));
+        const accounts: AccountOption[] = data.accounts.map((a: any) => {
+          const display = buildAccountDisplayOption(a);
+          return { id: a.id, label: display.selectorLabel || display.label, kind: a.kind };
+        });
         const cashAccounts = accounts.filter((a) => ["cash", "bank_debit", "ewallet"].includes(a.kind));
         const investAccounts = accounts.filter((a) => a.kind === "investment");
         setAllAccounts(accounts);

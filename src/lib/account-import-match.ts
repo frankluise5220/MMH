@@ -90,6 +90,18 @@ export function extractImportAccountLast4(value?: string) {
   return matches.length > 0 ? matches[matches.length - 1][0] : "";
 }
 
+export function isImportPaymentTailHint(value?: string | null) {
+  return /^(?:付款|扣款|还款)?尾号[:：]?\s*\d{2,8}$/.test(String(value ?? "").trim());
+}
+
+export function isImportPaymentTailSourceHint(value?: string | null) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  if (isImportPaymentTailHint(text)) return true;
+  if (/信用卡.*尾号|尾号\s*\d{2,8}.*信用卡|贷记卡.*尾号|尾号\s*\d{2,8}.*贷记卡/.test(text)) return false;
+  return /(?:付款|扣款|还款|银联转账|银联入账|自动扣款|自动还款|转账).*尾号[:：]?\s*\d{2,8}/.test(text);
+}
+
 function accountLast4(account: ImportAccountMatchSource) {
   const fromMasked = extractImportAccountLast4(account.numberMasked ?? "");
   if (fromMasked) return fromMasked;
@@ -335,6 +347,27 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     return narrowed.length === 1 ? narrowed[0].account : null;
   }
 
+  function pickPaymentTailSource(matches: Array<(typeof indexed)[number]>) {
+    const score = (item: (typeof indexed)[number]) => {
+      const kind = item.account.kind;
+      if (kind === "bank_debit") return 100;
+      if (kind === "cash") return 90;
+      if (kind === "ewallet") return 85;
+      if (kind === "deposit") return 50;
+      if (kind === "bank_credit") return 20;
+      if (kind === "investment") return -50;
+      if (kind === "loan") return -60;
+      return 0;
+    };
+    const ranked = matches
+      .map((item) => ({ item, score: score(item) }))
+      .sort((a, b) => b.score - a.score);
+    if (ranked.length === 0) return null;
+    const topScore = ranked[0].score;
+    const topMatches = ranked.filter((item) => item.score === topScore);
+    return topMatches.length === 1 ? topMatches[0].item.account : null;
+  }
+
   return (accountName: string | undefined): ImportAccountMatchResult<T> => {
     const raw = String(accountName ?? "").trim();
     if (!raw) return result(null, [], { targetKind: null, targetBankNames: [] });
@@ -389,6 +422,10 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
         return bankKeyMatches(item, targetBankKeys);
       });
       if (byLast4.length === 1) return result(byLast4[0].account, [], { targetKind, targetBankNames });
+      if (byLast4.length > 1 && isImportPaymentTailSourceHint(raw)) {
+        const paymentSource = pickPaymentTailSource(byLast4);
+        if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
+      }
       if (byLast4.length > 1) return result(null, byLast4, { targetKind, targetBankNames });
     }
 

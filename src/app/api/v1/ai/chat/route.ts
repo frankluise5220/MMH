@@ -21,6 +21,7 @@ import {
   looksLikeFundTrade,
   parseCMBFundRecord,
   parseFundTradeFromText,
+  parseTransactionSuccessReminder,
 } from "@/lib/ai/parser";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
@@ -200,6 +201,60 @@ function parseBillTxLines(txLines: string[], header: BillHeader, issuerKeyword: 
     });
   }
   return items;
+}
+
+function extractCreditCardTailForPreview(text: string | undefined) {
+  const clean = String(text ?? "").trim();
+  if (!clean) return "";
+  const direct = clean.match(/尾号\s*([0-9]{4})(?=.*信用卡)|信用卡.*?尾号\s*([0-9]{4})/);
+  if (direct?.[1] || direct?.[2]) return direct[1] ?? direct[2] ?? "";
+  const compact = clean.match(/\b([0-9]{4})\b(?=.*信用卡)|信用卡.*?\b([0-9]{4})\b/);
+  return compact?.[1] ?? compact?.[2] ?? "";
+}
+
+function accountPreviewName(account: {
+  name: string;
+  numberMasked?: string | null;
+  Institution?: { name?: string | null; shortName?: string | null } | null;
+}) {
+  const inst = account.Institution?.shortName?.trim() || account.Institution?.name?.trim() || "";
+  const tail = String(account.numberMasked ?? "").trim();
+  return [inst, account.name, tail].filter(Boolean).join("·");
+}
+
+async function enrichPreviewAccountNames(items: ParsedItem[], hidFilter: Record<string, string>, requestAccountId?: string) {
+  const needsCreditTail = items.some((item) =>
+    extractCreditCardTailForPreview(`${item.account ?? ""} ${item.rawText ?? ""} ${item.remark ?? ""}`),
+  );
+  if (!needsCreditTail) return items;
+
+  const accounts = await prisma.account.findMany({
+    where: { ...hidFilter, kind: "bank_credit" },
+    include: { Institution: { select: { name: true, shortName: true } } },
+  });
+  const requestAccount = requestAccountId ? accounts.find((account) => account.id === requestAccountId) ?? null : null;
+
+  return items.map((item) => {
+    const tail = extractCreditCardTailForPreview(`${item.account ?? ""} ${item.rawText ?? ""} ${item.remark ?? ""}`);
+    if (!tail) return item;
+    const matchesTail = (account: (typeof accounts)[number]) => {
+      const masked = String(account.numberMasked ?? "").replace(/\D/g, "");
+      const nameDigits = String(account.name ?? "").replace(/\D/g, "");
+      return masked.endsWith(tail) || nameDigits.endsWith(tail);
+    };
+    const matched =
+      requestAccount && matchesTail(requestAccount)
+        ? requestAccount
+        : accounts.find(matchesTail) ?? null;
+    if (!matched) return item;
+    return {
+      ...item,
+      _meta: {
+        ...(item as any)._meta,
+        accountDisplayName: accountPreviewName(matched),
+      },
+    } as ParsedItem;
+  });
 }
 
 function parseBatchEditCommand(text: string) {
@@ -1205,6 +1260,30 @@ export async function POST(req: Request) {
   }
 
   if (text && !imageDataUrl) {
+    const successReminder = parseTransactionSuccessReminder(text, new Date());
+    if (successReminder) {
+      const previewItems = await enrichPreviewAccountNames(successReminder.items, hidFilter, accountId);
+      const result = {
+        ok: true,
+        items: previewItems,
+        directImport: successReminder.directImport,
+        trace: [
+          `交易成功提醒规则直出 ${successReminder.items.length} 条记录（无需模型）`,
+          `directImport=${successReminder.directImport ? "true" : "false"}`,
+        ],
+      };
+      void logDistill({
+        source: "chat",
+        rawInput: text,
+        parsedItems: previewItems,
+        operationType: "transaction_success_reminder_direct",
+        finalResult: result,
+        trace: result.trace,
+        success: true,
+      });
+      return NextResponse.json(result, { headers: corsHeaders() });
+    }
+
     const billPre = preprocessBillText(text);
     if (billPre.txLines.length > 0 && billPre.header.statementDate) {
       const issuer = extractBankKeywordFromBill(text);
@@ -1531,7 +1610,7 @@ export async function POST(req: Request) {
     }
 
     const parsedOut = parseItems(rawContent, now, text ?? "");
-    const items = parsedOut.items;
+    const items = await enrichPreviewAccountNames(parsedOut.items, hidFilter, accountId);
     const isBill = isBillStatement(text ?? "");
     const directImport = items.every(isReadyForImport);
     const finalDirectImport = !isBill && directImport;

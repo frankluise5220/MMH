@@ -3,7 +3,6 @@
 import { ChevronDown, Plus, Repeat } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
 
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
@@ -11,9 +10,15 @@ import { EntityCreateForm } from "./EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { institutionTypeLabel } from "@/lib/account-kinds";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  fetchSettingsAccountData,
+  SETTINGS_DATA_CHANGED_EVENT,
+  type SettingsDataChangedDetail,
+} from "@/lib/client/settingsCache";
 import {
   buildMortgageLprRateAdjustments,
   calcMortgageAnnualRateFromLprDiscount,
@@ -50,6 +55,19 @@ type AccountOption = {
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+type SettingsAccountRecord = {
+  id: string;
+  name: string;
+  kind?: string | null;
+  isActive?: boolean | null;
+  isPlaceholder?: boolean | null;
+  institutionId?: string | null;
+  counterpartyId?: string | null;
+  debtDirection?: "payable" | "receivable" | null;
+  Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
+  Counterparty?: { name: string | null; shortName?: string | null; type?: string | null } | null;
+  AccountGroup?: { id: string; name: string | null } | null;
+};
 type HistoricalRateRow = { key: string; effectiveDate: string; annualRate: string };
 type RepaymentLprCheck = {
   mortgageLprDiscount: number | null;
@@ -138,11 +156,6 @@ function formatMoneyPreview(value: number) {
   return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function formatRatePreview(value: number | null) {
-  if (value == null || !Number.isFinite(value)) return "-";
-  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-}
-
 function isValidDateInput(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split("-").map(Number);
@@ -198,6 +211,23 @@ function debtModeForSimpleTransferDirection(
 ): DebtMode {
   if (direction === "transfer_in") return debtDirection === "receivable" ? "collect_in" : "borrow_in";
   return debtDirection === "payable" ? "repay_out" : "lend_out";
+}
+
+function settingsAccountToDebtOption(account: SettingsAccountRecord): AccountOption {
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]);
+  const counterpartyName = account.Counterparty?.shortName?.trim() || account.Counterparty?.name?.trim() || "";
+  const institutionType = account.Institution?.type ?? null;
+  return {
+    id: account.id,
+    label: display.selectorLabel || display.label,
+    subLabel: counterpartyName ? `往来款 · ${counterpartyName}` : display.subLabel,
+    kind: account.kind ?? null,
+    institutionId: account.institutionId ?? null,
+    counterpartyId: account.counterpartyId ?? null,
+    institutionType,
+    isInstitutionLoan: Boolean(account.institutionId && !account.counterpartyId),
+    debtDirection: account.debtDirection ?? null,
+  };
 }
 
 function normalizeDebtObjectValue(value: string | undefined, data?: NestedFieldData) {
@@ -268,7 +298,6 @@ export function DebtTransactionModal({
   >;
   showTriggerButton?: boolean;
 }) {
-  const router = useRouter();
   const today = useMemo(() => formatDateInput(new Date()), []);
   const debtItemListId = useId();
   const [localDebtAccounts, setLocalDebtAccounts] = useState(debtAccounts);
@@ -464,6 +493,56 @@ export function DebtTransactionModal({
   }, [nestedFieldData]);
 
   useEffect(() => {
+    let cancelled = false;
+    async function refreshDebtSettingsData() {
+      const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+      if (cancelled || !data) return;
+      const debtRows = (data.accounts as SettingsAccountRecord[])
+        .filter((account) => account.kind === "loan" && account.isPlaceholder !== true && account.isActive !== false);
+      setLocalDebtAccounts(debtRows.map(settingsAccountToDebtOption));
+      const nextNested: NestedFieldData = {
+        groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
+        institutionId: (data.institutions ?? []).map((institution) => ({
+          id: institution.id,
+          name: institution.shortName?.trim() || institution.name,
+          type: institution.type ?? "",
+        })),
+        counterpartyId: (data.counterparties ?? []).map((counterparty) => ({
+          id: counterparty.id,
+          name: counterparty.shortName?.trim() || counterparty.name,
+          type: counterparty.type ?? "organization",
+        })),
+      };
+      setLocalNestedFieldData(nextNested);
+      const counterpartyOptions = nextNested.counterpartyId.map((item) => ({
+        id: debtObjectOptionId(item.id, item.type),
+        label: item.name,
+        subLabel: item.type === "person" ? "往来人员" : "往来组织",
+      }));
+      const institutionOptions = nextNested.institutionId
+        .filter((item) => item.type === "bank")
+        .map((item) => ({
+          id: debtObjectOptionId(item.id, item.type),
+          label: item.name,
+          subLabel: institutionTypeLabel(item.type ?? null),
+        }));
+      setLocalDebtObjectOptions(mergeSmartSelectOptions(debtObjectOptions, [...counterpartyOptions, ...institutionOptions]));
+    }
+
+    function onSettingsChanged(ev: Event) {
+      const detail = (ev as CustomEvent<SettingsDataChangedDetail>).detail;
+      const scope = detail?.scope ?? "all";
+      if (scope === "accounts" || scope === "all") void refreshDebtSettingsData();
+    }
+
+    window.addEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    };
+  }, [debtObjectOptions]);
+
+  useEffect(() => {
     function onCreate(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId?: string;
@@ -619,8 +698,9 @@ export function DebtTransactionModal({
       handleDebtAccountChange(id);
       return;
     }
-    const existingAccount = findDebtAccountForObject(id, debtDirectionForMode(mode));
-    if (id.startsWith("counterparty:") && existingAccount) {
+    const shouldAutoPickAccount = id.startsWith("counterparty:");
+    const existingAccount = shouldAutoPickAccount ? findDebtAccountForObject(id, debtDirectionForMode(mode)) : null;
+    if (shouldAutoPickAccount && existingAccount) {
       setMode(debtModeForSimpleTransferDirection(simpleTransferDirectionForMode(mode), existingAccount.debtDirection));
     }
     setDebtInstitutionId(id);
@@ -738,10 +818,12 @@ export function DebtTransactionModal({
       return;
     }
 
+    const submittedLoanFundingMode =
+      editingEntryId && loanFundingMode === "financed_purchase" ? "financed_purchase" : "cash_disbursement";
     const formData = new FormData();
     formData.set("editEntryId", editingEntryId);
     formData.set("mode", mode);
-    formData.set("loanFundingMode", loanFundingMode);
+    formData.set("loanFundingMode", submittedLoanFundingMode);
     formData.set("date", date);
     const shouldUseDebtObject = !editingEntryId && canSelectDebtObject && !!debtInstitutionId && !debtAccountId;
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
@@ -762,7 +844,7 @@ export function DebtTransactionModal({
     formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod ? "true" : "false");
     formData.set(
       "createHistoricalRepaymentRecords",
-      loanFundingMode === "financed_purchase" ? "false" : createHistoricalRepaymentRecords ? "true" : "false",
+      submittedLoanFundingMode === "financed_purchase" ? "false" : createHistoricalRepaymentRecords ? "true" : "false",
     );
     formData.set("historicalLoanRates", historicalRates.text);
     if (acceptedLprAdjustment) {
@@ -818,7 +900,6 @@ export function DebtTransactionModal({
         }
       }
       dispatchFinanceDataChanged({ reason: "debt-save" });
-      router.refresh();
       if (keepAdding) {
         setPrincipal("");
         setInterest("");
@@ -862,18 +943,15 @@ export function DebtTransactionModal({
   }
 
   const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
-  const selectedDebtObject = debtObjectById.get(debtInstitutionId);
   const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
-  const selectedDebtObjectIsBankInstitution =
-    (debtInstitutionId.startsWith("institution:") && selectedDebtObject?.type === "bank") ||
-    (!!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank");
+  const selectedDebtAccountIsBankLoan = !!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank";
   const showSimpleTransferMode = selectedDebtObjectIsCounterparty && mode !== "prepay_out";
   const simpleTransferDirection = simpleTransferDirectionForMode(mode);
   const showInterest = !showSimpleTransferMode && (mode === "repay_out" || mode === "collect_in" || mode === "lend_out");
   const showPrepayment = mode === "prepay_out";
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
   const canSelectDebtObject = !!editingEntryId || canCreateDebtItem || showSimpleTransferMode;
-  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && selectedDebtObjectIsBankInstitution;
+  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && selectedDebtAccountIsBankLoan;
   const showBorrowPlan = showLoanBorrowOptions;
   useEffect(() => {
     if (selectedDebtObjectIsCounterparty && mode === "prepay_out") {
@@ -938,7 +1016,7 @@ export function DebtTransactionModal({
         if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
         return account.institutionId === rawId;
       })
-      .map((account) => account.label.split("·").pop()?.trim() || account.label.trim())
+      .map((account) => account.label.trim())
       .filter(Boolean))),
     [debtInstitutionId, localDebtAccounts],
   );
@@ -983,6 +1061,8 @@ export function DebtTransactionModal({
     if (rows.length === 0) return null;
     return {
       rows,
+      repaymentDay: firstRunDate.getUTCDate(),
+      intervalMonths,
       totalPrincipal: roundMoneyValue(rows.reduce((sum, row) => sum + row.principal, 0)),
       totalInterest: roundMoneyValue(rows.reduce((sum, row) => sum + row.interest, 0)),
       totalPayment: roundMoneyValue(rows.reduce((sum, row) => sum + row.payment, 0)),
@@ -1123,28 +1203,6 @@ export function DebtTransactionModal({
                       </div>
                     )}
 
-                    {showLoanBorrowOptions ? (
-                      <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 border-y border-slate-100 py-2">
-                        <div className="form-label">贷款形式</div>
-                        <div className="grid grid-cols-2 gap-1 rounded border border-slate-200 bg-slate-50 p-0.5">
-                          <button
-                            type="button"
-                            onClick={() => setLoanFundingMode("cash_disbursement")}
-                            className={`h-7 rounded text-xs ${loanFundingMode === "cash_disbursement" ? "bg-white font-medium text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-                          >
-                            资金到账
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLoanFundingMode("financed_purchase")}
-                            className={`h-7 rounded text-xs ${loanFundingMode === "financed_purchase" ? "bg-white font-medium text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-                          >
-                            消费分期
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "发生日期" : "入账日期") : "日期"}</div>
@@ -1250,13 +1308,7 @@ export function DebtTransactionModal({
                         <div className="form-label">新账户名称 <span className="text-slate-400">可选</span></div>
                           <input
                             value={debtItemName}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              setDebtItemName(value);
-                              if (mode === "borrow_in" && /(车贷|汽车贷款|购车)/.test(value)) {
-                                setLoanFundingMode("financed_purchase");
-                              }
-                            }}
+                            onChange={(event) => setDebtItemName(event.target.value)}
                             list={debtItemListId}
                             disabled={selectedExistingDebtItem}
                             placeholder={`不填则生成“${selectedDebtObjectName}的往来款”`}
@@ -1268,7 +1320,7 @@ export function DebtTransactionModal({
                       </div>
                     ) : null}
 
-                    {!showPrepayment ? (
+                    {!showPrepayment && !showBorrowPlan ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
                         <div className="form-label">{showSimpleTransferMode ? "金额" : mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? "本金" : "金额"}</div>
@@ -1356,6 +1408,12 @@ export function DebtTransactionModal({
                               <option value="先还利息一次性还本">先还利息一次性还本</option>
                             </select>
                           </div>
+                          <div className="space-y-1">
+                            <div className="form-label">
+                              {loanFundingMode === "financed_purchase" ? "分期本金" : "借款总额"}
+                            </div>
+                            <CalcInput value={principal} onChange={setPrincipal} placeholder="例如：1000" label="借款总额" precision={2} />
+                          </div>
                         </div>
 
                         {isFixedRepaymentMethod ? (
@@ -1419,15 +1477,6 @@ export function DebtTransactionModal({
                             )}
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                <div className="form-label">还款周期 <span className="text-red-500">*</span></div>
-                                <select value={repaymentIntervalMonths} onChange={(event) => setRepaymentIntervalMonths(event.target.value)} className="form-input">
-                                  <option value="1">每月</option>
-                                  <option value="3">每季度</option>
-                                  <option value="6">每半年</option>
-                                  <option value="12">每年</option>
-                                </select>
-                              </div>
-                              <div className="space-y-1">
                                 <div className="form-label">总期数 <span className="text-red-500">*</span></div>
                                 <input
                                   type="number"
@@ -1438,11 +1487,10 @@ export function DebtTransactionModal({
                                   className="form-input"
                                 />
                               </div>
-                            </div>
-
-                            <div className="space-y-1">
-                              <div className="form-label">首次还款日 <span className="text-red-500">*</span></div>
-                              <DateStepper value={firstRepaymentDate} onChange={setFirstRepaymentDate} />
+                              <div className="space-y-1">
+                                <div className="form-label">首次还款日 <span className="text-red-500">*</span></div>
+                                <DateStepper value={firstRepaymentDate} onChange={setFirstRepaymentDate} />
+                              </div>
                             </div>
 
                             {!isInterestFreeRepaymentMethod ? (
@@ -1472,7 +1520,9 @@ export function DebtTransactionModal({
                             {loanSchedulePreview ? (
                               <div className="rounded-md border border-slate-200">
                                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                                  <span className="font-medium text-slate-700">还款计划预览 · {loanSchedulePreview.rows.length} 期</span>
+                                  <span className="font-medium text-slate-700">
+                                    还款计划预览 · {loanSchedulePreview.rows.length} 期 · 还款日：{loanSchedulePreview.intervalMonths === 1 ? "每月" : `每${loanSchedulePreview.intervalMonths}个月`}{loanSchedulePreview.repaymentDay}号
+                                  </span>
                                   <span className="tabular-nums">
                                     本金 {formatMoneyPreview(loanSchedulePreview.totalPrincipal)} · 利息 {formatMoneyPreview(loanSchedulePreview.totalInterest)} · 合计 {formatMoneyPreview(loanSchedulePreview.totalPayment)}
                                   </span>
@@ -1482,9 +1532,9 @@ export function DebtTransactionModal({
                                     <thead className="sticky top-0 bg-white text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
                                       <tr>
                                         <th className="px-2 py-1 text-left font-medium">期数</th>
-                                        <th className="px-2 py-1 text-left font-medium">日期</th>
+                                        <th className="px-2 py-1 text-left font-medium">入账日期</th>
+                                        <th className="px-2 py-1 text-left font-medium">还款日期</th>
                                         <th className="px-2 py-1 text-right font-medium">本金</th>
-                                        <th className="px-2 py-1 text-right font-medium">年利率</th>
                                         <th className="px-2 py-1 text-right font-medium">利息</th>
                                         <th className="px-2 py-1 text-right font-medium">应还</th>
                                       </tr>
@@ -1493,9 +1543,9 @@ export function DebtTransactionModal({
                                       {loanSchedulePreview.rows.map((row) => (
                                         <tr key={`${row.period}-${row.date}`} className="border-t border-slate-100">
                                           <td className="px-2 py-1 text-slate-600">{row.period}/{loanTotalRuns}</td>
+                                          <td className="px-2 py-1 text-slate-600">{date}</td>
                                           <td className="px-2 py-1 text-slate-600">{row.date}</td>
                                           <td className="px-2 py-1 text-right text-slate-700">{formatMoneyPreview(row.principal)}</td>
-                                          <td className="px-2 py-1 text-right text-slate-700">{row.annualRate == null ? "-" : `${formatRatePreview(row.annualRate)}%`}</td>
                                           <td className="px-2 py-1 text-right text-slate-700">{formatMoneyPreview(row.interest)}</td>
                                           <td className="px-2 py-1 text-right font-medium text-slate-800">{formatMoneyPreview(row.payment)}</td>
                                         </tr>

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Unlock } from "lucide-react";
-import { useRouter } from "next/navigation";
 
 import { formatMoneyYuan as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -22,7 +21,6 @@ export default function EditBillAmount({
   displayMultiplier?: 1 | -1;
   postOverrideAdjustment?: number;
 }) {
-  const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [committedAmount, setCommittedAmount] = useState(currentAmount);
   const [localHasOverride, setLocalHasOverride] = useState(hasOverride);
@@ -111,7 +109,6 @@ export default function EditBillAmount({
           }),
         );
         dispatchFinanceDataChanged({ reason: "bill-override", accountIds: [accountId], statementMonth });
-        setTimeout(() => router.refresh(), 120);
         setEditing(false);
         setSaving(false);
         return;
@@ -121,7 +118,7 @@ export default function EditBillAmount({
       setErrMsg("网络错误");
     }
     setSaving(false);
-  }, [accountId, postOverrideAdjustment, router, statementMonth]);
+  }, [accountId, postOverrideAdjustment, statementMonth]);
 
   const reset = useCallback(async () => {
     if (!accountId || !statementMonth) return;
@@ -130,12 +127,11 @@ export default function EditBillAmount({
       await fetch(`/api/v1/bill/override?accountId=${accountId}&statementMonth=${statementMonth}`, { method: "DELETE" });
       await new Promise((resolve) => setTimeout(resolve, 60));
       dispatchFinanceDataChanged({ reason: "bill-override-reset", accountIds: [accountId], statementMonth });
-      router.refresh();
     } catch {
       // ignore
     }
     setSaving(false);
-  }, [accountId, router, statementMonth]);
+  }, [accountId, statementMonth]);
 
   if (editing) {
     return (

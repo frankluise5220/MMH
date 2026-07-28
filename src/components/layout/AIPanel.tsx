@@ -19,6 +19,7 @@ import {
 /* ---- Types ---- */
 
 type ParsedItemMeta = {
+  accountDisplayName?: string;
   institutionName?: string;
   cardNumberMasked?: string;
   creditLimit?: number;
@@ -173,6 +174,7 @@ function normalizeItemForImport(item: ParsedItem): ParsedItem {
     remark: item.remark?.trim() || undefined,
     counterparty: item.counterparty?.trim() || undefined,
     _meta: item._meta ? {
+      accountDisplayName: item._meta.accountDisplayName?.trim() || undefined,
       institutionName: item._meta.institutionName?.trim() || undefined,
       cardNumberMasked: item._meta.cardNumberMasked?.trim() || undefined,
       creditLimit: item._meta.creditLimit,
@@ -180,6 +182,43 @@ function normalizeItemForImport(item: ParsedItem): ParsedItem {
       repaymentDay: item._meta.repaymentDay,
     } : undefined,
   };
+}
+
+function itemTypeLabel(type: ParsedItem["type"]) {
+  if (type === "transfer") return "转账";
+  if (type === "income") return "收入";
+  if (type === "investment") return "投资";
+  return "支出";
+}
+
+function itemAccountLabel(item: ParsedItem) {
+  if (item.type === "transfer") {
+    const from = item.fromAccount?.trim() || "无转出";
+    const to = item.toAccount?.trim() || "无转入";
+    return `${from} -> ${to}`;
+  }
+  if (item._meta?.accountDisplayName?.trim()) return item._meta.accountDisplayName.trim();
+  return item.account?.trim() || item._meta?.institutionName?.trim() || "无账户";
+}
+
+function formatRecognitionPreviewBlock(item: ParsedItem, index: number) {
+  const date = item.date?.trim() || "无日期";
+  const remark = item.remark?.trim() || item.counterparty?.trim() || "";
+  return [
+    `${index + 1}.`,
+    `日期：${date}`,
+    `类型：${itemTypeLabel(item.type)}`,
+    `金额：${formatMoney(Math.abs(item.amount ?? 0))}`,
+    `账户：${itemAccountLabel(item)}`,
+    `收支机构：${item.counterparty?.trim() || "-"}`,
+    `备注：${remark}`,
+  ].join("\n");
+}
+
+function formatRecognitionPreviewText(items: ParsedItem[]) {
+  const lines = items.slice(0, 8).map(formatRecognitionPreviewBlock);
+  const rest = items.length > lines.length ? `\n...还有 ${items.length - lines.length} 条` : "";
+  return `识别到 ${items.length} 条记录，请核对后导入：\n${lines.join("\n\n")}${rest}`;
 }
 
 /* ---- Component ---- */
@@ -367,10 +406,15 @@ export function AIPanel({
 
   async function importItems(items: ParsedItem[]) {
     const defaultAcc = (defaultAccountName ?? "").trim();
+    const viewAccount = getViewAccountContext();
     const res = await fetch("/api/v1/ai/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, defaultAccountName: defaultAcc || undefined }),
+      body: JSON.stringify({
+        items,
+        accountId: viewAccount.accountId,
+        defaultAccountName: defaultAcc || viewAccount.accountName || undefined,
+      }),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "导入失败");
@@ -411,7 +455,7 @@ export function AIPanel({
           return;
         }
         setMessages((m) => [...m, { role: "assistant", text: `已删除 ${parsed.deletedCount} 条记录。`, trace: parsed.trace }]);
-        setTimeout(() => router.refresh(), 300);
+        dispatchFinanceDataChanged({ reason: "ai-entry-delete" });
         return;
       }
 
@@ -422,7 +466,7 @@ export function AIPanel({
           return;
         }
         setMessages((m) => [...m, { role: "assistant", text: `已恢复 ${parsed.restoredCount} 条记录。`, trace: parsed.trace }]);
-        setTimeout(() => router.refresh(), 300);
+        dispatchFinanceDataChanged({ reason: "ai-entry-restore" });
         return;
       }
 
@@ -433,7 +477,7 @@ export function AIPanel({
           return;
         }
         setMessages((m) => [...m, { role: "assistant", text: `已修改 ${parsed.updatedCount} 条记录。`, trace: parsed.trace }]);
-        setTimeout(() => router.refresh(), 300);
+        dispatchFinanceDataChanged({ reason: "ai-entry-update" });
         return;
       }
 
@@ -456,10 +500,10 @@ export function AIPanel({
           selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
           selectAll: importData.every(it => it.ready),
         });
-        setMessages((m) => [...m, { role: "assistant", text: `识别到 ${allItems.length} 条记录，请核对后导入。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems), trace: parsed.trace }]);
       } else if (parsed.operation) {
         setMessages((m) => [...m, { role: "assistant", text: `已执行：${parsed.operation}`, trace: parsed.trace }]);
-        setTimeout(() => router.refresh(), 500);
+        dispatchFinanceDataChanged({ reason: "ai-operation" });
       }
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: `错误：${e.message}`, error: e.message }]);
@@ -490,7 +534,7 @@ export function AIPanel({
           selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
           selectAll: importData.every(it => it.ready),
         });
-        setMessages((m) => [...m, { role: "assistant", text: `识别到 ${allItems.length} 条记录。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems), trace: parsed.trace }]);
       }
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: `识别失败：${e.message}` }]);
@@ -543,7 +587,6 @@ export function AIPanel({
         setConfirmDialog(null);
         const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
         dispatchFinanceDataChanged({ reason: "ai-entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
-        setTimeout(() => router.refresh(), 500);
         return;
       }
       const src = String(confirmDialog.payload.sourceText ?? "").trim();
@@ -551,7 +594,7 @@ export function AIPanel({
       if (parsed.ok) {
         setMessages((m) => [...m, { role: "assistant", text: `已确认执行：${parsed.deletedCount || parsed.restoredCount || parsed.updatedCount || 0} 条记录。`, trace: parsed.trace }]);
         setConfirmDialog(null);
-        setTimeout(() => router.refresh(), 500);
+        dispatchFinanceDataChanged({ reason: "ai-confirmed-operation" });
       }
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: `执行失败：${e.message}` }]);
@@ -573,7 +616,7 @@ export function AIPanel({
         : "";
       setMessages((m) => [...m, { role: "assistant", text: `已导入 ${result.createdCount} 条记录。${accountText}` }]);
       setImportConfirmDialog(null);
-      setTimeout(() => router.refresh(), 500);
+      dispatchFinanceDataChanged({ reason: "ai-entry-import" });
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: `导入失败：${e.message}` }]);
     } finally { setLoading(false); }
@@ -1516,7 +1559,7 @@ export function AIPanel({
                 {m.trace.slice(0, 3).map((t, i) => <div key={i} className="truncate">› {t}</div>)}
               </div>
             )}
-            <div className={`px-3 py-2 rounded-2xl text-sm shadow-sm transition-all ${
+            <div className={`px-3 py-2 rounded-2xl text-sm shadow-sm transition-all whitespace-pre-line ${
               m.role === "user"
                 ? "bg-foreground text-background rounded-tr-none max-w-[85%]"
                 : "bg-surface-white text-foreground rounded-tl-none border border-foreground/5 max-w-[90%]"
@@ -1530,11 +1573,60 @@ export function AIPanel({
             <Wand2 size={12} className="animate-spin text-accent-green" /> 正在解析...
           </div>
         )}
+        {importConfirmDialog && (
+          <div className="rounded-2xl border border-foreground/10 bg-surface-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[11px] font-bold text-foreground/60">AI 识别结果</div>
+              <button onClick={toggleImportAll} className="text-[11px] font-bold text-accent-green">
+                {importConfirmDialog.selectAll ? "取消全选" : "全选"}
+              </button>
+            </div>
+            <div className="space-y-2">
+              {importConfirmDialog.items.map((it) => {
+                const selected = importConfirmDialog.selectedKeys.has(it.key);
+                return (
+                  <label key={it.key} className={`block rounded-xl border p-3 text-xs ${
+                    selected ? "border-accent-green/30 bg-accent-green/5" : "border-foreground/10 bg-background/40"
+                  }`}>
+                    <div className="flex items-start gap-2">
+                      <input type="checkbox" checked={selected} onChange={() => toggleImportItem(it.key)} className="mt-1" />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div>日期：{it.item.date ?? "无日期"}</div>
+                        <div>类型：{itemTypeLabel(it.item.type)}</div>
+                        <div>金额：{formatMoney(Math.abs(it.item.amount ?? 0))}</div>
+                        <div className="truncate" title={itemAccountLabel(it.item)}>账户：{itemAccountLabel(it.item)}</div>
+                        <div className="truncate" title={it.item.counterparty ?? ""}>收支机构：{it.item.counterparty ?? "-"}</div>
+                        <div className="truncate text-foreground/60" title={it.item.remark ?? it.item.counterparty ?? ""}>
+                          备注：{it.item.remark ?? it.item.counterparty ?? ""}
+                        </div>
+                        {!it.ready && it.missingFields.length > 0 && (
+                          <div className="text-[10px] text-red-500">缺少：{it.missingFields.join("、")}</div>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button onClick={() => setImportConfirmDialog(null)} className="flex-1 rounded-xl border border-foreground/10 py-2 text-xs font-bold">
+                取消
+              </button>
+              <button
+                onClick={onConfirmBatchImport}
+                disabled={loading || importConfirmDialog.selectedKeys.size === 0}
+                className="flex-[2] rounded-xl bg-foreground py-2 text-xs font-bold text-background disabled:opacity-30"
+              >
+                确认导入 {importConfirmDialog.selectedKeys.size} 条
+              </button>
+            </div>
+          </div>
+        )}
         <div ref={chatEndRef} />
       </div>
 
       {/* 确认对话框覆盖层 */}
-      {((confirmDialog && confirmDialog.kind !== "delete") || importConfirmDialog) && (
+      {confirmDialog && (
         <div className="absolute inset-0 z-40 bg-background/95 backdrop-blur-md p-6 flex flex-col animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-6">
             <h6 className="font-heading text-lg text-foreground">{confirmDialog?.label ?? "确认导入"}</h6>
@@ -1741,15 +1833,13 @@ export function AIPanel({
                         {selected && <span className="text-[9px]">✓</span>}
                       </button>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono">{it.item.date ?? "无日期"}</span>
-                          <span className="font-bold text-accent-green shrink-0">¥{formatMoney(it.item.amount)}</span>
+                        <div className="grid grid-cols-[76px_minmax(0,1fr)_44px_72px] items-center gap-2">
+                          <span className="font-mono truncate">{it.item.date ?? "无日期"}</span>
+                          <span className="truncate" title={itemAccountLabel(it.item)}>{itemAccountLabel(it.item)}</span>
+                          <span className="text-foreground/55">{itemTypeLabel(it.item.type)}</span>
+                          <span className="font-bold text-accent-green text-right shrink-0">¥{formatMoney(it.item.amount)}</span>
                         </div>
-                        <div className="mt-1 truncate">{it.item.account ?? it.item.fromAccount ?? "无账户"}</div>
-                        <div className="mt-0.5 flex items-center justify-between gap-2 text-foreground/50">
-                          <span>{it.item.type === "transfer" ? "转账" : it.item.type === "income" ? "收入" : it.item.type === "investment" ? "投资" : "支出"}</span>
-                          <span className="truncate">{it.item.remark ?? it.item.counterparty ?? ""}</span>
-                        </div>
+                        <div className="mt-1 truncate text-foreground/50">{it.item.remark ?? it.item.counterparty ?? ""}</div>
                         {!it.ready && it.missingFields.length > 0 && (
                           <div className="mt-1 text-[9px] text-red-400/80">缺少：{it.missingFields.join("、")}</div>
                         )}

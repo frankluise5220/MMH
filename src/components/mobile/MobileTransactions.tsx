@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { ArrowDownLeft, ArrowLeft, ArrowLeftRight, ArrowUpRight, MoreHorizontal, Pencil, ReceiptText, Trash2, TrendingUp } from "lucide-react";
 import { formatMoneyYuan } from "@/lib/format";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export type MobileTransactionRow = {
   id: string;
@@ -29,7 +29,6 @@ type AccountSummary = {
 };
 
 export function MobileTransactions({ entries, accountSummary }: { entries: MobileTransactionRow[]; accountSummary?: AccountSummary }) {
-  const router = useRouter();
   const [visibleEntries, setVisibleEntries] = useState(entries);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -75,7 +74,7 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
     if (expandedId === id) setExpandedId(null);
     if (menuId === id) setMenuId(null);
     if (swipedId === id) setSwipedId(null);
-    router.refresh();
+    dispatchFinanceDataChanged({ reason: "mobile-entry-delete", deletedEntryIds: [id], entryIds: [id] });
   }
 
   function beginCardPointer(entryId: string, event: PointerEvent<HTMLElement>) {

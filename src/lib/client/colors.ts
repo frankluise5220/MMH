@@ -27,6 +27,18 @@ export function pnlColor(n: number, scheme: ColorScheme): string {
   return s.neutral;
 }
 
+export type ImportPreviewAmountKind = "income" | "expense" | "transfer" | "investment" | string;
+
+/**
+ * 账单导入预览展示的是资金方向，不是分类好坏。
+ * 收入=流入，支出=流出；在红涨绿跌设置下，支出应显示为绿色。
+ */
+export function importPreviewAmountColor(type: ImportPreviewAmountKind, scheme: ColorScheme): string {
+  if (type === "income") return pnlColor(1, scheme);
+  if (type === "expense") return pnlColor(-1, scheme);
+  return pnlColor(0, scheme);
+}
+
 /** 从 cookie 中读取色系偏好 */
 export function getColorSchemeFromCookie(cookieHeader: string | null): ColorScheme {
   if (!cookieHeader) return "red_up_green_down";

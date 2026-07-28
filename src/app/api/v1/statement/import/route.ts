@@ -7,10 +7,13 @@ import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
-import { expandImportBankName, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
+import { expandImportBankName, isImportPaymentTailSourceHint, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-account";
+import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -59,6 +62,7 @@ const ParsedItemSchema = z.object({
     creditLimit: z.number().optional(),
     billingDay: z.number().int().min(1).max(31).optional(),
     repaymentDay: z.number().int().min(1).max(31).optional(),
+    statementAmount: z.number().finite().optional(),
   }).optional(),
 });
 
@@ -168,6 +172,78 @@ async function statementMonthForAccountId(tx: Db, accountId: string | null, date
   if (acc.kind !== AccountKind.bank_credit && acc.kind !== AccountKind.loan) return null;
   if (!acc.billingDay) return null;
   return toStatementMonth(date, acc.billingDay);
+}
+
+type StatementBillLock = {
+  storageAccountId: string;
+  billAccountIds: string[];
+  statementMonth: string;
+  amount: number;
+};
+
+async function statementBillLockForImportedRecord(tx: Db, householdId: string, item: ParsedItem, record: { accountId: string | null; toAccountId: string | null }): Promise<StatementBillLock | null> {
+  const amount = item._meta?.statementAmount;
+  if (amount === undefined || !Number.isFinite(amount)) return null;
+  const candidateIds = [record.toAccountId, record.accountId].filter((id): id is string => Boolean(id));
+  if (candidateIds.length === 0) return null;
+  const accounts = await tx.account.findMany({
+    where: {
+      id: { in: candidateIds },
+      householdId,
+      kind: AccountKind.bank_credit,
+      billingDay: { not: null },
+    },
+    select: {
+      id: true,
+      householdId: true,
+      institutionId: true,
+      kind: true,
+      billingDay: true,
+      creditBillMode: true,
+    },
+  });
+  const accountById = new Map(accounts.map((account) => [account.id, account]));
+  const account = candidateIds.map((id) => accountById.get(id)).find(Boolean);
+  if (!account?.billingDay) return null;
+
+  const billAccountIds = await getCreditBillAccountIds(tx, account);
+  const statementMonth = toStatementMonth(postedDateForStatement(item, parseDate(item.date)), account.billingDay);
+  return {
+    storageAccountId: billAccountIds[0] ?? account.id,
+    billAccountIds,
+    statementMonth,
+    amount,
+  };
+}
+
+async function lockImportedStatementBills(tx: Db, locks: StatementBillLock[]) {
+  const latestByKey = new Map<string, StatementBillLock>();
+  for (const lock of locks) {
+    latestByKey.set(`${lock.storageAccountId}:${lock.statementMonth}`, lock);
+  }
+  const uniqueLocks = Array.from(latestByKey.values());
+  for (const lock of uniqueLocks) {
+    await tx.billOverride.upsert({
+      where: {
+        accountId_statementMonth: {
+          accountId: lock.storageAccountId,
+          statementMonth: lock.statementMonth,
+        },
+      },
+      create: {
+        accountId: lock.storageAccountId,
+        statementMonth: lock.statementMonth,
+        amount: String(lock.amount),
+        note: "statement_import",
+      },
+      update: {
+        amount: String(lock.amount),
+        note: "statement_import",
+      },
+    });
+  }
+  await invalidateCreditCardCycleCacheForAccountIds(uniqueLocks.flatMap((lock) => lock.billAccountIds));
+  return uniqueLocks;
 }
 
 async function accountCurrencyMeta(tx: Db, accountId: string | null) {
@@ -536,6 +612,11 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
 async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  if (isImportPaymentTailSourceHint(name)) {
+    const matchedTailAccount = await findExistingImportAccount(tx, householdId, name);
+    if (matchedTailAccount?.id) return matchedTailAccount.id;
+    throw new Error(`未找到付款尾号对应账户：${name}`);
+  }
   // When the account name matches "XX的往来款" and a Counterparty exists,
   // resolve or create the loan account linked to that counterparty.
   const debtAccountId = await resolveDebtAccountByCounterpartyName(tx, householdId, name);
@@ -598,7 +679,7 @@ async function resolveInstitution(tx: Db, householdId: string, institutionName?:
   const name = String(institutionName ?? "").trim();
   if (!name) return { id: null as string | null, name: null as string | null };
   const found = await findInstitution(tx, householdId, name);
-  return { id: found?.id ?? null, name: found ? name : null };
+  return { id: found?.id ?? null, name: found?.name ?? name };
 }
 
 function buildNote(item: ParsedItem) {
@@ -808,6 +889,7 @@ export async function POST(req: Request) {
 
   const created: { id: string }[] = [];
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
+  const statementBillLocks: StatementBillLock[] = [];
   const mailSource = parse.data.mailSource;
   const statementFingerprint = mailSource ? buildStatementFingerprint(items, defaultAccountName) : "";
   let importBatchId: string | null = null;
@@ -840,11 +922,20 @@ export async function POST(req: Request) {
     try {
       const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName, options);
       created.push({ id: createdRecord.id });
+      const statementBillLock = await statementBillLockForImportedRecord(prisma, householdId, item, {
+        accountId: createdRecord.accountId,
+        toAccountId: createdRecord.toAccountId,
+      });
+      if (statementBillLock) statementBillLocks.push(statementBillLock);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "导入失败";
       errors.push({ index: i, rawText: item.rawText, error: msg });
     }
   }
+
+  const lockedStatementBills = statementBillLocks.length > 0
+    ? await lockImportedStatementBills(prisma, statementBillLocks)
+    : [];
 
   if (importBatchId && created.length === 0) {
     await prisma.importBatch.delete({ where: { id: importBatchId } }).catch(() => null);
@@ -852,12 +943,19 @@ export async function POST(req: Request) {
   }
 
   // Client-side handles page refresh
+  revalidateAfterTxChange();
   return NextResponse.json({
     ok: true,
     createdCount: created.length,
     skippedCount: errors.length,
     ids: created.map((t) => t.id),
     importBatchId,
+    lockedStatementBills: lockedStatementBills.map((lock) => ({
+      accountId: lock.storageAccountId,
+      billAccountIds: lock.billAccountIds,
+      statementMonth: lock.statementMonth,
+      amount: lock.amount,
+    })),
     createdAccounts: options.createdAccounts ?? [],
     errors,
   }, { headers: corsHeaders() });

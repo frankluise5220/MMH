@@ -3,11 +3,11 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
 import { useRouter } from "next/navigation";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
-import { TableColumnFilter } from "@/components/TableColumnFilter";
-import { formatOwnerQualifiedAccountLabel } from "@/lib/account-display";
+import { formatAccountSelectorLabel } from "@/lib/account-display";
 import {
   IMPORT_ACCOUNT_ID_PREFIX,
   createImportAccountMatcher,
@@ -18,6 +18,7 @@ import {
 } from "@/lib/account-import-match";
 import { kindLabel } from "@/lib/account-kinds";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
@@ -122,13 +123,15 @@ type AccountOption = {
   AccountAlias?: Array<{ alias: string }> | null;
 };
 
+type BookCategory = { id: string; name: string; type: string; parentId?: string | null };
 type AccountPickerRole = "any" | "credit" | "repayment_source";
 type PreviewType = ParsedItem["type"] | CreditCardRepaymentBusinessType;
 type BillImportMode = "normal" | "credit_card";
-type FilterColumn = "date" | "type" | "account" | "counterAccount" | "remark";
 type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
+type NormalPreviewTableRow = { idx: number };
+type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
 type FundImportKind = "normal" | "fund" | null;
 type ImportCompletionState = {
   count: number;
@@ -157,10 +160,6 @@ type ImportFileParseResult = {
 };
 type ImportDebugDetails = Record<string, string | number | boolean | null>;
 
-const filterColumns: FilterColumn[] = ["date", "type", "account", "counterAccount", "remark"];
-const INITIAL_PREVIEW_COUNT = 200;
-const PREVIEW_COUNT_STEP = 200;
-
 function createImportTraceId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `import-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -176,6 +175,51 @@ function postImportDebugLog(traceId: string, event: string, details: ImportDebug
   }).catch((error) => {
     console.warn("[batch-import] 调试日志上报失败", error);
   });
+}
+
+function buildCategorySmartSelectOptions(
+  categories: BookCategory[],
+  txType?: ParsedItem["type"] | "all",
+): SmartSelectOption[] {
+  const options: SmartSelectOption[] = [{ id: "", label: "未分类" }];
+  const indent = "　";
+  const categoryTypes = txType === "all"
+    ? ["income", "expense"]
+    : [txType === "income" ? "income" : "expense"];
+
+  for (const categoryType of categoryTypes) {
+    const typedCategories = categories.filter((category) => category.type === categoryType);
+    const childrenByParentId = new Map<string | null, BookCategory[]>();
+    for (const category of typedCategories) {
+      const key = category.parentId ?? null;
+      const list = childrenByParentId.get(key) ?? [];
+      list.push(category);
+      childrenByParentId.set(key, list);
+    }
+    for (const list of childrenByParentId.values()) {
+      list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    }
+
+    const headerId = `category-type:${categoryType}`;
+    if (typedCategories.length > 0) {
+      options.push({ id: headerId, label: categoryType === "income" ? "收入分类" : "支出分类", isHeader: true });
+    }
+    const walk = (parentId: string | null, level: number, parentOptionId?: string) => {
+      const children = childrenByParentId.get(parentId) ?? [];
+      for (const category of children) {
+        const hasChildren = (childrenByParentId.get(category.id) ?? []).length > 0;
+        options.push({
+          id: category.id,
+          label: `${indent.repeat(level)}${category.name}`,
+          parentId: parentOptionId,
+          isGroup: hasChildren,
+        });
+        walk(category.id, level + 1, category.id);
+      }
+    };
+    walk(null, 0, headerId);
+  }
+  return options;
 }
 const FUND_CANONICAL_HEADERS = [
   "date",
@@ -1184,15 +1228,12 @@ export default function BatchImportPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [uploadDebug, setUploadDebug] = useState<string | null>(null);
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([]);
+  const [bookCategories, setBookCategories] = useState<BookCategory[]>([]);
   const [importCompletion, setImportCompletion] = useState<ImportCompletionState | null>(null);
   const [editingCell, setEditingCell] = useState<{ idx: number; field: EditableCell } | null>(null);
-  const [activeFilterColumn, setActiveFilterColumn] = useState<FilterColumn | null>(null);
-  const [columnFilters, setColumnFilters] = useState<Partial<Record<FilterColumn, string[]>>>({});
   const [showImportIssuesOnly, setShowImportIssuesOnly] = useState(false);
-  const [previewCount, setPreviewCount] = useState(INITIAL_PREVIEW_COUNT);
   const [previewIssues, setPreviewIssues] = useState<ImportIssue[]>([]);
   const [previewValidationProgress, setPreviewValidationProgress] = useState<{ checked: number; total: number } | null>(null);
-  const [selectionBusy, setSelectionBusy] = useState(false);
   const [importProgress, setImportProgress] = useState<ServerImportProgress | null>(null);
 
   useEffect(() => {
@@ -1236,18 +1277,29 @@ export default function BatchImportPage() {
     return () => { cancelled = true; };
   }, [formatText]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchSettingsBootstrap()
+      .then((bootstrap) => {
+        if (cancelled) return;
+        setBookCategories(Array.isArray(bootstrap.categories) ? bootstrap.categories as BookCategory[] : []);
+      })
+      .catch(() => {
+        if (!cancelled) setBookCategories([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    return formatOwnerQualifiedAccountLabel({
+    return formatAccountSelectorLabel({
       accountName: account.name,
-      kind: account.kind,
       institution: account.Institution
         ? {
             name: account.Institution.name ?? null,
             shortName: account.Institution.shortName ?? null,
-          }
+        }
         : null,
       numberMasked: account.numberMasked,
-      ownerName: account.AccountGroup?.name ?? null,
     });
   }, []);
 
@@ -1580,10 +1632,7 @@ export default function BatchImportPage() {
     setDrafts({});
     setSelected(new Set());
     setFundSelected(new Set());
-    setColumnFilters({});
-    setActiveFilterColumn(null);
     setShowImportIssuesOnly(false);
-    setPreviewCount(INITIAL_PREVIEW_COUNT);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
       const parseResult = await parseImportFile(file);
@@ -1697,10 +1746,7 @@ export default function BatchImportPage() {
     setFundRulesDirty(false);
     setFundSelected(new Set());
     setEditingCell(null);
-    setColumnFilters({});
-    setActiveFilterColumn(null);
     setShowImportIssuesOnly(false);
-    setPreviewCount(INITIAL_PREVIEW_COUNT);
 
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     let previewRequested = false;
@@ -1763,33 +1809,6 @@ export default function BatchImportPage() {
   const closeCellEdit = useCallback(() => {
     setEditingCell(null);
   }, []);
-
-  const toggleSelect = useCallback((idx: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-  }, []);
-
-  const toggleFundSelect = useCallback((idx: number) => {
-    setFundSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-  }, []);
-
-  const toggleAllFund = useCallback(() => {
-    setFundSelected((prev) => {
-      const allSelected = fundPreviewItems.length > 0 && fundPreviewItems.every((_, idx) => prev.has(idx));
-      if (allSelected) return new Set<number>();
-      return new Set(fundPreviewItems.map((_, idx) => idx));
-    });
-  }, [fundPreviewItems]);
-
 
   const updateDraft = useCallback((idx: number, field: string, value: unknown) => {
     setDrafts((prev) => ({
@@ -1878,62 +1897,12 @@ export default function BatchImportPage() {
     });
   }, [isCreditCardRepaymentItem, items]);
 
-  const getFilterColumnValue = useCallback((idx: number, column: FilterColumn) => {
-    const item = getItem(idx);
-    const { account, counterAccount } = previewAccountValuesForItem(item);
-    if (column === "date") return item.date || t("batchImport.emptyValue");
-    if (column === "type") return getTypeLabel(item);
-    if (column === "account") {
-      return accountDisplayText(account, accountPickerRoleForCell(item, "account")) || t("batchImport.emptyValue");
-    }
-    if (column === "counterAccount") {
-      return accountDisplayText(counterAccount, accountPickerRoleForCell(item, "counterAccount")) || t("batchImport.emptyValue");
-    }
-    return (item.remark || item.counterparty || "").trim() || t("batchImport.emptyValue");
-  }, [accountDisplayText, accountPickerRoleForCell, getItem, getTypeLabel, previewAccountValuesForItem, t]);
-
-  const columnFilterOptions = useMemo(() => {
-    if (!activeFilterColumn) return [];
-    return Array.from(new Set(items.map((_, idx) => getFilterColumnValue(idx, activeFilterColumn))))
-      .sort((a, b) => (a === t("batchImport.emptyValue") ? 1 : b === t("batchImport.emptyValue") ? -1 : a.localeCompare(b, "zh-CN")));
-  }, [items, activeFilterColumn, getFilterColumnValue, t]);
-
-  const filteredIndexes = useMemo(() => {
-    return items
-      .map((_, idx) => idx)
-      .filter((idx) => filterColumns.every((column) => {
-        const allowedValues = columnFilters[column];
-        return !allowedValues?.length || allowedValues.includes(getFilterColumnValue(idx, column));
-      }));
-  }, [items, columnFilters, getFilterColumnValue]);
-
-  const hasActiveColumnFilters = useMemo(
-    () => filterColumns.some((column) => (columnFilters[column]?.length ?? 0) > 0),
-    [columnFilters],
+  const selectedPreviewIndexes = useMemo(
+    () => Array.from(selected).filter((idx) => idx >= 0 && idx < items.length).sort((a, b) => a - b),
+    [items.length, selected],
   );
-
-  const toggleAllFiltered = useCallback(() => {
-    setSelectionBusy(true);
-    window.setTimeout(() => {
-      setSelected((prev) => {
-        const allFilteredSelected = filteredIndexes.length > 0 && filteredIndexes.every((idx) => prev.has(idx));
-        const next = new Set(prev);
-        for (const idx of filteredIndexes) {
-          if (allFilteredSelected) next.delete(idx);
-          else next.add(idx);
-        }
-        return next;
-      });
-      setSelectionBusy(false);
-    }, 0);
-  }, [filteredIndexes]);
-
-  const selectedFilteredIndexes = useMemo(
-    () => Array.from(selected).filter((idx) => filteredIndexes.includes(idx)).sort((a, b) => a - b),
-    [selected, filteredIndexes],
-  );
-  const batchTargetIndexes = selectedFilteredIndexes;
-  const importTargetIndexes = selectedFilteredIndexes;
+  const batchTargetIndexes = selectedPreviewIndexes;
+  const importTargetIndexes = selectedPreviewIndexes;
   const importTargetCount = importTargetIndexes.length;
 
   const collectImportIssuesForIndex = useCallback((idx: number) => {
@@ -2124,10 +2093,10 @@ export default function BatchImportPage() {
           .map((issue) => issue.message),
       }))
   ), [importErrorRowIndexes, importIssuesByRow]);
-  const displayedFilteredIndexes = useMemo(() => {
-    const source = showImportIssuesOnly
-      ? filteredIndexes.filter((idx) => previewIssueRowIndexes.has(idx))
-      : filteredIndexes;
+  const normalPreviewRows = useMemo<NormalPreviewTableRow[]>(() => {
+    const source = items
+      .map((_, idx) => idx)
+      .filter((idx) => !showImportIssuesOnly || previewIssueRowIndexes.has(idx));
     return [...source].sort((a, b) => {
       const aError = previewErrorRowIndexes.has(a);
       const bError = previewErrorRowIndexes.has(b);
@@ -2136,11 +2105,19 @@ export default function BatchImportPage() {
       const bWarning = previewWarningRowIndexes.has(b);
       if (aWarning !== bWarning) return aWarning ? -1 : 1;
       return a - b;
-    });
-  }, [filteredIndexes, previewErrorRowIndexes, previewIssueRowIndexes, previewWarningRowIndexes, showImportIssuesOnly]);
-  const displayedVisibleIndexes = useMemo(
-    () => displayedFilteredIndexes.slice(0, previewCount),
-    [displayedFilteredIndexes, previewCount],
+    }).map((idx) => ({ idx }));
+  }, [items, previewErrorRowIndexes, previewIssueRowIndexes, previewWarningRowIndexes, showImportIssuesOnly]);
+  const selectedNormalPreviewKeys = useMemo(
+    () => new Set(Array.from(selected).map((idx) => String(idx))),
+    [selected],
+  );
+  const fundPreviewRows = useMemo<FundPreviewTableRow[]>(
+    () => fundPreviewItems.map((item, idx) => ({ ...item, idx })),
+    [fundPreviewItems],
+  );
+  const selectedFundPreviewKeys = useMemo(
+    () => new Set(Array.from(fundSelected).map((idx) => String(idx))),
+    [fundSelected],
   );
   const previewErrorPreviewText = useMemo(() => {
     const groups: Map<string, number[]> = new Map();
@@ -2178,6 +2155,30 @@ export default function BatchImportPage() {
     }
     return parts.join("；");
   }, [previewWarningGrouped]);
+  const categoryById = useMemo(() => new Map(bookCategories.map((category) => [category.id, category])), [bookCategories]);
+  const categorySelectValue = useCallback((categoryName: string, txType?: ParsedItem["type"]) => {
+    const name = categoryName.trim();
+    if (!name) return "";
+    const preferredType = txType === "income" ? "income" : "expense";
+    const matched = bookCategories.find((category) => category.name === name && category.type === preferredType)
+      ?? bookCategories.find((category) => category.name === name);
+    return matched?.id ?? "";
+  }, [bookCategories]);
+  const categoryNameById = useCallback((categoryId: string) => {
+    if (!categoryId) return "";
+    return categoryById.get(categoryId)?.name ?? "";
+  }, [categoryById]);
+  const categoryReplaceOptions = useMemo<BatchReplaceOption[]>(
+    () => buildCategorySmartSelectOptions(bookCategories, "all").map((option) => ({
+      value: option.id,
+      label: option.label,
+      isHeader: option.isHeader,
+      isGroup: option.isGroup,
+      parentId: option.parentId,
+      title: option.title,
+    })),
+    [bookCategories],
+  );
   const previewValidationRunning = previewValidationProgress !== null;
   const importProgressPercent = useMemo(() => {
     if (!importProgress?.total) return 0;
@@ -2263,7 +2264,7 @@ export default function BatchImportPage() {
     const accountValue = replaceField === "account" || replaceField === "counterAccount"
       ? accountSelectTextById(value)
       : value;
-    if (!accountValue && replaceField !== "counterAccount") throw new Error(t("batchImport.batchReplaceEmptyValue"));
+    if (!accountValue && replaceField !== "counterAccount" && replaceField !== "category") throw new Error(t("batchImport.batchReplaceEmptyValue"));
 
     const nextDrafts = { ...drafts };
     let changed = 0;
@@ -2348,6 +2349,8 @@ export default function BatchImportPage() {
           invalid++;
           continue;
         }
+      } else if (replaceField === "category") {
+        patch.category = categoryNameById(value);
       } else if (replaceField === "institution") patch.institution = value;
       else if (replaceField === "remark") patch.remark = value;
       nextDrafts[idx] = { ...(nextDrafts[idx] ?? {}), ...patch };
@@ -2378,7 +2381,7 @@ export default function BatchImportPage() {
       invalidCount: invalid,
     });
     return resultMessage;
-  }, [accountSelectTextById, activeBillMode, batchTargetIndexes, drafts, formatText, getItem, isCreditCardRepaymentItem, replaceFieldLabels, t]);
+  }, [accountSelectTextById, activeBillMode, batchTargetIndexes, categoryNameById, drafts, formatText, getItem, isCreditCardRepaymentItem, replaceFieldLabels, t]);
 
   const handleImport = useCallback(async () => {
     if (importing) return;
@@ -2625,8 +2628,6 @@ export default function BatchImportPage() {
     setFundSelected(new Set());
     setDrafts({});
     setEditingCell(null);
-    setActiveFilterColumn(null);
-    setColumnFilters({});
     setShowImportIssuesOnly(false);
     setMessage(null);
     setUploadDebug(null);
@@ -2646,33 +2647,7 @@ export default function BatchImportPage() {
     if (href) {
       router.push(href);
     }
-    router.refresh();
   }, [handleCancel, importCompletion, router]);
-
-  const renderColumnFilter = (column: FilterColumn, label: string) => {
-    const selectedValues = columnFilters[column] ?? [];
-    const isOpen = activeFilterColumn === column;
-    const options = isOpen ? columnFilterOptions : [];
-
-    return (
-      <TableColumnFilter
-        label={label}
-        options={options}
-        selectedValues={selectedValues}
-        open={isOpen}
-        onToggleOpen={() => setActiveFilterColumn((current) => current === column ? null : column)}
-        onClose={() => setActiveFilterColumn(null)}
-        onChange={(values) => setColumnFilters((prev) => {
-          if (!values || values.length === 0) {
-            const next = { ...prev };
-            delete next[column];
-            return next;
-          }
-          return { ...prev, [column]: values };
-        })}
-      />
-    );
-  };
 
   const accountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
     { value: "", label: t("batchImport.unselected") },
@@ -2697,11 +2672,537 @@ export default function BatchImportPage() {
     },
     { value: "outflow", label: replaceFieldLabels.outflow, kind: "number", placeholder: t("batchImport.numberExpressionPlaceholder") },
     { value: "inflow", label: replaceFieldLabels.inflow, kind: "number", placeholder: t("batchImport.numberExpressionPlaceholder") },
-    { value: "account", label: replaceFieldLabels.account, kind: "smartSelect", options: accountReplaceOptions },
-    { value: "counterAccount", label: replaceFieldLabels.counterAccount, kind: "smartSelect", options: accountReplaceOptions, allowEmpty: true },
+    {
+      value: "account",
+      label: replaceFieldLabels.account,
+      kind: "smartSelect",
+      options: accountReplaceOptions,
+      smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
+    },
+    {
+      value: "counterAccount",
+      label: replaceFieldLabels.counterAccount,
+      kind: "smartSelect",
+      options: accountReplaceOptions,
+      allowEmpty: true,
+      smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
+    },
+    {
+      value: "category",
+      label: replaceFieldLabels.category,
+      kind: "smartSelect",
+      options: categoryReplaceOptions,
+      allowEmpty: true,
+      smartSelectBehavior: {
+        hierarchy: true,
+        search: true,
+        initialCollapsedAll: true,
+        accordionGroups: true,
+        selectableGroups: true,
+        groupSelectOnDoubleClick: false,
+        minDropdownWidth: 252,
+        dropdownMaxHeight: 180,
+        density: "micro",
+        expandedGroupColumns: 4,
+        resizableDropdown: true,
+      },
+    },
     { value: "institution", label: replaceFieldLabels.institution, kind: "text", placeholder: t("batchImport.institutionPlaceholder") },
     { value: "remark", label: replaceFieldLabels.remark, kind: "text", placeholder: t("batchImport.replaceContentPlaceholder") },
-  ], [accountReplaceOptions, replaceFieldLabels, t, typeOptions]);
+  ], [accountReplaceOptions, categoryReplaceOptions, replaceFieldLabels, t, typeOptions]);
+
+  const normalPreviewColumns = useMemo<AdvancedDataTableColumn<NormalPreviewTableRow>[]>(() => [
+    {
+      key: "status",
+      label: "",
+      width: 42,
+      minWidth: 36,
+      align: "center",
+      filterText: (row) => {
+        const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
+        if (rowIssues.some((issue) => issue.level === "error")) return "错误";
+        if (rowIssues.some((issue) => issue.level === "warning")) return "警告";
+        return "正常";
+      },
+      render: (row) => {
+        const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
+        const rowHasError = rowIssues.some((issue) => issue.level === "error");
+        const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
+        if (rowIssues.length === 0) return <span className="text-[11px] text-slate-400">{row.idx + 1}</span>;
+        return (
+          <span
+            className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : rowHasWarning ? "bg-amber-500" : "bg-slate-300"}`}
+            title={rowIssues.map((issue) => issue.message).join("；")}
+          >
+            !
+          </span>
+        );
+      },
+    },
+    {
+      key: "date",
+      label: t("batchImport.field.date"),
+      width: 116,
+      minWidth: 96,
+      filterKind: "dateRange",
+      filterText: (row) => getItem(row.idx).date || "-",
+      sortValue: (row) => getItem(row.idx).date || "",
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const date = draft.date ?? item.date ?? "";
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title={t("batchImport.doubleClickToEdit")}>
+            {editingField === "date" ? (
+              <DateStepper
+                value={date}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(value) => updateDraft(idx, "date", value)}
+                className="h-6 w-28 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
+              />
+            ) : date}
+          </div>
+        );
+      },
+    },
+    {
+      key: "type",
+      label: t("batchImport.field.type"),
+      width: 96,
+      minWidth: 78,
+      filterText: (row) => getTypeLabel(getItem(row.idx)),
+      render: (row) => {
+        const idx = row.idx;
+        const currentRowItem = getItem(idx);
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => openCellEdit(idx, "type")} title={t("batchImport.doubleClickToEdit")}>
+            {editingField === "type" ? (
+              <select
+                value={getPreviewType(currentRowItem)}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => {
+                  const nextPreviewType = event.target.value as PreviewType;
+                  const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? "transfer" : nextPreviewType;
+                  const nextBusinessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE : null;
+                  const accountPatch = accountPatchForPreviewTypeChange(currentRowItem, nextType, nextBusinessType);
+                  updateDraft(idx, "type", nextType);
+                  updateDraft(idx, "businessType", nextBusinessType);
+                  for (const [field, value] of Object.entries(accountPatch)) updateDraft(idx, field, value);
+                }}
+                className="h-6 w-20 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
+              >
+                <option value="expense">{t("transaction.type.expense")}</option>
+                <option value="income">{t("transaction.type.income")}</option>
+                <option value="transfer">{t("transaction.type.transfer")}</option>
+                <option value={CREDIT_CARD_REPAYMENT_BUSINESS_TYPE}>{t("transaction.type.creditCardRepayment")}</option>
+              </select>
+            ) : getTypeLabel(currentRowItem)}
+          </div>
+        );
+      },
+    },
+    {
+      key: "outflow",
+      label: t("batchImport.field.outflow"),
+      width: 112,
+      minWidth: 92,
+      align: "right",
+      sortValue: (row) => {
+        const item = items[row.idx];
+        const draft = drafts[row.idx] ?? {};
+        const type = draft.type ?? item.type ?? "expense";
+        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        return normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).outflow;
+      },
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const type = draft.type ?? item.type ?? "expense";
+        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const outflow = normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).outflow;
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap text-right tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "outflow")} title={t("batchImport.doubleClickToEdit")}>
+            {editingField === "outflow" ? (
+              <input
+                type="number"
+                value={outflow || ""}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => {
+                  const next = parseFloat(event.target.value) || 0;
+                  updateDraft(idx, "outflow", next);
+                  updateDraft(idx, "amount", next || 0);
+                  if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "out");
+                  else if (next > 0) updateDraft(idx, "type", "expense");
+                }}
+                className="h-6 w-24 rounded border border-blue-300 px-1.5 text-right text-xs tabular-nums focus:outline-none"
+                step="0.01"
+              />
+            ) : outflow ? outflow.toFixed(2) : "-"}
+          </div>
+        );
+      },
+    },
+    {
+      key: "inflow",
+      label: t("batchImport.field.inflow"),
+      width: 112,
+      minWidth: 92,
+      align: "right",
+      sortValue: (row) => {
+        const item = items[row.idx];
+        const draft = drafts[row.idx] ?? {};
+        const type = draft.type ?? item.type ?? "expense";
+        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        return normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).inflow;
+      },
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const type = draft.type ?? item.type ?? "expense";
+        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const inflow = normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).inflow;
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap text-right tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "inflow")} title={t("batchImport.doubleClickToEdit")}>
+            {editingField === "inflow" ? (
+              <input
+                type="number"
+                value={inflow || ""}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => {
+                  const next = parseFloat(event.target.value) || 0;
+                  updateDraft(idx, "inflow", next);
+                  updateDraft(idx, "amount", next || 0);
+                  if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "in");
+                  else if (next > 0) updateDraft(idx, "type", "income");
+                }}
+                className="h-6 w-24 rounded border border-blue-300 px-1.5 text-right text-xs tabular-nums focus:outline-none"
+                step="0.01"
+              />
+            ) : inflow ? inflow.toFixed(2) : "-"}
+          </div>
+        );
+      },
+    },
+    {
+      key: "account",
+      label: t("batchImport.field.account"),
+      width: 220,
+      minWidth: 150,
+      filterText: (row) => {
+        const item = getItem(row.idx);
+        const { account } = previewAccountValuesForItem(item);
+        return accountDisplayText(account, accountPickerRoleForCell(item, "account")) || t("batchImport.emptyValue");
+      },
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const type = draft.type ?? item.type ?? "expense";
+        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const currentRowItem = getItem(idx);
+        const { account } = previewAccountValuesForItem(currentRowItem);
+        const accountPickerRole = accountPickerRoleForCell(currentRowItem, "account");
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title={accountCellTitle(account, accountPickerRole)}>
+            {editingField === "account" ? (
+              <div className="w-80">
+                <SmartSelect
+                  mode="single"
+                  value={accountSelectValue(account, accountPickerRole)}
+                  onChange={(selectedId) => {
+                    const value = accountSelectTextById(selectedId);
+                    if (currentRowItem.importMode === "credit_card") {
+                      updateCreditStatementAccount(value);
+                      closeCellEdit();
+                      return;
+                    }
+                    updateDraft(idx, "account", value);
+                    if (type === "transfer") {
+                      if (direction === "in") updateDraft(idx, "toAccount", value);
+                      else updateDraft(idx, "fromAccount", value);
+                    }
+                    closeCellEdit();
+                  }}
+                  options={accountSmartSelectOptionsFor(account, accountPickerRole)}
+                  placeholder={t("batchImport.unselected")}
+                  behavior={{ hierarchy: false, search: true, clearable: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true, autoOpen: true }}
+                />
+              </div>
+            ) : account ? accountDisplayText(account, accountPickerRole) : <span className="text-red-500">{t("batchImport.unrecognized")}</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "counterAccount",
+      label: t("batchImport.field.counterAccount"),
+      width: 220,
+      minWidth: 150,
+      filterText: (row) => {
+        const item = getItem(row.idx);
+        const { counterAccount } = previewAccountValuesForItem(item);
+        return accountDisplayText(counterAccount, accountPickerRoleForCell(item, "counterAccount")) || t("batchImport.emptyValue");
+      },
+      render: (row) => {
+        const idx = row.idx;
+        const currentRowItem = getItem(idx);
+        const draft = drafts[idx] ?? {};
+        const businessType = draft.businessType !== undefined ? draft.businessType : currentRowItem.businessType;
+        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? currentRowItem.transferDirection;
+        const { counterAccount } = previewAccountValuesForItem(currentRowItem);
+        const counterAccountPickerRole = accountPickerRoleForCell(currentRowItem, "counterAccount");
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={accountCellTitle(counterAccount, counterAccountPickerRole)}>
+            {editingField === "counterAccount" ? (
+              <div className="w-80">
+                <SmartSelect
+                  mode="single"
+                  value={accountSelectValue(counterAccount, counterAccountPickerRole)}
+                  onChange={(selectedId) => {
+                    const value = accountSelectTextById(selectedId);
+                    if (currentRowItem.importMode === "credit_card" && isCreditCardRepaymentItem(currentRowItem)) updateDraft(idx, "fromAccount", value);
+                    else if (direction === "in") updateDraft(idx, "fromAccount", value);
+                    else updateDraft(idx, "toAccount", value);
+                    if (value.trim()) updateDraft(idx, "type", "transfer");
+                    closeCellEdit();
+                  }}
+                  options={accountSmartSelectOptionsFor(counterAccount, counterAccountPickerRole)}
+                  placeholder={t("batchImport.unselected")}
+                  behavior={{ hierarchy: false, search: true, clearable: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true, autoOpen: true }}
+                />
+              </div>
+            ) : counterAccount ? accountDisplayText(counterAccount, counterAccountPickerRole) : <span className="text-slate-400">-</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "category",
+      label: t("batchImport.field.category"),
+      width: 150,
+      minWidth: 110,
+      filterText: (row) => getItem(row.idx).category || t("batchImport.emptyValue"),
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const category = draft.category ?? item.category ?? "";
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="truncate text-slate-700" title={category || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
+            {editingField === "category" ? (
+              <div className="w-44">
+                <SmartSelect
+                  mode="single"
+                  value={categorySelectValue(category, item.type)}
+                  onChange={(categoryId) => {
+                    updateDraft(idx, "category", categoryNameById(categoryId));
+                    closeCellEdit();
+                  }}
+                  options={buildCategorySmartSelectOptions(bookCategories, item.type)}
+                  placeholder={t("batchImport.categoryPlaceholder")}
+                  searchable
+                  behavior={{
+                    hierarchy: true,
+                    search: true,
+                    initialCollapsedAll: true,
+                    accordionGroups: true,
+                    selectableGroups: true,
+                    groupSelectOnDoubleClick: false,
+                    minDropdownWidth: 252,
+                    dropdownMaxHeight: 180,
+                    density: "micro",
+                    expandedGroupColumns: 4,
+                    resizableDropdown: true,
+                    autoOpen: true,
+                  }}
+                />
+              </div>
+            ) : category || <span className="text-slate-400">-</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "institution",
+      label: t("batchImport.field.institution"),
+      width: 150,
+      minWidth: 110,
+      filterText: (row) => getItem(row.idx).institution || t("batchImport.emptyValue"),
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const institution = draft.institution ?? item.institution ?? "";
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="truncate text-slate-700" title={institution || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "institution")}>
+            {editingField === "institution" ? (
+              <input
+                type="text"
+                value={institution}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => updateDraft(idx, "institution", event.target.value)}
+                placeholder={t("batchImport.institutionPlaceholder")}
+                className="h-6 w-36 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
+              />
+            ) : institution || <span className="text-slate-400">-</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "tags",
+      label: t("batchImport.field.tags"),
+      width: 170,
+      minWidth: 120,
+      filterText: (row) => getItem(row.idx).tags || t("batchImport.emptyValue"),
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const tags = draft.tags ?? item.tags ?? "";
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="truncate text-slate-700" title={tags || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "tags")}>
+            {editingField === "tags" ? (
+              <input
+                type="text"
+                value={tags}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => updateDraft(idx, "tags", event.target.value)}
+                placeholder={t("batchImport.tagsPlaceholder")}
+                className="h-6 w-44 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
+              />
+            ) : tags || <span className="text-slate-400">-</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "remark",
+      label: t("batchImport.field.remark"),
+      width: 260,
+      minWidth: 160,
+      filterText: (row) => {
+        const item = getItem(row.idx);
+        return (item.remark || item.counterparty || "").trim() || t("batchImport.emptyValue");
+      },
+      render: (row) => {
+        const idx = row.idx;
+        const item = items[idx];
+        const draft = drafts[idx] ?? {};
+        const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
+        const editingField = editingCell?.idx === idx ? editingCell.field : null;
+        return (
+          <div className="truncate text-slate-700" title={remark || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "remark")}>
+            {editingField === "remark" ? (
+              <input
+                type="text"
+                value={remark}
+                autoFocus
+                onBlur={closeCellEdit}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
+                onChange={(event) => updateDraft(idx, "remark", event.target.value)}
+                placeholder={t("batchImport.remarkPlaceholder")}
+                className="h-6 w-48 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
+              />
+            ) : remark || <span className="text-slate-400">-</span>}
+          </div>
+        );
+      },
+    },
+  ], [
+    accountCellTitle,
+    accountDisplayText,
+    accountPickerRoleForCell,
+    accountPatchForPreviewTypeChange,
+    accountSelectTextById,
+    accountSelectValue,
+    accountSmartSelectOptionsFor,
+    bookCategories,
+    categoryNameById,
+    categorySelectValue,
+    closeCellEdit,
+    drafts,
+    editingCell,
+    getItem,
+    getPreviewType,
+    getTypeLabel,
+    isCreditCardRepaymentItem,
+    items,
+    openCellEdit,
+    previewAccountValuesForItem,
+    previewIssuesByRow,
+    t,
+    updateCreditStatementAccount,
+    updateDraft,
+  ]);
+
+  const fundPreviewColumns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
+    {
+      key: "status",
+      label: "",
+      width: 42,
+      minWidth: 36,
+      align: "center",
+      filterText: (row) => row.issues.some((issue) => issue.level === "error") ? "错误" : row.issues.some((issue) => issue.level === "warning") ? "警告" : "正常",
+      render: (row) => {
+        const rowHasError = row.issues.some((issue) => issue.level === "error");
+        const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
+        if (row.issues.length === 0) return <span className="text-[11px] text-slate-400">{row.idx + 1}</span>;
+        return (
+          <span
+            className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : rowHasWarning ? "bg-amber-500" : "bg-slate-300"}`}
+            title={row.issues.map((issue) => issue.message).join("；")}
+          >
+            !
+          </span>
+        );
+      },
+    },
+    { key: "date", label: t("batchImport.template.fund.label.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.date || "-", sortValue: (row) => row.date || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.date || "-"}</span> },
+    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 112, minWidth: 88, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSubtypeLabel(row.fundSubtype, row.source, t)}</span> },
+    { key: "source", label: t("batchImport.template.fund.label.source"), width: 92, minWidth: 76, filterText: (row) => getFundImportSourceLabel(row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSourceLabel(row.source, t)}</span> },
+    { key: "cashAccount", label: t("batchImport.template.fund.label.cashAccount"), width: 180, minWidth: 130, filterText: (row) => row.cashAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.cashAccount || ""}>{row.cashAccount || "-"}</span> },
+    { key: "fundAccount", label: t("batchImport.template.fund.label.fundAccount"), width: 180, minWidth: 130, filterText: (row) => row.fundAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundAccount || ""}>{row.fundAccount || "-"}</span> },
+    { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.fundCode || "-"}</span> },
+    { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
+    { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.amount, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.amount, 2)}</span> },
+    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.units ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.units, 2)}</span> },
+    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.nav ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.nav, 4)}</span> },
+    { key: "feeRate", label: t("batchImport.fundPreview.feeRate"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.feeRate ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.feeRate != null ? `${row.feeRate.toFixed(4)}%` : "-"}</span> },
+    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", sortValue: (row) => row.fee ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.fee, 2)}</span> },
+    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.confirmDate || "-"}</span> },
+    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.arrivalDate || "-"}</span> },
+    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => <span className="truncate text-slate-700" title={row.remark || ""}>{row.remark || "-"}</span> },
+  ], [t]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -2896,7 +3397,7 @@ export default function BatchImportPage() {
 
       {activeImportKind === "normal" && (items.length > 0 || uploading) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
-          <div className="w-full max-w-7xl h-[82vh] bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+          <div data-smart-select-boundary className="w-full max-w-7xl h-[82vh] min-h-[420px] min-w-[720px] resize bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
@@ -2950,7 +3451,7 @@ export default function BatchImportPage() {
                       onChange={(selectedId) => updateCreditStatementAccount(accountSelectTextById(selectedId))}
                       options={accountSmartSelectOptionsFor(creditStatementAccount, "credit")}
                       placeholder={t("batchImport.unselected")}
-                      behavior={{ hierarchy: false, search: true, clearable: false }}
+                      behavior={{ hierarchy: false, search: true, clearable: false, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true }}
                     />
                   </div>
                   <span className="text-xs text-slate-500">{t("batchImport.creditMode.statementAccountHint")}</span>
@@ -2958,11 +3459,11 @@ export default function BatchImportPage() {
               ) : null}
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                 <span className="font-medium text-slate-700">
-                  {hasActiveColumnFilters || showImportIssuesOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
+                  {showImportIssuesOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
                 </span>
                 <span>
-                  {hasActiveColumnFilters || showImportIssuesOnly
-                    ? formatText("batchImport.filteredCount", { filtered: displayedFilteredIndexes.length, total: items.length })
+                  {showImportIssuesOnly
+                    ? formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })
                     : formatText("batchImport.totalCount", { total: items.length })}
                 </span>
                 {previewValidationRunning && (
@@ -2971,11 +3472,6 @@ export default function BatchImportPage() {
                       checked: previewValidationProgress?.checked ?? 0,
                       total: previewValidationProgress?.total ?? items.length,
                     })}
-                  </span>
-                )}
-                {selectionBusy && (
-                  <span className="rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                    {t("batchImport.selectingRows")}
                   </span>
                 )}
                 {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && previewWarningRows.length === 0 && (
@@ -2993,30 +3489,17 @@ export default function BatchImportPage() {
                     {formatText("batchImport.previewWarningBadge", { count: previewWarningRows.length })}
                   </span>
                 )}
-                <span className="text-slate-400">{t("batchImport.filterHint")}</span>
                 {previewIssueRowIndexes.size > 0 && (
                   <button
                     type="button"
                     onClick={() => {
                       setShowImportIssuesOnly((value) => !value);
-                      setPreviewCount(INITIAL_PREVIEW_COUNT);
                     }}
                     className="h-8 px-2 rounded border border-amber-200 bg-white text-xs font-medium text-amber-700 hover:bg-amber-50"
                   >
                     {showImportIssuesOnly ? t("batchImport.showAllRows") : t("batchImport.showIssueRows")}
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveFilterColumn(null);
-                    setColumnFilters({});
-                    setShowImportIssuesOnly(false);
-                  }}
-                  className="ml-auto h-8 px-2 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
-                >
-                  {t("batchImport.clearAllFilters")}
-                </button>
               </div>
               {previewErrorRows.length > 0 && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -3041,306 +3524,50 @@ export default function BatchImportPage() {
                 </div>
               )}
             </div>
-            <div className="flex-1 min-h-0 overflow-auto">
-              <table className="w-full text-xs border-separate border-spacing-0">
-              <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
-                <tr>
-                  <th className="w-24 px-2 py-1 text-left">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={displayedFilteredIndexes.length > 0 && displayedFilteredIndexes.every((idx) => selected.has(idx))}
-                        onChange={toggleAllFiltered}
-                        disabled={selectionBusy}
-                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
-                        title={t("batchImport.selectFiltered")}
-                      />
-                      <BatchReplacePopoverButton
-                        fields={replaceFields}
-                        targetCount={batchTargetIndexes.length}
-                        targetLabel={t("batchImport.selectedTargetLabel")}
-                        panelAlign="left"
-                        disabledTitle={t("batchImport.selectFirstHint")}
-                        buttonTitle={formatText("batchImport.batchEditTitle", { count: batchTargetIndexes.length })}
-                        messageClassName="sr-only"
-                        onApply={applyReplaceToTargets}
-                      />
-                    </div>
-                  </th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("date", t("batchImport.field.date"))}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("type", t("batchImport.field.type"))}</th>
-                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">{t("batchImport.field.outflow")}</th>
-                  <th className="px-2 py-1 text-right text-xs font-medium text-slate-600">{t("batchImport.field.inflow")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("account", t("batchImport.field.account"))}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("counterAccount", t("batchImport.field.counterAccount"))}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{t("batchImport.field.category")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{t("batchImport.field.tags")}</th>
-                  <th className="px-2 py-1 text-left text-xs font-medium text-slate-600">{renderColumnFilter("remark", t("batchImport.field.remark"))}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {uploading ? (
-                  <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-blue-600">
-                      {t("batchImport.previewParsing")}
-                    </td>
-                  </tr>
-                ) : displayedFilteredIndexes.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
-                      {t("batchImport.noRecordsForFilter")}
-                    </td>
-                  </tr>
-                ) : displayedVisibleIndexes.map((idx) => {
-                  const item = items[idx];
-                  const draft = drafts[idx] ?? {};
-                  const date = draft.date ?? item.date ?? "";
-                  const type = draft.type ?? item.type ?? "expense";
-                  const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-                  const direction = isCreditCardRepaymentBusinessType(businessType)
-                    ? "out"
-                    : draft.transferDirection ?? item.transferDirection;
-                  const flow = normalizeFlowFields(
-                    type,
-                    Number(draft.amount ?? item.amount ?? 0),
-                    Number(draft.inflow ?? item.inflow ?? 0),
-                    Number(draft.outflow ?? item.outflow ?? 0),
-                    direction,
-                  );
-                  const outflow = flow.outflow;
-                  const inflow = flow.inflow;
-                  const currentRowItem = getItem(idx);
-                  const { account, counterAccount } = previewAccountValuesForItem(currentRowItem);
-                  const accountPickerRole = accountPickerRoleForCell(currentRowItem, "account");
-                  const counterAccountPickerRole = accountPickerRoleForCell(currentRowItem, "counterAccount");
-                  const category = draft.category ?? item.category ?? "";
-                  const tags = draft.tags ?? item.tags ?? "";
-                  const remark = draft.remark ?? item.remark ?? item.counterparty ?? "";
-                  const isSelected = selected.has(idx);
-                  const editingField = editingCell?.idx === idx ? editingCell.field : null;
-                  const typeLabel = getTypeLabel(currentRowItem);
-                  const rowIssues = previewIssuesByRow.get(idx) ?? [];
+            <div className="flex-1 min-h-0">
+              <AdvancedDataTable
+                storageKey="mmh_batch_import_normal_preview_table_v1"
+                columns={normalPreviewColumns}
+                rows={uploading ? [] : normalPreviewRows}
+                rowKey={(row) => String(row.idx)}
+                emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
+                minTableWidth={1820}
+                selectable
+                selectedKeys={selectedNormalPreviewKeys}
+                onSelectionChange={(keys) => {
+                  setSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
+                }}
+                batchActionSlot={(
+                  <BatchReplacePopoverButton
+                    fields={replaceFields}
+                    targetCount={batchTargetIndexes.length}
+                    targetLabel={t("batchImport.selectedTargetLabel")}
+                    panelAlign="left"
+                    disabledTitle={t("batchImport.selectFirstHint")}
+                    buttonTitle={formatText("batchImport.batchEditTitle", { count: batchTargetIndexes.length })}
+                    messageClassName="sr-only"
+                    onApply={applyReplaceToTargets}
+                  />
+                )}
+                toolbarTitle={t("batchImport.previewTitle")}
+                toolbarRightContent={(
+                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                    <span>{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
+                    {showImportIssuesOnly ? <span>{formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })}</span> : null}
+                  </div>
+                )}
+                rowClassName={(row) => {
+                  const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
                   const rowHasError = rowIssues.some((issue) => issue.level === "error");
                   const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
-
-                  return (
-                    <tr key={idx} className={`${isSelected ? "" : "opacity-50"} ${rowHasError ? "bg-red-50" : rowHasWarning ? "bg-amber-50" : ""}`}>
-                      <td className="px-2 py-1">
-                        <span className="inline-flex h-3.5 items-center gap-1 align-middle">
-                          {rowIssues.length > 0 ? (
-                            <span
-                              className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : "bg-amber-500"}`}
-                              title={rowIssues.map((issue) => issue.message).join("；")}
-                            >
-                              !
-                            </span>
-                          ) : (
-                            <span className="h-3.5 w-3.5" />
-                          )}
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSelect(idx)}
-                            className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
-                          />
-                        </span>
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title={t("batchImport.doubleClickToEdit")}>
-                        {editingField === "date" ? (
-                          <DateStepper
-                            value={date}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(value) => updateDraft(idx, "date", value)}
-                            className="h-6 w-28 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          />
-                        ) : date}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "type")} title={t("batchImport.doubleClickToEdit")}>
-                        {editingField === "type" ? (
-                          <select
-                            value={getPreviewType(currentRowItem)}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => {
-                              const nextPreviewType = e.target.value as PreviewType;
-                              const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                ? "transfer"
-                                : nextPreviewType;
-                              const nextBusinessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-                                : null;
-                              const accountPatch = accountPatchForPreviewTypeChange(currentRowItem, nextType, nextBusinessType);
-                              updateDraft(idx, "type", nextType);
-                              updateDraft(idx, "businessType", nextBusinessType);
-                              for (const [field, value] of Object.entries(accountPatch)) {
-                                updateDraft(idx, field, value);
-                              }
-                            }}
-                            className="h-6 w-20 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          >
-                            <option value="expense">{t("transaction.type.expense")}</option>
-                            <option value="income">{t("transaction.type.income")}</option>
-                            <option value="transfer">{t("transaction.type.transfer")}</option>
-                            <option value={CREDIT_CARD_REPAYMENT_BUSINESS_TYPE}>{t("transaction.type.creditCardRepayment")}</option>
-                          </select>
-                        ) : typeLabel}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "outflow")} title={t("batchImport.doubleClickToEdit")}>
-                        {editingField === "outflow" ? (
-                          <input
-                            type="number"
-                            value={outflow || ""}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => {
-                              const next = parseFloat(e.target.value) || 0;
-                              updateDraft(idx, "outflow", next);
-                              updateDraft(idx, "amount", next || 0);
-                              if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "out");
-                              else if (next > 0) updateDraft(idx, "type", "expense");
-                            }}
-                            className="h-6 w-24 px-1.5 text-xs text-right border border-blue-300 rounded focus:outline-none tabular-nums"
-                            step="0.01"
-                          />
-                        ) : (outflow ? outflow.toFixed(2) : "-")}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-right text-xs tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "inflow")} title={t("batchImport.doubleClickToEdit")}>
-                        {editingField === "inflow" ? (
-                          <input
-                            type="number"
-                            value={inflow || ""}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => {
-                              const next = parseFloat(e.target.value) || 0;
-                              updateDraft(idx, "inflow", next);
-                              updateDraft(idx, "amount", next || 0);
-                              if (type === "transfer" && next > 0) updateDraft(idx, "transferDirection", "in");
-                              else if (next > 0) updateDraft(idx, "type", "income");
-                            }}
-                            className="h-6 w-24 px-1.5 text-xs text-right border border-blue-300 rounded focus:outline-none tabular-nums"
-                            step="0.01"
-                          />
-                        ) : (inflow ? inflow.toFixed(2) : "-")}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "account")} title={accountCellTitle(account, accountPickerRole)}>
-                        {editingField === "account" ? (
-                          <div className="w-80">
-                            <SmartSelect
-                              mode="single"
-                              value={accountSelectValue(account, accountPickerRole)}
-                              onChange={(selectedId) => {
-                                const value = accountSelectTextById(selectedId);
-                                if (currentRowItem.importMode === "credit_card") {
-                                  updateCreditStatementAccount(value);
-                                  closeCellEdit();
-                                  return;
-                                }
-                                updateDraft(idx, "account", value);
-                                if (type === "transfer") {
-                                  if (direction === "in") updateDraft(idx, "toAccount", value);
-                                  else updateDraft(idx, "fromAccount", value);
-                                }
-                                closeCellEdit();
-                              }}
-                              options={accountSmartSelectOptionsFor(account, accountPickerRole)}
-                              placeholder={t("batchImport.unselected")}
-                              behavior={{ hierarchy: false, search: true, clearable: true }}
-                            />
-                          </div>
-                        ) : (account ? accountDisplayText(account, accountPickerRole) : <span className="text-red-500">{t("batchImport.unrecognized")}</span>)}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-slate-700" onDoubleClick={() => openCellEdit(idx, "counterAccount")} title={accountCellTitle(counterAccount, counterAccountPickerRole)}>
-                        {editingField === "counterAccount" ? (
-                          <div className="w-80">
-                            <SmartSelect
-                              mode="single"
-                              value={accountSelectValue(counterAccount, counterAccountPickerRole)}
-                              onChange={(selectedId) => {
-                                const value = accountSelectTextById(selectedId);
-                                if (
-                                  currentRowItem.importMode === "credit_card" &&
-                                  isCreditCardRepaymentItem(currentRowItem)
-                                ) {
-                                  updateDraft(idx, "fromAccount", value);
-                                } else if (direction === "in") updateDraft(idx, "fromAccount", value);
-                                else updateDraft(idx, "toAccount", value);
-                                if (value.trim()) updateDraft(idx, "type", "transfer");
-                                closeCellEdit();
-                              }}
-                              options={accountSmartSelectOptionsFor(counterAccount, counterAccountPickerRole)}
-                              placeholder={t("batchImport.unselected")}
-                              behavior={{ hierarchy: false, search: true, clearable: true }}
-                            />
-                          </div>
-                        ) : (counterAccount ? accountDisplayText(counterAccount, counterAccountPickerRole) : <span className="text-slate-400">-</span>)}
-                      </td>
-                      <td className="max-w-[180px] truncate px-2 py-1 text-xs text-slate-700" title={category || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
-                        {editingField === "category" ? (
-                          <input
-                            type="text"
-                            value={category}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => updateDraft(idx, "category", e.target.value)}
-                            placeholder={t("batchImport.categoryPlaceholder")}
-                            className="h-6 w-36 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          />
-                        ) : (category || <span className="text-slate-400">-</span>)}
-                      </td>
-                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={tags || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "tags")}>
-                        {editingField === "tags" ? (
-                          <input
-                            type="text"
-                            value={tags}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => updateDraft(idx, "tags", e.target.value)}
-                            placeholder={t("batchImport.tagsPlaceholder")}
-                            className="h-6 w-44 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          />
-                        ) : (tags || <span className="text-slate-400">-</span>)}
-                      </td>
-                      <td className="max-w-[220px] truncate px-2 py-1 text-xs text-slate-700" title={remark || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "remark")}>
-                        {editingField === "remark" ? (
-                          <input
-                            type="text"
-                            value={remark}
-                            autoFocus
-                            onBlur={closeCellEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") closeCellEdit(); }}
-                            onChange={(e) => updateDraft(idx, "remark", e.target.value)}
-                            placeholder={t("batchImport.remarkPlaceholder")}
-                            className="h-6 w-48 px-1.5 text-xs border border-blue-300 rounded focus:outline-none"
-                          />
-                        ) : (remark || <span className="text-slate-400">-</span>)}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!uploading && displayedFilteredIndexes.length > displayedVisibleIndexes.length && (
-                  <tr>
-                    <td colSpan={12} className="px-4 py-2 text-center text-xs text-slate-500">
-                      {formatText("batchImport.currentVisibleCount", { visible: displayedVisibleIndexes.length, total: displayedFilteredIndexes.length })}
-                      <button
-                        type="button"
-                        onClick={() => setPreviewCount((count) => count + PREVIEW_COUNT_STEP)}
-                        className="ml-2 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                      >
-                        {formatText("batchImport.loadMore", { count: Math.min(PREVIEW_COUNT_STEP, displayedFilteredIndexes.length - displayedVisibleIndexes.length) })}
-                      </button>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
+                }}
+                fillHeight
+                compactRows
+                showFilters={false}
+                sortable={false}
+                showColumnVisibilityButton={false}
+              />
             </div>
           </div>
         </div>
@@ -3348,7 +3575,7 @@ export default function BatchImportPage() {
 
       {activeImportKind === "fund" && (fundPreviewItems.length > 0 || uploading) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
-          <div className="w-full max-w-7xl h-[82vh] bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+          <div data-smart-select-boundary className="w-full max-w-7xl h-[82vh] min-h-[420px] min-w-[720px] resize bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewFundTitle")}</div>
@@ -3462,92 +3689,38 @@ export default function BatchImportPage() {
                 </div>
               )}
             </div>
-            <div className="flex-1 min-h-0 overflow-auto">
-              <table className="w-full text-xs border-separate border-spacing-0">
-                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="w-16 px-2 py-1 text-left">
-                      <span className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={fundPreviewItems.length > 0 && fundPreviewItems.every((_, idx) => fundSelected.has(idx))}
-                          onChange={toggleAllFund}
-                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
-                        />
-                      </span>
-                    </th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.date")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundSubtype")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.source")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.cashAccount")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundAccount")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundCode")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.fundName")}</th>
-                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.template.fund.label.amount")}</th>
-                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.fundPreview.feeRate")}</th>
-                    <th className="px-2 py-1 text-right font-medium text-slate-600">{t("batchImport.template.fund.label.fee")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.confirmDate")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.arrivalDate")}</th>
-                    <th className="px-2 py-1 text-left font-medium text-slate-600">{t("batchImport.template.fund.label.remark")}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {uploading ? (
-                    <tr>
-                      <td colSpan={14} className="px-4 py-8 text-center text-sm text-blue-600">
-                        {t("batchImport.previewParsing")}
-                      </td>
-                    </tr>
-                  ) : fundPreviewItems.length === 0 ? (
-                    <tr>
-                      <td colSpan={14} className="px-4 py-8 text-center text-sm text-slate-500">
-                        {t("batchImport.noRecordsForFilter")}
-                      </td>
-                    </tr>
-                  ) : fundPreviewItems.map((item, idx) => {
-                    const rowHasError = item.issues.some((issue) => issue.level === "error");
-                    const rowHasWarning = item.issues.some((issue) => issue.level === "warning");
-                    const rowIssues = item.issues.map((issue) => issue.message).join("；");
-                    return (
-                      <tr key={`${item.rawText}-${idx}`} className={`${fundSelected.has(idx) ? "" : "opacity-50"} ${rowHasError ? "bg-red-50" : rowHasWarning ? "bg-amber-50" : ""}`}>
-                        <td className="px-2 py-1">
-                          <span className="inline-flex h-3.5 items-center gap-1 align-middle">
-                            {item.issues.length > 0 ? (
-                              <span
-                                className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : "bg-amber-500"}`}
-                                title={rowIssues}
-                              >
-                                !
-                              </span>
-                            ) : (
-                              <span className="h-3.5 w-3.5" />
-                            )}
-                            <input
-                              type="checkbox"
-                              checked={fundSelected.has(idx)}
-                              onChange={() => toggleFundSelect(idx)}
-                              className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
-                            />
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.date || "-"}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{getFundImportSubtypeLabel(item.fundSubtype, item.source, t)}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{getFundImportSourceLabel(item.source, t)}</td>
-                        <td className="max-w-[160px] truncate px-2 py-1 text-slate-700" title={item.cashAccount || ""}>{item.cashAccount || "-"}</td>
-                        <td className="max-w-[160px] truncate px-2 py-1 text-slate-700" title={item.fundAccount || ""}>{item.fundAccount || "-"}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">{item.fundCode || "-"}</td>
-                        <td className="max-w-[180px] truncate px-2 py-1 text-slate-700" title={item.fundName || ""}>{item.fundName || "-"}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{formatOptionalNumber(item.amount, 2)}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{item.feeRate != null ? `${item.feeRate.toFixed(4)}%` : "-"}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums text-slate-700">{formatOptionalNumber(item.fee, 2)}</td>
-                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.confirmDate || "-"}</td>
-                        <td className="whitespace-nowrap px-2 py-1 tabular-nums text-slate-700">{item.arrivalDate || "-"}</td>
-                        <td className="max-w-[180px] truncate px-2 py-1 text-slate-700" title={item.remark || ""}>{item.remark || "-"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="flex-1 min-h-0">
+              <AdvancedDataTable
+                storageKey="mmh_batch_import_fund_preview_table_v1"
+                columns={fundPreviewColumns}
+                rows={uploading ? [] : fundPreviewRows}
+                rowKey={(row) => String(row.idx)}
+                emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
+                minTableWidth={1860}
+                selectable
+                selectedKeys={selectedFundPreviewKeys}
+                onSelectionChange={(keys) => {
+                  setFundSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
+                }}
+                toolbarTitle={t("batchImport.previewFundTitle")}
+                toolbarRightContent={(
+                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                    <span>{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                    {fundImportErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
+                    {fundImportWarningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
+                  </div>
+                )}
+                rowClassName={(row) => {
+                  const rowHasError = row.issues.some((issue) => issue.level === "error");
+                  const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
+                  return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
+                }}
+                fillHeight
+                compactRows
+                showFilters={false}
+                sortable={false}
+                showColumnVisibilityButton={false}
+              />
             </div>
           </div>
         </div>

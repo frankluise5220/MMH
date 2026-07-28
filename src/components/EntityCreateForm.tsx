@@ -6,6 +6,7 @@ import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds"
 import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS, TRADING_CALENDAR_LABELS } from "@/lib/fund/trading-calendar";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 
 /* ---- Types ---- */
 
@@ -287,6 +288,10 @@ function getSmartSelectCreateLabel(entityType: NestedEntityType) {
   return "新增";
 }
 
+function settingsScopeForEntity(entityType: NestedEntityType): SettingsDataScope {
+  return entityType === "category" ? "categories" : "accounts";
+}
+
 /* ---- Main Component ---- */
 
 export function EntityCreateForm(props: EntityCreateFormProps) {
@@ -544,6 +549,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               : entityType === "counterparty"
                 ? selectedTypeValue === "person" ? "往来人员" : "往来组织"
               : undefined,
+        });
+        void notifySettingsDataChanged({
+          scope: settingsScopeForEntity(entityType),
+          reason: `${entityType}:create`,
+          prefetch: true,
         });
         onCreated(created.id, created.name, {
           parentId: form.parentId || undefined,

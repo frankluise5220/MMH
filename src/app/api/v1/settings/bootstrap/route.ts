@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadCommonData } from "@/lib/server/cached-data";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,29 @@ function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProdu
     return { ...account, kind: AccountKind.deposit };
   }
   return account;
+}
+
+function withAccountDisplayFields<T extends {
+  id: string;
+  name: string;
+  kind: AccountKind;
+  numberMasked?: string | null;
+  groupId?: string | null;
+  investProductType?: string | null;
+  Institution?: { name: string | null; shortName?: string | null } | null;
+  AccountGroup?: { id: string; name: string | null } | null;
+}>(account: T) {
+  const normalized = normalizeReturnedAccountKind(account);
+  const display = buildAccountDisplayOption(normalized);
+  return {
+    ...normalized,
+    label: display.selectorLabel || display.label,
+    selectorLabel: display.selectorLabel,
+    selectorCoreLabel: display.selectorCoreLabel,
+    fullLabel: display.fullLabel,
+    hoverTitle: display.hoverTitle,
+    displaySubLabel: display.subLabel,
+  };
 }
 
 /**
@@ -31,7 +55,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
-      accounts: accounts.map(normalizeReturnedAccountKind),
+      accounts: accounts.map(withAccountDisplayFields),
       groups,
       institutions,
       counterparties,

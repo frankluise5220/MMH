@@ -20,15 +20,16 @@ export function dispatchFinanceDataChanged(detail: FinanceDataChangedDetail = {}
 }
 
 /**
- * 客户端刷新辅助函数
- * 添加100ms延迟等待服务端revalidate完成后再刷新
+ * Full route refresh helper.
+ * Prefer dispatchFinanceDataChanged for ordinary saves/deletes/imports; use this
+ * only for explicit user refresh actions or global context switches.
  */
 export function useRefresh() {
   const router = useRouter();
 
   /**
-   * 延迟刷新页面，确保服务端revalidate完成
-   * @param delay 延迟时间（毫秒），默认100ms
+   * Delayed route refresh for true full-page refresh scenarios.
+   * @param delay delay in milliseconds, defaults to 100ms
    */
   async function refresh(delay = 100) {
     await new Promise(resolve => setTimeout(resolve, delay));
@@ -39,11 +40,11 @@ export function useRefresh() {
 }
 
 export function useFinanceRefresh() {
-  const router = useRouter();
-
-  return async function refreshFinanceData(detail: FinanceDataChangedDetail = {}, delay = 100) {
+  /**
+   * Broadcast a scoped finance-data change. Visible views should refresh their
+   * own affected rows, balances, and summaries without a full route refresh.
+   */
+  return function refreshFinanceData(detail: FinanceDataChangedDetail = {}) {
     dispatchFinanceDataChanged(detail);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    router.refresh();
   };
 }

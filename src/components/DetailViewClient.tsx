@@ -633,6 +633,11 @@ export function DetailViewClient({
         const title = option?.title ?? option?.fullLabel ?? option?.label ?? last4;
         return { id: target.id, label: last4, title };
       }
+      return {
+        id: target.id,
+        label: "-",
+        title: option?.title ?? option?.fullLabel ?? option?.label ?? target.name ?? "",
+      };
     }
     return { id: target.id, ...accountDisplayFallback(target.id, target.name) };
   }, [accountColumnMode, accountColumnTarget, accountDisplayFallback, accountOptionById]);

@@ -18,12 +18,24 @@ export type SettingsBootstrapData = SettingsAccountData & {
   categories: SettingsCategory[];
   tags: SettingsTag[];
 };
+export type SettingsDataScope = "accounts" | "categories" | "tags" | "all";
+export type SettingsDataChangedDetail = {
+  scope: SettingsDataScope;
+  reason?: string;
+};
+export type SettingsDataChangeOptions = {
+  scope?: SettingsDataScope;
+  reason?: string;
+  prefetch?: boolean;
+  invalidate?: boolean;
+};
 
 const ACCOUNT_DATA_KEY = "accounts-basic";
 const BOOTSTRAP_KEY = "settings-bootstrap";
 const CATEGORIES_KEY = "categories";
 const TAGS_KEY = "tags";
 const TTL_MS = 60_000;
+export const SETTINGS_DATA_CHANGED_EVENT = "mmh:settings:data-changed";
 
 type CacheEntry<T> = {
   value?: T;
@@ -108,6 +120,45 @@ export function warmSettingsBootstrap(options?: { force?: boolean }) {
   void fetchSettingsBootstrap(options).catch(() => null);
 }
 
+function scopeTouchesAccounts(scope: SettingsDataScope) {
+  return scope === "accounts" || scope === "all";
+}
+
+function scopeTouchesCategories(scope: SettingsDataScope) {
+  return scope === "categories" || scope === "all";
+}
+
+function scopeTouchesTags(scope: SettingsDataScope) {
+  return scope === "tags" || scope === "all";
+}
+
+export function invalidateSettingsData(scope: SettingsDataScope = "all") {
+  if (scopeTouchesAccounts(scope)) cache.delete(ACCOUNT_DATA_KEY);
+  if (scopeTouchesCategories(scope)) cache.delete(CATEGORIES_KEY);
+  if (scopeTouchesTags(scope)) cache.delete(TAGS_KEY);
+  cache.delete(BOOTSTRAP_KEY);
+}
+
+async function prefetchSettingsData(scope: SettingsDataScope) {
+  if (scope === "all") {
+    await fetchSettingsBootstrap({ force: true });
+    return;
+  }
+  if (scope === "accounts") await fetchSettingsAccountData({ force: true });
+  if (scope === "categories") await fetchSettingsCategories({ force: true });
+  if (scope === "tags") await fetchSettingsTags({ force: true });
+}
+
+export async function notifySettingsDataChanged(options?: SettingsDataChangeOptions) {
+  const scope = options?.scope ?? "all";
+  if (options?.invalidate !== false) invalidateSettingsData(scope);
+  const detail: SettingsDataChangedDetail = { scope, reason: options?.reason };
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(SETTINGS_DATA_CHANGED_EVENT, { detail }));
+  }
+  if (options?.prefetch) await prefetchSettingsData(scope);
+}
+
 export async function fetchSettingsAccountData(options?: { force?: boolean }) {
   const bootstrap = await getSharedSettingsBootstrap(options);
   if (bootstrap) {
@@ -154,8 +205,7 @@ export function setSettingsAccountData(next: SettingsAccountData) {
 }
 
 export function invalidateSettingsAccountData() {
-  cache.delete(ACCOUNT_DATA_KEY);
-  cache.delete(BOOTSTRAP_KEY);
+  invalidateSettingsData("accounts");
 }
 
 export function getCachedSettingsCategories() {
@@ -193,8 +243,7 @@ export function setSettingsCategories(next: SettingsCategory[]) {
 }
 
 export function invalidateSettingsCategories() {
-  cache.delete(CATEGORIES_KEY);
-  cache.delete(BOOTSTRAP_KEY);
+  invalidateSettingsData("categories");
 }
 
 export function getCachedSettingsTags() {
@@ -232,6 +281,5 @@ export function setSettingsTags(next: SettingsTag[]) {
 }
 
 export function invalidateSettingsTags() {
-  cache.delete(TAGS_KEY);
-  cache.delete(BOOTSTRAP_KEY);
+  invalidateSettingsData("tags");
 }

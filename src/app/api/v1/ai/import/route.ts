@@ -8,6 +8,7 @@ import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
+import { findRecentTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 
 export const runtime = "nodejs";
 
@@ -87,12 +88,12 @@ export async function POST(req: NextRequest) {
 
   const { hidFilter, householdId } = await getHouseholdScope();
 
-  const { items, defaultAccountName, fundContext } = parsed.data;
+  const { items, defaultAccountName, accountId: requestAccountId, fundContext } = parsed.data;
   if (!items?.length) {
     return NextResponse.json({ ok: false, error: "没有可导入的记录" }, { status: 400 });
   }
 
-  const [accounts, categories, groups, users] = await Promise.all([
+  const [accounts, categories, groups, users, institutions] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter },
       include: { Institution: true, AccountGroup: true },
@@ -101,6 +102,7 @@ export async function POST(req: NextRequest) {
     prisma.category.findMany({ where: { ...hidFilter }, orderBy: { name: "asc" } }),
     prisma.accountGroup.findMany({ where: { ...hidFilter }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.user.findMany({ orderBy: { name: "asc" } }),
+    prisma.institution.findMany({ where: { ...hidFilter }, orderBy: { name: "asc" } }),
   ]);
 
   const accountById = new Map(accounts.map((a) => [a.id, a]));
@@ -108,6 +110,7 @@ export async function POST(req: NextRequest) {
     accounts.map((a) => [`${a.Institution?.name ?? ""}·${a.name}`.replace(/^·/, ""), a]),
   );
   const accountByAlias = new Map<string, (typeof accounts)[number]>();
+  const requestAccount = requestAccountId ? accountById.get(requestAccountId) ?? null : null;
 
   const BANK_KEYWORD_MAP: Record<string, string[]> = {
     "工商银行": ["工商", "工行", "ICBC"],
@@ -157,11 +160,47 @@ export async function POST(req: NextRequest) {
     return "";
   }
 
+  function institutionMatchesBankKey(account: (typeof accounts)[number], bankKey: string) {
+    if (!bankKey) return true;
+    const inst = (account.Institution?.name ?? "").trim();
+    const accName = account.name.trim();
+    const aliases = BANK_KEYWORD_MAP[bankKey] ?? [];
+    return inst.includes(bankKey) || accName.includes(bankKey) || aliases.some((al) => inst.includes(al) || accName.includes(al));
+  }
+
+  function extractCreditCardTail(text: string | undefined) {
+    const clean = String(text ?? "").trim();
+    if (!clean) return "";
+    const direct = clean.match(/尾号\s*([0-9]{4})(?=.*信用卡)|信用卡.*?尾号\s*([0-9]{4})/);
+    if (direct?.[1] || direct?.[2]) return direct[1] ?? direct[2] ?? "";
+    const compact = clean.match(/\b([0-9]{4})\b(?=.*信用卡)|信用卡.*?\b([0-9]{4})\b/);
+    return compact?.[1] ?? compact?.[2] ?? "";
+  }
+
+  function accountTailMatches(account: (typeof accounts)[number], tail: string) {
+    if (!tail) return false;
+    const masked = String(account.numberMasked ?? "").replace(/\D/g, "");
+    const nameDigits = String(account.name ?? "").replace(/\D/g, "");
+    return masked.endsWith(tail) || nameDigits.endsWith(tail);
+  }
+
+  function findCreditAccountFromText(text: string | undefined) {
+    const tail = extractCreditCardTail(text);
+    if (!tail) return null;
+    const bankKey = extractBankKeyword(String(text ?? ""));
+    const candidates = accounts.filter((a) => a.kind === "bank_credit" && accountTailMatches(a, tail));
+    const narrowedByBank = bankKey ? candidates.filter((a) => institutionMatchesBankKey(a, bankKey)) : candidates;
+    if (requestAccount && requestAccount.kind === "bank_credit" && accountTailMatches(requestAccount, tail)) {
+      if (!bankKey || institutionMatchesBankKey(requestAccount, bankKey)) return requestAccount;
+    }
+    return narrowedByBank[0] ?? candidates[0] ?? null;
+  }
+
   const allRawText = items.map((x) => `${x.rawText ?? ""} ${x.remark ?? ""} ${x.counterparty ?? ""}`).join(" ");
   const statementIssuer = extractBankKeyword(allRawText);
-  const preferredCreditAccount = statementIssuer
+  const preferredCreditAccount = findCreditAccountFromText(allRawText) ?? (statementIssuer
     ? accounts.find((a) => a.kind === "bank_credit" && ((a.Institution?.name ?? "").includes(statementIssuer) || a.name.includes(statementIssuer))) ?? null
-    : null;
+    : null);
   const isCreditStatement = preferredCreditAccount !== null;
 
   function shouldLearnAlias(alias: string, account: { id: string; name: string }) {
@@ -176,6 +215,9 @@ export async function POST(req: NextRequest) {
   function findAccount(name: string | undefined) {
     if (!name) return null;
     const clean = name.trim();
+    const creditByTail = findCreditAccountFromText(clean);
+    if (creditByTail) return creditByTail;
+
     const exact = accountByName.get(clean);
     if (exact) return exact;
 
@@ -188,19 +230,15 @@ export async function POST(req: NextRequest) {
 
     const candidates = accounts.filter((a) =>
       a.name.toLowerCase().includes(lower) ||
+      (a.numberMasked ?? "").toLowerCase().includes(lower) ||
       (a.Institution?.name ?? "").toLowerCase().includes(lower) ||
       lower.includes(a.name.toLowerCase()) ||
+      (!!a.numberMasked && lower.includes(a.numberMasked.toLowerCase())) ||
       `${a.Institution?.name ?? ""}·${a.name}`.toLowerCase().includes(lower),
     );
 
     const narrowedByBank = bankKey
-      ? candidates.filter((a) => {
-          const inst = (a.Institution?.name ?? "").trim();
-          const accName = a.name.trim();
-          const aliases = BANK_KEYWORD_MAP[bankKey] ?? [];
-          return inst.includes(bankKey) || accName.includes(bankKey) ||
-            aliases.some((al) => inst.includes(al) || accName.includes(al));
-        })
+      ? candidates.filter((a) => institutionMatchesBankKey(a, bankKey))
       : candidates;
 
     const narrowedByKind = wantsCredit
@@ -296,11 +334,19 @@ export async function POST(req: NextRequest) {
     return item.counterparty?.trim() || undefined;
   }
 
+  function findCounterpartyInstitution(name: string | undefined) {
+    const clean = String(name ?? "").trim();
+    if (!clean) return null;
+    return institutions.find((inst) => inst.name === clean || inst.shortName === clean) ??
+      institutions.find((inst) => clean.includes(inst.name) || (!!inst.shortName && clean.includes(inst.shortName))) ??
+      null;
+  }
+
   function enrichRemark(item: z.infer<typeof ItemSchema>) {
     const parts: string[] = [];
     if (item.remark?.trim()) parts.push(item.remark.trim());
     const raw = item.rawText ?? "";
-    const payTail = raw.match(/付款尾号[:：]?\s*(\d{2,8})/);
+    const payTail = raw.match(/(?:付款|扣款|还款|银联转账|银联入账|自动扣款|自动还款|转账)?\s*尾号[:：]?\s*(\d{2,8})/);
     if (payTail) parts.push(`付款尾号:${payTail[1]}`);
     if (/银联入账/.test(raw) && !parts.some((p) => p.includes("银联入账"))) parts.push("银联入账");
     return parts.join(" / ") || undefined;
@@ -449,6 +495,7 @@ export async function POST(req: NextRequest) {
 
       const normalizedCounterparty = inferCounterparty(item);
       const normalizedRemark = enrichRemark(item);
+      let didCreate = false;
 
       // Fast path: fund view batch creation — skip account resolution entirely
       if (item.type === "investment" && fundContext) {
@@ -483,6 +530,7 @@ export async function POST(req: NextRequest) {
             fundSubtype: fundSubtypeValue as any,
             householdId,
             currency: normalizeCurrency(cashAcc?.currency ?? fundAcc.currency),
+            source: "ai_import",
           },
         });
         createdCount++;
@@ -521,8 +569,10 @@ export async function POST(req: NextRequest) {
             statementMonth: fromStatementMonth,
             householdId,
             currency: transferCurrency,
+            source: "ai_import",
           },
         });
+        didCreate = true;
       } else if (item.type === "investment") {
         const from =
           findAccount(item.fromAccount) ??
@@ -577,6 +627,7 @@ export async function POST(req: NextRequest) {
               statementMonth,
               householdId,
               currency: normalizeCurrency(single.currency),
+              source: "ai_import",
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -585,6 +636,7 @@ export async function POST(req: NextRequest) {
               } : {}),
             },
           });
+          didCreate = true;
         } else {
           const fromStatementMonth =
             (from.kind === "bank_credit" || from.kind === "loan") && from.billingDay ? toStatementMonth(date, from.billingDay) : null;
@@ -604,6 +656,7 @@ export async function POST(req: NextRequest) {
               statementMonth: fromStatementMonth,
               householdId,
               currency: normalizeCurrency(cashAccount?.currency ?? from.currency),
+              source: "ai_import",
               ...(displayFundCode ? {
                 fundCode: displayFundCode,
                 fundName: fundName ?? undefined,
@@ -612,11 +665,14 @@ export async function POST(req: NextRequest) {
               } : {}),
             },
           });
+          didCreate = true;
         }
       } else {
         const account =
+          findCreditAccountFromText(`${item.account ?? ""} ${item.rawText ?? ""} ${item.remark ?? ""}`) ??
           (isCreditStatement ? preferredCreditAccount : null) ??
           findAccount(item.account) ??
+          requestAccount ??
           findAccount(defaultAcc) ??
           firstAccount;
 
@@ -653,6 +709,7 @@ export async function POST(req: NextRequest) {
           }
         } catch { /* ignore */ }
         const category = findCategory(item.type, item.category);
+        const counterpartyInstitution = findCounterpartyInstitution(normalizedCounterparty);
         const statementMonth =
           (account.kind === "bank_credit" || account.kind === "loan") && account.billingDay ? toStatementMonth(date, account.billingDay) : null;
         const entryData: Record<string, unknown> = {
@@ -666,14 +723,31 @@ export async function POST(req: NextRequest) {
           statementMonth,
           householdId,
           currency: normalizeCurrency(account.currency),
+          source: "ai_import",
+          counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
+          counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedCounterparty ?? null,
         };
         if (category) {
           entryData.categoryId = category.id;
           entryData.categoryName = category.name;
         }
-        await prisma.txRecord.create({ data: entryData as any });
+        await prisma.$transaction(async (tx) => {
+          const duplicate = await findRecentTransactionDuplicate(tx, {
+            householdId,
+            type: item.type as any,
+            date,
+            accountId: account.id,
+            amount: entryData.amount as number,
+            categoryId: category?.id ?? null,
+            note: normalizedRemark ?? null,
+            source: "ai_import",
+          });
+          if (duplicate) return;
+          await tx.txRecord.create({ data: entryData as any });
+          didCreate = true;
+        });
       }
-      createdCount++;
+      if (didCreate) createdCount++;
     } catch (e) {
       errors.push({ index: i, rawText: item.rawText.slice(0, 60), error: e instanceof Error ? e.message : "写入失败" });
     }

@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -52,7 +51,6 @@ export function ReportDetailTable({
   onRefresh?: () => void | DetailEntry[] | Promise<void | DetailEntry[]>;
   resetKey: string;
 }) {
-  const router = useRouter();
   const colorScheme = typeof document === "undefined"
     ? "red_up_green_down"
     : getColorSchemeFromCookie(document.cookie ?? null);
@@ -89,14 +87,12 @@ export function ReportDetailTable({
         const seq = ++refreshSeq;
         try {
           const refreshedEntries = await onRefresh?.();
-          if (Array.isArray(refreshedEntries) && seq === refreshSeq) {
-            setDisplayEntries(refreshedEntries);
-          }
-        } catch {
-          // A failed local detail refresh should not block the server refresh fallback.
+        if (Array.isArray(refreshedEntries) && seq === refreshSeq) {
+          setDisplayEntries(refreshedEntries);
         }
-        if (seq !== refreshSeq) return;
-        router.refresh();
+      } catch {
+          // Keep the current view stable; the user can refresh the page manually if needed.
+        }
       }, 100);
     };
     const editSuccessEvents = [
@@ -115,7 +111,7 @@ export function ReportDetailTable({
       window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
       editSuccessEvents.forEach((eventName) => window.removeEventListener(eventName, refresh));
     };
-  }, [onRefresh, router]);
+  }, [onRefresh]);
 
   return (
     <BasicDetailSelectionProvider resetKey={resetKey}>

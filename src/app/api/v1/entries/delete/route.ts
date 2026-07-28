@@ -176,7 +176,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Client-side handles page refresh via router.refresh() + mmh:fund:refresh
+    // Client-side updates visible rows and derived numbers through finance change events.
     return NextResponse.json({
       ok: true,
       message: keptBusinessCount > 0

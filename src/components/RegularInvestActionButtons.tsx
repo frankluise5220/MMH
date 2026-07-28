@@ -2,8 +2,8 @@
 
 import { Play, Pause, Square, Trash2, Pencil } from "lucide-react";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 const STATUS_MAP: Record<string, { label: string; cls: string }> = {
   active: { label: "执行中", cls: "text-green-600" },
@@ -46,9 +46,10 @@ export function RegularInvestActionButtons({
   editAccountLabel?: string;
   action: PlanAction;
 }) {
-  const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [localStatus, setLocalStatus] = useState(plan.status);
+  const [deleted, setDeleted] = useState(false);
 
   async function handleAction(actionType: "pause" | "resume" | "stop") {
     const formData = new FormData();
@@ -60,8 +61,8 @@ export function RegularInvestActionButtons({
     try {
       const res = await action(formData);
       if (!res.ok) { window.alert(res.error); return; }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
+      setLocalStatus(actionType === "pause" ? "paused" : actionType === "resume" ? "active" : "stopped");
+      dispatchFinanceDataChanged({ reason: "regular-invest-plan-status", accountIds: [plan.accountId, plan.cashAccountId].filter((id): id is string => Boolean(id)) });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "操作失败");
     } finally {
@@ -81,8 +82,8 @@ export function RegularInvestActionButtons({
     try {
       const res = await action(formData);
       if (!res.ok) { window.alert(res.error); return; }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      router.refresh();
+      setDeleted(true);
+      dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete", accountIds: [plan.accountId, plan.cashAccountId].filter((id): id is string => Boolean(id)) });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "删除失败");
     } finally {
@@ -90,12 +91,14 @@ export function RegularInvestActionButtons({
     }
   }
 
-  const statusInfo = STATUS_MAP[plan.status] ?? { label: plan.status, cls: "text-slate-500" };
+  if (deleted) return null;
+
+  const statusInfo = STATUS_MAP[localStatus] ?? { label: localStatus, cls: "text-slate-500" };
 
   return (
     <>
       <div className="flex items-center gap-1">
-        {plan.status === "active" && (
+        {localStatus === "active" && (
           <>
             <button type="button" onClick={() => handleAction("pause")} disabled={submitting} title="暂停"
               className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-yellow-600 hover:bg-yellow-50 hover:border-yellow-200 disabled:opacity-50">
@@ -107,7 +110,7 @@ export function RegularInvestActionButtons({
             </button>
           </>
         )}
-        {plan.status === "paused" && (
+        {localStatus === "paused" && (
           <button type="button" onClick={() => handleAction("resume")} disabled={submitting} title="恢复"
             className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-green-600 hover:bg-green-50 hover:border-green-200 disabled:opacity-50">
             <Play className="w-3.5 h-3.5" />

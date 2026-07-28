@@ -8,7 +8,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ArrowDownAZ, ArrowDownUp, Pause, Pencil, Play, Plus, RefreshCw, SlidersHorizontal, Square, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { DateStepper } from "@/components/DateStepper";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
@@ -384,7 +383,6 @@ export function RegularInvestClient({
   transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const router = useRouter();
   const tableViewportRef = useRef<HTMLDivElement>(null);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [plans, setPlans] = useState(initialPlans);
@@ -463,7 +461,6 @@ export function RegularInvestClient({
   useEffect(() => {
     async function handleEditSuccess() {
       await refreshRecords();
-      router.refresh();
     }
     window.addEventListener("mmh:transaction:edit:success", handleEditSuccess);
     return () => window.removeEventListener("mmh:transaction:edit:success", handleEditSuccess);
@@ -590,7 +587,6 @@ export function RegularInvestClient({
     ]).filter((id): id is string => Boolean(id))));
     dispatchFinanceDataChanged({ reason: "scheduled-task-execute", accountIds });
     if (selectedPlan) await refreshRecords();
-    router.refresh();
   }
 
   async function handleAction(planId: string, action: "pause" | "resume" | "stop") {
@@ -789,7 +785,7 @@ export function RegularInvestClient({
         setPlanRecords([]);
         setSelectedPlan((prev) => prev?.id === planId ? { ...prev, ...data.plan, executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 } : prev);
         setPlans((prev) => prev.map((plan) => plan.id === planId ? { ...plan, ...data.plan, executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 } : plan));
-        router.refresh();
+        dispatchFinanceDataChanged({ reason: "regular-invest-records-delete" });
       } else {
         window.alert(data.error || "删除失败");
       }
@@ -804,7 +800,8 @@ export function RegularInvestClient({
         setSelectedPlan(null);
         setPlanRecords([]);
       }
-      router.refresh();
+      setPlans((prev) => prev.filter((plan) => plan.id !== planId));
+      dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete" });
     } else {
       window.alert(data.error || "删除失败");
     }
@@ -821,7 +818,7 @@ export function RegularInvestClient({
     const data = await res.json();
     if (data.ok) {
       await refreshRecords();
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "regular-invest-record-delete", deletedEntryIds: [recordId], entryIds: [recordId] });
     } else {
       window.alert(data.error || "删除失败");
     }
@@ -877,7 +874,7 @@ export function RegularInvestClient({
     if (data.ok) {
       setEditingRecord(null);
       await refreshRecords();
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "regular-invest-record-save", entryIds: [editingRecord.id] });
     } else {
       window.alert(data.error || "保存失败");
     }

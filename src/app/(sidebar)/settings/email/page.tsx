@@ -3,18 +3,19 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { DateStepper } from "@/components/DateStepper";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { createImportAccountResolver } from "@/lib/account-import-match";
+import { getColorSchemeFromCookie, importPreviewAmountColor } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
 type BatchReplacePopoverButtonComponent = typeof import("@/components/BatchReplacePopoverButton").BatchReplacePopoverButton;
 type SmartSelectComponent = typeof import("@/components/SmartSelect").SmartSelect;
-type TableColumnFilterComponent = typeof import("@/components/TableColumnFilter").TableColumnFilter;
 
 const BatchReplacePopoverButton = dynamic(
   () => import("@/components/BatchReplacePopoverButton").then((mod) => mod.BatchReplacePopoverButton),
@@ -24,10 +25,6 @@ const SmartSelect = dynamic(
   () => import("@/components/SmartSelect").then((mod) => mod.SmartSelect),
   { ssr: false },
 ) as SmartSelectComponent;
-const TableColumnFilter = dynamic(
-  () => import("@/components/TableColumnFilter").then((mod) => mod.TableColumnFilter),
-  { ssr: false },
-) as TableColumnFilterComponent;
 
 const MAIL_DISPLAY_LIMIT = 5;
 const MAIL_FIXED_KEYWORD = "账单";
@@ -99,13 +96,13 @@ type ParsedItemMeta = {
   creditLimit?: number;
   billingDay?: number;
   repaymentDay?: number;
+  statementAmount?: number;
 };
 type ParsedItem = {
   rawText: string; type: "expense" | "income" | "transfer" | "investment";
   date?: string; amount: number; account?: string; fromAccount?: string; toAccount?: string; category?: string; remark?: string; counterparty?: string; institution?: string; postedDate?: string;
   _meta?: ParsedItemMeta;
 };
-type ImportPreviewColumn = "date" | "postedDate" | "type" | "account" | "counterAccount" | "category" | "institution" | "amount" | "remark" | "status";
 type ImportPreviewEditableCell = "date" | "postedDate" | "type" | "account" | "counterAccount" | "category" | "institution" | "amount" | "remark";
 type ImportPreviewItem = {
   key: string;
@@ -121,7 +118,6 @@ type ImportPreviewState = {
   selectAll: boolean;
   statementAccountId?: string;
 };
-const IMPORT_PREVIEW_FILTER_COLUMNS: ImportPreviewColumn[] = ["date", "postedDate", "type", "account", "counterAccount", "category", "institution", "amount", "remark", "status"];
 const IMPORT_PREVIEW_FIELD_LABELS: Record<ImportPreviewEditableCell, string> = {
   date: "交易日",
   postedDate: "入账日期",
@@ -267,9 +263,7 @@ export default function EmailSettingsPage() {
   const [mailRange, setMailRange] = useState("month");
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
-  const [previewColumnFilters, setPreviewColumnFilters] = useState<Partial<Record<ImportPreviewColumn, string[]>>>({});
-  const [activePreviewFilterColumn, setActivePreviewFilterColumn] = useState<ImportPreviewColumn | null>(null);
-  const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "postedDate" | "type" | "category" } | null>(null);
+  const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "postedDate" | "type" | "counterAccount" | "category" } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -282,7 +276,16 @@ export default function EmailSettingsPage() {
     try {
       const res = await fetch("/api/v1/settings/email-accounts", { signal });
       const data = await res.json();
-      if (data.ok) setAccounts(data.accounts);
+      if (data.ok) {
+        const nextAccounts: Account[] = Array.isArray(data.accounts) ? data.accounts : [];
+        setAccounts(nextAccounts);
+        if (nextAccounts.length === 1 && selectedId !== nextAccounts[0].id) {
+          const onlyAccount = nextAccounts[0];
+          setSelectedId(onlyAccount.id);
+          setInfo(`已自动选择邮箱：${onlyAccount.label || onlyAccount.username}，正在读取账单邮件。`);
+          await listMails(onlyAccount.id);
+        }
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
     } finally {
@@ -596,6 +599,10 @@ export default function EmailSettingsPage() {
       });
       const data = await res.json();
       if (data.ok) {
+        const lockedAccountIds = Array.isArray(data.lockedStatementBills)
+          ? data.lockedStatementBills.flatMap((item: any) => Array.isArray(item.billAccountIds) ? item.billAccountIds : [item.accountId]).filter(Boolean)
+          : [];
+        const refreshAccountIds = Array.from(new Set([...(targetAccountId ? [targetAccountId] : []), ...lockedAccountIds]));
         const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
         const accountText = createdAccounts.length
           ? `；已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}`
@@ -607,8 +614,8 @@ export default function EmailSettingsPage() {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
           setError(firstError ? `有 ${data.skippedCount} 条未导入：${firstError}` : `有 ${data.skippedCount} 条未导入，请检查账户匹配。`);
         }
-        setImportComplete({ created: createdCount, skipped: skippedCount, accountId: targetAccountId });
-        dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: targetAccountId ? [targetAccountId] : undefined });
+        setImportComplete({ created: createdCount, skipped: skippedCount, accountId: refreshAccountIds.length === 1 ? refreshAccountIds[0] : targetAccountId });
+        dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: refreshAccountIds.length > 0 ? refreshAccountIds : undefined });
       }
       else setError(data.error ?? "导入失败");
     } catch { setError("网络错误"); }
@@ -626,7 +633,6 @@ export default function EmailSettingsPage() {
       const view = account?.kind === "bank_credit" ? "bill" : "detail";
       router.push(`/?accountId=${encodeURIComponent(targetAccountId)}&view=${view}`);
     }
-    router.refresh();
   }
 
   const selectedAccount = accounts.find(a => a.id === selectedId);
@@ -677,6 +683,10 @@ export default function EmailSettingsPage() {
     return bookAccounts.find((account) => account.id === accountId)?.name;
   }
 
+  function isDebitOrEwalletAccount(account: BookAccount) {
+    return account.kind === "bank_debit" || account.kind === "ewallet";
+  }
+
   function guessDebitTransferAccountName(item: ParsedItem) {
     const source = [item.remark, item.counterparty, item.category, item.rawText]
       .map((value) => cleanOptionalText(value))
@@ -685,7 +695,7 @@ export default function EmailSettingsPage() {
     const sourceKey = normalizedKey(source);
     if (!sourceKey) return undefined;
 
-    const debitAccounts = bookAccounts.filter((account) => account.kind === "bank_debit");
+    const debitAccounts = bookAccounts.filter(isDebitOrEwalletAccount);
     for (const account of debitAccounts) {
       const accountKeys = [
         account.name,
@@ -758,6 +768,7 @@ export default function EmailSettingsPage() {
         creditLimit: item._meta.creditLimit,
         billingDay: item._meta.billingDay,
         repaymentDay: item._meta.repaymentDay,
+        statementAmount: item._meta.statementAmount,
       } : undefined,
     };
   }
@@ -800,29 +811,6 @@ export default function EmailSettingsPage() {
     );
     setImportPreview(recomputePreviewState(nextItems));
     setParsedItems(nextItems.map((row) => row.item));
-  }
-
-  function togglePreviewItem(key: string) {
-    if (!importPreview) return;
-    const row = importPreview.items.find((item) => item.key === key);
-    if (row && !row.ready && !importPreview.selectedKeys.has(key)) return;
-    const selectedKeys = new Set(importPreview.selectedKeys);
-    if (selectedKeys.has(key)) selectedKeys.delete(key);
-    else selectedKeys.add(key);
-    setImportPreview({ ...importPreview, selectedKeys, selectAll: selectedKeys.size === importPreview.items.length });
-  }
-
-  function togglePreviewAll() {
-    if (!importPreview) return;
-    const selectedKeys = new Set(importPreview.selectedKeys);
-    const targetRows = filteredPreviewRows.length > 0 ? filteredPreviewRows : importPreview.items;
-    const allFilteredSelected = targetRows.length > 0 && targetRows.every((row) => !row.ready || selectedKeys.has(row.key));
-    for (const row of targetRows) {
-      if (!row.ready) continue;
-      if (!allFilteredSelected) selectedKeys.add(row.key);
-      else selectedKeys.delete(row.key);
-    }
-    setImportPreview({ ...importPreview, selectedKeys, selectAll: importPreview.items.length > 0 && importPreview.items.filter((row) => row.ready).every((row) => selectedKeys.has(row.key)) });
   }
 
   function normalizedKey(value?: string | null) {
@@ -914,36 +902,6 @@ export default function EmailSettingsPage() {
   }, [importPreview?.statementAccountId, previewAccountDisplayTitleById]);
 
   const hasImportPreview = importPreview !== null;
-  const previewFilterRows = useMemo(() => importPreview?.items ?? [], [importPreview]);
-  const getPreviewColumnValue = useCallback((row: ImportPreviewItem, column: ImportPreviewColumn) => {
-    const item = row.item;
-    if (column === "date") return item.date?.trim() || "(空)";
-    if (column === "postedDate") return normalizeDateOnlyText(item.postedDate) || "(空)";
-    if (column === "type") return typeLabel(item.type);
-    if (column === "account") return selectedPreviewAccountDisplayLabel(row) || accountLabel(item) || "(空)";
-    if (column === "counterAccount") return cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "(空)";
-    if (column === "category") return item.category?.trim() || "(空)";
-    if (column === "institution") return item.institution?.trim() || "(空)";
-    if (column === "amount") return Number.isFinite(item.amount) ? item.amount.toFixed(2) : "(空)";
-    if (column === "remark") return (item.remark || item.rawText || "").trim() || "(空)";
-    return row.ready ? "可导入" : row.missingFields.includes("账户") ? "缺账户" : `缺${row.missingFields.join("、") || "字段"}`;
-  }, [selectedPreviewAccountDisplayLabel]);
-  const previewColumnFilterOptions = useMemo(() => {
-    if (!activePreviewFilterColumn) return [];
-    return Array.from(new Set(previewFilterRows.map((row) => getPreviewColumnValue(row, activePreviewFilterColumn))))
-      .sort((a, b) => (a === "(空)" ? 1 : b === "(空)" ? -1 : a.localeCompare(b, "zh-CN")));
-  }, [activePreviewFilterColumn, getPreviewColumnValue, previewFilterRows]);
-  const filteredPreviewRows = useMemo(() => {
-    return previewFilterRows.filter((row) => IMPORT_PREVIEW_FILTER_COLUMNS.every((column) => {
-      const allowedValues = previewColumnFilters[column];
-      return !allowedValues?.length || allowedValues.includes(getPreviewColumnValue(row, column));
-    }));
-  }, [getPreviewColumnValue, previewColumnFilters, previewFilterRows]);
-  const filteredPreviewKeys = useMemo(() => new Set(filteredPreviewRows.map((row) => row.key)), [filteredPreviewRows]);
-  const selectedFilteredPreviewKeys = useMemo(() => {
-    if (!importPreview) return [];
-    return Array.from(importPreview.selectedKeys).filter((key) => filteredPreviewKeys.has(key));
-  }, [filteredPreviewKeys, importPreview]);
   const previewAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
     if (!hasImportPreview) return [{ value: "", label: "未选择" }];
     return [
@@ -957,14 +915,14 @@ export default function EmailSettingsPage() {
     return [
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
-        .filter((account) => account.kind === "bank_debit")
+        .filter((account) => account.kind === "bank_debit" || account.kind === "ewallet")
         .map((account) => ({ value: account.id, label: account.selectorLabel, title: account.hoverTitle })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountDisplayOptions = useMemo(
     () => {
       if (!hasImportPreview) return [];
-      return previewAccountDisplayOptions.filter((account) => account.kind === "bank_debit");
+      return previewAccountDisplayOptions.filter((account) => account.kind === "bank_debit" || account.kind === "ewallet");
     },
     [hasImportPreview, previewAccountDisplayOptions],
   );
@@ -996,17 +954,22 @@ export default function EmailSettingsPage() {
     if (!previewDebitVisibleOptionIds) return source;
     return source.filter((option) => option.isHeader || previewDebitVisibleOptionIds.has(option.id));
   }, [previewDebitAccountFilteredOptions, previewDebitAccountOptions, previewDebitVisibleOptionIds]);
-  const previewCategoryOptions = useMemo(() => {
-    if (!hasImportPreview) return [];
-    return bookCategories
-      .filter((category) => category.type === "expense" || category.type === "income")
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-  }, [bookCategories, hasImportPreview]);
   const previewCategoryById = useMemo(
     () => new Map(bookCategories.map((category) => [category.id, category])),
     [bookCategories],
   );
+  const previewCategorySelectValue = useCallback((categoryName: string | undefined, txType: ParsedItem["type"]) => {
+    const name = String(categoryName ?? "").trim();
+    if (!name) return "";
+    const categoryType = txType === "income" ? "income" : "expense";
+    const matched = bookCategories.find((category) => category.name === name && category.type === categoryType)
+      ?? bookCategories.find((category) => category.name === name);
+    return matched?.id ?? "";
+  }, [bookCategories]);
+  const previewCategoryNameById = useCallback((categoryId: string) => {
+    if (!categoryId) return "";
+    return previewCategoryById.get(categoryId)?.name ?? "";
+  }, [previewCategoryById]);
   const previewCategoryReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
     if (!hasImportPreview) return [];
     const typeLabels: Record<string, string> = { expense: "支出分类", income: "收入分类" };
@@ -1050,6 +1013,24 @@ export default function EmailSettingsPage() {
 
     return options;
   }, [bookCategories, hasImportPreview]);
+  const previewCategorySmartSelectOptionsFor = useCallback((txType: ParsedItem["type"]): SmartSelectOption[] => {
+    const categoryType = txType === "income" ? "income" : "expense";
+    return previewCategoryReplaceOptions
+      .filter((option) => {
+        if (!option.value) return true;
+        if (option.isHeader) return option.value === `preview-category-type:${categoryType}`;
+        return previewCategoryById.get(option.value)?.type === categoryType;
+      })
+      .map((option) => ({
+        id: option.value,
+        label: option.label,
+        subLabel: option.subLabel,
+        title: option.title,
+        isHeader: option.isHeader,
+        isGroup: option.isGroup,
+        parentId: option.parentId,
+      }));
+  }, [previewCategoryById, previewCategoryReplaceOptions]);
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<ImportPreviewEditableCell>[]>(() => {
     if (!hasImportPreview) return [];
     return [
@@ -1067,8 +1048,20 @@ export default function EmailSettingsPage() {
           { value: "investment", label: "投资" },
         ],
       },
-      { value: "account", label: IMPORT_PREVIEW_FIELD_LABELS.account, kind: "smartSelect", options: previewAccountReplaceOptions },
-      { value: "counterAccount", label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount, kind: "smartSelect", options: previewDebitAccountReplaceOptions },
+      {
+        value: "account",
+        label: IMPORT_PREVIEW_FIELD_LABELS.account,
+        kind: "smartSelect",
+        options: previewAccountReplaceOptions,
+        smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
+      },
+      {
+        value: "counterAccount",
+        label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount,
+        kind: "smartSelect",
+        options: previewDebitAccountReplaceOptions,
+        smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
+      },
       {
         value: "category",
         label: IMPORT_PREVIEW_FIELD_LABELS.category,
@@ -1083,10 +1076,11 @@ export default function EmailSettingsPage() {
           accordionGroups: true,
           selectableGroups: true,
           groupSelectOnDoubleClick: false,
-          minDropdownWidth: 560,
-          dropdownMaxHeight: 420,
-          density: "compact",
+          minDropdownWidth: 252,
+          dropdownMaxHeight: 180,
+          density: "micro",
           expandedGroupColumns: 4,
+          resizableDropdown: true,
         },
       },
       { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "银行或第三方支付机构" },
@@ -1099,7 +1093,7 @@ export default function EmailSettingsPage() {
     const nameKey = normalizedKey(accountName);
     if (!nameKey) return undefined;
     const found = bookAccounts.find((account) =>
-      account.kind === "bank_debit" &&
+      isDebitOrEwalletAccount(account) &&
       normalizedKey(account.name) === nameKey
     );
     return found?.id;
@@ -1149,9 +1143,10 @@ export default function EmailSettingsPage() {
 
   function applyPreviewReplace(field: ImportPreviewEditableCell, value: string) {
     if (!importPreview) throw new Error("没有导入预览");
-    if (selectedFilteredPreviewKeys.length === 0) throw new Error("请先勾选记录，或按筛选结果全选");
+    const selectedPreviewKeys = Array.from(importPreview.selectedKeys);
+    if (selectedPreviewKeys.length === 0) throw new Error("请先勾选记录");
     const nextItems = importPreview.items.map((row) => {
-      if (!selectedFilteredPreviewKeys.includes(row.key)) return row;
+      if (!importPreview.selectedKeys.has(row.key)) return row;
       if (field === "amount") return recomputePreviewRow(row, { amount: Math.abs(Number(value) || 0) });
       if (field === "type") return recomputePreviewRow(row, { type: value as ParsedItem["type"] });
       if (field === "account") {
@@ -1170,30 +1165,7 @@ export default function EmailSettingsPage() {
     });
     setImportPreview(recomputePreviewState(nextItems));
     setParsedItems(nextItems.map((row) => row.item));
-    return `已批量修改 ${selectedFilteredPreviewKeys.length} 条：${IMPORT_PREVIEW_FIELD_LABELS[field]}。`;
-  }
-
-  function renderPreviewColumnFilter(column: ImportPreviewColumn, label: string) {
-    const selectedValues = previewColumnFilters[column] ?? [];
-    const isOpen = activePreviewFilterColumn === column;
-    return (
-      <TableColumnFilter
-        label={label}
-        options={isOpen ? previewColumnFilterOptions : []}
-        selectedValues={selectedValues}
-        open={isOpen}
-        onToggleOpen={() => setActivePreviewFilterColumn((current) => current === column ? null : column)}
-        onClose={() => setActivePreviewFilterColumn(null)}
-        onChange={(values) => setPreviewColumnFilters((current) => {
-          if (!values || values.length === 0) {
-            const next = { ...current };
-            delete next[column];
-            return next;
-          }
-          return { ...current, [column]: values };
-        })}
-      />
-    );
+    return `已批量修改 ${selectedPreviewKeys.length} 条：${IMPORT_PREVIEW_FIELD_LABELS[field]}。`;
   }
 
   function updatePreviewAccount(rowKey: string, accountId: string) {
@@ -1337,9 +1309,7 @@ export default function EmailSettingsPage() {
   }
 
   function amountTextClass(type: ParsedItem["type"]) {
-    if (type === "income") return "text-emerald-600";
-    if (type === "expense") return "text-red-600";
-    return "text-slate-800";
+    return importPreviewAmountColor(type, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
   }
 
   function accountLabel(item: ParsedItem) {
@@ -1349,6 +1319,265 @@ export default function EmailSettingsPage() {
     if (bank) return `${bank}信用卡${last4 ? `(${last4})` : ""}`;
     return "未识别账户";
   }
+
+  const importPreviewColumns = useMemo<AdvancedDataTableColumn<ImportPreviewItem>[]>(() => [
+    {
+      key: "date",
+      label: "交易日",
+      width: 112,
+      minWidth: 92,
+      filterText: (row) => row.item.date?.trim() || "(空)",
+      sortValue: (row) => row.item.date || "",
+      render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.item.date || "-"}</span>,
+    },
+    {
+      key: "postedDate",
+      label: "入账日期",
+      width: 132,
+      minWidth: 112,
+      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || "(空)",
+      sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || "",
+      render: (row) => {
+        const item = row.item;
+        return (
+          <div className="whitespace-nowrap tabular-nums text-slate-500" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "postedDate" })}>
+            {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "postedDate" ? (
+              <DateStepper
+                autoFocus
+                className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
+                value={normalizeDateOnlyText(item.postedDate) ?? ""}
+                onBlur={() => setEditingPreviewCell(null)}
+                onChange={(value) => {
+                  updatePreviewRow(row.key, { postedDate: value || undefined });
+                  setEditingPreviewCell(null);
+                }}
+              />
+            ) : (
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改入账日期">{normalizeDateOnlyText(item.postedDate) || "-"}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "type",
+      label: "类型",
+      width: 86,
+      minWidth: 72,
+      filterText: (row) => typeLabel(row.item.type),
+      render: (row) => {
+        const item = row.item;
+        return (
+          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "type" })}>
+            {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "type" ? (
+              <select
+                autoFocus
+                className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
+                value={item.type}
+                onBlur={() => setEditingPreviewCell(null)}
+                onChange={(e) => {
+                  updatePreviewRow(row.key, { type: e.target.value as ParsedItem["type"] });
+                  setEditingPreviewCell(null);
+                }}
+              >
+                {PREVIEW_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改类型">{typeLabel(item.type)}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "account",
+      label: "账户",
+      width: 240,
+      minWidth: 160,
+      filterText: (row) => selectedPreviewAccountDisplayLabel(row) || accountLabel(row.item) || "(空)",
+      render: (row) => {
+        const item = row.item;
+        return row.ready || item.type === "transfer" ? (
+          <div className="space-y-1 text-slate-700">
+            <span className="whitespace-nowrap" title={selectedPreviewAccountDisplayTitle(row) ?? accountLabel(item)}>
+              {selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}
+            </span>
+          </div>
+        ) : (
+          <div className="min-w-[220px] space-y-1.5">
+            <div className="truncate text-[11px] text-slate-400" title={accountLabel(item)}>账单识别：{accountLabel(item)}</div>
+            <select
+              className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none"
+              value={row.selectedAccountId ?? row.matchedAccountId ?? ""}
+              onChange={(e) => e.target.value ? updatePreviewAccount(row.key, e.target.value) : clearPreviewAccount(row.key)}
+            >
+              <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
+              {previewAccountOptions(item).map((account) => (
+                <option key={account.id} value={account.id} title={account.hoverTitle}>
+                  {account.selectorLabel}
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center justify-between gap-2">
+              {item._meta?.ownerName ? <span className="text-[11px] text-slate-400">持卡人 {item._meta.ownerName}</span> : <span />}
+              <button className="h-7 px-2 rounded-md border border-blue-200 text-[11px] text-blue-600 hover:bg-blue-50" onClick={() => openAccountDraft(row)}>
+                创建账户
+              </button>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      key: "counterAccount",
+      label: "对手账户",
+      width: 260,
+      minWidth: 170,
+      filterText: (row) => cleanOptionalText(row.item.fromAccount) || cleanOptionalText(row.item.toAccount) || "(空)",
+      render: (row) => {
+        const item = row.item;
+        if (item.type !== "transfer") return <span className="text-slate-400">-</span>;
+        return (
+          <div className="min-w-[170px] space-y-1" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "counterAccount" })}>
+            {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "counterAccount" ? (
+              <SmartSelect
+                mode="single"
+                value={previewDebitAccountIdFromName(item.fromAccount ?? item.toAccount ?? "") ?? ""}
+                onChange={(accountId) => {
+                  const nextName = accountNameFromId(accountId);
+                  const nextItems = importPreview!.items.map((previewRow) =>
+                    previewRow.key === row.key ? recomputePreviewRow(previewRow, { fromAccount: nextName, toAccount: undefined }) : previewRow
+                  );
+                  setImportPreview(recomputePreviewState(nextItems));
+                  setParsedItems(nextItems.map((previewRow) => previewRow.item));
+                  setEditingPreviewCell(null);
+                }}
+                options={displayPreviewDebitAccountOptions}
+                placeholder="选择还款借记卡"
+                onCreateClick={() => openDebitAccountDraft(row.key)}
+                createLabel="新增账户"
+                onCycleOwnerFilter={cyclePreviewDebitOwnerFilter}
+                ownerFilterLabel={previewDebitOwnerFilterLabel}
+                behavior={{
+                  search: true,
+                  hierarchy: true,
+                  clearable: true,
+                  cycleSelectionWithArrowKeys: true,
+                  minDropdownWidth: 216,
+                  dropdownMaxHeight: 180,
+                  density: "micro",
+                  resizableDropdown: true,
+                  autoOpen: true,
+                }}
+              />
+            ) : (
+              <span className="cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title="双击修改对手账户">
+                {cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "-"}
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "category",
+      label: "分类",
+      width: 128,
+      minWidth: 92,
+      filterText: (row) => row.item.category?.trim() || "(空)",
+      render: (row) => {
+        const item = row.item;
+        return (
+          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "category" })}>
+            {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
+              <div className="w-44">
+                <SmartSelect
+                  mode="single"
+                  value={previewCategorySelectValue(item.category, item.type)}
+                  onChange={(categoryId) => {
+                    updatePreviewRow(row.key, { category: previewCategoryNameById(categoryId) || undefined });
+                    setEditingPreviewCell(null);
+                  }}
+                  options={previewCategorySmartSelectOptionsFor(item.type)}
+                  placeholder="选择分类"
+                  searchable
+                  behavior={{
+                    hierarchy: true,
+                    search: true,
+                    initialCollapsedAll: true,
+                    accordionGroups: true,
+                    selectableGroups: true,
+                    groupSelectOnDoubleClick: false,
+                    minDropdownWidth: 252,
+                    dropdownMaxHeight: 180,
+                    density: "micro",
+                    expandedGroupColumns: 4,
+                    resizableDropdown: true,
+                    autoOpen: true,
+                  }}
+                />
+              </div>
+            ) : (
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改分类">{item.category || "-"}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "institution",
+      label: "收支机构",
+      width: 140,
+      minWidth: 110,
+      filterText: (row) => row.item.institution?.trim() || "(空)",
+      render: (row) => <span className="whitespace-nowrap text-slate-700" title={row.item.institution || "-"}>{row.item.institution || "-"}</span>,
+    },
+    {
+      key: "amount",
+      label: "金额",
+      width: 112,
+      minWidth: 88,
+      align: "right",
+      filterText: (row) => Number.isFinite(row.item.amount) ? row.item.amount.toFixed(2) : "(空)",
+      sortValue: (row) => row.item.amount,
+      render: (row) => <span className={`whitespace-nowrap tabular-nums ${amountTextClass(row.item.type)}`}>{previewAmountText(row.item)}</span>,
+    },
+    {
+      key: "remark",
+      label: "备注",
+      width: 300,
+      minWidth: 180,
+      filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || "(空)",
+      render: (row) => <span className="text-slate-600" title={row.item.remark || row.item.rawText}>{row.item.remark || row.item.rawText}</span>,
+    },
+    {
+      key: "status",
+      label: "状态",
+      width: 130,
+      minWidth: 100,
+      filterText: (row) => row.ready ? "可导入" : row.missingFields.includes("账户") ? "缺账户" : `缺${row.missingFields.join("、") || "字段"}`,
+      render: (row) => row.ready ? (
+        <span className="text-[11px] text-slate-400">-</span>
+      ) : (
+        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+          {row.missingFields.includes("账户") ? "请选择或创建账户" : `缺 ${row.missingFields.join("、")}`}
+        </span>
+      ),
+    },
+  ], [
+    editingPreviewCell,
+    importPreview,
+    displayPreviewDebitAccountOptions,
+    previewDebitOwnerFilterLabel,
+    previewCategoryNameById,
+    previewCategorySelectValue,
+    previewCategorySmartSelectOptionsFor,
+    selectedPreviewAccountDisplayLabel,
+    selectedPreviewAccountDisplayTitle,
+    cyclePreviewDebitOwnerFilter,
+  ]);
 
   function formatAttachmentSize(size: number) {
     if (!Number.isFinite(size) || size <= 0) return "";
@@ -1478,7 +1707,7 @@ export default function EmailSettingsPage() {
 
       {importPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
-          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-[720px] max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-slate-800">账单导入预览</div>
@@ -1489,208 +1718,56 @@ export default function EmailSettingsPage() {
               <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => importComplete ? confirmImportComplete() : setImportPreview(null)}>×</button>
             </div>
 
-            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-2">
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-2 text-xs text-slate-600">
-                  <input type="checkbox" checked={importPreview.selectAll} onChange={togglePreviewAll} />
-                  全选
-                </label>
-                <BatchReplacePopoverButton
-                  fields={previewReplaceFields}
-                  targetCount={selectedFilteredPreviewKeys.length}
-                  targetLabel="筛选后已选"
-                  panelAlign="left"
-                  disabledTitle="请先勾选记录，可先按表头筛选后全选"
-                  buttonTitle={`批量修改筛选后已选 ${selectedFilteredPreviewKeys.length} 条`}
-                  messageClassName="sr-only"
-                  onApply={applyPreviewReplace}
-                />
-              </div>
-              <div className="flex items-center gap-3 text-xs text-slate-500">
-                {importPreview.statementAccountId && (
-                  <span>
-                    账户：{previewAccountDisplayLabelById(importPreview.statementAccountId) ?? "已匹配账户"}
-                  </span>
+            <div className="min-h-0 flex-1">
+              <AdvancedDataTable
+                storageKey="mmh_settings_email_statement_import_preview_table_v1"
+                columns={importPreviewColumns}
+                rows={importPreview.items}
+                rowKey={(row) => row.key}
+                emptyText="没有符合筛选条件的记录。"
+                minTableWidth={1700}
+                selectable
+                selectedKeys={importPreview.selectedKeys}
+                onSelectionChange={(keys) => {
+                  const readyKeys = new Set(importPreview.items.filter((row) => row.ready).map((row) => row.key));
+                  const selectedKeys = new Set(Array.from(keys).filter((key) => readyKeys.has(key)));
+                  setImportPreview({
+                    ...importPreview,
+                    selectedKeys,
+                    selectAll: importPreview.items.length > 0 && importPreview.items.filter((row) => row.ready).every((row) => selectedKeys.has(row.key)),
+                  });
+                }}
+                batchActionSlot={(
+                  <BatchReplacePopoverButton
+                    fields={previewReplaceFields}
+                    targetCount={importPreview.selectedKeys.size}
+                    targetLabel="已选"
+                    panelAlign="left"
+                    disabledTitle="请先勾选记录"
+                    buttonTitle={`批量修改已选 ${importPreview.selectedKeys.size} 条`}
+                    messageClassName="sr-only"
+                    onApply={applyPreviewReplace}
+                  />
                 )}
-                <span>筛选 {filteredPreviewRows.length} / {importPreview.items.length} 条</span>
-                <span>将导入 {importPreview.selectedKeys.size} 条</span>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-auto">
-              <table className="min-w-full text-left text-xs">
-                <thead className="sticky top-0 bg-white text-slate-500 shadow-sm">
-                  <tr>
-                    <th className="w-10 px-3 py-2"></th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("date", "交易日")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("postedDate", "入账日期")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("type", "类型")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("account", "账户")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("counterAccount", "对手账户")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("category", "分类")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("institution", "收支机构")}</th>
-                    <th className="px-3 py-2 text-right">{renderPreviewColumnFilter("amount", "金额")}</th>
-                    <th className="min-w-[260px] px-3 py-2">{renderPreviewColumnFilter("remark", "备注")}</th>
-                    <th className="px-3 py-2">{renderPreviewColumnFilter("status", "状态")}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredPreviewRows.map((row) => {
-                    const item = row.item;
-                    const checked = importPreview.selectedKeys.has(row.key);
-                    return (
-                      <tr key={row.key} className={checked ? "bg-blue-50/40" : "bg-white"}>
-                        <td className="px-3 py-2 align-top">
-                          <input type="checkbox" checked={checked} onChange={() => togglePreviewItem(row.key)} />
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-700">{item.date || "-"}</td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top tabular-nums text-slate-500" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "postedDate" })}>
-                          {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "postedDate" ? (
-                            <DateStepper
-                              autoFocus
-                              className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
-                              value={normalizeDateOnlyText(item.postedDate) ?? ""}
-                              onBlur={() => setEditingPreviewCell(null)}
-                              onChange={(value) => {
-                                updatePreviewRow(row.key, { postedDate: value || undefined });
-                                setEditingPreviewCell(null);
-                              }}
-                            />
-                          ) : (
-                            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改入账日期">{normalizeDateOnlyText(item.postedDate) || "-"}</span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "type" })}>
-                          {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "type" ? (
-                            <select
-                              autoFocus
-                              className="h-8 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
-                              value={item.type}
-                              onBlur={() => setEditingPreviewCell(null)}
-                              onChange={(e) => {
-                                updatePreviewRow(row.key, { type: e.target.value as ParsedItem["type"] });
-                                setEditingPreviewCell(null);
-                              }}
-                            >
-                              {PREVIEW_TYPE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改类型">{typeLabel(item.type)}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 align-top text-slate-700">
-                          {row.ready || item.type === "transfer" ? (
-                            <div className="space-y-1">
-                              <span className="whitespace-nowrap text-slate-700" title={selectedPreviewAccountDisplayTitle(row) ?? accountLabel(item)}>
-                                {selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}
-                              </span>
-                              {item.type === "transfer" ? <div className="text-[11px] text-slate-400">到账账户</div> : null}
-                            </div>
-                          ) : (
-                            <div className="min-w-[220px] space-y-1.5">
-                              <div className="truncate text-[11px] text-slate-400" title={accountLabel(item)}>账单识别：{accountLabel(item)}</div>
-                              <select
-                                className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none"
-                                value={row.selectedAccountId ?? row.matchedAccountId ?? ""}
-                                onChange={(e) => e.target.value ? updatePreviewAccount(row.key, e.target.value) : clearPreviewAccount(row.key)}
-                              >
-                                <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
-                                {previewAccountOptions(item).map((account) => (
-                                  <option key={account.id} value={account.id} title={account.hoverTitle}>
-                                    {account.selectorLabel}
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="flex items-center justify-between gap-2">
-                                {item._meta?.ownerName ? <span className="text-[11px] text-slate-400">持卡人 {item._meta.ownerName}</span> : <span />}
-                                <button className="h-7 px-2 rounded-md border border-blue-200 text-[11px] text-blue-600 hover:bg-blue-50" onClick={() => openAccountDraft(row)}>
-                                  创建账户
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </td>
-                        <td className="min-w-[180px] px-3 py-2 align-top text-slate-700">
-                          {item.type === "transfer" ? (
-                            <div className="min-w-[260px] space-y-1">
-                              <SmartSelect
-                                mode="single"
-                                value={previewDebitAccountIdFromName(item.fromAccount ?? item.toAccount ?? "") ?? ""}
-                                onChange={(accountId) => {
-                                  const nextName = accountNameFromId(accountId);
-                                  const nextItems = importPreview.items.map((previewRow) =>
-                                    previewRow.key === row.key ? recomputePreviewRow(previewRow, { fromAccount: nextName, toAccount: undefined }) : previewRow
-                                  );
-                                  setImportPreview(recomputePreviewState(nextItems));
-                                  setParsedItems(nextItems.map((previewRow) => previewRow.item));
-                                }}
-                                options={displayPreviewDebitAccountOptions}
-                                placeholder="选择还款借记卡"
-                                onCreateClick={() => openDebitAccountDraft(row.key)}
-                                createLabel="新增账户"
-                                onCycleOwnerFilter={cyclePreviewDebitOwnerFilter}
-                                ownerFilterLabel={previewDebitOwnerFilterLabel}
-                                behavior={{
-                                  search: true,
-                                  hierarchy: true,
-                                  clearable: true,
-                                  cycleSelectionWithArrowKeys: true,
-                                  minDropdownWidth: 460,
-                                }}
-                              />
-                              <div className="text-[11px] text-slate-400">资金流出账户</div>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400">-</span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "category" })}>
-                          {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
-                            <select
-                              autoFocus
-                              className="h-8 min-w-[120px] rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
-                              value={item.category ?? ""}
-                              onBlur={() => setEditingPreviewCell(null)}
-                              onChange={(e) => {
-                                updatePreviewRow(row.key, { category: e.target.value || undefined });
-                                setEditingPreviewCell(null);
-                              }}
-                            >
-                              <option value="">未分类</option>
-                              {previewCategoryOptions
-                                .filter((category) => category.type === item.type || (item.type !== "income" && category.type === "expense"))
-                                .map((category) => (
-                                  <option key={category.id} value={category.name}>{category.name}</option>
-                                ))}
-                            </select>
-                          ) : (
-                            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改分类">{item.category || "-"}</span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700">{item.institution || "-"}</td>
-                        <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${amountTextClass(item.type)}`}>{previewAmountText(item)}</td>
-                        <td className="px-3 py-2 align-top text-slate-600">{item.remark || item.rawText}</td>
-                        <td className="whitespace-nowrap px-3 py-2 align-top">
-                          {row.ready ? (
-                            <span className="text-[11px] text-slate-400">-</span>
-                          ) : (
-                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
-                              {row.missingFields.includes("账户") ? "请选择或创建账户" : `缺 ${row.missingFields.join("、")}`}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filteredPreviewRows.length === 0 && (
-                    <tr>
-                      <td colSpan={11} className="px-4 py-8 text-center text-sm text-slate-500">没有符合筛选条件的记录。</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                toolbarTitle="账单导入预览"
+                toolbarRightContent={(
+                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                    {importPreview.statementAccountId && (
+                      <span>
+                        账户：{previewAccountDisplayLabelById(importPreview.statementAccountId) ?? "已匹配账户"}
+                      </span>
+                    )}
+                    <span>共 {importPreview.items.length} 条</span>
+                    <span>将导入 {importPreview.selectedKeys.size} 条</span>
+                  </div>
+                )}
+                rowClassName={(row) => importPreview.selectedKeys.has(row.key) ? "bg-blue-50/40" : "bg-white"}
+                fillHeight
+                compactRows
+                showFilters={false}
+                sortable={false}
+                showColumnVisibilityButton={false}
+              />
             </div>
 
             <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">

@@ -65,7 +65,7 @@ export function notifySmartSelectOptionCreated(option: SmartSelectOption) {
 
 type SearchBehavior = boolean | "auto";
 type HierarchyBehavior = boolean | "auto";
-type SmartSelectDensity = "regular" | "compact";
+type SmartSelectDensity = "regular" | "compact" | "dense" | "micro";
 
 type SmartSelectSharedBehavior = {
   search?: SearchBehavior;
@@ -83,6 +83,8 @@ type SmartSelectSharedBehavior = {
   dropdownMaxHeight?: number;
   density?: SmartSelectDensity;
   expandedGroupColumns?: number;
+  resizableDropdown?: boolean;
+  autoOpen?: boolean;
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
@@ -343,6 +345,8 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
     expandedGroupColumns: behavior?.expandedGroupColumns,
+    resizableDropdown: behavior?.resizableDropdown ?? false,
+    autoOpen: behavior?.autoOpen ?? false,
     create: behavior?.create ?? (props.onCreateClick
       ? {
           type: "button" as const,
@@ -375,6 +379,8 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
     expandedGroupColumns: behavior?.expandedGroupColumns,
+    resizableDropdown: behavior?.resizableDropdown ?? false,
+    autoOpen: behavior?.autoOpen ?? false,
     create: behavior?.create ?? (props.onInlineCreate
       ? {
           type: "inline" as const,
@@ -421,11 +427,15 @@ export function SmartSelect(props: SmartSelectProps) {
     dropdownMaxHeight,
     density,
     expandedGroupColumns,
+    resizableDropdown,
+    autoOpen,
     create,
   } = normalizedBehavior;
-  const compact = density === "compact";
-  const rowHeight = compact ? 30 : 36;
-  const headerHeight = compact ? 34 : 42;
+  const micro = density === "micro";
+  const dense = density === "dense" || micro;
+  const compact = density === "compact" || dense;
+  const rowHeight = micro ? 16 : dense ? 26 : compact ? 30 : 36;
+  const headerHeight = micro ? 24 : dense ? 30 : compact ? 34 : 42;
   const singleGridColumns = mode === "single" && expandedGroupColumns
     ? Math.max(2, Math.min(6, Math.floor(expandedGroupColumns)))
     : undefined;
@@ -463,7 +473,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const [search, setSearch] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0 });
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0, maxHeight: 0 });
 
   const triggerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -495,12 +505,20 @@ export function SmartSelect(props: SmartSelectProps) {
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
+    const boundary = triggerRef.current.closest("[data-smart-select-boundary]");
+    const boundaryRect = boundary instanceof HTMLElement ? boundary.getBoundingClientRect() : null;
+    const boundaryPadding = 8;
+    const boundaryTop = (boundaryRect?.top ?? 0) + boundaryPadding;
+    const boundaryLeft = (boundaryRect?.left ?? 0) + boundaryPadding;
+    const boundaryRight = (boundaryRect?.right ?? window.innerWidth) - boundaryPadding;
+    const boundaryBottom = (boundaryRect?.bottom ?? window.innerHeight) - boundaryPadding;
     const behaviorMinWidth = minDropdownWidth && minDropdownWidth > 0
       ? minDropdownWidth
       : defaultDropdownMinWidth;
     const minWidth = Math.max(isSingleCreateButton && !compact ? 300 : 0, behaviorMinWidth);
-    const width = Math.min(Math.max(rect.width, minWidth), window.innerWidth - 16);
-    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
+    const width = Math.min(Math.max(rect.width, minWidth), availableWidth);
+    const left = Math.min(Math.max(boundaryLeft, rect.left), Math.max(boundaryLeft, boundaryRight - width));
     const estimatedHeight = (searchable ? headerHeight : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
       + Math.min(
@@ -508,13 +526,14 @@ export function SmartSelect(props: SmartSelectProps) {
         Math.max(4, Math.floor(resolvedDropdownMaxHeight / rowHeight)),
       ) * rowHeight
       + 16;
-    const below = window.innerHeight - rect.bottom;
-    const above = rect.top;
+    const below = Math.max(48, boundaryBottom - rect.bottom - 4);
+    const above = Math.max(48, rect.top - boundaryTop - 4);
     const openAbove = below < estimatedHeight && above > below;
-    const top = openAbove
-      ? Math.max(8, rect.top - estimatedHeight - 4)
-      : rect.bottom + 4;
-    setDropdownPos({ top, left, width });
+    const availableHeight = openAbove ? above : below;
+    const maxHeight = Math.max(48, Math.min(estimatedHeight, availableHeight));
+    const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
+    const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
+    setDropdownPos({ top, left, width, maxHeight });
   }, [compact, defaultDropdownMinWidth, effectiveOptions.length, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
@@ -536,6 +555,11 @@ export function SmartSelect(props: SmartSelectProps) {
     setFocusedIndex(findInitialFocusedIndex(nextVisible, mode, value, preferredIndex));
     window.requestAnimationFrame(() => calcPosition());
   }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, initialCollapsedAll, mode, searchable, value]);
+
+  useEffect(() => {
+    if (!autoOpen || open) return;
+    openDropdown("first");
+  }, [autoOpen, open, openDropdown]);
 
   const toggleGroup = useCallback((groupId: string) => {
     setCollapsedGroups((prev) => {
@@ -589,13 +613,14 @@ export function SmartSelect(props: SmartSelectProps) {
 
   useEffect(() => {
     if (!open) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (triggerRef.current?.contains(event.target as Node)) return;
-      if (dropdownRef.current?.contains(event.target as Node)) return;
+    const handlePointerDownOutside = (event: PointerEvent) => {
+      const path = event.composedPath();
+      if (triggerRef.current && path.includes(triggerRef.current)) return;
+      if (dropdownRef.current && path.includes(dropdownRef.current)) return;
       closeDropdown();
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("pointerdown", handlePointerDownOutside, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDownOutside, true);
   }, [closeDropdown, open]);
 
   useEffect(() => {
@@ -791,19 +816,23 @@ export function SmartSelect(props: SmartSelectProps) {
       ref={dropdownRef}
       data-smart-select-dropdown="true"
       onKeyDown={handleDropdownKeyDown}
-      className={`overflow-hidden ${compact ? "rounded-[10px]" : "rounded-[12px]"} border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]`}
+      className={`flex flex-col overflow-hidden ${resizableDropdown ? "resize" : ""} ${compact ? "rounded-[10px]" : "rounded-[12px]"} border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]`}
       style={{
         position: "fixed",
         top: dropdownPos.top,
         left: dropdownPos.left,
         width: dropdownPos.width,
+        minWidth: resizableDropdown ? Math.min(dropdownPos.width, micro ? 140 : dense ? 220 : 240) : dropdownPos.width,
+        minHeight: resizableDropdown ? Math.min(180, dropdownPos.maxHeight || 180) : undefined,
+        maxWidth: "calc(100vw - 16px)",
+        maxHeight: dropdownPos.maxHeight || "calc(100vh - 16px)",
         zIndex: 30000,
       }}
     >
       {mode === "single" ? (
         <>
           {(searchable || isSingleCreateButton || cycleAction || headerExtra) ? (
-            <div className={`flex items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
+            <div className={`flex min-w-0 items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
               {searchable ? (
                 <input
                   data-search
@@ -812,28 +841,30 @@ export function SmartSelect(props: SmartSelectProps) {
                     setSearch(event.target.value);
                     setFocusedIndex(0);
                   }}
-                  className="h-7 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  className="h-7 min-w-0 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                   placeholder="搜索..."
                 />
               ) : (
-                <div className="flex-1" />
+                <div className="min-w-0 flex-1" />
               )}
-              {isSingleCreateButton ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeDropdown();
-                    isSingleCreateButton.onClick();
-                  }}
-                  title={isSingleCreateButton.label ?? "新增"}
-                  aria-label={isSingleCreateButton.label ?? "新增"}
-                  className="secondary-button !px-0 h-7 w-7 shrink-0 text-blue-600 hover:bg-blue-50"
-                >
-                  <Plus className="h-[18px] w-[18px]" />
-                </button>
-              ) : null}
-              {renderCycleActionButton(cycleAction)}
-              {headerExtra}
+              <div className="flex shrink-0 items-center gap-1">
+                {isSingleCreateButton ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeDropdown();
+                      isSingleCreateButton.onClick();
+                    }}
+                    title={isSingleCreateButton.label ?? "新增"}
+                    aria-label={isSingleCreateButton.label ?? "新增"}
+                    className="secondary-button !px-0 h-7 w-7 shrink-0 text-blue-600 hover:bg-blue-50"
+                  >
+                    <Plus className="h-[18px] w-[18px]" />
+                  </button>
+                ) : null}
+                {renderCycleActionButton(cycleAction)}
+                {headerExtra}
+              </div>
             </div>
           ) : null}
 
@@ -841,9 +872,9 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className={`overflow-y-auto ${singleGridColumns ? "grid gap-1 p-1" : ""}`}
+            className={`min-h-0 flex-1 overflow-y-auto ${singleGridColumns ? "grid gap-1 p-1" : ""}`}
             style={{
-              maxHeight: resolvedDropdownMaxHeight,
+              maxHeight: resizableDropdown ? undefined : resolvedDropdownMaxHeight,
               ...(singleGridColumns ? { gridTemplateColumns: `repeat(${singleGridColumns}, minmax(0, 1fr))` } : {}),
             }}
           >
@@ -854,7 +885,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   <div
                     key={option.id}
                     style={fullGridRowStyle}
-                    className={`flex ${compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
+                    className={`flex ${micro ? "h-4 px-1.5" : dense ? "h-6 px-2" : compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
                       index === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
                     }`}
                     onMouseEnter={() => setFocusedIndex(index)}
@@ -905,7 +936,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);
                     }}
                     onMouseEnter={() => setFocusedIndex(index)}
-                    className={`flex ${compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                    className={`flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
                       index === focusedIndex ? "bg-blue-50" : ""
                     } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                   >
@@ -953,7 +984,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
                         index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
                       } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
-                    : `flex ${compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                    : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
                         index === focusedIndex ? "bg-blue-50" : ""
                       } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                 >
@@ -977,7 +1008,7 @@ export function SmartSelect(props: SmartSelectProps) {
       ) : (
         <>
           {(searchable || cycleAction || headerExtra) ? (
-            <div className={`flex items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
+            <div className={`flex min-w-0 items-center gap-1 border-b border-slate-200/70 px-2 ${compact ? "py-1" : "pt-2 pb-1"}`}>
               {searchable ? (
                 <input
                   data-search
@@ -986,14 +1017,16 @@ export function SmartSelect(props: SmartSelectProps) {
                     setSearch(event.target.value);
                     setFocusedIndex(0);
                   }}
-                  className="h-7 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  className="h-7 min-w-0 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                   placeholder="搜索..."
                 />
               ) : (
-                <div className="flex-1" />
+                <div className="min-w-0 flex-1" />
               )}
-              {renderCycleActionButton(cycleAction)}
-              {headerExtra}
+              <div className="flex shrink-0 items-center gap-1">
+                {renderCycleActionButton(cycleAction)}
+                {headerExtra}
+              </div>
             </div>
           ) : null}
 
@@ -1070,7 +1103,8 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className="max-h-[240px] overflow-y-auto"
+            className="min-h-0 flex-1 overflow-y-auto"
+            style={{ maxHeight: resizableDropdown ? undefined : 240 }}
           >
             {visible.map((option, index) => {
               const checked = (value as string[]).includes(option.id);
@@ -1084,7 +1118,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   aria-selected={checked}
                   onClick={() => toggleMulti(option.id)}
                   onMouseEnter={() => setFocusedIndex(index)}
-                  className={`flex h-9 w-full items-center gap-2 px-3 text-left text-sm transition-colors ${
+                  className={`flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-2 text-left transition-colors ${
                     index === focusedIndex ? "bg-blue-50" : ""
                   } ${checked ? "font-medium" : ""}`}
                 >
@@ -1118,7 +1152,7 @@ export function SmartSelect(props: SmartSelectProps) {
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}
-        className={`flex ${compact ? "h-8 rounded-[8px] px-2 text-xs" : "h-9 rounded-[10px] px-3 text-sm"} w-full items-center justify-between border border-slate-300/70 bg-surface-white outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100`}
+        className={`flex ${micro ? "h-6 rounded-[7px] px-1.5 text-[11px]" : dense ? "h-7 rounded-[8px] px-2 text-xs" : compact ? "h-8 rounded-[8px] px-2 text-xs" : "h-9 rounded-[10px] px-3 text-sm"} w-full items-center justify-between border border-slate-300/70 bg-surface-white outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100`}
       >
         {mode === "single" ? (
           <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex min-w-0 flex-1 items-center`} title={selectedTitle}>

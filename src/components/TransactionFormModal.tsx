@@ -11,8 +11,17 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { kindLabel } from "@/lib/account-kinds";
 import { getCashTargetOperation } from "@/lib/account-kind-utils";
+import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  fetchSettingsAccountData,
+  fetchSettingsCategories,
+  fetchSettingsTags,
+  SETTINGS_DATA_CHANGED_EVENT,
+  type SettingsCategory,
+  type SettingsDataChangedDetail,
+} from "@/lib/client/settingsCache";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import {
   buildCreditCardInstallmentSchedule,
@@ -167,6 +176,52 @@ function getCategoryLeafName(label: string) {
   return label.includes(".") ? label.split(".").pop() ?? label : label;
 }
 
+function buildCategoryOptionsFromSettings(categories: SettingsCategory[], type: string): CategoryOption[] {
+  const byId = new Map(categories.map((category) => [category.id, category]));
+  const pathFor = (category: SettingsCategory) => {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    let cursor: SettingsCategory | undefined = category;
+    while (cursor && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      names.unshift(cursor.name);
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+    }
+    return names.join(".");
+  };
+  return categories
+    .filter((category) => category.type === type)
+    .map((category) => ({
+      id: category.id,
+      label: pathFor(category),
+      parentId: category.parentId ?? null,
+      type: category.type,
+    }));
+}
+
+function settingsAccountToOption(account: SettingsAccountRecord): AccountOption {
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]);
+  return {
+    id: account.id,
+    label: display.selectorLabel || display.label,
+    subLabel: display.subLabel,
+    kind: account.kind ?? null,
+    investProductType: account.investProductType ?? null,
+    debtDirection: account.debtDirection ?? null,
+    institutionId: account.institutionId ?? null,
+    currency: account.currency ?? null,
+    billingDay: account.billingDay ?? null,
+  };
+}
+
+function buildGroupedOptionsFromSettingsAccounts(accounts: SettingsAccountRecord[]): SmartSelectOption[] {
+  const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]));
+  const metaById = new Map(accounts.map((account) => [account.id, settingsAccountToOption(account)]));
+  return buildGroupedAccountOptions(displayOptions).map((option) => (
+    option.isHeader || option.isGroup ? option : { ...option, ...metaById.get(option.id) }
+  ));
+}
+
 type TagOption = {
   id: string;
   name: string;
@@ -176,6 +231,24 @@ type TagOption = {
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
+
+type SettingsAccountRecord = {
+  id: string;
+  name: string;
+  kind?: string | null;
+  isActive?: boolean | null;
+  isPlaceholder?: boolean | null;
+  groupId?: string | null;
+  institutionId?: string | null;
+  counterpartyId?: string | null;
+  numberMasked?: string | null;
+  investProductType?: string | null;
+  debtDirection?: string | null;
+  currency?: string | null;
+  billingDay?: number | null;
+  Institution?: { name: string | null; shortName?: string | null } | null;
+  AccountGroup?: { id: string; name: string | null } | null;
+};
 
 export function TransactionFormModal({
   accounts,
@@ -285,12 +358,12 @@ export function TransactionFormModal({
               name: institution.shortName?.trim() || institution.name,
               type: institution.type ?? "",
             })),
-            counterpartyId: (data.institutions ?? [])
-              .filter((institution: { type?: string | null }) => COUNTERPARTY_TYPES.has(institution.type ?? "other"))
-              .map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
-                id: institution.id,
-                name: institution.shortName?.trim() || institution.name,
-                type: institution.type ?? "other",
+            counterpartyId: (data.counterparties ?? [])
+              .filter((counterparty: { type?: string | null }) => COUNTERPARTY_TYPES.has(counterparty.type ?? "other"))
+              .map((counterparty: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
+                id: counterparty.id,
+                name: counterparty.shortName?.trim() || counterparty.name,
+                type: counterparty.type ?? "other",
               })),
           });
         }
@@ -435,6 +508,84 @@ export function TransactionFormModal({
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshAccountData() {
+      const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+      if (cancelled || !data) return;
+      const rawAccounts = (data.accounts as SettingsAccountRecord[])
+        .filter((account) => account.isPlaceholder !== true && account.isActive !== false);
+      const allOptions = rawAccounts.map(settingsAccountToOption);
+      const allowedKinds = new Set(
+        [...accounts, ...accountList]
+          .map((account) => account.kind)
+          .filter((kind): kind is string => Boolean(kind)),
+      );
+      const nextAccountOptions = allOptions.filter((option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
+      const selectedIds = new Set([accountId, fromAccountId, toAccountId].filter(Boolean));
+      setAccountList((prev) => {
+        const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !nextAccountOptions.some((next) => next.id === option.id));
+        return mergeSmartSelectOptions(nextAccountOptions, selectedOnly);
+      });
+      setTransferAccountList((prev) => {
+        const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !allOptions.some((next) => next.id === option.id));
+        return mergeSmartSelectOptions(allOptions, selectedOnly);
+      });
+      const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts);
+      const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
+        rawAccounts.filter((account) => !allowedKinds.size || allowedKinds.has(account.kind ?? "")),
+      );
+      setLocalAccountSSOpts(groupedAccount);
+      setLocalTransferAccountSSOpts(groupedAll);
+      setLocalNestedFieldData({
+        groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
+        institutionId: (data.institutions ?? []).map((institution) => ({
+          id: institution.id,
+          name: institution.shortName?.trim() || institution.name,
+          type: institution.type ?? "",
+        })),
+        counterpartyId: (data.counterparties ?? []).map((counterparty) => ({
+          id: counterparty.id,
+          name: counterparty.shortName?.trim() || counterparty.name,
+          type: counterparty.type ?? "organization",
+        })),
+      });
+    }
+
+    async function refreshCategories() {
+      const next = await fetchSettingsCategories({ force: true }).catch(() => null);
+      if (cancelled || !next) return;
+      setCategoryList(buildCategoryOptionsFromSettings(next, currentCategoryType));
+    }
+
+    async function refreshTags() {
+      const next = await fetchSettingsTags({ force: true }).catch(() => null);
+      if (cancelled || !next) return;
+      setTagList(next.map((tag) => ({ id: tag.id, name: tag.name, color: tag.color })));
+    }
+
+    function onSettingsChanged(ev: Event) {
+      const detail = (ev as CustomEvent<SettingsDataChangedDetail>).detail;
+      const scope = detail?.scope ?? "all";
+      if (scope === "accounts" || scope === "all") void refreshAccountData();
+      if (scope === "categories" || scope === "all") void refreshCategories();
+      if (scope === "tags" || scope === "all") void refreshTags();
+    }
+
+    window.addEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    };
+  }, [
+    accountId,
+    accountList,
+    accounts,
+    currentCategoryType,
+    fromAccountId,
+    toAccountId,
+  ]);
 
   const {
     ownerFilter,

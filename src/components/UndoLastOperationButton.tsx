@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Undo2 } from "lucide-react";
 
 import {
@@ -24,7 +23,6 @@ export function UndoLastOperationButton({
   className?: string;
   iconSize?: number;
 }) {
-  const router = useRouter();
   const [state, setState] = useState<UndoState>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -64,7 +62,6 @@ export function UndoLastOperationButton({
       setMessage(`已撤销：${result.data.label}`);
       setState(null);
       dispatchFinanceDataChanged({ reason: "undo-entry-operation", entryIds: undefined });
-      router.refresh();
     } finally {
       setLoading(false);
     }

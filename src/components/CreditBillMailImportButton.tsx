@@ -1,12 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { MailSearch, RefreshCw, X } from "lucide-react";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { useI18n } from "@/lib/i18n";
+import { getColorSchemeFromCookie, importPreviewAmountColor } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { createImportAccountResolver } from "@/lib/account-import-match";
+import { formatAccountSelectorLabel } from "@/lib/account-display";
 
 type EmailAccount = {
   id: string;
@@ -62,6 +67,7 @@ type ParsedItem = {
     creditLimit?: number;
     billingDay?: number;
     repaymentDay?: number;
+    statementAmount?: number;
   };
 };
 
@@ -70,15 +76,28 @@ type ParseState = {
   items: ParsedItem[];
 };
 
+type BookAccount = {
+  id: string;
+  name: string;
+  kind: string;
+  institutionId?: string | null;
+  userId?: string | null;
+  groupId?: string | null;
+  investProductType?: string | null;
+  numberMasked?: string | null;
+  creditLimit?: string | number | null;
+  billingDay?: number | null;
+  repaymentDay?: number | null;
+  Institution?: { id?: string; name?: string | null; shortName?: string | null; type?: string | null } | null;
+  AccountGroup?: { id: string; name: string | null } | null;
+  AccountAlias?: Array<{ alias: string }> | null;
+};
+
 const LAST_WORKING_EMAIL_ACCOUNT_KEY = "mmh_credit_bill_last_working_email_account";
-const BILL_MAIL_KEYWORDS = [
-  "账单",
-  "对账单",
-  "月结单",
-  "statement",
-  "e-statement",
-  "credit card statement",
-];
+const MAIL_DISPLAY_LIMIT = 5;
+const MAIL_FIXED_KEYWORD = "账单";
+const MAIL_SCAN_LIMIT = 500;
+const MAIL_TIMEOUT_MS = 20_000;
 
 function readLastWorkingEmailAccountId() {
   if (typeof window === "undefined") return "";
@@ -106,6 +125,54 @@ function normalizeDateOnlyText(value?: string | null) {
   return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
 
+function isPlaceholderText(value?: string | null) {
+  const text = String(value ?? "").trim();
+  return !text || /^[-—–]+$/.test(text) || text === "?";
+}
+
+function cleanOptionalText(value?: string | null) {
+  const text = String(value ?? "").trim();
+  return isPlaceholderText(text) ? undefined : text;
+}
+
+function stripPostingDateNote(value: string) {
+  return value
+    .replace(/[（(]\s*入账日(?:期)?\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}\s*[)）]/g, "")
+    .trim();
+}
+
+function inferKnownMerchant(item: ParsedItem) {
+  const source = [item.institution, item.counterparty, item.remark, item.rawText]
+    .map((value) => cleanOptionalText(value))
+    .filter(Boolean)
+    .join(" ");
+  const normalizedSource = stripPostingDateNote(source);
+  if (/美团外卖/.test(normalizedSource)) return { institution: "美团", counterparty: "美团外卖", category: "餐饮" };
+  if (/(?:特约)?美团(?:平台)?商户?|美团/.test(normalizedSource)) return { institution: "美团", counterparty: "美团", category: "餐饮" };
+  if (/拼多多|付费通/.test(source)) return { institution: "拼多多", counterparty: "拼多多", category: "购物" };
+  if (/支付宝/.test(source)) return { institution: "支付宝", counterparty: "支付宝", category: "购物" };
+  if (/微信支付|财付通/.test(source)) return { institution: "微信", counterparty: "微信支付", category: "购物" };
+  if (/京东|网银在线/.test(source)) return { institution: "京东", counterparty: "京东", category: "购物" };
+  return {};
+}
+
+function shouldTreatAsTransfer(item: ParsedItem) {
+  const source = [item.remark, item.counterparty, item.category, item.rawText]
+    .map((value) => cleanOptionalText(value))
+    .filter(Boolean)
+    .join(" ");
+  return /转账|转帐|还款|信用卡还款/.test(source);
+}
+
+function normalizedKey(value?: string | null) {
+  return String(value ?? "").trim().replace(/[·•\-—_\s()[\]（）【】]/g, "").toLowerCase();
+}
+
+function stripOwnerPrefix(value: string) {
+  const match = value.trim().match(/^(.+?)的(.+)$/);
+  return match?.[2]?.trim() || value.trim();
+}
+
 function formatDate(value: string) {
   return normalizeDateOnlyText(value) || value;
 }
@@ -124,38 +191,137 @@ function sameMail(a: Pick<MailItem, "emailAccountId" | "uid">, b: Pick<MailItem,
   return a.emailAccountId === b.emailAccountId && a.uid === b.uid;
 }
 
-function normalizeParsedItem(item: ParsedItem, accountName: string): ParsedItem {
-  const amount = Math.abs(Number(item.amount ?? 0));
-  const parsedAccountName = item.account?.trim() || accountName;
+function normalizeParsedItem(item: ParsedItem): ParsedItem {
+  const merchant = inferKnownMerchant(item);
+  const treatAsTransfer = item.type === "transfer" || shouldTreatAsTransfer(item);
   const date = item.date?.trim() || undefined;
   const postedDate = normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(date) || undefined;
-  if (item.type === "transfer") {
-    return {
-      ...item,
-      date,
-      amount,
-      account: parsedAccountName,
-      toAccount: item.toAccount?.trim() || parsedAccountName,
-      fromAccount: item.fromAccount?.trim() || undefined,
-      postedDate,
-      remark: item.remark?.trim() || item.rawText,
-    };
-  }
   return {
-    ...item,
+    rawText: item.rawText,
+    type: treatAsTransfer ? "transfer" : item.type,
     date,
-    amount,
-    account: parsedAccountName,
+    amount: Math.abs(Number(item.amount ?? 0)) || 0,
+    account: cleanOptionalText(item.account),
+    fromAccount: treatAsTransfer ? cleanOptionalText(item.fromAccount) : cleanOptionalText(item.fromAccount),
+    toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
+    category: treatAsTransfer ? undefined : cleanOptionalText(item.category) || merchant.category,
+    remark: cleanOptionalText(item.remark) || item.rawText,
+    counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
+    institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
     postedDate,
-    remark: item.remark?.trim() || item.rawText,
+    _meta: item._meta ? {
+      institutionName: cleanOptionalText(item._meta.institutionName),
+      ownerName: cleanOptionalText(item._meta.ownerName),
+      cardNumberMasked: cleanOptionalText(item._meta.cardNumberMasked),
+      creditLimit: item._meta.creditLimit,
+      billingDay: item._meta.billingDay,
+      repaymentDay: item._meta.repaymentDay,
+      statementAmount: item._meta.statementAmount,
+    } : undefined,
   };
 }
 
 function canImportItem(item: ParsedItem) {
   if (!item.date?.trim()) return false;
   if (!Number.isFinite(item.amount) || item.amount <= 0) return false;
-  if (item.type === "transfer") return Boolean(item.fromAccount?.trim() && item.toAccount?.trim());
-  return true;
+  const hasStatementAccount = Boolean(accountLabel(item) || item.account?.trim() || item.toAccount?.trim() || item._meta?.institutionName);
+  if (item.type === "transfer") return Boolean(hasStatementAccount && item.fromAccount?.trim());
+  return hasStatementAccount;
+}
+
+function accountLabel(item: ParsedItem) {
+  const directAccount = cleanOptionalText(item.account) || cleanOptionalText(item.toAccount);
+  if (directAccount) return directAccount;
+  const bank = cleanOptionalText(item._meta?.institutionName);
+  const last4 = cleanOptionalText(item._meta?.cardNumberMasked);
+  if (bank) return `${bank}信用卡${last4 ? `(${last4})` : ""}`;
+  return "";
+}
+
+function isCreditStatement(item: ParsedItem) {
+  return Boolean(item._meta?.institutionName || item._meta?.cardNumberMasked || /信用卡/.test(accountLabel(item)));
+}
+
+function previewAmountClass(type: ParsedItem["type"]) {
+  return importPreviewAmountColor(type, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
+}
+
+function isDebitOrEwalletAccount(account: BookAccount) {
+  return account.kind === "bank_debit" || account.kind === "ewallet";
+}
+
+function guessDebitTransferAccountName(item: ParsedItem, accounts: BookAccount[]) {
+  const source = [item.remark, item.counterparty, item.category, item.rawText]
+    .map((value) => cleanOptionalText(value))
+    .filter(Boolean)
+    .join(" ");
+  const sourceKey = normalizedKey(source);
+  if (!sourceKey) return undefined;
+
+  const debitAccounts = accounts.filter(isDebitOrEwalletAccount);
+  for (const account of debitAccounts) {
+    const accountKeys = [
+      account.name,
+      stripOwnerPrefix(account.name),
+      account.Institution?.name,
+      account.Institution?.shortName,
+    ].map(normalizedKey).filter((key) => key.length >= 2);
+    if (accountKeys.some((key) => sourceKey.includes(key))) return account.name;
+  }
+
+  const digitSource = source.replace(/\D/g, "");
+  const last4Matches = debitAccounts.filter((account) => {
+    const last4 = String(account.numberMasked ?? "").replace(/\D/g, "");
+    return last4.length >= 4 && digitSource.includes(last4);
+  });
+  if (last4Matches.length === 1) return last4Matches[0].name;
+
+  const institutionMatches = debitAccounts.filter((account) => {
+    const institutionKeys = [account.Institution?.name, account.Institution?.shortName]
+      .map(normalizedKey)
+      .filter((key) => key.length >= 2);
+    return institutionKeys.some((key) => sourceKey.includes(key));
+  });
+  return institutionMatches.length === 1 ? institutionMatches[0].name : undefined;
+}
+
+function resolveStatementAccountName(item: ParsedItem, accounts: BookAccount[], fallbackAccountName: string) {
+  const label = accountLabel(item);
+  const credit = isCreditStatement(item);
+  const last4 = String(item._meta?.cardNumberMasked ?? "").trim();
+  const bank = item._meta?.institutionName;
+  const resolver = createImportAccountResolver(accounts);
+  const candidates = Array.from(new Set([
+    label,
+    item.account,
+    stripOwnerPrefix(label),
+    bank && `${bank}信用卡`,
+    bank && last4 ? `${bank}信用卡(${last4})` : "",
+    bank && last4 ? `${bank}信用卡${last4}` : "",
+  ].filter((value): value is string => Boolean(value?.trim()))));
+  for (const candidate of candidates) {
+    const matched = resolver(candidate);
+    if (!matched) continue;
+    if (credit && matched.kind !== "bank_credit") continue;
+    return matched.name;
+  }
+  return cleanOptionalText(label) || fallbackAccountName;
+}
+
+function formatMatchedStatementAccountName(item: ParsedItem, accounts: BookAccount[], fallbackAccountName: string) {
+  const resolvedName = resolveStatementAccountName(item, accounts, fallbackAccountName);
+  const matched = accounts.find((account) => account.name === resolvedName);
+  if (!matched) return resolvedName;
+  return formatAccountSelectorLabel({
+    accountName: matched.name,
+    institution: matched.Institution
+      ? {
+          name: matched.Institution.name ?? null,
+          shortName: matched.Institution.shortName ?? null,
+        }
+      : null,
+    numberMasked: matched.numberMasked,
+  });
 }
 
 export function CreditBillMailImportButton({
@@ -185,8 +351,10 @@ export function CreditBillMailImportButton({
   const [info, setInfo] = useState("");
   const [parsed, setParsed] = useState<ParseState | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewSelectedKeys, setPreviewSelectedKeys] = useState<Set<number>>(new Set());
-  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountText: string } | null>(null);
+  const [previewSelectedKeys, setPreviewSelectedKeys] = useState<Set<string>>(new Set());
+  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountText: string; accountIds?: string[] } | null>(null);
+  const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
+  const bookAccountsRef = useRef<BookAccount[]>([]);
 
   const importableItems = useMemo(
     () => parsed?.items.filter(canImportItem) ?? [],
@@ -198,24 +366,56 @@ export function CreditBillMailImportButton({
   );
   const selectedPreviewItems = useMemo(
     () => previewRows
-      .filter((row) => row.ready && previewSelectedKeys.has(row.key))
+      .filter((row) => row.ready && previewSelectedKeys.has(String(row.key)))
       .map((row) => row.item),
     [previewRows, previewSelectedKeys],
   );
   const allImportablePreviewSelected =
     importableItems.length > 0 &&
-    previewRows.filter((row) => row.ready).every((row) => previewSelectedKeys.has(row.key));
+    previewRows.filter((row) => row.ready).every((row) => previewSelectedKeys.has(String(row.key)));
 
-  async function openAndLoad() {
+  function openAndLoad() {
     setOpen(true);
+    setLoading(true);
     setPreviewOpen(false);
     setPreviewSelectedKeys(new Set());
     setError("");
-    setInfo("");
+    setInfo("正在准备账单导入窗口...");
     setParsed(null);
     setMails([]);
     setEmailAccounts([]);
-    await loadEmailAccounts();
+    window.setTimeout(() => {
+      void Promise.all([
+        loadBookLookups(),
+        loadEmailAccounts(),
+      ]);
+    }, 0);
+  }
+
+  async function loadBookLookups() {
+    try {
+      const bootstrap = await fetchSettingsBootstrap();
+      const accounts = Array.isArray(bootstrap.accounts) ? bootstrap.accounts as BookAccount[] : [];
+      bookAccountsRef.current = accounts;
+      setBookAccounts(accounts);
+      return accounts;
+    } catch {
+      return bookAccountsRef.current;
+    }
+  }
+
+  async function fetchJsonWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMessage: string) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), MAIL_TIMEOUT_MS);
+    try {
+      const res = await fetch(input, { ...init, signal: controller.signal });
+      return await res.json();
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw new Error(timeoutMessage);
+      throw err;
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   async function loadEmailAccounts() {
@@ -265,17 +465,16 @@ export function CreditBillMailImportButton({
     setParsed(null);
     setMails([]);
     try {
-      const res = await fetch("/api/v1/email/imap/list", {
+      const data = await fetchJsonWithTimeout("/api/v1/email/imap/list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: account.id,
-          keywords: BILL_MAIL_KEYWORDS,
-          limit: 30,
-          scanLimit: 800,
+          keyword: MAIL_FIXED_KEYWORD,
+          limit: MAIL_DISPLAY_LIMIT,
+          scanLimit: MAIL_SCAN_LIMIT,
         }),
-      });
-      const data = await res.json();
+      }, "读取超时，请检查 IMAP 配置、授权码或网络连接");
       if (!data.ok) throw new Error(data.error || t("creditBill.readFailed"));
       const nextMails: MailItem[] = (Array.isArray(data.items) ? data.items : [])
         .map((item: Omit<MailItem, "emailAccountId" | "emailAccountLabel">) => ({
@@ -284,7 +483,7 @@ export function CreditBillMailImportButton({
           emailAccountLabel: account.label || account.username,
         }))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-        .slice(0, 30);
+        .slice(0, MAIL_DISPLAY_LIMIT);
       const markedMails = await markImportedMails(nextMails);
       setMails(markedMails);
       writeLastWorkingEmailAccountId(account.id);
@@ -352,12 +551,12 @@ export function CreditBillMailImportButton({
     setImportComplete(null);
     setParsed(null);
     try {
-      const fetchRes = await fetch("/api/v1/email/imap/fetch", {
+      const accounts = await loadBookLookups();
+      const fetchData = await fetchJsonWithTimeout("/api/v1/email/imap/fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: mail.emailAccountId, uid: mail.uid }),
-      });
-      const fetchData = await fetchRes.json();
+      }, "读取邮件内容超时，请稍后重试");
       if (!fetchData.ok) throw new Error(fetchData.error || t("creditBill.readMailContentFailed"));
       writeLastWorkingEmailAccountId(mail.emailAccountId);
       const content = buildStatementParseContent(fetchData.item);
@@ -371,7 +570,10 @@ export function CreditBillMailImportButton({
       const parseData = await parseRes.json();
       if (!parseData.ok) throw new Error(parseData.error || t("creditBill.parseFailed"));
       const items = (Array.isArray(parseData.items) ? parseData.items : [])
-        .map((item: ParsedItem) => normalizeParsedItem(item, accountName))
+        .map((item: ParsedItem) => normalizeParsedItem(item))
+        .map((item: ParsedItem) => item.type === "transfer" && !item.fromAccount
+          ? { ...item, fromAccount: guessDebitTransferAccountName(item, accounts) }
+          : item)
         .filter((item: ParsedItem) => item.amount > 0);
       setParsed({ mail, items });
       if (items.length === 0) setInfo(t("creditBill.noItemsInMail"));
@@ -386,17 +588,18 @@ export function CreditBillMailImportButton({
     if (!parsed || importableItems.length === 0 || importing || importComplete) return;
     setError("");
     setImportComplete(null);
-    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => row.key)));
+    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => String(row.key))));
     setPreviewOpen(true);
   }
 
   function togglePreviewRow(key: number) {
     const row = previewRows.find((item) => item.key === key);
     if (!row?.ready) return;
+    const stringKey = String(key);
     setPreviewSelectedKeys((current) => {
       const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(stringKey)) next.delete(stringKey);
+      else next.add(stringKey);
       return next;
     });
   }
@@ -406,7 +609,7 @@ export function CreditBillMailImportButton({
       setPreviewSelectedKeys(new Set());
       return;
     }
-    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => row.key)));
+    setPreviewSelectedKeys(new Set(previewRows.filter((row) => row.ready).map((row) => String(row.key))));
   }
 
   function updatePreviewItem(key: number, patch: Partial<ParsedItem>) {
@@ -434,12 +637,30 @@ export function CreditBillMailImportButton({
     setError("");
     setInfo("");
     try {
+      const accounts = await loadBookLookups();
+      const sourceItems = selectedPreviewItems.map((item) => {
+        const statementAccountName = resolveStatementAccountName(item, accounts, accountName);
+        if (item.type === "transfer") {
+          return {
+            ...item,
+            account: statementAccountName,
+            fromAccount: cleanOptionalText(item.fromAccount)
+              ?? cleanOptionalText(item.toAccount)
+              ?? guessDebitTransferAccountName(item, accounts),
+            toAccount: statementAccountName,
+          };
+        }
+        return { ...item, account: statementAccountName };
+      });
+      const resolver = createImportAccountResolver(accounts);
+      const affectedAccountIds = Array.from(new Set(sourceItems
+        .map((item) => resolver(item.account)?.id)
+        .filter((id): id is string => Boolean(id))));
       const res = await fetch("/api/v1/statement/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: selectedPreviewItems,
-          defaultAccountName: accountName,
+          items: sourceItems,
           autoCreateAccounts: false,
           mailSource: {
             emailAccountId: parsed.mail.emailAccountId,
@@ -453,6 +674,10 @@ export function CreditBillMailImportButton({
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
+      const lockedAccountIds = Array.isArray(data.lockedStatementBills)
+        ? data.lockedStatementBills.flatMap((item: any) => Array.isArray(item.billAccountIds) ? item.billAccountIds : [item.accountId]).filter(Boolean)
+        : [];
+      const refreshAccountIds = Array.from(new Set([...affectedAccountIds, ...lockedAccountIds]));
       const skippedCount = data.skippedCount ?? 0;
       const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
       const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
@@ -464,15 +689,14 @@ export function CreditBillMailImportButton({
       }
       const createdCount = data.createdCount ?? 0;
       setInfo(`${tf("creditBill.importDone", { created: createdCount, skipped: skippedCount })}${accountText}`);
-      setImportComplete({ created: createdCount, skipped: skippedCount, accountText });
+      setImportComplete({ created: createdCount, skipped: skippedCount, accountText, accountIds: refreshAccountIds });
       if (createdCount > 0) {
         const importedMail = parsed.mail;
         setMails((prev) => prev.map((mail) => sameMail(mail, importedMail)
           ? { ...mail, imported: true, importedAt: new Date().toISOString() }
           : mail));
       }
-      dispatchFinanceDataChanged({ reason: "credit-bill-mail-import" });
-      router.refresh();
+      dispatchFinanceDataChanged({ reason: "credit-bill-mail-import", accountIds: refreshAccountIds.length > 0 ? refreshAccountIds : undefined });
     } catch (err) {
       setError(err instanceof Error ? err.message : t("creditBill.importFailed"));
     } finally {
@@ -484,12 +708,121 @@ export function CreditBillMailImportButton({
     setParsed(null);
     setPreviewOpen(false);
     setPreviewSelectedKeys(new Set());
+    const targetAccountIds = importComplete?.accountIds?.length ? importComplete.accountIds : accountId ? [accountId] : [];
+    const targetAccountId = targetAccountIds.length === 1 ? targetAccountIds[0] : accountId;
     setImportComplete(null);
     setOpen(false);
-    dispatchFinanceDataChanged({ reason: "credit-bill-mail-import", accountIds: accountId ? [accountId] : undefined });
-    if (accountId) router.push(`/?accountId=${encodeURIComponent(accountId)}&view=bill`);
-    router.refresh();
+    dispatchFinanceDataChanged({ reason: "credit-bill-mail-import", accountIds: targetAccountIds.length > 0 ? targetAccountIds : undefined });
+    if (targetAccountId) {
+      const targetAccount = bookAccounts.find((item) => item.id === targetAccountId);
+      const view = targetAccount?.kind === "bank_credit" ? "bill" : "detail";
+      router.push(`/?accountId=${encodeURIComponent(targetAccountId)}&view=${view}`);
+    }
   }
+
+  const previewTableColumns = useMemo<AdvancedDataTableColumn<(typeof previewRows)[number]>[]>(() => [
+    {
+      key: "date",
+      label: "交易日",
+      width: 110,
+      minWidth: 92,
+      filterText: (row) => row.item.date || "-",
+      sortValue: (row) => row.item.date || "",
+      render: (row) => <span className="whitespace-nowrap tabular-nums">{row.item.date || "-"}</span>,
+    },
+    {
+      key: "postedDate",
+      label: "入账日期",
+      width: 150,
+      minWidth: 130,
+      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date) || "-",
+      sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date) || "",
+      render: (row) => (
+        <DateStepper
+          value={normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date)}
+          onChange={(value) => updatePreviewItem(row.key, { postedDate: value || undefined })}
+          className="h-7 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400"
+        />
+      ),
+    },
+    {
+      key: "type",
+      label: "类型",
+      width: 86,
+      minWidth: 72,
+      filterText: (row) => row.item.type === "income" ? t("creditBill.income") : row.item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense"),
+      render: (row) => (
+        <span className="whitespace-nowrap">
+          {row.item.type === "income" ? t("creditBill.income") : row.item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}
+        </span>
+      ),
+    },
+    {
+      key: "account",
+      label: "账户",
+      width: 180,
+      minWidth: 140,
+      filterText: (row) => formatMatchedStatementAccountName(row.item, bookAccounts, accountName) || "-",
+      render: (row) => {
+        const displayName = formatMatchedStatementAccountName(row.item, bookAccounts, accountName);
+        return <span title={displayName}>{displayName}</span>;
+      },
+    },
+    {
+      key: "counterAccount",
+      label: "对手账户",
+      width: 150,
+      minWidth: 118,
+      filterText: (row) => row.item.fromAccount || row.item.toAccount || "-",
+      render: (row) => <span title={row.item.fromAccount || row.item.toAccount || "-"}>{row.item.fromAccount || row.item.toAccount || "-"}</span>,
+    },
+    {
+      key: "category",
+      label: "分类",
+      width: 120,
+      minWidth: 92,
+      filterText: (row) => row.item.category || "-",
+      render: (row) => row.item.category || "-",
+    },
+    {
+      key: "institution",
+      label: "收支机构",
+      width: 140,
+      minWidth: 110,
+      filterText: (row) => row.item.institution || row.item.counterparty || "-",
+      render: (row) => <span title={row.item.institution || row.item.counterparty || "-"}>{row.item.institution || row.item.counterparty || "-"}</span>,
+    },
+    {
+      key: "amount",
+      label: "金额",
+      width: 110,
+      minWidth: 88,
+      align: "right",
+      filterText: (row) => row.item.amount.toFixed(2),
+      sortValue: (row) => row.item.amount,
+      render: (row) => <span className={`tabular-nums ${previewAmountClass(row.item.type)}`}>{row.item.amount.toFixed(2)}</span>,
+    },
+    {
+      key: "remark",
+      label: "备注",
+      width: 280,
+      minWidth: 180,
+      filterText: (row) => row.item.remark || row.item.rawText || "-",
+      render: (row) => (
+        <div className="truncate" title={row.item.remark || row.item.rawText}>
+          {row.item.remark || row.item.rawText || "-"}
+        </div>
+      ),
+    },
+    {
+      key: "status",
+      label: "状态",
+      width: 110,
+      minWidth: 92,
+      filterText: (row) => row.ready ? "-" : "缺少必要字段",
+      render: (row) => row.ready ? <span className="text-slate-400">-</span> : <span className="text-amber-700">缺少必要字段</span>,
+    },
+  ], [accountName, bookAccounts, t]);
 
   return (
     <>
@@ -627,7 +960,7 @@ export function CreditBillMailImportButton({
                             <div key={`${item.date ?? ""}:${item.amount}:${index}`} className={`rounded-lg border px-3 py-2 text-xs ${ready ? "border-slate-200 bg-white" : "border-amber-200 bg-amber-50"}`}>
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium text-slate-700">{item.date || t("creditBill.noDate")} · {item.type === "income" ? t("creditBill.income") : item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}</span>
-                                <span className="tabular-nums text-slate-700">{item.amount.toFixed(2)}</span>
+                                <span className={`tabular-nums ${previewAmountClass(item.type)}`}>{item.amount.toFixed(2)}</span>
                               </div>
                               <div className="mt-1 truncate text-slate-500">{item.counterparty || item.institution || item.remark || item.rawText}</div>
                               {!ready ? <div className="mt-1 text-amber-700">{t("creditBill.missingImportFields")}</div> : null}
@@ -673,7 +1006,7 @@ export function CreditBillMailImportButton({
 
       {previewOpen && parsed && typeof document !== "undefined" ? createPortal(
         <div className="fixed inset-0 z-[100] flex items-start justify-center bg-slate-900/35 px-4 py-[6vh]">
-          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-[720px] max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-800">{t("creditBill.importPreviewTitle")}</div>
@@ -689,68 +1022,28 @@ export function CreditBillMailImportButton({
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto">
-              <table className="min-w-full border-separate border-spacing-0 text-xs">
-                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="w-10 border-b border-r border-slate-200 px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={allImportablePreviewSelected}
-                        onChange={toggleAllPreviewRows}
-                        aria-label="全选可导入记录"
-                      />
-                    </th>
-                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">日期</th>
-                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">入账日期</th>
-                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-left">类型</th>
-                    <th className="min-w-40 border-b border-r border-slate-200 px-3 py-2 text-left">账户</th>
-                    <th className="min-w-36 border-b border-r border-slate-200 px-3 py-2 text-left">分类/对手方</th>
-                    <th className="whitespace-nowrap border-b border-r border-slate-200 px-3 py-2 text-right">金额</th>
-                    <th className="min-w-56 border-b border-r border-slate-200 px-3 py-2 text-left">备注</th>
-                    <th className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.map((row) => {
-                    const checked = previewSelectedKeys.has(row.key);
-                    const item = row.item;
-                    return (
-                      <tr key={row.key} className={row.ready ? "bg-white hover:bg-blue-50/40" : "bg-amber-50/60 text-amber-800"}>
-                        <td className="border-b border-r border-slate-100 px-2 py-2 text-center">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={!row.ready}
-                            onChange={() => togglePreviewRow(row.key)}
-                            aria-label={`选择第 ${row.key + 1} 条记录`}
-                          />
-                        </td>
-                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">{item.date || "-"}</td>
-                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">
-                          <DateStepper
-                            value={normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(item.date)}
-                            onChange={(value) => updatePreviewItem(row.key, { postedDate: value || undefined })}
-                            className="h-7 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400"
-                          />
-                        </td>
-                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2">
-                          {item.type === "income" ? t("creditBill.income") : item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}
-                        </td>
-                        <td className="border-b border-r border-slate-100 px-3 py-2">{item.account || accountName}</td>
-                        <td className="border-b border-r border-slate-100 px-3 py-2">{item.category || item.counterparty || item.institution || "-"}</td>
-                        <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2 text-right tabular-nums">{item.amount.toFixed(2)}</td>
-                        <td className="max-w-72 border-b border-r border-slate-100 px-3 py-2">
-                          <div className="truncate" title={item.remark || item.rawText}>{item.remark || item.rawText || "-"}</div>
-                        </td>
-                        <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">
-                          {row.ready ? <span className="text-emerald-700">可导入</span> : <span className="text-amber-700">缺少必要字段</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="min-h-0 flex-1">
+              <AdvancedDataTable
+                storageKey="mmh_credit_bill_mail_import_preview_table_v1"
+                columns={previewTableColumns}
+                rows={previewRows}
+                rowKey={(row) => String(row.key)}
+                emptyText="没有可预览的账单记录"
+                minTableWidth={1520}
+                selectable
+                selectedKeys={previewSelectedKeys}
+                onSelectionChange={(keys) => {
+                  const readyKeys = new Set(previewRows.filter((row) => row.ready).map((row) => String(row.key)));
+                  setPreviewSelectedKeys(new Set(Array.from(keys).filter((key) => readyKeys.has(key))));
+                }}
+                rowClassName={(row) => row.ready ? "bg-white" : "bg-amber-50/70 text-amber-800"}
+                fillHeight
+                compactRows
+                toolbarMode="none"
+                showFilters={false}
+                sortable={false}
+                showColumnVisibilityButton={false}
+              />
             </div>
 
             {(error || info) ? (

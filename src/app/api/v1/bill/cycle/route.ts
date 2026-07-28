@@ -16,7 +16,7 @@ import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { addDaysUtc, clampDay, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { revalidateAfterSettingsChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import {
   getCreditBillAccountIds,
   syncCreditCardInstitutionSettings,
@@ -64,6 +64,10 @@ function dueForCycle(periodEnd: Date, billingDay: number, repaymentDay: number |
   const dueYear = periodEnd.getUTCFullYear() + Math.floor(dueMonth / 12);
   const dueMonthNorm = ((dueMonth % 12) + 12) % 12;
   return new Date(Date.UTC(dueYear, dueMonthNorm, clampDay(dueYear, dueMonthNorm, repaymentDay)));
+}
+
+function mdUtcDots(date: Date) {
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}.${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 export async function PATCH(req: Request) {
@@ -259,6 +263,8 @@ export async function PATCH(req: Request) {
     });
     const cycleIdByMonth = new Map(adjustedCycles.map((cycle) => [cycle.statementMonth, cycle.id]));
     const adjustedCycleByMonth = new Map(adjustedCycles.map((cycle) => [cycle.statementMonth, cycle]));
+    const changedMonthSet = new Set(changedCycles.map((cycle) => cycle.statementMonth));
+    const overrideStatementMonthSet = new Set(overrides.map((override) => override.statementMonth));
 
     await prisma.$transaction(async (tx) => {
       for (const cycle of cycleRows) {
@@ -289,6 +295,7 @@ export async function PATCH(req: Request) {
     });
 
     revalidateAfterTxChange();
+    revalidateAfterSettingsChange();
     return NextResponse.json({
       ok: true,
       data: {
@@ -298,6 +305,28 @@ export async function PATCH(req: Request) {
         billingDay,
         repaymentDay,
         updatedCycles: changedCycles.length,
+        updatedRows: cycleRows
+          .filter((cycle) => changedMonthSet.has(cycle.statementMonth))
+          .map((cycle) => {
+            const adjustedCycle = adjustedCycleByMonth.get(cycle.statementMonth);
+            const periodStart = adjustedCycle?.periodStart ?? cycle.periodStart;
+            const periodEnd = adjustedCycle?.periodEnd ?? cycle.periodEnd;
+            const due = adjustedCycle?.dueDate ?? cycle.dueDate;
+            return {
+              month: cycle.statementMonth,
+              periodStart: formatDateUtc(periodStart),
+              periodEnd: formatDateUtc(periodEnd),
+              dueDate: due ? formatDateUtc(due) : "",
+              periodLabel: `${mdUtcDots(periodStart)} ~ ${mdUtcDots(periodEnd)}`,
+              dueLabel: due ? formatDateUtc(due) : "-",
+              expenseAbs: cycle.expenseAbs,
+              income: cycle.income,
+              paid: cycle.paid,
+              effectiveBill: cycle.effectiveBill,
+              isCurrentCycle: cycle.isCurrentCycle,
+              hasOverride: overrideStatementMonthSet.has(cycle.statementMonth),
+            };
+          }),
       },
     });
   } catch (error) {

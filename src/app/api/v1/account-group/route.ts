@@ -6,6 +6,7 @@ import {
   assertInstitutionDisplayNamesUnique,
   isInstitutionNameUniqueError,
 } from "@/lib/server/institution-name-unique";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -56,6 +57,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Client-side handles page refresh
+  revalidateAfterSettingsChange();
   return NextResponse.json({ ok: true, group: { id: created.id, name: created.name } });
 }
 
@@ -122,5 +124,6 @@ export async function PUT(req: NextRequest) {
     }
   }
   // Client-side handles page refresh
+  revalidateAfterSettingsChange();
   return NextResponse.json({ ok: true });
 }

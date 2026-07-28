@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo, useRef, startTransition } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, startTransition } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -28,7 +28,7 @@ import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { InitModal } from "../InitModal";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { LanguageSwitcher } from "../LanguageSwitcher";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 import {
@@ -285,6 +285,7 @@ export function SidebarClient({
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
   const internalHistoryTargetRef = useRef<{ url: string; index: number } | null>(null);
+  const prefetchedHrefRef = useRef<Set<string>>(new Set());
   const [appHistory, setAppHistory] = useState<{ entries: string[]; index: number }>({
     entries: [],
     index: -1,
@@ -382,7 +383,9 @@ export function SidebarClient({
           if (data?.ok && Array.isArray(data?.accounts)) {
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts.map((a: any) => toSidebarAccountItem(a, getAppPreferences().creditCardSidebarLabelTemplate)));
+                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts
+                  .filter((a: any) => a.isActive !== false)
+                  .map((a: any) => toSidebarAccountItem(a, getAppPreferences().creditCardSidebarLabelTemplate)));
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;
@@ -457,6 +460,41 @@ export function SidebarClient({
     if (pathname === "/" && selectedAccountId) recordRecentAccount(selectedAccountId);
   }, [pathname, selectedAccountId]);
 
+  useEffect(() => {
+    const clearPrefetchMarkers = () => {
+      prefetchedHrefRef.current.clear();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, clearPrefetchMarkers);
+    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, clearPrefetchMarkers);
+    window.addEventListener(APP_PREFS_EVENT, clearPrefetchMarkers);
+    return () => {
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, clearPrefetchMarkers);
+      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, clearPrefetchMarkers);
+      window.removeEventListener(APP_PREFS_EVENT, clearPrefetchMarkers);
+    };
+  }, []);
+
+  const prefetchRoute = useCallback((href: string) => {
+    if (!href || href === currentAppUrl) return;
+    const prefetched = prefetchedHrefRef.current;
+    if (prefetched.has(href)) return;
+    if (prefetched.size > 80) prefetched.clear();
+    prefetched.add(href);
+
+    const run = () => {
+      try {
+        router.prefetch(href);
+      } catch {
+        prefetched.delete(href);
+      }
+    };
+    if (typeof window !== "undefined" && window.requestIdleCallback) {
+      window.requestIdleCallback(run, { timeout: 250 });
+    } else if (typeof window !== "undefined") {
+      window.setTimeout(run, 40);
+    }
+  }, [currentAppUrl, router]);
+
   function cycleOwnerFilter() {
     const cycle = ["", ...ownerOptions];
     const current = getSidebarOwnerFilterPreference();
@@ -518,9 +556,12 @@ export function SidebarClient({
         : "border border-transparent text-slate-600 hover:border-slate-100 hover:bg-white hover:text-slate-900"
     }`;
 
-  const balCls = (n: number) => n > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : n < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
-  const displayBalance = (item: AccountItem) => item.kind === "bank_credit" ? -item.balance : item.balance;
-  const displaySectionTotal = (kind: string, value: number) => kind === "信用卡" ? -value : value;
+  const balCls = (n: number) => {
+    const rounded = roundDisplayNumber(n);
+    return rounded > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : rounded < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
+  };
+  const displayBalance = (item: AccountItem) => roundDisplayNumber(item.kind === "bank_credit" ? -item.balance : item.balance);
+  const displaySectionTotal = (kind: string, value: number) => roundDisplayNumber(kind === "信用卡" ? -value : value);
   const itemBalanceCls = (item: AccountItem) => balCls(displayBalance(item));
   const sectionBalanceCls = (kind: string, value: number) => balCls(displaySectionTotal(kind, value));
   const sectionLabel = (label: string) => {
@@ -562,8 +603,9 @@ export function SidebarClient({
   // Restore and Refine Grouping logic
   const visibleItems = useMemo(() => {
     const passesCommonVisibility = (item: AccountItem) => {
-      if (item.kind === "loan" && item.institutionType === "bank" && item.balance === 0) return false;
-      if (hideZero && item.balance === 0) return false;
+      const visibleBalance = displayBalance(item);
+      if (item.kind === "loan" && item.institutionType === "bank" && isDisplayZeroMoney(visibleBalance)) return false;
+      if (hideZero && isDisplayZeroMoney(visibleBalance)) return false;
       if (selectedOwnerFilter && isOwnerScopedSidebarItem(item) && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
       return true;
     };
@@ -1043,6 +1085,9 @@ export function SidebarClient({
                                   prefetch={false}
                                   scroll={false}
                                   title={itemTitle}
+                                  onMouseEnter={() => prefetchRoute(href)}
+                                  onFocus={() => prefetchRoute(href)}
+                                  onTouchStart={() => prefetchRoute(href)}
                                   className={`${accountLinkCls(active)} ${group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : ""} ${index > 0 ? "border-t border-slate-100/90" : ""}`}
                                 >
                                   <span className="min-w-0 flex-1 pr-2">
@@ -1073,6 +1118,8 @@ export function SidebarClient({
           <Link
             href="/settings"
             prefetch={false}
+            onMouseEnter={() => prefetchRoute("/settings")}
+            onFocus={() => prefetchRoute("/settings")}
             onClick={() => {
               if (!pathname.startsWith("/settings")) setPendingSettings(true);
             }}

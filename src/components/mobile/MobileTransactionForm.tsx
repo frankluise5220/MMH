@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
 import { SmartSelect } from "@/components/SmartSelect";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 type AccountOption = AccountDisplaySource;
 type CategoryOption = { id: string; name: string; type: string };
@@ -36,7 +36,6 @@ const EMPTY_DRAFT: TransactionDraft = {
 };
 
 export function MobileTransactionForm({ accounts, categories, defaultAccountId = "" }: Props) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<TransactionDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
@@ -153,7 +152,11 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.ok) throw new Error(result?.error ?? "保存失败");
       setOpen(false);
-      router.refresh();
+      dispatchFinanceDataChanged({
+        reason: "mobile-transaction-save",
+        accountIds: [draft.accountId, draft.toAccountId].filter((id): id is string => Boolean(id)),
+        entryIds: draft.id ? [draft.id] : undefined,
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "保存失败");
     } finally {

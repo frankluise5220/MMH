@@ -1,9 +1,12 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
-import { invalidateSettingsAccountData } from "@/lib/client/settingsCache";
+import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
+
+function scopeForEntity(entity: "accountGroup" | "account" | "institution" | "counterparty" | "category"): SettingsDataScope {
+  return entity === "category" ? "categories" : "accounts";
+}
 
 export function SettingsDeleteButton({
   label,
@@ -16,7 +19,6 @@ export function SettingsDeleteButton({
   id: string;
   refresh?: boolean;
 }) {
-  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
   async function onDelete() {
@@ -36,12 +38,9 @@ export function SettingsDeleteButton({
         window.alert(data?.error ?? "删除失败");
         return;
       }
-      if (entity === "account" || entity === "accountGroup" || entity === "institution" || entity === "counterparty") {
-        invalidateSettingsAccountData();
-      }
+      void notifySettingsDataChanged({ scope: scopeForEntity(entity), reason: `${entity}:delete`, prefetch: true });
       if (refresh !== false) {
         window.dispatchEvent(new Event("mmh:fund:refresh"));
-        router.refresh();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "删除失败";

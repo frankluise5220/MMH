@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest) {
       select: { id: true, name: true, type: true, parentId: true, isSystem: true },
     });
 
+    revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true, category });
   } catch (e) {
     if (isDuplicateCategoryNameError(e)) {
@@ -248,6 +250,7 @@ export async function PUT(req: NextRequest) {
       return updated;
     });
 
+    revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true, category });
   } catch (e) {
     if (isDuplicateCategoryNameError(e)) {

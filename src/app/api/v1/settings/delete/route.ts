@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该所有人，无法删除" }, { status: 409 });
     await prisma.accountGroup.delete({ where: { id } });
     revalidateAfterSettingsChange();
-    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
+    // Client-side updates settings/account caches and broadcasts local change events.
     return NextResponse.json({ ok: true });
   }
 
@@ -42,7 +42,7 @@ export async function POST(req: Request) {
     if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });
     await prisma.account.delete({ where: { id } });
     revalidateAfterSettingsChange();
-    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
+    // Client-side updates settings/account caches and broadcasts local change events.
     return NextResponse.json({ ok: true });
   }
 
@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该往来对象，无法删除" }, { status: 409 });
     await prisma.institution.delete({ where: { id } });
     revalidateAfterSettingsChange();
-    // Client-side handles page refresh via mmh:fund:refresh + router.refresh()
+    // Client-side updates settings/account caches and broadcasts local change events.
     return NextResponse.json({ ok: true });
   }
 
@@ -92,6 +92,7 @@ export async function POST(req: Request) {
   if (used > 0) return NextResponse.json({ ok: false, error: "该类别已产生流水记录，无法删除" }, { status: 409 });
 
   await prisma.category.delete({ where: { id } });
+  revalidateAfterSettingsChange();
   // Client-side handles page refresh
   return NextResponse.json({ ok: true });
 }

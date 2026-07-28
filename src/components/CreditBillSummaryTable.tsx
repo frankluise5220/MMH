@@ -21,7 +21,8 @@ import {
   setCreditBillHideZeroPreference,
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 export type CreditBillSummaryRow = {
@@ -149,16 +150,26 @@ export function CreditBillSummaryTable({
             : row,
         ),
       );
-      setTimeout(() => router.refresh(), 120);
     }
 
     window.addEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
     return () => window.removeEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
-  }, [accountId, router]);
+  }, [accountId]);
 
   useEffect(() => {
     setPage(clampPage(initialPage, Math.max(1, Math.ceil(rows.length / pageSize))));
   }, [initialPage, pageSize, rows.length]);
+
+  useEffect(() => {
+    const handleFinanceChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[] }>).detail;
+      if (detail?.reason !== "account-credit-cycle-settings") return;
+      if (detail.accountIds?.length && !detail.accountIds.includes(accountId)) return;
+      router.refresh();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
+  }, [accountId, router]);
 
   useEffect(() => {
     if (page === safePage) return;
@@ -271,7 +282,6 @@ export function CreditBillSummaryTable({
         accountIds: [accountId],
         statementMonth: installmentSourceMonth || undefined,
       });
-      router.refresh();
     } catch (error) {
       setInstallmentError(error instanceof Error ? error.message : "创建账单分期失败");
     } finally {
@@ -295,11 +305,32 @@ export function CreditBillSummaryTable({
           dueDate: cycleForm.dueDate || null,
         }),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      const data = await res.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: {
+          billAccountIds?: string[];
+          updatedRows?: Array<Partial<CreditBillSummaryRow> & { month: string }>;
+        };
+      } | null;
       if (!data?.ok) throw new Error(data?.error ?? t("creditBill.updateCycleFailed"));
+      const updatedRows = Array.isArray(data.data?.updatedRows) ? data.data.updatedRows : [];
+      if (updatedRows.length > 0) {
+        const updatedByMonth = new Map(updatedRows.map((row) => [row.month, row]));
+        setLocalRows((current) =>
+          current.map((row) => {
+            const updated = updatedByMonth.get(row.month);
+            return updated ? { ...row, ...updated } : row;
+          }),
+        );
+      }
       setEditingCycle(null);
-      dispatchFinanceDataChanged({ reason: "bill-cycle", accountIds: [accountId], statementMonth: editingCycle.month });
-      setTimeout(() => router.refresh(), 120);
+      void notifySettingsDataChanged({ scope: "accounts", reason: "bill-cycle", prefetch: true });
+      dispatchFinanceDataChanged({
+        reason: "bill-cycle",
+        accountIds: data.data?.billAccountIds?.length ? data.data.billAccountIds : [accountId],
+        statementMonth: editingCycle.month,
+      });
     } catch (error) {
       setCycleError(error instanceof Error ? error.message : t("creditBill.updateCycleFailed"));
     } finally {

@@ -5,7 +5,7 @@ import { useMemo, useState, useCallback, useEffect } from "react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
-import { fetchSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
+import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 
 type Institution = {
   id: string;
@@ -76,8 +76,8 @@ export function SettingsInstitutionsClient({
   }, [mode]);
 
   function handleCreated() {
-    invalidateSettingsAccountData();
-    refreshList({ force: true });
+    void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:create`, prefetch: true });
+    void refreshList({ force: true });
   }
 
   return (
@@ -124,6 +124,10 @@ export function SettingsInstitutionsClient({
                         title={mode === "institution" ? "编辑机构" : mode === "family" ? "编辑家庭成员" : "编辑往来对象"}
                         nameLabel={mode === "institution" ? "机构名称" : mode === "family" ? "家庭成员名称" : "往来对象名称"}
                         allowedTypes={[...allowedTypes]}
+                        onSaved={() => {
+                          void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:update`, prefetch: true });
+                          void refreshList({ force: true });
+                        }}
                       />
                       <SettingsDeleteButton label={`${deleteLabel}：${item.name}`} entity={mode === "counterparty" ? "counterparty" : "institution"} id={item.id} />
                     </div>

@@ -62,6 +62,10 @@ export const SYSTEM_PROMPT = `你是一个出色的家庭帐簿记录管理专�
 - 用户说"消费"默认 type=expense
 - 用户说"恢复这7条"可解析为 operation=restore，并在 scope 中体现 limit=7（可放在 reason 中补充）
 - 如果是账单明细解析任务，operation=create 且 items 返回结构化明细
+- 如果是银行/支付交易提醒，operation=create，items 使用入库模板：
+  {"rawText":"原始片段","type":"expense|income|transfer|investment","date":"YYYY-MM-DD","amount":数字,"account":"账户可匹配文本","category":"","remark":"商户/摘要","counterparty":"银行或支付机构"}
+- 信用卡提醒出现"尾号3833信用卡"时，account 必须保留为"尾号3833信用卡"这类卡尾文本，不要泛化成"信用卡"。
+- 消费/刷卡/支出默认 type=expense；退款/退货/入账默认 type=income；金额用正数，方向由 type 表达。
 - 只输出 JSON，不要解释文字，不要 markdown。`;
 
 export const CLASSIFY_PROMPT = `你是 MMH 系统的输入分类器。你的任务是根据用户输入的内容，判断其类型并输出分类结果。

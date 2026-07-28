@@ -11,17 +11,32 @@
  * - 编辑弹窗内 useState 不需要前缀（作用域已清晰）
  */
 
+export function roundDisplayNumber(amount: number, fractionDigits = 2): number {
+  if (!Number.isFinite(amount)) return amount;
+  const factor = 10 ** fractionDigits;
+  const sign = amount < 0 ? -1 : 1;
+  const roundedAbs = Math.round((Math.abs(amount) + Number.EPSILON) * factor) / factor;
+  const rounded = roundedAbs === 0 ? 0 : sign * roundedAbs;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+export function isDisplayZeroMoney(amount: number, fractionDigits = 2): boolean {
+  return roundDisplayNumber(amount, fractionDigits) === 0;
+}
+
 /** 格式化金额，带正负号，2位小数，中文数字格式（不含¥前缀） */
 export function formatMoney(amount: number): string {
-  const sign = amount < 0 ? "-" : "";
-  const abs = Math.abs(amount);
+  const rounded = roundDisplayNumber(amount, 2);
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded);
   return `${sign}${abs.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /** 格式化金额，4位小数，中文数字格式（用于净值等精度要求高的场景） */
 export function formatMoney4(amount: number): string {
-  const sign = amount < 0 ? "-" : "";
-  const abs = Math.abs(amount);
+  const rounded = roundDisplayNumber(amount, 4);
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded);
   return `${sign}${abs.toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 }
 

@@ -7,7 +7,8 @@ import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
-import { fetchSettingsAccountData, getCachedSettingsAccountData, invalidateSettingsAccountData } from "@/lib/client/settingsCache";
+import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isDepositAccount } from "@/lib/account-kind-utils";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
@@ -110,6 +111,12 @@ export default function SettingsAccountsPage() {
     window.dispatchEvent(new Event("mmh:fund:refresh"));
   }
 
+  async function refreshSettingsAccounts(reason: string) {
+    void notifySettingsDataChanged({ scope: "accounts", reason, prefetch: true });
+    await loadAll({ force: true });
+    notifySidebarChanged();
+  }
+
   // ---- Group handlers ----
   async function createGroup() {
     if (!newGroupName.trim()) return;
@@ -120,9 +127,7 @@ export default function SettingsAccountsPage() {
     });
     setNewGroupName("");
     setShowNewGroup(false);
-    invalidateSettingsAccountData();
-    loadAll({ force: true });
-    notifySidebarChanged();
+    void refreshSettingsAccounts("account-group:create");
   }
 
   async function updateGroup() {
@@ -133,9 +138,7 @@ export default function SettingsAccountsPage() {
       body: JSON.stringify({ id: editGroupId, name: editGroupName.trim() }),
     });
     setEditGroupId(null);
-    invalidateSettingsAccountData();
-    loadAll({ force: true });
-    notifySidebarChanged();
+    void refreshSettingsAccounts("account-group:update");
   }
 
   async function deleteGroup(id: string) {
@@ -147,9 +150,7 @@ export default function SettingsAccountsPage() {
     const data = await res.json();
     if (data.ok) {
       setSelectedGroup("");
-      invalidateSettingsAccountData();
-      loadAll({ force: true });
-      notifySidebarChanged();
+      void refreshSettingsAccounts("account-group:delete");
     }
     else window.alert(data.error);
   }
@@ -179,20 +180,51 @@ export default function SettingsAccountsPage() {
   async function saveEdit() {
     if (!editingId) return;
     setEditError("");
+    const savedId = editingId;
+    const previousAccount = accounts.find((account) => account.id === savedId) ?? null;
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: editingId, ...editForm }),
+      body: JSON.stringify({ id: savedId, ...editForm }),
     });
-    const data = await res.json().catch(() => null);
+    const data = await res.json().catch(() => null) as {
+      ok?: boolean;
+      error?: string;
+      data?: {
+        affectedCreditAccountIds?: string[];
+        creditCycleRuleChanged?: boolean;
+      };
+    } | null;
     if (!res.ok || data?.ok === false) {
       setEditError(data?.error ?? "保存失败");
       return;
     }
     setEditingId(null);
-    invalidateSettingsAccountData();
-    loadAll({ force: true });
-    notifySidebarChanged();
+    const affectedCreditAccountIds = Array.isArray(data?.data?.affectedCreditAccountIds)
+      ? data.data.affectedCreditAccountIds.filter((id): id is string => Boolean(id))
+      : [];
+    const nextKind = editForm.kind;
+    const creditRuleChanged = Boolean(data?.data?.creditCycleRuleChanged) || Boolean(
+      previousAccount &&
+      (
+        previousAccount.kind === "bank_credit" ||
+        nextKind === "bank_credit"
+      ) &&
+      (
+        previousAccount.kind !== nextKind ||
+        String(previousAccount.institutionId ?? "") !== String(editForm.institutionId ?? "") ||
+        String(previousAccount.billingDay ?? "") !== String(editForm.billingDay ?? "") ||
+        String(previousAccount.repaymentDay ?? "") !== String(editForm.repaymentDay ?? "") ||
+        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate")
+      ),
+    );
+    if (creditRuleChanged) {
+      dispatchFinanceDataChanged({
+        reason: "account-credit-cycle-settings",
+        accountIds: affectedCreditAccountIds.length > 0 ? affectedCreditAccountIds : [savedId],
+      });
+    }
+    void refreshSettingsAccounts("account:update");
   }
 
   async function changeEditInstitution(institutionId: string) {
@@ -219,9 +251,7 @@ export default function SettingsAccountsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
-    invalidateSettingsAccountData();
-    loadAll({ force: true });
-    notifySidebarChanged();
+    void refreshSettingsAccounts("account:toggle-active");
   }
 
   const accountDisplayName = (account: Account) => {
@@ -588,9 +618,7 @@ export default function SettingsAccountsPage() {
                         const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
                         const data = await res.json();
                         if (data.ok) {
-                          invalidateSettingsAccountData();
-                          loadAll({ force: true });
-                          notifySidebarChanged();
+                          void refreshSettingsAccounts("account:delete");
                           return;
                         }
                         if (data.needPassword) {
@@ -631,9 +659,7 @@ export default function SettingsAccountsPage() {
         fieldData={{ groupId: groups, institutionId: institutions }}
         onCreated={() => {
           setShowCreateAccount(false);
-          invalidateSettingsAccountData();
-          loadAll({ force: true });
-          notifySidebarChanged();
+          void refreshSettingsAccounts("account:create");
         }}
         existingNames={accounts.map(a => a.name)}
       />
@@ -653,6 +679,7 @@ export default function SettingsAccountsPage() {
               setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);
               setEditForm(f => ({ ...f, groupId: id }));
             }
+            void refreshSettingsAccounts(nestedEntityType === "institution" ? "institution:create-nested" : "account-group:create-nested");
             setNestedEntityType(null);
           }}
         />
@@ -682,9 +709,7 @@ export default function SettingsAccountsPage() {
                   const data = await res.json();
                   if (data.ok) {
                     setDeleteTarget(null);
-                    invalidateSettingsAccountData();
-                    loadAll({ force: true });
-                    notifySidebarChanged();
+                    void refreshSettingsAccounts("account:delete-with-password");
                   }
                   else setDeleteError(data.error);
                 }
@@ -706,9 +731,7 @@ export default function SettingsAccountsPage() {
                 const data = await res.json();
                 if (data.ok) {
                   setDeleteTarget(null);
-                  invalidateSettingsAccountData();
-                  loadAll({ force: true });
-                  notifySidebarChanged();
+                  void refreshSettingsAccounts("account:delete-with-password");
                 }
                 else setDeleteError(data.error);
               }}
