@@ -108,6 +108,10 @@ function hasCommand(command) {
   return probe.status === 0;
 }
 
+function commandName(name) {
+  return process.platform === "win32" ? `${name}.cmd` : name;
+}
+
 function requirePath(target, message) {
   if (!fs.existsSync(target)) {
     throw new Error(message);
@@ -298,7 +302,7 @@ start_app () {
   export MMH_DEPLOY_TARGET=fnos-native
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
-  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/node_modules/prisma/build/index.js" db push --schema "$PRISMA_SCHEMA_PATH") >>"$LOG_FILE" 2>&1 || exit 1
+  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
 }
@@ -360,8 +364,51 @@ if (fs.existsSync(standaloneDir)) {
   copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
-  for (const dependency of [
+  const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
+  const diff = run(commandName("npx"), [
     "prisma",
+    "migrate",
+    "diff",
+    "--from-empty",
+    "--to-schema",
+    path.join(root, "prisma", "schema.native.prisma"),
+    "--script",
+    "--output",
+    initSql,
+  ], { stdio: "inherit" });
+  if (diff.status !== 0) process.exit(diff.status || 1);
+  write(path.join(stageDir, "app", "server", "scripts", "init-sqlite.cjs"), `const fs = require("node:fs");
+const path = require("node:path");
+const Database = require("better-sqlite3");
+
+function databasePathFromUrl(value) {
+  if (!value || !value.startsWith("file:")) {
+    throw new Error("DATABASE_URL must be a SQLite file: URL.");
+  }
+  const rawPath = value.slice("file:".length);
+  return path.resolve(decodeURIComponent(rawPath));
+}
+
+const dbPath = databasePathFromUrl(process.env.DATABASE_URL);
+const sqlPath = path.join(__dirname, "..", "prisma", "native-init.sql");
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+const db = new Database(dbPath);
+try {
+  const existing = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+  if (!existing) {
+    db.exec(fs.readFileSync(sqlPath, "utf8"));
+    db.exec("CREATE TABLE IF NOT EXISTS _mmh_native_schema (version TEXT NOT NULL PRIMARY KEY, appliedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+    db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run("0.1.0");
+    console.log(\`SQLite database initialized at \${dbPath}\`);
+  } else {
+    console.log(\`SQLite database already initialized at \${dbPath}\`);
+  }
+} finally {
+  db.close();
+}
+`);
+  for (const dependency of [
     "@prisma/client",
     "@prisma/adapter-better-sqlite3",
     "better-sqlite3",
