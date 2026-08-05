@@ -282,7 +282,7 @@ start_app () {
   export MMH_DEPLOY_TARGET=fnos-native
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
-  "$NODE_BIN" "$SERVER_DIR/node_modules/prisma/build/index.js" db push --schema "$PRISMA_SCHEMA_PATH" >>"$LOG_FILE" 2>&1 || exit 1
+  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/node_modules/prisma/build/index.js" db push --schema "$PRISMA_SCHEMA_PATH") >>"$LOG_FILE" 2>&1 || exit 1
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
 }
