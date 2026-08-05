@@ -1,6 +1,18 @@
 name: Build fnOS Native Stage
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fnos-native-stage.yml"
+      - "scripts/build-fnos-native-*.cjs"
+      - "scripts/generate-native-sqlite-schema.cjs"
+      - "scripts/verify-fnos-native-package.cjs"
+      - "prisma/schema.prisma"
+      - "prisma/schema.native.prisma"
+      - "src/lib/db/prisma.ts"
+      - "package.json"
+      - "package-lock.json"
   workflow_dispatch:
     inputs:
       package_version:
