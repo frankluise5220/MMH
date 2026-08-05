@@ -482,7 +482,9 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
     try {
-      const entryAmount = Math.abs(toNumber(item.amount));
+      const itemAmount = toNumber(item.amount);
+      const entryAmount = Math.abs(itemAmount);
+      const isExpenseRefund = item.type === "expense" && itemAmount < 0;
       if (entryAmount === 0) {
         errors.push({ index: i, rawText: item.rawText.slice(0, 60), error: "金额为 0，跳过" });
         continue;
@@ -716,7 +718,7 @@ export async function POST(req: NextRequest) {
           type: item.type as any,
           status: "posted",
           date,
-          amount: item.type === "expense" ? -entryAmount : entryAmount,
+          amount: item.type === "expense" ? (isExpenseRefund ? entryAmount : -entryAmount) : entryAmount,
           accountId: account.id,
           accountName: account.name,
           note: normalizedRemark,

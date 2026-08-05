@@ -39,6 +39,7 @@ export default function SettingsCategoriesClient({
   const [savingEdit, setSavingEdit] = useState(false);
   const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
   const [movingParent, setMovingParent] = useState(false);
+  const [moveExpanded, setMoveExpanded] = useState<Set<string>>(new Set());
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -53,6 +54,21 @@ export default function SettingsCategoriesClient({
       .then((next) => setCategories(next as Category[]))
       .catch(() => null);
   }, [initialCategories, initialLoaded]);
+
+  useEffect(() => {
+    const selected = selectedId ? categories.find(c => c.id === selectedId) : null;
+    if (!selected?.parentId) return;
+
+    setMoveExpanded(prev => {
+      const next = new Set(prev);
+      let parentId: string | null = selected.parentId;
+      while (parentId) {
+        next.add(parentId);
+        parentId = categories.find(c => c.id === parentId)?.parentId ?? null;
+      }
+      return next;
+    });
+  }, [categories, selectedId]);
 
   const roots = categories.filter(c => c.parentId === null);
   const childrenMap = new Map<string, Category[]>();
@@ -101,6 +117,15 @@ export default function SettingsCategoriesClient({
 
   function toggleExpand(id: string) {
     setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleMoveExpand(id: string) {
+    setMoveExpanded(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -401,17 +426,57 @@ export default function SettingsCategoriesClient({
   const selectedCategory = selectedId ? categories.find(c => c.id === selectedId) : null;
   const selectedChildren = selectedId ? getChildren(selectedId) : [];
   const selectedPath = selectedCategory ? getCategoryPath(selectedCategory).map(c => c.name) : [];
-  const parentMoveOptions = (() => {
-    if (!selectedCategory) return [];
-    const excluded = getDescendantIds(selectedCategory.id);
+  const moveExcluded = (() => {
+    const excluded = new Set<string>();
+    if (!selectedCategory) return excluded;
+    for (const id of getDescendantIds(selectedCategory.id)) excluded.add(id);
     excluded.add(selectedCategory.id);
-    return categories
-      .filter(c => c.type === selectedCategory.type && !excluded.has(c.id))
-      .map(c => ({
-        id: c.id,
-        label: getCategoryPath(c).map(item => item.name).join(" 〉"),
-      }));
+    return excluded;
   })();
+  const moveTargetRoots = selectedCategory
+    ? roots.filter(c => c.type === selectedCategory.type && !moveExcluded.has(c.id))
+    : [];
+  function getMoveTargetChildren(id: string) {
+    if (!selectedCategory) return [];
+    return getChildren(id).filter(c => c.type === selectedCategory.type && !moveExcluded.has(c.id));
+  }
+  function renderMoveTarget(cat: Category, depth: number) {
+    const children = getMoveTargetChildren(cat.id);
+    const hasChildren = children.length > 0;
+    const isExpanded = moveExpanded.has(cat.id);
+    const isCurrent = selectedCategory?.parentId === cat.id;
+
+    return (
+      <div key={cat.id}>
+        <div
+          className={`flex items-center gap-1 rounded px-2 py-1 ${isCurrent ? "bg-blue-50" : "hover:bg-slate-50"}`}
+          style={{ paddingLeft: `${8 + depth * 16}px` }}
+        >
+          <button
+            type="button"
+            onClick={() => hasChildren && toggleMoveExpand(cat.id)}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 hover:text-slate-600"
+            title={hasChildren ? (isExpanded ? "收起" : "展开") : undefined}
+          >
+            {hasChildren ? (isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />) : <span className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            disabled={selectedCategory?.isSystem || movingParent || isCurrent}
+            onClick={() => selectedCategory && void moveCategory(selectedCategory.id, cat.id)}
+            className={`min-w-0 flex-1 truncate text-left text-xs ${isCurrent ? "font-medium text-blue-700" : "text-slate-700"} disabled:cursor-default disabled:opacity-70`}
+            title={`移动到：${getCategoryPath(cat).map(item => item.name).join(" 〉")}`}
+          >
+            {cat.name}
+          </button>
+          {cat.isSystem && <span className="shrink-0 text-[10px] text-slate-400">系统</span>}
+          {isCurrent && <span className="shrink-0 text-[10px] text-blue-500">当前</span>}
+          {hasChildren && !isExpanded && <span className="shrink-0 text-[10px] text-slate-400">{children.length}</span>}
+        </div>
+        {isExpanded && children.map(child => renderMoveTarget(child, depth + 1))}
+      </div>
+    );
+  }
   const selectedParentName = selectedCategory?.parentId
     ? categories.find(c => c.id === selectedCategory.parentId)?.name ?? "上级分类"
     : selectedCategory
@@ -513,29 +578,41 @@ export default function SettingsCategoriesClient({
                       保存
                     </button>
                   </div>
-                  <label className="min-w-0">
+                  <div className="min-w-0">
                     <span className="form-label mb-1 block">上级分类</span>
-                    <select
-                      value={selectedCategory.parentId ?? ""}
-                      onChange={(event) => {
-                        const nextParentId = event.target.value || null;
-                        void moveCategory(selectedCategory.id, nextParentId);
-                      }}
-                      disabled={selectedCategory.isSystem || movingParent}
-                      className="form-input"
-                      title={`当前上级：${selectedParentName}`}
-                    >
-                      <option value="">{typeLabel(selectedCategory.type)}（顶层）</option>
-                      {parentMoveOptions.map(option => (
-                        <option key={option.id} value={option.id}>{option.label}</option>
-                      ))}
-                    </select>
+                    <div className="rounded-lg border border-slate-200 bg-white" title={`当前上级：${selectedParentName}`}>
+                      <div
+                        className={`flex items-center gap-1 border-b border-slate-100 px-2 py-1.5 ${
+                          selectedCategory.parentId === null ? "bg-blue-50" : ""
+                        }`}
+                      >
+                        <span className="h-5 w-5 shrink-0" />
+                        <button
+                          type="button"
+                          disabled={selectedCategory.isSystem || movingParent || selectedCategory.parentId === null}
+                          onClick={() => void moveCategory(selectedCategory.id, null)}
+                          className={`min-w-0 flex-1 truncate text-left text-xs ${
+                            selectedCategory.parentId === null ? "font-medium text-blue-700" : "text-slate-700"
+                          } disabled:cursor-default disabled:opacity-70`}
+                        >
+                          {typeLabel(selectedCategory.type)}（顶层）
+                        </button>
+                        {selectedCategory.parentId === null && <span className="shrink-0 text-[10px] text-blue-500">当前</span>}
+                      </div>
+                      <div className="max-h-48 overflow-y-auto py-1">
+                        {moveTargetRoots.length === 0 ? (
+                          <div className="px-3 py-3 text-center text-xs text-slate-400">暂无可移动到的分组</div>
+                        ) : (
+                          moveTargetRoots.map(root => renderMoveTarget(root, 0))
+                        )}
+                      </div>
+                    </div>
                     <div className="mt-1 text-[11px] text-slate-400">
                       {selectedCategory.isSystem
                         ? "系统内置类别固定显示，不能改名或移动。"
                         : `移动后，「${selectedCategory.name}」及其子分类会整体移动。`}
                     </div>
-                  </label>
+                  </div>
                 </div>
                 {editError && <div className="mt-2 text-xs text-red-600">{editError}</div>}
                 <div className="flex items-center gap-2 mt-3">

@@ -10,7 +10,10 @@
     "build": "next build",
     "start": "node scripts/start-standalone.cjs",
     "lint": "eslint",
+    "build:fnos": "node scripts/build-fnos-package.cjs",
+    "stage:fnos": "node scripts/build-fnos-package.cjs --stage-only",
     "check:encoding": "node scripts/check-encoding.cjs",
+    "check:fnos": "node scripts/verify-fnos-package.cjs",
     "codex:git": "node scripts/codex-git.cjs",
     "codex:rg": "node scripts/codex-rg.cjs",
     "codex:prisma": "node scripts/codex-prisma-run.cjs"

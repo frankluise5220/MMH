@@ -19,6 +19,8 @@ type ParsedItem = {
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
   amount: number;
+  outflow?: number;
+  inflow?: number;
   account?: string;
   fromAccount?: string;
   toAccount?: string;
@@ -215,8 +217,9 @@ function normalizeRecognitionText(value?: string | null) {
     .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, " ")
     .replace(/付款尾号[:：]?\s*\d{2,8}/g, " ")
     .replace(/尾号[:：]?\s*\d{2,8}/g, " ")
+    .replace(/\b\d{8}\b/g, " ")
     .replace(/[￥¥]?\d+(?:,\d{3})*(?:\.\d+)?/g, " ")
-    .replace(/人民币|支付宝|微信支付|财付通|拼多多支付|京东支付|云闪付|银联|入账|交易|消费|付款|支付/g, " ")
+    .replace(/人民币|支付宝|微信支付|财付通|拼多多支付|京东支付|云闪付|银联|入账|交易|消费|付款|支付|退款|退货|退回|冲正|撤销/g, " ")
     .replace(/[()（）【】[\]{}《》<>、,，.;；:：/\\|~!！?？"'“”‘’+\-_=—\s]+/g, " ")
     .trim();
 }
@@ -387,17 +390,37 @@ function isLikelyTransfer(text: string): boolean {
 }
 
 function extractPaymentTail(text: string) {
-  const match = String(text ?? "").match(/(?:付款|扣款|还款)?尾号[:：]?\s*(\d{2,8})/);
-  return match?.[1] ?? "";
+  const source = String(text ?? "");
+  const explicitTail = source.match(/(?:(付款|扣款|还款))?尾号[:：]?\s*(\d{2,8})/);
+  if (explicitTail) {
+    if (explicitTail[1]) return explicitTail[2];
+    const matchIndex = explicitTail.index ?? 0;
+    const prefix = source.slice(Math.max(0, matchIndex - 12), matchIndex);
+    if (!/信用卡|贷记卡|卡号|末四位|后四位/.test(prefix)) return explicitTail[2];
+  }
+
+  const sourceTail = source.match(/(?:银联(?:入账|转账|代扣|支付)?|云闪付|自动(?:扣款|还款)|付款|扣款|还款|转账|代扣)[^\d]{0,18}(\d{4})(?![\d.])/);
+  if (sourceTail) return sourceTail[1];
+
+  const leadingTail = source.match(/(?:^|[^\d])(\d{4})(?![\d.])[^\d]{0,18}(?:银联(?:入账|转账|代扣|支付)?|云闪付|自动(?:扣款|还款)|付款|扣款|还款|转账|代扣)/);
+  return leadingTail?.[1] ?? "";
 }
 
 function paymentTailAccountName(text: string) {
   const tail = extractPaymentTail(text);
-  return tail ? `尾号${tail}` : "";
+  if (!tail) return "";
+  return /银联入账|银联转账|银联代扣|银联支付|云闪付/i.test(text) ? `银联入账尾号${tail}` : `尾号${tail}`;
 }
 
 function isCreditCardRepaymentLike(text: string) {
   return /银联入账|付款尾号|扣款尾号|还款尾号|自动还款|自动扣款|信用卡还款|还款入账/i.test(text);
+}
+
+function isExpenseRefundLike(text: string) {
+  const normalized = String(text ?? "");
+  if (!normalized.trim()) return false;
+  if (isCreditCardRepaymentLike(normalized)) return false;
+  return /退款|退货|退回|消费撤销|交易撤销|冲正|Refund|Return|Reversal/i.test(normalized);
 }
 
 function decodeHtmlEntities(value: string) {
@@ -699,8 +722,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
     const { counterparty, category, institution } = aliasMatch(description);
     const transferText = `${description} ${amountCell.raw}`;
     const isRepaymentTransfer = isCreditCardRepaymentLike(transferText);
+    const isExpenseRefund = isExpenseRefundLike(transferText);
     const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免|还款|Payment|Credit/i.test(transferText);
-    const type = isRepaymentTransfer || isLikelyTransfer(description) ? "transfer" : isCreditIn ? "income" : amount < 0 ? "income" : "expense";
+    const type = isRepaymentTransfer || isLikelyTransfer(description) ? "transfer" : isExpenseRefund ? "expense" : isCreditIn ? "income" : amount < 0 ? "income" : "expense";
     const paymentFromAccount = type === "transfer" ? paymentTailAccountName(transferText) : "";
     const cardAccount = hasActiveAccountHeader
       ? activeAccount
@@ -716,6 +740,8 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: absAmount,
+      inflow: type === "income" || isExpenseRefund ? absAmount : undefined,
+      outflow: type === "expense" && !isExpenseRefund ? absAmount : undefined,
       account: cardAccount,
       fromAccount: paymentFromAccount || undefined,
       toAccount: type === "transfer" ? cardAccount : undefined,
@@ -751,7 +777,8 @@ function parseStructuredStatement(text: string): ParsedItem[] {
     if (amount === 0) continue;
 
     const { counterparty, category, institution } = aliasMatch(line);
-    const isIncome = /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
+    const isExpenseRefund = isExpenseRefundLike(line);
+    const isIncome = !isExpenseRefund && /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
     const isTransfer = isLikelyTransfer(line);
     const paymentFromAccount = isTransfer ? paymentTailAccountName(line) : "";
 
@@ -762,6 +789,8 @@ function parseStructuredStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: amount || 0,
+      inflow: type === "income" || isExpenseRefund ? amount || 0 : undefined,
+      outflow: type === "expense" && !isExpenseRefund ? amount || 0 : undefined,
       counterparty: counterparty || undefined,
       institution: institution || undefined,
       category: category || undefined,
@@ -778,7 +807,8 @@ function parseNaturalLanguage(text: string): ParsedItem[] {
   const amountM = text.match(/-?[\d,]+\.?\d*/);
   const amount = amountM ? Math.abs(parseFloat(amountM[0].replace(/,/g,""))) : 0;
 
-  const isIncome = /收到|收入|工资|入账|退款|返现|到账|红包|奖金|报销/i.test(text);
+  const isExpenseRefund = isExpenseRefundLike(text);
+  const isIncome = !isExpenseRefund && /收到|收入|工资|入账|退款|返现|到账|红包|奖金|报销/i.test(text);
   const isTransfer = isLikelyTransfer(text);
   const paymentFromAccount = isTransfer ? paymentTailAccountName(text) : "";
 
@@ -789,6 +819,8 @@ function parseNaturalLanguage(text: string): ParsedItem[] {
     type: isTransfer ? "transfer" : isIncome ? "income" : "expense",
     date: dateM ? `${dateM[1]}-${dateM[2].padStart(2,"0")}-${dateM[3].padStart(2,"0")}` : undefined,
     amount,
+    inflow: isIncome || isExpenseRefund ? amount : undefined,
+    outflow: !isIncome && !isExpenseRefund && !isTransfer ? amount : undefined,
     counterparty: counterparty || undefined,
     institution: institution || undefined,
     category: category || undefined,
@@ -845,6 +877,8 @@ export async function POST(req: Request) {
             {
               OR: [
                 { source: "manual" },
+                { source: "statement_import" },
+                { source: "ai_import" },
                 { source: null },
               ],
             },

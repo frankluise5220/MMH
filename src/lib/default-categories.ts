@@ -28,6 +28,7 @@ export type DefaultCategoryTemplate = {
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
 const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-24-bank-installment-expense-category-v1";
+const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -534,6 +535,100 @@ function categoryNormalizationKey(householdId: string) {
   return `category_hierarchy_normalized:${householdId}`;
 }
 
+function deletedDefaultCategoryKey(householdId: string) {
+  return `${DELETED_DEFAULT_CATEGORY_KEY_PREFIX}${householdId}`;
+}
+
+function defaultCategoryTemplateKey(type: DefaultCategoryType, parentName: string | null, name: string) {
+  return JSON.stringify([type, parentName ?? "", name]);
+}
+
+function isKnownCategoryType(type: string): type is DefaultCategoryType {
+  return ["expense", "income", "advance", "transfer", "investment"].includes(type);
+}
+
+function getDeletedDefaultCategorySet(value?: string | null) {
+  if (!value) return new Set<string>();
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return new Set<string>();
+    return new Set(parsed.filter((item): item is string => typeof item === "string"));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function getDeletedDefaultCategories(writer: CategoryWriter, householdId: string) {
+  const setting = await writer.systemSetting.findUnique({
+    where: { key: deletedDefaultCategoryKey(householdId) },
+    select: { value: true },
+  });
+  return getDeletedDefaultCategorySet(setting?.value);
+}
+
+function getDefaultCategoryDeletionTemplateKey(input: {
+  type: string;
+  name: string;
+  parentName?: string | null;
+  isSystem?: boolean;
+}) {
+  if (input.isSystem || !isKnownCategoryType(input.type)) return null;
+  const type = input.type;
+  const name = input.name.trim();
+  const parentName = input.parentName?.trim() || null;
+  if (!name) return null;
+
+  if (!parentName) {
+    const template = defaultCategoryTemplates.find((category) => category.type === type && category.name === name);
+    if (!template) return null;
+    const isSystem = template.isSystem ?? isSystemCategoryTemplate(type, name);
+    return isSystem ? null : defaultCategoryTemplateKey(type, null, name);
+  }
+
+  for (const category of defaultCategoryTemplates) {
+    if (category.type !== type) continue;
+    for (const child of category.children ?? []) {
+      const childName = typeof child === "string" ? child : child.name;
+      if (category.name === parentName && childName === name) {
+        const isSystem = typeof child === "string"
+          ? isSystemCategoryTemplate(type, childName)
+          : child.isSystem ?? isSystemCategoryTemplate(type, childName);
+        return isSystem ? null : defaultCategoryTemplateKey(type, parentName, name);
+      }
+      if (typeof child !== "string" && child.name === parentName && child.children?.includes(name)) {
+        const isSystem = isSystemCategoryTemplate(type, name);
+        return isSystem ? null : defaultCategoryTemplateKey(type, parentName, name);
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function recordDefaultCategoryDeletion(
+  writer: CategoryWriter,
+  householdId: string,
+  input: { type: string; name: string; parentName?: string | null; isSystem?: boolean },
+) {
+  const templateKey = getDefaultCategoryDeletionTemplateKey(input);
+  if (!templateKey) return;
+
+  const settingKey = deletedDefaultCategoryKey(householdId);
+  const current = await writer.systemSetting.findUnique({
+    where: { key: settingKey },
+    select: { value: true },
+  });
+  const deleted = getDeletedDefaultCategorySet(current?.value);
+  if (deleted.has(templateKey)) return;
+  deleted.add(templateKey);
+
+  await writer.systemSetting.upsert({
+    where: { key: settingKey },
+    update: { value: JSON.stringify([...deleted].sort()) },
+    create: { key: settingKey, value: JSON.stringify([...deleted].sort()) },
+  });
+}
+
 async function normalizeCategoryTypeLabelNodes(writer: CategoryWriter, householdId: string) {
   for (const type of Object.keys(categoryTypeLabels) as CategoryMainType[]) {
     if (type === "transfer" || type === "investment") continue;
@@ -701,38 +796,64 @@ async function renameRootCategory(
 }
 
 async function ensureDefaultCategoryTemplatesForHousehold(writer: CategoryWriter, householdId: string) {
+  const deletedDefaults = await getDeletedDefaultCategories(writer, householdId);
+
   for (const category of defaultCategoryTemplates) {
+    const rootIsSystem = category.isSystem ?? isSystemCategoryTemplate(category.type, category.name);
+    if (
+      !rootIsSystem &&
+      deletedDefaults.has(defaultCategoryTemplateKey(category.type, null, category.name))
+    ) {
+      continue;
+    }
+
     const root = await ensureDefaultCategory(
       writer,
       householdId,
       category.type,
       category.name,
       null,
-      category.isSystem ?? isSystemCategoryTemplate(category.type, category.name),
+      rootIsSystem,
     );
 
     for (const child of category.children ?? []) {
       const childName = typeof child === "string" ? child : child.name;
+      const childIsSystem = typeof child === "string"
+        ? isSystemCategoryTemplate(category.type, childName)
+        : child.isSystem ?? isSystemCategoryTemplate(category.type, childName);
+      if (
+        !childIsSystem &&
+        deletedDefaults.has(defaultCategoryTemplateKey(category.type, category.name, childName))
+      ) {
+        continue;
+      }
+
       const childRecord = await ensureDefaultCategory(
         writer,
         householdId,
         category.type,
         childName,
         root.id,
-        typeof child === "string"
-          ? isSystemCategoryTemplate(category.type, childName)
-          : child.isSystem ?? isSystemCategoryTemplate(category.type, childName),
+        childIsSystem,
       );
 
       if (typeof child !== "string") {
         for (const grandChildName of child.children ?? []) {
+          const grandChildIsSystem = isSystemCategoryTemplate(category.type, grandChildName);
+          if (
+            !grandChildIsSystem &&
+            deletedDefaults.has(defaultCategoryTemplateKey(category.type, childName, grandChildName))
+          ) {
+            continue;
+          }
+
           await ensureDefaultCategory(
             writer,
             householdId,
             category.type,
             grandChildName,
             childRecord.id,
-            isSystemCategoryTemplate(category.type, grandChildName),
+            grandChildIsSystem,
           );
         }
       }

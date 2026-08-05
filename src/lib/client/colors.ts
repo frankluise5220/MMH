@@ -28,6 +28,13 @@ export function pnlColor(n: number, scheme: ColorScheme): string {
 }
 
 export type ImportPreviewAmountKind = "income" | "expense" | "transfer" | "investment" | string;
+export type ImportPreviewFlowItem = {
+  type?: ImportPreviewAmountKind | null;
+  amount?: number | null;
+  inflow?: number | null;
+  outflow?: number | null;
+  transferDirection?: string | null;
+};
 
 /**
  * 账单导入预览展示的是资金方向，不是分类好坏。
@@ -37,6 +44,37 @@ export function importPreviewAmountColor(type: ImportPreviewAmountKind, scheme: 
   if (type === "income") return pnlColor(1, scheme);
   if (type === "expense") return pnlColor(-1, scheme);
   return pnlColor(0, scheme);
+}
+
+function positiveAmount(value: unknown) {
+  const amount = Math.abs(Number(value ?? 0));
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+export function importPreviewFlowAmountKind(item: ImportPreviewFlowItem): ImportPreviewAmountKind {
+  const inflow = positiveAmount(item.inflow);
+  const outflow = positiveAmount(item.outflow);
+  if (inflow > 0 && outflow <= 0) return "income";
+  if (outflow > 0 && inflow <= 0) return "expense";
+  if (item.transferDirection === "in") return "income";
+  if (item.transferDirection === "out") return "expense";
+  return item.type ?? "";
+}
+
+export function importPreviewFlowAmountColor(item: ImportPreviewFlowItem, scheme: ColorScheme): string {
+  return importPreviewAmountColor(importPreviewFlowAmountKind(item), scheme);
+}
+
+export function importPreviewFlowAmountText(item: ImportPreviewFlowItem): string {
+  const inflow = positiveAmount(item.inflow);
+  const outflow = positiveAmount(item.outflow);
+  const amount = inflow > 0 && outflow <= 0
+    ? inflow
+    : outflow > 0 && inflow <= 0
+      ? outflow
+      : positiveAmount(item.amount);
+  const isExpenseRefund = item.type === "expense" && inflow > 0 && outflow <= 0;
+  return `${isExpenseRefund ? "+" : ""}${amount.toFixed(2)}`;
 }
 
 /** 从 cookie 中读取色系偏好 */

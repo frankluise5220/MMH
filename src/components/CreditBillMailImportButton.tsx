@@ -7,7 +7,7 @@ import { MailSearch, RefreshCw, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { useI18n } from "@/lib/i18n";
-import { getColorSchemeFromCookie, importPreviewAmountColor } from "@/lib/client/colors";
+import { getColorSchemeFromCookie, importPreviewFlowAmountColor, importPreviewFlowAmountText } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { createImportAccountResolver } from "@/lib/account-import-match";
@@ -46,12 +46,20 @@ type MailDetail = {
   html: string;
   attachments?: MailAttachment[];
 };
+type LockedStatementBill = {
+  accountId?: string | null;
+  billAccountIds?: string[] | null;
+  statementMonth?: string | null;
+  amount?: number | string | null;
+};
 
 type ParsedItem = {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
   amount: number;
+  outflow?: number;
+  inflow?: number;
   account?: string;
   fromAccount?: string;
   toAccount?: string;
@@ -60,6 +68,7 @@ type ParsedItem = {
   counterparty?: string;
   institution?: string;
   postedDate?: string;
+  transferDirection?: "in" | "out";
   _meta?: {
     institutionName?: string;
     ownerName?: string;
@@ -80,6 +89,12 @@ type BookAccount = {
   id: string;
   name: string;
   kind: string;
+  label?: string | null;
+  selectorLabel?: string | null;
+  selectorCoreLabel?: string | null;
+  fullLabel?: string | null;
+  hoverTitle?: string | null;
+  displaySubLabel?: string | null;
   institutionId?: string | null;
   userId?: string | null;
   groupId?: string | null;
@@ -133,6 +148,24 @@ function isPlaceholderText(value?: string | null) {
 function cleanOptionalText(value?: string | null) {
   const text = String(value ?? "").trim();
   return isPlaceholderText(text) ? undefined : text;
+}
+
+function moneyNumber(value?: number | string | null) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatMoneyAmount(value?: number | string | null) {
+  const amount = moneyNumber(value);
+  if (amount === null) return "";
+  return `¥${amount.toFixed(2)}`;
+}
+
+function uniqueStatementAmounts(items: ParsedItem[]) {
+  const amounts = items
+    .map((item) => moneyNumber(item._meta?.statementAmount))
+    .filter((amount): amount is number => amount !== null && amount > 0);
+  return Array.from(new Map(amounts.map((amount) => [amount.toFixed(2), amount])).values());
 }
 
 function stripPostingDateNote(value: string) {
@@ -196,11 +229,16 @@ function normalizeParsedItem(item: ParsedItem): ParsedItem {
   const treatAsTransfer = item.type === "transfer" || shouldTreatAsTransfer(item);
   const date = item.date?.trim() || undefined;
   const postedDate = normalizeDateOnlyText(item.postedDate) || normalizeDateOnlyText(date) || undefined;
+  const amount = Math.abs(Number(item.amount ?? 0)) || 0;
+  const inflow = Math.abs(Number(item.inflow ?? 0)) || 0;
+  const outflow = Math.abs(Number(item.outflow ?? 0)) || 0;
   return {
     rawText: item.rawText,
     type: treatAsTransfer ? "transfer" : item.type,
     date,
-    amount: Math.abs(Number(item.amount ?? 0)) || 0,
+    amount,
+    inflow: inflow || undefined,
+    outflow: outflow || undefined,
     account: cleanOptionalText(item.account),
     fromAccount: treatAsTransfer ? cleanOptionalText(item.fromAccount) : cleanOptionalText(item.fromAccount),
     toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
@@ -209,6 +247,7 @@ function normalizeParsedItem(item: ParsedItem): ParsedItem {
     counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
     institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
     postedDate,
+    transferDirection: item.transferDirection,
     _meta: item._meta ? {
       institutionName: cleanOptionalText(item._meta.institutionName),
       ownerName: cleanOptionalText(item._meta.ownerName),
@@ -242,8 +281,8 @@ function isCreditStatement(item: ParsedItem) {
   return Boolean(item._meta?.institutionName || item._meta?.cardNumberMasked || /信用卡/.test(accountLabel(item)));
 }
 
-function previewAmountClass(type: ParsedItem["type"]) {
-  return importPreviewAmountColor(type, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
+function previewAmountClass(item: ParsedItem) {
+  return importPreviewFlowAmountColor(item, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
 }
 
 function isDebitOrEwalletAccount(account: BookAccount) {
@@ -312,6 +351,8 @@ function formatMatchedStatementAccountName(item: ParsedItem, accounts: BookAccou
   const resolvedName = resolveStatementAccountName(item, accounts, fallbackAccountName);
   const matched = accounts.find((account) => account.name === resolvedName);
   if (!matched) return resolvedName;
+  const provided = matched.fullLabel?.trim() || matched.selectorLabel?.trim() || matched.label?.trim();
+  if (provided) return provided;
   return formatAccountSelectorLabel({
     accountName: matched.name,
     institution: matched.Institution
@@ -352,7 +393,7 @@ export function CreditBillMailImportButton({
   const [parsed, setParsed] = useState<ParseState | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewSelectedKeys, setPreviewSelectedKeys] = useState<Set<string>>(new Set());
-  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountText: string; accountIds?: string[] } | null>(null);
+  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountText: string; accountIds?: string[]; lockedStatementBills?: LockedStatementBill[] } | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
   const bookAccountsRef = useRef<BookAccount[]>([]);
 
@@ -369,6 +410,18 @@ export function CreditBillMailImportButton({
       .filter((row) => row.ready && previewSelectedKeys.has(String(row.key)))
       .map((row) => row.item),
     [previewRows, previewSelectedKeys],
+  );
+  const parsedStatementAmounts = useMemo(
+    () => uniqueStatementAmounts(parsed?.items ?? []),
+    [parsed],
+  );
+  const importCompleteLockedBills = useMemo(
+    () => importComplete?.lockedStatementBills?.map((item) => ({
+      accountId: item.billAccountIds?.[0] ?? item.accountId ?? null,
+      statementMonth: item.statementMonth ?? "",
+      amount: moneyNumber(item.amount),
+    })) ?? [],
+    [importComplete?.lockedStatementBills],
   );
   const allImportablePreviewSelected =
     importableItems.length > 0 &&
@@ -689,7 +742,13 @@ export function CreditBillMailImportButton({
       }
       const createdCount = data.createdCount ?? 0;
       setInfo(`${tf("creditBill.importDone", { created: createdCount, skipped: skippedCount })}${accountText}`);
-      setImportComplete({ created: createdCount, skipped: skippedCount, accountText, accountIds: refreshAccountIds });
+      setImportComplete({
+        created: createdCount,
+        skipped: skippedCount,
+        accountText,
+        accountIds: refreshAccountIds,
+        lockedStatementBills: Array.isArray(data.lockedStatementBills) ? data.lockedStatementBills : [],
+      });
       if (createdCount > 0) {
         const importedMail = parsed.mail;
         setMails((prev) => prev.map((mail) => sameMail(mail, importedMail)
@@ -798,9 +857,9 @@ export function CreditBillMailImportButton({
       width: 110,
       minWidth: 88,
       align: "right",
-      filterText: (row) => row.item.amount.toFixed(2),
+      filterText: (row) => importPreviewFlowAmountText(row.item),
       sortValue: (row) => row.item.amount,
-      render: (row) => <span className={`tabular-nums ${previewAmountClass(row.item.type)}`}>{row.item.amount.toFixed(2)}</span>,
+      render: (row) => <span className={`tabular-nums ${previewAmountClass(row.item)}`}>{importPreviewFlowAmountText(row.item)}</span>,
     },
     {
       key: "remark",
@@ -960,7 +1019,7 @@ export function CreditBillMailImportButton({
                             <div key={`${item.date ?? ""}:${item.amount}:${index}`} className={`rounded-lg border px-3 py-2 text-xs ${ready ? "border-slate-200 bg-white" : "border-amber-200 bg-amber-50"}`}>
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium text-slate-700">{item.date || t("creditBill.noDate")} · {item.type === "income" ? t("creditBill.income") : item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}</span>
-                                <span className={`tabular-nums ${previewAmountClass(item.type)}`}>{item.amount.toFixed(2)}</span>
+                                <span className={`tabular-nums ${previewAmountClass(item)}`}>{importPreviewFlowAmountText(item)}</span>
                               </div>
                               <div className="mt-1 truncate text-slate-500">{item.counterparty || item.institution || item.remark || item.rawText}</div>
                               {!ready ? <div className="mt-1 text-amber-700">{t("creditBill.missingImportFields")}</div> : null}
@@ -1011,6 +1070,11 @@ export function CreditBillMailImportButton({
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-800">{t("creditBill.importPreviewTitle")}</div>
                 <div className="mt-0.5 truncate text-xs text-slate-500">{t("creditBill.importPreviewDesc")}</div>
+                {parsedStatementAmounts.length > 0 ? (
+                  <div className="mt-1 truncate text-xs text-slate-500">
+                    账单金额：{parsedStatementAmounts.map((amount) => formatMoneyAmount(amount)).join(" / ")}
+                  </div>
+                ) : null}
               </div>
               <button
                 type="button"
@@ -1050,6 +1114,16 @@ export function CreditBillMailImportButton({
               <div className="border-t border-slate-100 px-4 py-2 text-xs">
                 {error ? <div className="text-red-600">{error}</div> : null}
                 {info ? <div className="text-slate-500">{info}</div> : null}
+                {importCompleteLockedBills.length > 0 ? (
+                  <div className="mt-0.5 text-slate-500">
+                    已锁定：{importCompleteLockedBills.map((item) => {
+                      const account = bookAccounts.find((entry) => entry.id === item.accountId);
+                      const accountText = account?.fullLabel?.trim() || account?.selectorLabel?.trim() || account?.name || "账单账户";
+                      const amountText = formatMoneyAmount(item.amount);
+                      return `${item.statementMonth || "未知月份"} · ${accountText}${amountText ? ` · ${amountText}` : ""}`;
+                    }).join("；")}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

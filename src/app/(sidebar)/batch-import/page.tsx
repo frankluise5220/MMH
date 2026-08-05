@@ -116,6 +116,12 @@ type AccountOption = {
   id: string;
   name: string;
   kind: "cash" | "bank_debit" | "bank_credit" | string;
+  label?: string | null;
+  selectorLabel?: string | null;
+  selectorCoreLabel?: string | null;
+  fullLabel?: string | null;
+  hoverTitle?: string | null;
+  displaySubLabel?: string | null;
   numberMasked?: string | null;
   isActive?: boolean;
   Institution?: { id?: string; name: string | null; shortName?: string | null } | null;
@@ -568,8 +574,16 @@ function normalizeDateCell(value: string) {
   return raw;
 }
 
+function isExpenseRefundImportText(source: string) {
+  const text = String(source ?? "");
+  if (!text.trim()) return false;
+  if (/信用卡还款|还款入账|repayment|payment/i.test(text)) return false;
+  return /退款|退货|退回|消费撤销|交易撤销|冲正|refund|return|reversal/i.test(text);
+}
+
 function inferBillType(source: string, inflow: number, outflow: number, counterAccount: string): ParsedItem["type"] {
-  if (/结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|refund|credit/i.test(source)) return "income";
+  if (isExpenseRefundImportText(source)) return "expense";
+  if (/结息|利息|派息|收入|工资|报销|返现|返利|credit/i.test(source)) return "income";
   if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|repayment|payment/i.test(source)) return "transfer";
   if (/installment/i.test(source)) return "expense";
   if (counterAccount) return "transfer";
@@ -635,7 +649,8 @@ function normalizeFlowFields(
     return { amount: nextAmount, inflow: nextAmount, outflow: 0 };
   }
   if (type === "expense") {
-    const nextAmount = amount || outflow;
+    const nextAmount = amount || outflow || inflow;
+    if (inflow > 0 && outflow <= 0) return { amount: nextAmount, inflow: nextAmount, outflow: 0 };
     return { amount: nextAmount, inflow: 0, outflow: nextAmount };
   }
   if (type === "transfer") {
@@ -950,8 +965,10 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       counterAccount,
     });
     const secondRemark = readAny(row, ["第二备注", "对方备注", "转入备注", "toNote", "secondRemark"]);
-    const source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${remark}`;
-    const amountLooksIncome = /结息|利息|派息|收入|工资|报销|退款|退货|返现|返利|贷方|贷记|入账|存入/.test(source);
+    const rowText = row.join(" ");
+    const source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${institution} ${remark} ${secondRemark} ${counterAccount} ${account} ${rowText}`;
+    const isExpenseRefund = isExpenseRefundImportText(source);
+    const amountLooksIncome = !isExpenseRefund && /结息|利息|派息|收入|工资|报销|返现|返利|贷方|贷记|入账|存入/.test(source);
     const hasExplicitFlow = rawInflow > 0 || rawOutflow > 0 || !!rawInflowText || !!rawOutflowText;
     const rawInferredType = resolvedMajorType ?? inferBillType(
       source,
@@ -967,7 +984,9 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       : rawOutflow > 0 && rawInflow <= 0 ? "out"
       : null;
     const type: ParsedItem["type"] =
-      explicitFlowDirection === "in" && rawInferredType !== "transfer" && !businessType
+      isExpenseRefund && rawInferredType !== "transfer" && !businessType
+        ? "expense"
+        : explicitFlowDirection === "in" && rawInferredType !== "transfer" && !businessType
         ? "income"
         : explicitFlowDirection === "out" && rawInferredType !== "transfer" && !businessType
           ? "expense"
@@ -975,7 +994,13 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
             ? "income"
             : rawInferredType;
     const onlyAmountFlow = !hasExplicitFlow && rawAmount > 0
-      ? normalizeFlowFields(type, rawAmount, type === "income" ? rawAmount : 0, type === "income" ? 0 : rawAmount, type === "transfer" ? "out" : undefined)
+      ? normalizeFlowFields(
+        type,
+        rawAmount,
+        type === "income" || isExpenseRefund ? rawAmount : 0,
+        type === "income" || isExpenseRefund ? 0 : rawAmount,
+        type === "transfer" ? "out" : undefined,
+      )
       : null;
     const inflow = onlyAmountFlow?.inflow ?? rawInflow;
     const outflow = onlyAmountFlow?.outflow ?? rawOutflow;
@@ -1291,6 +1316,8 @@ export default function BatchImportPage() {
   }, []);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
+    const provided = account.fullLabel?.trim() || account.selectorLabel?.trim() || account.label?.trim();
+    if (provided) return provided;
     return formatAccountSelectorLabel({
       accountName: account.name,
       institution: account.Institution
@@ -1308,13 +1335,12 @@ export default function BatchImportPage() {
   }, [t]);
 
   const accountOptionSubLabel = useCallback((account: AccountOption) => {
-    return [kindLabel(account.kind), accountOwnerLabel(account)].filter(Boolean).join(" · ");
+    const owner = account.fullLabel?.trim() ? "" : accountOwnerLabel(account);
+    return [account.displaySubLabel?.trim() || kindLabel(account.kind), owner].filter(Boolean).join(" · ");
   }, [accountOwnerLabel]);
 
   const accountHoverTitle = useCallback((account: AccountOption) => {
-    return [accountDisplayLabel(account)]
-      .filter(Boolean)
-      .join(" · ");
+    return account.hoverTitle?.trim() || account.fullLabel?.trim() || accountDisplayLabel(account);
   }, [accountDisplayLabel]);
 
   const activeAccountOptions = useMemo(

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { recordDefaultCategoryDeletion } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
@@ -69,8 +70,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  const category = await prisma.category.findUnique({ where: { id } });
+  const category = await prisma.category.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      parentId: true,
+      householdId: true,
+      isSystem: true,
+      Category: { select: { name: true } },
+    },
+  });
   if (!category) return NextResponse.json({ ok: false, error: "类别不存在" }, { status: 404 });
+  if (!isAdmin(user) && category.householdId && category.householdId !== householdId) {
+    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+  }
 
   if (category.isSystem) {
     return NextResponse.json({ ok: false, error: "系统内置类别，无法删除" }, { status: 409 });
@@ -80,6 +95,7 @@ export async function POST(req: Request) {
     prisma.category.count({ where: { parentId: id } }),
     prisma.txRecord.count({
       where: {
+        householdId,
         OR: [
           { categoryId: id },
           { categoryId: null, categoryName: category.name },
@@ -91,7 +107,15 @@ export async function POST(req: Request) {
   if (children > 0) return NextResponse.json({ ok: false, error: "该类别有子级，无法删除" }, { status: 409 });
   if (used > 0) return NextResponse.json({ ok: false, error: "该类别已产生流水记录，无法删除" }, { status: 409 });
 
-  await prisma.category.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await recordDefaultCategoryDeletion(tx, householdId, {
+      type: category.type,
+      name: category.name,
+      parentName: category.Category?.name ?? null,
+      isSystem: category.isSystem,
+    });
+    await tx.category.delete({ where: { id } });
+  });
   revalidateAfterSettingsChange();
   // Client-side handles page refresh
   return NextResponse.json({ ok: true });

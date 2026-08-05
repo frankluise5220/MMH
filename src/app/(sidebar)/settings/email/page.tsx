@@ -10,7 +10,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { createImportAccountResolver } from "@/lib/account-import-match";
-import { getColorSchemeFromCookie, importPreviewAmountColor } from "@/lib/client/colors";
+import { getColorSchemeFromCookie, importPreviewFlowAmountColor, importPreviewFlowAmountText } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
@@ -56,6 +56,12 @@ type BookAccount = {
   id: string;
   name: string;
   kind: string;
+  label?: string | null;
+  selectorLabel?: string | null;
+  selectorCoreLabel?: string | null;
+  fullLabel?: string | null;
+  hoverTitle?: string | null;
+  displaySubLabel?: string | null;
   institutionId?: string | null;
   userId?: string | null;
   groupId?: string | null;
@@ -100,7 +106,7 @@ type ParsedItemMeta = {
 };
 type ParsedItem = {
   rawText: string; type: "expense" | "income" | "transfer" | "investment";
-  date?: string; amount: number; account?: string; fromAccount?: string; toAccount?: string; category?: string; remark?: string; counterparty?: string; institution?: string; postedDate?: string;
+  date?: string; amount: number; inflow?: number; outflow?: number; account?: string; fromAccount?: string; toAccount?: string; category?: string; remark?: string; counterparty?: string; institution?: string; postedDate?: string; transferDirection?: "in" | "out";
   _meta?: ParsedItemMeta;
 };
 type ImportPreviewEditableCell = "date" | "postedDate" | "type" | "account" | "counterAccount" | "category" | "institution" | "amount" | "remark";
@@ -117,6 +123,18 @@ type ImportPreviewState = {
   selectedKeys: Set<string>;
   selectAll: boolean;
   statementAccountId?: string;
+};
+type LockedStatementBill = {
+  accountId?: string | null;
+  billAccountIds?: string[] | null;
+  statementMonth?: string | null;
+  amount?: number | string | null;
+};
+type ImportCompleteState = {
+  created: number;
+  skipped: number;
+  accountId: string | null;
+  lockedStatementBills: LockedStatementBill[];
 };
 const IMPORT_PREVIEW_FIELD_LABELS: Record<ImportPreviewEditableCell, string> = {
   date: "交易日",
@@ -162,6 +180,24 @@ function isPlaceholderText(value?: string | null) {
 function cleanOptionalText(value?: string | null) {
   const text = String(value ?? "").trim();
   return isPlaceholderText(text) ? undefined : text;
+}
+
+function moneyNumber(value?: number | string | null) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatMoneyAmount(value?: number | string | null) {
+  const amount = moneyNumber(value);
+  if (amount === null) return "";
+  return `¥${amount.toFixed(2)}`;
+}
+
+function uniqueStatementAmounts(items: ParsedItem[]) {
+  const amounts = items
+    .map((item) => moneyNumber(item._meta?.statementAmount))
+    .filter((amount): amount is number => amount !== null && amount > 0);
+  return Array.from(new Map(amounts.map((amount) => [amount.toFixed(2), amount])).values());
 }
 
 function normalizeDateOnlyText(value?: string | null) {
@@ -259,7 +295,7 @@ export default function EmailSettingsPage() {
   const [accountDraft, setAccountDraft] = useState<AccountCreateDraft | null>(null);
   const [savingAccountDraft, setSavingAccountDraft] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [importComplete, setImportComplete] = useState<{ created: number; skipped: number; accountId: string | null } | null>(null);
+  const [importComplete, setImportComplete] = useState<ImportCompleteState | null>(null);
   const [mailRange, setMailRange] = useState("month");
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
@@ -614,7 +650,12 @@ export default function EmailSettingsPage() {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
           setError(firstError ? `有 ${data.skippedCount} 条未导入：${firstError}` : `有 ${data.skippedCount} 条未导入，请检查账户匹配。`);
         }
-        setImportComplete({ created: createdCount, skipped: skippedCount, accountId: refreshAccountIds.length === 1 ? refreshAccountIds[0] : targetAccountId });
+        setImportComplete({
+          created: createdCount,
+          skipped: skippedCount,
+          accountId: refreshAccountIds.length === 1 ? refreshAccountIds[0] : targetAccountId,
+          lockedStatementBills: Array.isArray(data.lockedStatementBills) ? data.lockedStatementBills : [],
+        });
         dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: refreshAccountIds.length > 0 ? refreshAccountIds : undefined });
       }
       else setError(data.error ?? "导入失败");
@@ -748,13 +789,19 @@ export default function EmailSettingsPage() {
     const treatAsTransfer = item.type === "transfer" || shouldTreatAsTransfer(item);
     const date = item.date?.trim() || undefined;
     const postedDate = normalizeDateOnlyText(item.postedDate) ?? normalizeDateOnlyText(date);
+    const amount = Math.abs(Number(item.amount ?? 0)) || 0;
+    const inflow = Math.abs(Number(item.inflow ?? 0)) || 0;
+    const outflow = Math.abs(Number(item.outflow ?? 0)) || 0;
     return {
       rawText: item.rawText,
       type: treatAsTransfer ? "transfer" : item.type,
       date,
-      amount: Math.abs(item.amount ?? 0) || 0,
+      amount,
+      inflow: inflow || undefined,
+      outflow: outflow || undefined,
+      transferDirection: item.transferDirection,
       account: cleanOptionalText(item.account),
-      fromAccount: treatAsTransfer ? guessDebitTransferAccountName(item) : cleanOptionalText(item.fromAccount),
+      fromAccount: treatAsTransfer ? (cleanOptionalText(item.fromAccount) || guessDebitTransferAccountName(item)) : cleanOptionalText(item.fromAccount),
       toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
       category: treatAsTransfer ? undefined : cleanOptionalText(item.category) || merchant.category,
       remark,
@@ -803,6 +850,20 @@ export default function EmailSettingsPage() {
       statementAccountId,
     });
   }
+
+  const importPreviewStatementAmounts = useMemo(() => uniqueStatementAmounts(parsedItems), [parsedItems]);
+
+  const importCompleteLockedBills = useMemo(() => {
+    if (!importComplete?.lockedStatementBills?.length) return [];
+    return importComplete.lockedStatementBills.map((item) => {
+      const accountId = item.billAccountIds?.[0] ?? item.accountId ?? null;
+      return {
+        accountId,
+        statementMonth: item.statementMonth ?? "",
+        amount: moneyNumber(item.amount),
+      };
+    });
+  }, [importComplete?.lockedStatementBills]);
 
   function updatePreviewRow(rowKey: string, patch: Partial<ParsedItem>, accountId?: string | null) {
     if (!importPreview) return;
@@ -885,12 +946,12 @@ export default function EmailSettingsPage() {
   const previewAccountDisplayLabelById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account?.selectorLabel ?? account?.label ?? null;
+    return account?.fullLabel ?? account?.selectorLabel ?? account?.label ?? null;
   }, [previewAccountDisplayById]);
   const previewAccountDisplayTitleById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account?.hoverTitle ?? account?.selectorLabel ?? account?.label ?? null;
+    return account?.hoverTitle ?? account?.fullLabel ?? account?.selectorLabel ?? account?.label ?? null;
   }, [previewAccountDisplayById]);
   const selectedPreviewAccountDisplayLabel = useCallback((row: ImportPreviewItem) => {
     const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
@@ -907,7 +968,7 @@ export default function EmailSettingsPage() {
     return [
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
-        .map((account) => ({ value: account.id, label: account.selectorLabel, title: account.hoverTitle })),
+        .map((account) => ({ value: account.id, label: account.fullLabel ?? account.selectorLabel, title: account.hoverTitle ?? account.fullLabel })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
@@ -916,7 +977,7 @@ export default function EmailSettingsPage() {
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
         .filter((account) => account.kind === "bank_debit" || account.kind === "ewallet")
-        .map((account) => ({ value: account.id, label: account.selectorLabel, title: account.hoverTitle })),
+        .map((account) => ({ value: account.id, label: account.fullLabel ?? account.selectorLabel, title: account.hoverTitle ?? account.fullLabel })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountDisplayOptions = useMemo(
@@ -1089,15 +1150,24 @@ export default function EmailSettingsPage() {
     ];
   }, [hasImportPreview, previewAccountReplaceOptions, previewCategoryReplaceOptions, previewDebitAccountReplaceOptions]);
 
-  function previewDebitAccountIdFromName(accountName: string) {
+  const previewDebitAccountIdFromName = useCallback((accountName: string) => {
     const nameKey = normalizedKey(accountName);
     if (!nameKey) return undefined;
-    const found = bookAccounts.find((account) =>
+    const resolver = createImportAccountResolver(bookAccounts.filter(isDebitOrEwalletAccount));
+    const found = resolver(accountName);
+    if (found?.id) return found.id;
+    const fallback = bookAccounts.find((account) =>
       isDebitOrEwalletAccount(account) &&
       normalizedKey(account.name) === nameKey
     );
-    return found?.id;
-  }
+    return fallback?.id;
+  }, [bookAccounts]);
+
+  const previewDebitAccountDisplayLabelByName = useCallback((accountName: string) => {
+    const accountId = previewDebitAccountIdFromName(accountName);
+    if (!accountId) return cleanOptionalText(accountName) || null;
+    return previewAccountDisplayLabelById(accountId) || cleanOptionalText(accountName) || null;
+  }, [previewAccountDisplayLabelById, previewDebitAccountIdFromName]);
 
   function recomputePreviewRow(row: ImportPreviewItem, itemPatch: Partial<ParsedItem>, accountId?: string | null): ImportPreviewItem {
     let item = { ...row.item, ...itemPatch };
@@ -1305,11 +1375,11 @@ export default function EmailSettingsPage() {
   }
 
   function previewAmountText(item: ParsedItem) {
-    return Math.abs(item.amount ?? 0).toFixed(2);
+    return importPreviewFlowAmountText(item);
   }
 
-  function amountTextClass(type: ParsedItem["type"]) {
-    return importPreviewAmountColor(type, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
+  function amountTextClass(item: ParsedItem) {
+    return importPreviewFlowAmountColor(item, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
   }
 
   function accountLabel(item: ParsedItem) {
@@ -1320,7 +1390,7 @@ export default function EmailSettingsPage() {
     return "未识别账户";
   }
 
-  const importPreviewColumns = useMemo<AdvancedDataTableColumn<ImportPreviewItem>[]>(() => [
+  const importPreviewColumns: AdvancedDataTableColumn<ImportPreviewItem>[] = [
     {
       key: "date",
       label: "交易日",
@@ -1415,8 +1485,8 @@ export default function EmailSettingsPage() {
             >
               <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
               {previewAccountOptions(item).map((account) => (
-                <option key={account.id} value={account.id} title={account.hoverTitle}>
-                  {account.selectorLabel}
+                <option key={account.id} value={account.id} title={account.fullLabel ?? account.hoverTitle}>
+                  {account.fullLabel ?? account.selectorLabel}
                 </option>
               ))}
             </select>
@@ -1474,7 +1544,7 @@ export default function EmailSettingsPage() {
               />
             ) : (
               <span className="cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title="双击修改对手账户">
-                {cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "-"}
+                {previewDebitAccountDisplayLabelByName(cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "") || cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "-"}
               </span>
             )}
           </div>
@@ -1540,9 +1610,9 @@ export default function EmailSettingsPage() {
       width: 112,
       minWidth: 88,
       align: "right",
-      filterText: (row) => Number.isFinite(row.item.amount) ? row.item.amount.toFixed(2) : "(空)",
+      filterText: (row) => previewAmountText(row.item) || "(空)",
       sortValue: (row) => row.item.amount,
-      render: (row) => <span className={`whitespace-nowrap tabular-nums ${amountTextClass(row.item.type)}`}>{previewAmountText(row.item)}</span>,
+      render: (row) => <span className={`whitespace-nowrap tabular-nums ${amountTextClass(row.item)}`}>{previewAmountText(row.item)}</span>,
     },
     {
       key: "remark",
@@ -1566,18 +1636,7 @@ export default function EmailSettingsPage() {
         </span>
       ),
     },
-  ], [
-    editingPreviewCell,
-    importPreview,
-    displayPreviewDebitAccountOptions,
-    previewDebitOwnerFilterLabel,
-    previewCategoryNameById,
-    previewCategorySelectValue,
-    previewCategorySmartSelectOptionsFor,
-    selectedPreviewAccountDisplayLabel,
-    selectedPreviewAccountDisplayTitle,
-    cyclePreviewDebitOwnerFilter,
-  ]);
+  ];
 
   function formatAttachmentSize(size: number) {
     if (!Number.isFinite(size) || size <= 0) return "";
@@ -1752,6 +1811,11 @@ export default function EmailSettingsPage() {
                 toolbarTitle="账单导入预览"
                 toolbarRightContent={(
                   <div className="flex items-center gap-3 text-xs text-slate-500">
+                    {importPreviewStatementAmounts.length > 0 && (
+                      <span>
+                        账单金额：{importPreviewStatementAmounts.map((amount) => formatMoneyAmount(amount)).join(" / ")}
+                      </span>
+                    )}
                     {importPreview.statementAccountId && (
                       <span>
                         账户：{previewAccountDisplayLabelById(importPreview.statementAccountId) ?? "已匹配账户"}
@@ -1772,7 +1836,20 @@ export default function EmailSettingsPage() {
 
             <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
               <div className="text-xs text-slate-500">
-                {importComplete ? "导入已完成，请确认后返回。" : `将导入 ${importPreview.selectedKeys.size} 条`}
+                {importComplete ? (
+                  importCompleteLockedBills.length > 0 ? (
+                    <span className="space-y-1">
+                      <span className="block">导入已完成，请确认后返回。</span>
+                      <span className="block">
+                        已锁定：{importCompleteLockedBills.map((item) => {
+                          const accountText = previewAccountDisplayLabelById(item.accountId) ?? "账单账户";
+                          const amountText = formatMoneyAmount(item.amount);
+                          return `${item.statementMonth || "未知月份"} · ${accountText}${amountText ? ` · ${amountText}` : ""}`;
+                        }).join("；")}
+                      </span>
+                    </span>
+                  ) : "导入已完成，请确认后返回。"
+                ) : `将导入 ${importPreview.selectedKeys.size} 条`}
               </div>
               <div className="flex items-center gap-2">
                 {!importComplete && (

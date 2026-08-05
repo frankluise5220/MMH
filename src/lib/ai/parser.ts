@@ -13,6 +13,13 @@ export interface ParsedItem {
   counterparty?: string;
 }
 
+function isExpenseRefundLike(text: string) {
+  const normalized = String(text ?? "");
+  if (!normalized.trim()) return false;
+  if (/信用卡还款|还款入账|repayment|payment/i.test(normalized)) return false;
+  return /退款|退货|退回|消费撤销|交易撤销|冲正|refund|return|reversal/i.test(normalized);
+}
+
 // ── Date utilities (used by normalizeDate / parseItems) ──
 
 export function formatYmd(d: Date) {
@@ -100,7 +107,9 @@ export function parseTransactionSuccessReminder(text: string, now: Date): { item
   const typeText = raw.match(/交易类型\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
   if (!md || !Number.isFinite(amount) || amount === 0) return null;
 
-  const isIncome = /退款|退货|返还|收入|入账/.test(typeText) && !/消费/.test(typeText);
+  const combinedText = `${typeText} ${merchant}`;
+  const isExpenseRefund = isExpenseRefundLike(combinedText);
+  const isIncome = !isExpenseRefund && /返还|收入|入账/.test(typeText) && !/消费/.test(typeText);
   const account = tail ? `尾号${tail}信用卡` : undefined;
   const counterparty = /支付宝/.test(merchant) ? "支付宝" : /微信/.test(merchant) ? "微信" : /银联/.test(merchant) ? "银联" : undefined;
   const date = normalizeMonthDayDate(Number(md[1]), Number(md[2]), now);
@@ -111,7 +120,7 @@ export function parseTransactionSuccessReminder(text: string, now: Date): { item
       rawText: raw.slice(0, 200),
       type: isIncome ? "income" : "expense",
       date,
-      amount: Math.abs(amount),
+      amount: isExpenseRefund ? -Math.abs(amount) : Math.abs(amount),
       account,
       remark: merchant || typeText || undefined,
       counterparty,
@@ -178,7 +187,7 @@ export function parseAmountLoose(value: unknown, fallbackText: string) {
 }
 
 export function isReadyForImport(item: ParsedItem) {
-  if (!(item.amount > 0)) return false;
+  if (!(Math.abs(item.amount) > 0)) return false;
   if (item.type === "transfer") return !!(item.fromAccount?.trim() && item.toAccount?.trim());
   return true;
 }
@@ -277,10 +286,17 @@ export function parseItems(raw: string, now: Date, userTextForContext: string): 
     const ctxText = `${userTextForContext}\n${rawText}`.trim();
     const typeFromModel = (item.type as ParsedItem["type"]) || "expense";
     const date = normalizeDate(item.date, ctxText, now);
-    const amount = parseAmountLoose(item.amount, ctxText);
+    const itemDirectionText = `${rawText} ${item.remark ?? ""} ${item.category ?? ""} ${item.counterparty ?? ""}`;
+    const isExpenseRefund = isExpenseRefundLike(itemDirectionText);
+    const type = isExpenseRefund && typeFromModel !== "transfer" && typeFromModel !== "investment"
+      ? "expense"
+      : typeFromModel;
+    const amount = isExpenseRefund && type === "expense"
+      ? -parseAmountLoose(item.amount, ctxText)
+      : parseAmountLoose(item.amount, ctxText);
     return {
       rawText,
-      type: typeFromModel,
+      type,
       date,
       amount,
       account: item.account?.trim() ? item.account : undefined,

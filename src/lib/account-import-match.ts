@@ -102,6 +102,16 @@ export function isImportPaymentTailSourceHint(value?: string | null) {
   return /(?:付款|扣款|还款|银联转账|银联入账|自动扣款|自动还款|转账).*尾号[:：]?\s*\d{2,8}/.test(text);
 }
 
+export function isImportUnionPayDebitTailSourceHint(value?: string | null) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return /银联入账|银联转账|银联代扣|银联支付|云闪付/i.test(text) && /\d{4}(?!\d)/.test(text);
+}
+
+function isBareLast4Hint(value?: string | null) {
+  return /^\d{4}$/.test(String(value ?? "").trim());
+}
+
 function accountLast4(account: ImportAccountMatchSource) {
   const fromMasked = extractImportAccountLast4(account.numberMasked ?? "");
   if (fromMasked) return fromMasked;
@@ -368,6 +378,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     return topMatches.length === 1 ? topMatches[0].item.account : null;
   }
 
+  function pickUnionPayDebitSource(matches: Array<(typeof indexed)[number]>) {
+    const debitMatches = matches.filter((item) => item.account.kind === "bank_debit");
+    if (debitMatches.length === 1) return debitMatches[0].account;
+    return null;
+  }
+
   return (accountName: string | undefined): ImportAccountMatchResult<T> => {
     const raw = String(accountName ?? "").trim();
     if (!raw) return result(null, [], { targetKind: null, targetBankNames: [] });
@@ -393,6 +409,14 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
         if (narrowed) return result(narrowed, [], { targetKind, targetBankNames });
         if (exactMatches.length === 1 && (!targetKind || !exactMatches[0].account.kind || exactMatches[0].account.kind === targetKind)) {
           return result(exactMatches[0].account, [], { targetKind, targetBankNames });
+        }
+        if (!targetKind && exactMatches.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
+          const paymentSource = pickUnionPayDebitSource(exactMatches);
+          if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
+        }
+        if (!targetKind && exactMatches.length > 1 && isBareLast4Hint(raw)) {
+          const paymentSource = pickPaymentTailSource(exactMatches);
+          if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
         }
         if (!targetKind && exactMatches.length > 1) return result(null, exactMatches, { targetKind, targetBankNames });
 
@@ -422,7 +446,15 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
         return bankKeyMatches(item, targetBankKeys);
       });
       if (byLast4.length === 1) return result(byLast4[0].account, [], { targetKind, targetBankNames });
+      if (byLast4.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
+        const paymentSource = pickUnionPayDebitSource(byLast4);
+        if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
+      }
       if (byLast4.length > 1 && isImportPaymentTailSourceHint(raw)) {
+        const paymentSource = pickPaymentTailSource(byLast4);
+        if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
+      }
+      if (byLast4.length > 1 && !targetKind && isBareLast4Hint(raw)) {
         const paymentSource = pickPaymentTailSource(byLast4);
         if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
       }

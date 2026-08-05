@@ -47,6 +47,8 @@ const ParsedItemSchema = z.object({
   type: z.enum(["expense", "income", "transfer", "investment"]),
   date: z.string().optional(),
   amount: z.number().finite().min(0),
+  outflow: z.number().finite().min(0).optional(),
+  inflow: z.number().finite().min(0).optional(),
   account: z.string().optional(),
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
@@ -55,6 +57,7 @@ const ParsedItemSchema = z.object({
   counterparty: z.string().optional(),
   institution: z.string().optional(),
   postedDate: z.string().optional(),
+  transferDirection: z.enum(["in", "out"]).optional(),
   _meta: z.object({
     institutionName: z.string().optional(),
     ownerName: z.string().optional(),
@@ -793,8 +796,11 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
   const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate);
   const currencyMeta = await accountCurrencyMeta(tx, accountId);
 
-  const sign = item.type === "income" ? 1 : -1;
-  const amount = sign * amountAbs;
+  const inflowAbs = Number.isFinite(item.inflow) ? Math.abs(item.inflow ?? 0) : 0;
+  const outflowAbs = Number.isFinite(item.outflow) ? Math.abs(item.outflow ?? 0) : 0;
+  const isExpenseRefund = item.type === "expense" && inflowAbs > 0 && outflowAbs <= 0;
+  const sign = item.type === "income" || isExpenseRefund ? 1 : -1;
+  const amount = sign * (amountAbs || inflowAbs || outflowAbs);
 
   // For investment type, query account kind to determine fund fields
   let fundCode: string | null = null;
@@ -850,6 +856,20 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
+/**
+ * POST /api/v1/statement/import
+ * Import parsed transaction items from bill recognition, quick add, or credit-card mail.
+ *
+ * Body: { items, defaultAccountName?, autoCreateAccounts?, mailSource? }
+ * - item.type is one of expense/income/transfer/investment.
+ * - item.amount is the absolute display amount for statement-import callers.
+ * - item.inflow/item.outflow may carry account-side direction. For an original-spend
+ *   refund, send { type: "expense", amount, inflow: amount } so the row offsets the
+ *   original expense category while increasing the account balance.
+ * - transfer rows use fromAccount/toAccount and may carry transferDirection.
+ *
+ * Returns: { ok: true, createdCount, skippedCount, ids, importBatchId?, lockedStatementBills?, createdAccounts?, errors }
+ */
 export async function POST(req: Request) {
   const currentUser = await getCurrentUser();
   if (!currentUser && !requireApiKey(req).ok) {

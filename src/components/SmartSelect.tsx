@@ -920,7 +920,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   <button
                     key={option.id}
                     id={`${listId}-${index}`}
-                    style={fullGridRowStyle}
+                    style={singleGridColumns ? undefined : fullGridRowStyle}
                     type="button"
                     role="option"
                     aria-selected={selected}
@@ -936,16 +936,22 @@ export function SmartSelect(props: SmartSelectProps) {
                       if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);
                     }}
                     onMouseEnter={() => setFocusedIndex(index)}
-                    className={`flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
-                      index === focusedIndex ? "bg-blue-50" : ""
-                    } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
+                    className={singleGridColumns
+                      ? `relative flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                          index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
+                        } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+                      : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                          index === focusedIndex ? "bg-blue-50" : ""
+                        } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
                   >
                     <span
                       onClick={(event) => {
                         event.stopPropagation();
                         if (hierarchy && collapsibleGroups) toggleGroup(option.id);
                       }}
-                      className="flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+                      className={singleGridColumns
+                        ? "absolute right-1 top-1 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+                        : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
                     >
                       {hierarchy && collapsibleGroups ? (
                         <>
@@ -960,8 +966,8 @@ export function SmartSelect(props: SmartSelectProps) {
                         </>
                       ) : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate" title={option.title || stripIndent(option.label)}>{singleGridColumns ? stripIndent(option.label) : option.label}</span>
-                    {option.subLabel ? (
+                    <span className={singleGridColumns ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"} title={option.title || stripIndent(option.label)}>{singleGridColumns ? stripIndent(option.label) : option.label}</span>
+                    {!singleGridColumns && option.subLabel ? (
                       <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
                     ) : null}
                   </button>
