@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import type { CurrentUser } from "@/lib/server/auth";
 
 export const BACKUP_FORMAT_VERSION = 2;
@@ -572,8 +573,9 @@ export async function restoreHouseholdBackup(
     }
 
     if (data.preciousMetalTypes.length > 0) {
-      await tx.preciousMetalType.createMany({
-        data: data.preciousMetalTypes.map((item) => ({
+      await createManySkipDuplicatesCompat(
+        tx.preciousMetalType,
+        data.preciousMetalTypes.map((item) => ({
           id: String(item.id),
           code: String(item.code ?? ""),
           name: String(item.name ?? ""),
@@ -585,13 +587,13 @@ export async function restoreHouseholdBackup(
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),
-        skipDuplicates: true,
-      });
+      );
     }
 
     if (data.preciousMetalUnits.length > 0) {
-      await tx.preciousMetalUnit.createMany({
-        data: data.preciousMetalUnits.map((item) => ({
+      await createManySkipDuplicatesCompat(
+        tx.preciousMetalUnit,
+        data.preciousMetalUnits.map((item) => ({
           id: String(item.id),
           code: String(item.code ?? ""),
           name: String(item.name ?? ""),
@@ -604,8 +606,7 @@ export async function restoreHouseholdBackup(
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),
-        skipDuplicates: true,
-      });
+      );
     }
 
     if (data.accounts.length > 0) {
@@ -759,8 +760,9 @@ export async function restoreHouseholdBackup(
     }
 
     if (data.preciousMetalHoldings.length > 0) {
-      await tx.preciousMetalHolding.createMany({
-        data: data.preciousMetalHoldings
+      await createManySkipDuplicatesCompat(
+        tx.preciousMetalHolding,
+        data.preciousMetalHoldings
           .filter((item) => importedAccounts.has(String(item.accountId)))
           .map((item) => ({
             id: String(item.id),
@@ -778,8 +780,7 @@ export async function restoreHouseholdBackup(
             historicalProfit: item.historicalProfit == null ? "0" : String(item.historicalProfit),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
-        skipDuplicates: true,
-      });
+      );
     }
 
     if (data.fundSnapshots.length > 0) {

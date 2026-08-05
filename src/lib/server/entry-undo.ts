@@ -8,6 +8,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
 type DbWriter = PrismaClient | Prisma.TransactionClient;
@@ -234,10 +235,7 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
         : [];
       await tx.entryTag.deleteMany({ where: { entryId: id } });
       if (tagIds.length > 0) {
-        await tx.entryTag.createMany({
-          data: tagIds.map((tagId) => ({ entryId: id, tagId })),
-          skipDuplicates: true,
-        });
+        await createManySkipDuplicatesCompat(tx.entryTag, tagIds.map((tagId) => ({ entryId: id, tagId })));
       }
     }
     const planStatuses = snapshots.flatMap((snapshot) =>

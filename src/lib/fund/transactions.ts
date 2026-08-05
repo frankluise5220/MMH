@@ -2,6 +2,7 @@ import { FundCashFlowKind, FundSubtype, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 
 type Tx = Prisma.TransactionClient;
 
@@ -187,8 +188,9 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
 
     await client.fundTransactionCashFlow.deleteMany({ where: { fundTransactionId: ft.id } });
     if (cashRows.length) {
-      await client.fundTransactionCashFlow.createMany({
-        data: cashRows.map((row) => ({
+      await createManySkipDuplicatesCompat(
+        client.fundTransactionCashFlow,
+        cashRows.map((row) => ({
           id: `${isRefundRow(row) ? "cfr" : "cff"}_${row.id}`,
           fundTransactionId: ft.id,
           txRecordId: row.id,
@@ -203,8 +205,7 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
             ? row.toAccountId
             : row.accountId,
         })),
-        skipDuplicates: true,
-      });
+      );
     }
 
     const refundAmount = refunds.reduce((sum, row) => sum + Math.abs(toNumber(row.fundArrivalAmount ?? row.amount)), 0);

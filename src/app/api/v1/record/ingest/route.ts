@@ -13,6 +13,7 @@ import {
   type ImportAccountIdentityConflict,
 } from "@/lib/account-import-match";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { writeImportDebugLog } from "@/lib/server/import-debug-log";
 import {
@@ -376,10 +377,7 @@ function resolveCategorySnapshotFromContext(
 async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: string) {
   const tagIds = resolveTagIds(ctx, tags);
   if (tagIds.length === 0) return;
-  await tx.entryTag.createMany({
-    data: tagIds.map((tagId) => ({ entryId, tagId })),
-    skipDuplicates: true,
-  });
+  await createManySkipDuplicatesCompat(tx.entryTag, tagIds.map((tagId) => ({ entryId, tagId })));
 }
 
 function statementMonthForAccountMeta(ctx: ImportContext, accountId: string | null, date: Date) {
