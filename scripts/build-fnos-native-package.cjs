@@ -123,6 +123,8 @@ const excludedRuntimePackages = new Set([
   "@prisma/studio-core",
   "chart.js",
   "mysql2",
+  "node-abi",
+  "prebuild-install",
   "postgres",
 ]);
 
@@ -375,6 +377,8 @@ if (fs.existsSync(standaloneDir)) {
   for (const dependency of [
     "@img",
     "detect-libc",
+    "node-abi",
+    "prebuild-install",
     "semver",
     "sharp",
   ]) {
