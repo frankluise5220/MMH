@@ -118,6 +118,35 @@ function copyRuntimeDependency(name) {
   copyDir(path.join(root, "node_modules", name), path.join(stageDir, "app", "server", "node_modules", name));
 }
 
+function materializeStandaloneSymlinks(baseDir) {
+  if (!fs.existsSync(baseDir)) return;
+  for (const name of fs.readdirSync(baseDir)) {
+    const item = path.join(baseDir, name);
+    const stat = fs.lstatSync(item);
+    if (stat.isSymbolicLink()) {
+      const linkTarget = fs.readlinkSync(item);
+      const absoluteTarget = path.isAbsolute(linkTarget)
+        ? linkTarget
+        : path.resolve(path.dirname(item), linkTarget);
+      const relativeFromStandaloneModules = path.relative(path.join(standaloneDir, "node_modules"), absoluteTarget);
+      const localTarget = path.join(stageDir, "app", "server", "node_modules", relativeFromStandaloneModules);
+      fs.rmSync(item, { force: true });
+      if (fs.existsSync(localTarget)) {
+        const targetStat = fs.lstatSync(localTarget);
+        if (targetStat.isDirectory()) {
+          copyDir(localTarget, item);
+        } else {
+          copyFile(localTarget, item);
+        }
+      }
+      continue;
+    }
+    if (stat.isDirectory()) {
+      materializeStandaloneSymlinks(item);
+    }
+  }
+}
+
 fs.rmSync(stageDir, { recursive: true, force: true });
 for (const dir of [
   "app/bin",
@@ -303,6 +332,7 @@ if (fs.existsSync(standaloneDir)) {
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
   }
+  materializeStandaloneSymlinks(path.join(stageDir, "app", "server", ".next", "node_modules"));
 }
 
 if (nodeTarball) {
