@@ -68,21 +68,49 @@ checkport=true
 `);
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
-  defaults: { "run-as": "root" },
-  username: "mmh",
-  groupname: "mmh",
+  defaults: { "run-as": "package" },
+  username: "docker-mmh",
+  groupname: "docker-mmh",
 }, null, 2));
 
-write(path.join(stageDir, "config", "resource"), JSON.stringify({}, null, 2));
+write(path.join(stageDir, "config", "resource"), JSON.stringify({
+  "docker-project": {
+    projects: [
+      {
+        name: "mmh",
+        path: "docker",
+      },
+    ],
+  },
+  "data-share": {
+    shares: [
+      {
+        name: "mmh",
+        permission: {
+          rw: ["docker-mmh"],
+        },
+      },
+      {
+        name: "mmh/data",
+        permission: {
+          rw: ["docker-mmh"],
+        },
+      },
+    ],
+  },
+}, null, 2));
 write(path.join(stageDir, "wizard", "install"), JSON.stringify([], null, 2));
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
-    title: "MMH",
-    icon: "images/icon_64.png",
-    type: "url",
-    protocol: "http",
-    port: "7777",
-    url: "/",
+    "mmh.Application": {
+      title: "MMH",
+      icon: "images/icon_{0}.png",
+      type: "url",
+      protocol: "http",
+      port: "7777",
+      url: "/",
+      allUsers: false,
+    },
   },
 }, null, 2));
 
@@ -98,78 +126,36 @@ copy(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"));
 copy(wideIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
-set -euo pipefail
 
-APP_DIR="\${TRIM_APPDEST:-$(cd "$(dirname "$0")/.." && pwd)}"
-DOCKER_DIR="$APP_DIR/app/docker"
-COMPOSE_FILE="$DOCKER_DIR/docker-compose.yaml"
-ENV_FILE="$DOCKER_DIR/.env"
-
-compose() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p mmh "$@"
-    return
-  fi
-  if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p mmh "$@"
-    return
-  fi
-  echo "docker compose is not available" >&2
-  exit 127
-}
-
-ensure_env() {
-  if [ ! -f "$ENV_FILE" ]; then
-    cp "$DOCKER_DIR/env.example" "$ENV_FILE"
-  fi
-  if grep -q 'CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD' "$ENV_FILE"; then
-    if command -v openssl >/dev/null 2>&1; then
-      PASSWORD="$(openssl rand -hex 24)"
-    else
-      PASSWORD="$(date +%s%N | sha256sum | cut -c1-48)"
-    fi
-    sed -i "s/CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD/$PASSWORD/g" "$ENV_FILE"
-  fi
+is_docker_running () {
+  docker inspect mmh-app | grep -q "\\"Status\\": \\"running\\"," || exit 1
 }
 
 case "\${1:-status}" in
-  start)
-    ensure_env
-    compose up -d
-    ;;
-  stop)
-    ensure_env
-    compose stop
-    ;;
-  restart)
-    ensure_env
-    compose up -d
-    ;;
-  status)
-    ensure_env
-    compose ps --status running >/dev/null
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart|status}" >&2
-    exit 1
-    ;;
+start)
+  # Docker applications are started by fnOS appcenter.
+  exit 0
+  ;;
+stop)
+  # Docker applications are stopped by fnOS appcenter.
+  exit 0
+  ;;
+status)
+  if is_docker_running; then
+    exit 0
+  else
+    exit 3
+  fi
+  ;;
+*)
+  exit 1
+  ;;
 esac
 `, 0o755);
 
 const lifecycle = `#!/bin/bash
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-case "$(basename "$0")" in
-  install_init|install_callback|upgrade_init|upgrade_callback|config_init|config_callback)
-    "$SCRIPT_DIR/main" start
-    ;;
-  uninstall_init|uninstall_callback)
-    "$SCRIPT_DIR/main" stop
-    ;;
-  *)
-    exit 0
-    ;;
-esac
+
+exit 0
 `;
 
 for (const name of [

@@ -42,6 +42,8 @@ read("postgresInit");
 
 expect(/MMH_DEPLOY_TARGET:\s*fnos/.test(compose), "Compose should mark MMH_DEPLOY_TARGET=fnos.");
 expect(/"\$\{MMH_WEB_PORT:-7777\}:7777"/.test(compose), "Compose should expose only configurable Web port 7777.");
+expect(!/env_file:\s*\n\s*-\s*\.env/.test(compose), "fnOS Compose should not require a missing .env file.");
+expect(/MMH_COMPOSE_FILE:\s*\/workspace\/docker-compose\.yaml/.test(compose), "fnOS updater should point to docker-compose.yaml.");
 expect(!/5433:5432/.test(compose) && !/"5432:5432"/.test(compose), "Compose must not expose Postgres to host.");
 expect(/\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/.test(compose), "Compose should explicitly declare updater Docker socket dependency.");
 expect((compose.match(/no-new-privileges:true/g) ?? []).length >= 3, "All services should use no-new-privileges.");
@@ -59,6 +61,8 @@ expect(/PostgreSQL 不映射到宿主机端口/.test(readme), "README should doc
 expect(/Docker socket/.test(readme), "README should document updater Docker socket caveat.");
 expect(/\.fpk/.test(readme), "README should document .fpk as the release package.");
 expect(/\.fpk/.test(repositoryReadme), "Repository README should document .fpk-only release packages.");
+expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
+expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
