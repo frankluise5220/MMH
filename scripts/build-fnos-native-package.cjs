@@ -120,7 +120,6 @@ const excludedRuntimePackages = new Set([
   "@electric-sql/pglite-socket",
   "@electric-sql/pglite-tools",
   "@hono/node-server",
-  "@prisma/studio-core",
   "chart.js",
   "mysql2",
   "node-abi",
