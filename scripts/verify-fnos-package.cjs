@@ -63,6 +63,8 @@ expect(/\.fpk/.test(readme), "README should document .fpk as the release package
 expect(/\.fpk/.test(repositoryReadme), "Repository README should document .fpk-only release packages.");
 expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
 expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
+expect(/platform=x86/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS platform compatibility.");
+expect(/path\.join\(outDir, "mmh\.fpk"\)/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should produce an appname.fpk release file.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
@@ -83,7 +85,8 @@ try {
   const repositoryApps = JSON.parse(repositoryAppsText);
   const app = Array.isArray(repositoryApps.apps) ? repositoryApps.apps.find((item) => item?.id === "mmh") : null;
   expect(Boolean(app), "Repository apps example should include mmh.");
-  expect(typeof app?.download_url === "string" && app.download_url.endsWith(".fpk"), "Repository download_url must point to a .fpk file.");
+  expect(typeof app?.download_url === "string" && app.download_url.endsWith("/mmh.fpk"), "Repository download_url must point to appname.fpk.");
+  expect(app?.platform === "x86" || app?.platform === "all", "Repository app should declare fnOS platform.");
   expect(typeof app?.version === "string" && app.version.length > 0, "Repository app should declare version.");
 } catch (error) {
   failures.push(`repository/apps.example.json is not valid JSON: ${error.message}`);

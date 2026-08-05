@@ -8,8 +8,8 @@
 
 - `id`：稳定应用 ID，例如 `mmh`。
 - `version`：飞牛包版本，与 Release tag 对齐。
-- `arch`：包架构，例如 `x86_64`。
-- `download_url`：指向 GitHub Release 中的 `.fpk` 文件。
+- `platform`：包平台，例如 `x86`、`arm` 或 `all`。
+- `download_url`：指向 GitHub Release 中的 `.fpk` 文件；按飞牛包规则，正式安装文件名保持 `{appname}.fpk`，MMH 即 `mmh.fpk`。
 - `changelog`：面向用户的更新说明。
 
 `apps.example.json` 是字段草案。正式字段以飞牛应用源规范为准；但无论字段名称如何变化，原则保持不变：源索引必须指向 `.fpk` 单文件，并能随版本更新。

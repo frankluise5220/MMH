@@ -55,6 +55,7 @@ version=${version}
 desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
 display_name=MMH
 arch=x86_64
+platform=x86
 source=thirdparty
 maintainer=frankluise5220
 maintainer_url=https://github.com/frankluise5220/MMH
@@ -107,7 +108,7 @@ write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
       icon: "images/icon_{0}.png",
       type: "url",
       protocol: "http",
-      port: "7777",
+      port: "{port}",
       url: "/",
       allUsers: false,
     },
@@ -201,6 +202,9 @@ if (!fs.existsSync(produced)) {
   process.exit(1);
 }
 
-const fpkPath = path.join(outDir, `mmh-${version}-x86_64.fpk`);
+const fpkPath = path.join(outDir, "mmh.fpk");
+const versionedFpkPath = path.join(outDir, `mmh-${version}.fpk`);
 copy(produced, fpkPath);
+copy(produced, versionedFpkPath);
 console.log(`FNOS FPK built: ${path.relative(root, fpkPath)}`);
+console.log(`Versioned copy: ${path.relative(root, versionedFpkPath)}`);
