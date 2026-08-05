@@ -114,8 +114,28 @@ function requirePath(target, message) {
   }
 }
 
+const copiedRuntimePackages = new Set();
+
 function copyRuntimeDependency(name) {
-  copyDir(path.join(root, "node_modules", name), path.join(stageDir, "app", "server", "node_modules", name));
+  return copyDir(path.join(root, "node_modules", name), path.join(stageDir, "app", "server", "node_modules", name));
+}
+
+function copyRuntimeDependencyClosure(name) {
+  if (copiedRuntimePackages.has(name)) return;
+  copiedRuntimePackages.add(name);
+  if (!copyRuntimeDependency(name)) return;
+
+  const packageJson = path.join(root, "node_modules", name, "package.json");
+  if (!fs.existsSync(packageJson)) return;
+
+  const manifest = JSON.parse(fs.readFileSync(packageJson, "utf8"));
+  const dependencies = {
+    ...manifest.dependencies,
+    ...manifest.optionalDependencies,
+  };
+  for (const dependencyName of Object.keys(dependencies)) {
+    copyRuntimeDependencyClosure(dependencyName);
+  }
 }
 
 function materializeStandaloneSymlinks(baseDir) {
@@ -324,10 +344,16 @@ if (fs.existsSync(standaloneDir)) {
   copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
-  copyDir(path.join(root, "node_modules", "prisma"), path.join(stageDir, "app", "server", "node_modules", "prisma"));
-  copyDir(path.join(root, "node_modules", "@prisma"), path.join(stageDir, "app", "server", "node_modules", "@prisma"));
-  for (const dependency of ["better-sqlite3", "bindings", "prebuild-install"]) {
-    copyRuntimeDependency(dependency);
+  copyRuntimeDependency("@prisma");
+  for (const dependency of [
+    "prisma",
+    "@prisma/client",
+    "@prisma/adapter-better-sqlite3",
+    "better-sqlite3",
+    "bindings",
+    "prebuild-install",
+  ]) {
+    copyRuntimeDependencyClosure(dependency);
   }
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
