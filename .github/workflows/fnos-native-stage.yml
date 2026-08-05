@@ -1,0 +1,64 @@
+name: Build fnOS Native Stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Native FPK package version"
+        required: false
+        default: "0.1.0-native"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-native-stage:
+    name: Build Linux native fnOS stage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download Linux Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/fnos-native/runtime
+          NODE_VERSION="$(node -p "process.versions.node")"
+          NODE_TARBALL="node-v${NODE_VERSION}-linux-x64.tar.gz"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" \
+            -o "release-artifacts/fnos-native/runtime/${NODE_TARBALL}"
+          echo "FNOS_NATIVE_NODE_TARBALL=${PWD}/release-artifacts/fnos-native/runtime/${NODE_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Build native app
+        env:
+          DATABASE_URL: file:./native-build.db
+          MMH_DEPLOY_TARGET: fnos-native
+        run: npm run build:fnos-native:app
+
+      - name: Build native stage archive
+        env:
+          FNOS_PACKAGE_VERSION: ${{ github.event.inputs.package_version || github.ref_name }}
+          FNOS_NATIVE_NODE_TARBALL: ${{ env.FNOS_NATIVE_NODE_TARBALL }}
+        run: npm run stage:fnos-native
+
+      - name: Verify native package source
+        run: npm run check:fnos-native
+
+      - name: Upload native stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmh-fnos-native-stage
+          path: release-artifacts/fnos-native/mmh-native-*-fpk-source.tgz
+          if-no-files-found: error
