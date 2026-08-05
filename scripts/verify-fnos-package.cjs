@@ -63,7 +63,7 @@ expect(/\.fpk/.test(readme), "README should document .fpk as the release package
 expect(/\.fpk/.test(repositoryReadme), "Repository README should document .fpk-only release packages.");
 expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
 expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
-expect(/platform=x86/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS platform compatibility.");
+expect(/platform=all/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare Docker package platform compatibility.");
 expect(/path\.join\(outDir, "mmh\.fpk"\)/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should produce an appname.fpk release file.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");

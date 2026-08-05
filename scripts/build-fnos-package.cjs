@@ -54,8 +54,7 @@ appname=mmh
 version=${version}
 desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
 display_name=MMH
-arch=x86_64
-platform=x86
+platform=all
 source=thirdparty
 maintainer=frankluise5220
 maintainer_url=https://github.com/frankluise5220/MMH
@@ -120,11 +119,10 @@ copy(path.join(root, "deploy", "fnos", "env.example"), path.join(stageDir, "app"
 copy(path.join(root, "deploy", "fnos", "postgres-entrypoint.sh"), path.join(stageDir, "app", "docker", "postgres-entrypoint.sh"));
 
 const markIcon = path.join(root, "public", "branding", "mmh-logo-mark.preview.png");
-const wideIcon = path.join(root, "public", "branding", "mmh-logo-horizontal.preview.png");
 copy(markIcon, path.join(stageDir, "ICON.PNG"));
-copy(wideIcon, path.join(stageDir, "ICON_256.PNG"));
+copy(markIcon, path.join(stageDir, "ICON_256.PNG"));
 copy(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"));
-copy(wideIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
+copy(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 

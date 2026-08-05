@@ -8,7 +8,7 @@
 
 - `id`：稳定应用 ID，例如 `mmh`。
 - `version`：飞牛包版本，与 Release tag 对齐。
-- `platform`：包平台，例如 `x86`、`arm` 或 `all`。
+- `platform`：包平台，例如 `x86`、`arm` 或 `all`；Docker 应用优先使用 `all`。
 - `download_url`：指向 GitHub Release 中的 `.fpk` 文件；按飞牛包规则，正式安装文件名保持 `{appname}.fpk`，MMH 即 `mmh.fpk`。
 - `changelog`：面向用户的更新说明。
 
