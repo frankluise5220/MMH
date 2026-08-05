@@ -61,7 +61,7 @@ jobs:
 
       - name: Build native stage archive
         env:
-          FNOS_PACKAGE_VERSION: ${{ github.event.inputs.package_version || github.ref_name }}
+          FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           FNOS_NATIVE_NODE_TARBALL: ${{ env.FNOS_NATIVE_NODE_TARBALL }}
         run: npm run stage:fnos-native
 
