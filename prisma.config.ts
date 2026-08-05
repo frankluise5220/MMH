@@ -8,7 +8,7 @@ if (!process.env["DATABASE_URL"]) {
 }
 
 export default defineConfig({
-  schema: "prisma/schema.prisma",
+  schema: process.env["PRISMA_SCHEMA_PATH"] || "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },

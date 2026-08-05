@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const root = path.resolve(__dirname, "..");
+const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const version = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
+const appName = "mmh-native";
+const outDir = path.join(root, "release-artifacts", "fnos-native");
+const stageDir = path.join(outDir, `${appName}-fpk`);
+const stageOnly = process.argv.includes("--stage-only");
+const nodeTarball = process.env.FNOS_NATIVE_NODE_TARBALL || "";
+const isLinux = process.platform === "linux";
+
+function mkdirp(target) {
+  fs.mkdirSync(target, { recursive: true });
+}
+
+function write(file, content, mode) {
+  mkdirp(path.dirname(file));
+  fs.writeFileSync(file, content.replace(/\r\n/g, "\n"), "utf8");
+  if (mode) fs.chmodSync(file, mode);
+}
+
+function copyFile(src, dest) {
+  mkdirp(path.dirname(dest));
+  fs.copyFileSync(src, dest);
+}
+
+function copyDir(src, dest) {
+  if (!fs.existsSync(src)) return false;
+  fs.cpSync(src, dest, { recursive: true });
+  return true;
+}
+
+function run(command, args, options = {}) {
+  return spawnSync(command, args, {
+    cwd: options.cwd || root,
+    stdio: options.stdio || "pipe",
+    shell: false,
+    encoding: "utf8",
+  });
+}
+
+function hasCommand(command) {
+  const probe = process.platform === "win32"
+    ? run("where.exe", [command])
+    : run("sh", ["-lc", `command -v ${command}`]);
+  return probe.status === 0;
+}
+
+function requirePath(target, message) {
+  if (!fs.existsSync(target)) {
+    throw new Error(message);
+  }
+}
+
+function copyRuntimeDependency(name) {
+  copyDir(path.join(root, "node_modules", name), path.join(stageDir, "app", "server", "node_modules", name));
+}
+
+fs.rmSync(stageDir, { recursive: true, force: true });
+for (const dir of [
+  "app/bin",
+  "app/data",
+  "app/server",
+  "app/ui/images",
+  "cmd",
+  "config",
+  "wizard",
+]) {
+  mkdirp(path.join(stageDir, dir));
+}
+
+const generatedSchema = run(process.execPath, [path.join(root, "scripts", "generate-native-sqlite-schema.cjs")], {
+  stdio: "inherit",
+});
+if (generatedSchema.status !== 0) process.exit(generatedSchema.status || 1);
+
+write(path.join(stageDir, "manifest"), `
+appname=${appName}
+version=${version}
+desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
+display_name=MMH Native
+arch=x86_64
+platform=x86
+source=thirdparty
+maintainer=frankluise5220
+maintainer_url=https://github.com/frankluise5220/MMH
+distributor=frankluise5220
+distributor_url=https://github.com/frankluise5220/MMH
+helpurl=https://github.com/frankluise5220/MMH
+desktop_uidir=ui
+desktop_applaunchname=mmhNative.Application
+service_port=7777
+checkport=true
+`);
+
+write(path.join(stageDir, "config", "privilege"), JSON.stringify({
+  defaults: { "run-as": "package" },
+  username: "mmh-native",
+  groupname: "mmh-native",
+}, null, 2));
+
+write(path.join(stageDir, "config", "resource"), JSON.stringify({
+  "data-share": {
+    shares: [
+      {
+        name: "mmh-native",
+        permission: {
+          rw: ["mmh-native"],
+        },
+      },
+      {
+        name: "mmh-native/data",
+        permission: {
+          rw: ["mmh-native"],
+        },
+      },
+    ],
+  },
+}, null, 2));
+
+write(path.join(stageDir, "wizard", "install"), JSON.stringify([], null, 2));
+write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
+  ".url": {
+    "mmhNative.Application": {
+      title: "MMH",
+      icon: "images/icon_{0}.png",
+      type: "url",
+      protocol: "http",
+      port: "{port}",
+      url: "/",
+      allUsers: false,
+    },
+  },
+}, null, 2));
+
+const markIcon = path.join(root, "public", "branding", "mmh-logo-mark.preview.png");
+copyFile(markIcon, path.join(stageDir, "ICON.PNG"));
+copyFile(markIcon, path.join(stageDir, "ICON_256.PNG"));
+copyFile(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"));
+copyFile(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
+
+write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
+
+APP_DEST="\${TRIM_APPDEST:-}"
+if [ -z "$APP_DEST" ]; then
+  APP_DEST="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+DATA_DEST="\${TRIM_DATADEST:-$APP_DEST/data}"
+SERVER_DIR="$APP_DEST/server"
+NODE_BIN="$APP_DEST/bin/node"
+PID_FILE="$DATA_DEST/mmh.pid"
+LOG_FILE="$DATA_DEST/mmh.log"
+
+start_app () {
+  mkdir -p "$DATA_DEST"
+  if [ ! -x "$NODE_BIN" ]; then
+    echo "Bundled Linux Node runtime is missing: $NODE_BIN" >&2
+    exit 1
+  fi
+  if [ ! -f "$SERVER_DIR/server.js" ]; then
+    echo "Next standalone server is missing: $SERVER_DIR/server.js" >&2
+    exit 1
+  fi
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    exit 0
+  fi
+  export NODE_ENV=production
+  export HOSTNAME=0.0.0.0
+  export PORT="\${PORT:-7777}"
+  export MMH_DEPLOY_TARGET=fnos-native
+  export DATABASE_URL="file:$DATA_DEST/mmh.db"
+  export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
+  "$NODE_BIN" "$SERVER_DIR/node_modules/prisma/build/index.js" db push --schema "$PRISMA_SCHEMA_PATH" >>"$LOG_FILE" 2>&1 || exit 1
+  nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
+  echo "$!" > "$PID_FILE"
+}
+
+stop_app () {
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" >/dev/null 2>&1 || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+status_app () {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    exit 0
+  fi
+  exit 3
+}
+
+case "\${1:-status}" in
+start)
+  start_app
+  ;;
+stop)
+  stop_app
+  ;;
+status)
+  status_app
+  ;;
+*)
+  exit 1
+  ;;
+esac
+`, 0o755);
+
+const lifecycle = `#!/bin/bash
+
+exit 0
+`;
+for (const name of [
+  "install_init",
+  "install_callback",
+  "upgrade_init",
+  "upgrade_callback",
+  "uninstall_init",
+  "uninstall_callback",
+  "config_init",
+  "config_callback",
+]) {
+  write(path.join(stageDir, "cmd", name), lifecycle, 0o755);
+}
+
+const standaloneDir = path.join(root, ".next", "standalone");
+const staticDir = path.join(root, ".next", "static");
+const publicDir = path.join(root, "public");
+
+if (fs.existsSync(standaloneDir)) {
+  copyDir(standaloneDir, path.join(stageDir, "app", "server"));
+  copyDir(staticDir, path.join(stageDir, "app", "server", ".next", "static"));
+  copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
+  copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
+  copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
+  copyDir(path.join(root, "node_modules", "prisma"), path.join(stageDir, "app", "server", "node_modules", "prisma"));
+  copyDir(path.join(root, "node_modules", "@prisma"), path.join(stageDir, "app", "server", "node_modules", "@prisma"));
+  for (const dependency of ["better-sqlite3", "bindings", "prebuild-install"]) {
+    copyRuntimeDependency(dependency);
+  }
+  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
+    fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
+  }
+}
+
+if (nodeTarball) {
+  requirePath(nodeTarball, `FNOS_NATIVE_NODE_TARBALL does not exist: ${nodeTarball}`);
+  const extract = run("tar", ["-xzf", nodeTarball, "-C", path.join(stageDir, "app", "bin"), "--strip-components=1"]);
+  if (extract.status !== 0) {
+    console.error(extract.stderr || extract.stdout || "Failed to extract FNOS_NATIVE_NODE_TARBALL.");
+    process.exit(extract.status || 1);
+  }
+}
+
+const hasNode = fs.existsSync(path.join(stageDir, "app", "bin", "bin", "node"));
+if (hasNode) {
+  fs.renameSync(path.join(stageDir, "app", "bin", "bin", "node"), path.join(stageDir, "app", "bin", "node"));
+}
+
+console.log(`FNOS native FPK source staged: ${path.relative(root, stageDir)}`);
+
+if (stageOnly) {
+  const archive = path.join(outDir, `${appName}-${version}-fpk-source.tgz`);
+  const tar = run("tar", ["-czf", archive, "-C", stageDir, "."]);
+  if (tar.status !== 0) {
+    console.error(tar.stderr || tar.stdout || "tar failed");
+    process.exit(tar.status || 1);
+  }
+  console.log(`FNOS native stage-only archive: ${path.relative(root, archive)}`);
+  process.exit(0);
+}
+
+try {
+  if (!isLinux) {
+    throw new Error("Native fnOS release packages must be built on Linux/fnOS so native Node modules match the target platform.");
+  }
+  requirePath(path.join(stageDir, "app", "server", "server.js"), "Run a native standalone build before packaging: npm run build:fnos-native:app");
+  requirePath(path.join(stageDir, "app", "bin", "node"), "Provide a Linux x64 Node runtime tarball via FNOS_NATIVE_NODE_TARBALL before building the native FPK.");
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
+if (!hasCommand("fnpack")) {
+  console.error("fnpack was not found. Build the release .fpk on a fnOS packaging environment.");
+  process.exit(1);
+}
+
+const build = run("fnpack", ["build"], { cwd: stageDir, stdio: "inherit" });
+if (build.status !== 0) process.exit(build.status || 1);
+
+const produced = path.join(stageDir, `${appName}.fpk`);
+if (!fs.existsSync(produced)) {
+  console.error(`fnpack completed but did not produce ${appName}.fpk.`);
+  process.exit(1);
+}
+
+copyFile(produced, path.join(outDir, `${appName}.fpk`));
+copyFile(produced, path.join(outDir, `${appName}-${version}.fpk`));
+console.log(`FNOS native FPK built: ${path.relative(root, path.join(outDir, `${appName}.fpk`))}`);

@@ -1,3 +1,5 @@
+export {};
+
 // Fetch results from the app's test API, send to AI for self-improvement
 async function main() {
   // Get failed cases
