@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
@@ -27,6 +28,62 @@ function write(file, content, mode) {
 function copyFile(src, dest) {
   mkdirp(path.dirname(dest));
   fs.copyFileSync(src, dest);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])));
+  return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+function writeSolidPng(file, size) {
+  mkdirp(path.dirname(file));
+  const signature = Buffer.from("89504e470d0a1a0a", "hex");
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const row = Buffer.alloc(1 + size * 4);
+  row[0] = 0;
+  for (let offset = 1; offset < row.length; offset += 4) {
+    row[offset] = 0x1d;
+    row[offset + 1] = 0x23;
+    row[offset + 2] = 0x30;
+    row[offset + 3] = 0xff;
+  }
+  const pixels = Buffer.concat(Array.from({ length: size }, () => row));
+  fs.writeFileSync(file, Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
+function copyIcon(src, dest, size) {
+  if (fs.existsSync(src)) {
+    copyFile(src, dest);
+    return;
+  }
+  writeSolidPng(dest, size);
 }
 
 function copyDir(src, dest) {
@@ -139,10 +196,10 @@ write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
 }, null, 2));
 
 const markIcon = path.join(root, "public", "branding", "mmh-logo-mark.preview.png");
-copyFile(markIcon, path.join(stageDir, "ICON.PNG"));
-copyFile(markIcon, path.join(stageDir, "ICON_256.PNG"));
-copyFile(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"));
-copyFile(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
+copyIcon(markIcon, path.join(stageDir, "ICON.PNG"), 64);
+copyIcon(markIcon, path.join(stageDir, "ICON_256.PNG"), 256);
+copyIcon(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
+copyIcon(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 
