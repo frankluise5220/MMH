@@ -115,12 +115,23 @@ function requirePath(target, message) {
 }
 
 const copiedRuntimePackages = new Set();
+const excludedRuntimePackages = new Set([
+  "@electric-sql/pglite",
+  "@electric-sql/pglite-socket",
+  "@electric-sql/pglite-tools",
+  "@hono/node-server",
+  "@prisma/studio-core",
+  "chart.js",
+  "mysql2",
+  "postgres",
+]);
 
 function copyRuntimeDependency(name) {
   return copyDir(path.join(root, "node_modules", name), path.join(stageDir, "app", "server", "node_modules", name));
 }
 
 function copyRuntimeDependencyClosure(name) {
+  if (excludedRuntimePackages.has(name)) return;
   if (copiedRuntimePackages.has(name)) return;
   copiedRuntimePackages.add(name);
   if (!copyRuntimeDependency(name)) return;
@@ -129,10 +140,7 @@ function copyRuntimeDependencyClosure(name) {
   if (!fs.existsSync(packageJson)) return;
 
   const manifest = JSON.parse(fs.readFileSync(packageJson, "utf8"));
-  const dependencies = {
-    ...manifest.dependencies,
-    ...manifest.optionalDependencies,
-  };
+  const dependencies = manifest.dependencies || {};
   for (const dependencyName of Object.keys(dependencies)) {
     copyRuntimeDependencyClosure(dependencyName);
   }
@@ -344,7 +352,6 @@ if (fs.existsSync(standaloneDir)) {
   copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
-  copyRuntimeDependency("@prisma");
   for (const dependency of [
     "prisma",
     "@prisma/client",
@@ -373,6 +380,10 @@ if (nodeTarball) {
 const hasNode = fs.existsSync(path.join(stageDir, "app", "bin", "bin", "node"));
 if (hasNode) {
   fs.renameSync(path.join(stageDir, "app", "bin", "bin", "node"), path.join(stageDir, "app", "bin", "node"));
+  for (const entry of fs.readdirSync(path.join(stageDir, "app", "bin"))) {
+    if (entry === "node") continue;
+    fs.rmSync(path.join(stageDir, "app", "bin", entry), { recursive: true, force: true });
+  }
 }
 
 console.log(`FNOS native FPK source staged: ${path.relative(root, stageDir)}`);
