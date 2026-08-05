@@ -57,6 +57,7 @@ expect(/app:\s*\n[\s\S]*image:\s*\$\{MMH_APP_IMAGE:-/.test(compose), "Compose sh
 expect(/updater:\s*\n[\s\S]*image:\s*\$\{MMH_UPDATER_IMAGE:-/.test(compose), "Compose should start the MMH updater image.");
 expect(/DATABASE_URL:\s*postgresql:\/\//.test(compose), "Compose should provide DATABASE_URL for Prisma.");
 expect(/pgdata:/.test(compose), "Compose should persist PostgreSQL data in a named volume.");
+expect(/^version:\s*"3\.8"/m.test(compose), "Compose should keep a Docker Compose version header for fnOS appcenter compatibility.");
 
 expect(/POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"/.test(env), "env.example should keep password placeholder.");
 expect(!/sk-[a-zA-Z0-9]/.test(env), "env.example must not contain API keys.");
@@ -81,7 +82,9 @@ expect(/prisma db push/.test(dockerEntrypoint), "Docker entrypoint should initia
 expect(/exec node server\.js/.test(dockerEntrypoint), "Docker entrypoint should start Next standalone server.");
 expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
 expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
-expect(/platform=all/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare Docker package platform compatibility.");
+expect(/arch=x86_64/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare x86_64 architecture for the current fnOS package.");
+expect(/platform=x86/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare x86 platform compatibility.");
+expect(/docker compose -f "\$COMPOSE_FILE" up -d/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script cmd/main should start the compose stack through fnOS app destination.");
 expect(/path\.join\(outDir, "mmh\.fpk"\)/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should produce an appname.fpk release file.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");

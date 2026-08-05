@@ -54,7 +54,8 @@ appname=mmh
 version=${version}
 desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
 display_name=MMH
-platform=all
+arch=x86_64
+platform=x86
 source=thirdparty
 maintainer=frankluise5220
 maintainer_url=https://github.com/frankluise5220/MMH
@@ -126,25 +127,26 @@ copy(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"));
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 
-is_docker_running () {
-  docker inspect mmh-app | grep -q "\\"Status\\": \\"running\\"," || exit 1
-}
+APP_DEST="\${TRIM_APPDEST:-}"
+if [ -z "$APP_DEST" ]; then
+  APP_DEST="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+COMPOSE_FILE="$APP_DEST/docker/docker-compose.yaml"
+
+if [ ! -f "$COMPOSE_FILE" ]; then
+  exit 3
+fi
 
 case "\${1:-status}" in
 start)
-  # Docker applications are started by fnOS appcenter.
-  exit 0
+  docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1 || exit 1
   ;;
 stop)
-  # Docker applications are stopped by fnOS appcenter.
-  exit 0
+  docker compose -f "$COMPOSE_FILE" down >/dev/null 2>&1 || exit 1
   ;;
 status)
-  if is_docker_running; then
-    exit 0
-  else
-    exit 3
-  fi
+  docker compose -f "$COMPOSE_FILE" ps --status running --services 2>/dev/null | grep -q '^app$' || exit 3
   ;;
 *)
   exit 1
