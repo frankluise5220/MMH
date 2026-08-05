@@ -24,7 +24,26 @@ jobs:
       - name: Verify fnOS package sources
         run: npm run check:fnos
 
+      - name: Check existing Release FPK
+        id: existing-fpk
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSETS_URL: ${{ github.event.release.assets_url }}
+        run: |
+          set -euo pipefail
+          FOUND="$(
+            curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${ASSETS_URL}" |
+            node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const a=JSON.parse(s);console.log(a.some(x=>typeof x.name==='string'&&x.name.endsWith('.fpk'))?'true':'false')})"
+          )"
+          echo "found=${FOUND}" >> "$GITHUB_OUTPUT"
+
       - name: Verify fnpack
+        if: steps.existing-fpk.outputs.found != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -35,9 +54,11 @@ jobs:
           fi
 
       - name: Build fnOS FPK
+        if: steps.existing-fpk.outputs.found != 'true'
         run: npm run build:fnos
 
       - name: Upload fnOS FPK artifact
+        if: steps.existing-fpk.outputs.found != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mmh-fnos-fpk
@@ -45,7 +66,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload fnOS FPK to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' && steps.existing-fpk.outputs.found != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: release-artifacts/fnos/*.fpk

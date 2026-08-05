@@ -77,9 +77,10 @@ miniBill 的速度优势主要来自轻量运行时边界：前端构建后作�
 
 1. GitHub Actions 构建并推送 `mmh` 与 `mmh-updater` 镜像到 GHCR。
 2. 发布 GitHub Release 时，`.github/workflows/fnos-release.yml` 会运行 `npm run check:fnos` 和 `npm run build:fnos`。
-3. Release runner 必须已安装 `fnpack`；缺少 `fnpack` 时 workflow 会失败，不生成也不上传假包。
-4. workflow 成功后会把 `release-artifacts/fnos/*.fpk` 上传为 GitHub Release asset。
-5. 飞牛第三方源元数据更新 `version` 和 `download_url`，其中 `download_url` 必须指向该 Release 中的 `.fpk`。
+3. 如果 Release 已经手动附带 `.fpk`，workflow 会检测到并跳过重复构建。
+4. 如果 Release 尚未附带 `.fpk`，Release runner 必须已安装 `fnpack`；缺少 `fnpack` 时 workflow 会失败，不生成也不上传假包。
+5. workflow 成功后会把 `release-artifacts/fnos/*.fpk` 上传为 GitHub Release asset。
+6. 飞牛第三方源元数据更新 `version` 和 `download_url`，其中 `download_url` 必须指向该 Release 中的 `.fpk`。
 
 ## 待确认
 

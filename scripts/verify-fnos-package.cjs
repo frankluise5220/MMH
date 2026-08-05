@@ -64,6 +64,8 @@ expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should bui
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
 expect(!/release-artifacts\/fnos\/\*\.tgz/.test(fnosReleaseWorkflow), "fnOS workflow must not upload stage-only .tgz files.");
 expect(/fnpack was not found/.test(fnosReleaseWorkflow), "fnOS workflow should fail clearly when fnpack is unavailable.");
+expect(/Check existing Release FPK/.test(fnosReleaseWorkflow), "fnOS workflow should detect manually attached .fpk assets.");
+expect(/steps\.existing-fpk\.outputs\.found != 'true'/.test(fnosReleaseWorkflow), "fnOS workflow should skip rebuilding when Release already has a .fpk asset.");
 
 try {
   const manifest = JSON.parse(manifestText);
