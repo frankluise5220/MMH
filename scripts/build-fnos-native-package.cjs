@@ -175,6 +175,13 @@ function materializeStandaloneSymlinks(baseDir) {
   }
 }
 
+function removeRuntimeDependency(name) {
+  fs.rmSync(path.join(stageDir, "app", "server", "node_modules", ...name.split("/")), {
+    recursive: true,
+    force: true,
+  });
+}
+
 fs.rmSync(stageDir, { recursive: true, force: true });
 for (const dir of [
   "app/bin",
@@ -366,6 +373,14 @@ if (fs.existsSync(standaloneDir)) {
     fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
   }
   materializeStandaloneSymlinks(path.join(stageDir, "app", "server", ".next", "node_modules"));
+  for (const dependency of [
+    "@img",
+    "detect-libc",
+    "semver",
+    "sharp",
+  ]) {
+    removeRuntimeDependency(dependency);
+  }
 }
 
 if (nodeTarball) {
