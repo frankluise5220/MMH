@@ -1,38 +1,32 @@
-# MMH 飞牛 fnOS 安装素材
+# MMH 飞牛 fnOS 应用包
 
-这个目录用于准备飞牛 fnOS 应用包。当前版本是 Docker 应用骨架，目标是让飞牛通过图形界面导入 Compose 并运行 MMH。
+这个目录用于准备飞牛 fnOS 应用包。目标不是让用户手工导入 Compose，而是让用户安装一个 `mmh.fpk` 后得到完整 MMH 运行环境。
+
+`mmh.fpk` 是安装器和运行编排，不是源码包。完整功能由包内 Docker Compose 拉起的三个服务共同提供：
+
+- `app`：MMH Web 应用，镜像内包含 Next.js standalone、Prisma Client、Prisma schema、Prisma CLI/runtime 依赖和启动脚本。
+- `postgres`：MMH 数据库，数据写入持久卷。
+- `updater`：系统更新助手，用于网页内拉取新镜像并重启服务。
+
+安装 `mmh.fpk` 后，用户不需要理解 Node、Prisma、Next.js 或数据库构建流程；首次启动由应用镜像等待 PostgreSQL 就绪并执行 `prisma db push` 初始化数据库结构。
 
 ## 文件
 
 - `docker-compose.yml`：飞牛 Docker 应用编排。
-- `env.example`：安装配置模板，复制为 `.env` 后使用。
-- `manifest.example.json`：飞牛应用包元数据草案，等待实际 fpk 规范确认。
+- `env.example`：普通 NAS 手工安装时使用的配置模板；正式 `fpk` 安装不要求用户手工复制 `.env`。
+- `manifest.example.json`：应用源元数据草案，正式包内 manifest 由 `scripts/build-fnos-package.cjs` 生成。
 
 ## 安装步骤
 
-1. 在飞牛文件管理中新建应用目录，例如：
-
-   ```text
-   docker/mmh
-   ```
-
-2. 将本目录中的 `docker-compose.yml`、`env.example` 复制到该目录。
-
-3. 将 `env.example` 重命名为 `.env`。
-
-4. 修改 `.env` 中的数据库密码：
-
-   ```env
-   POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"
-   ```
-
-5. 在飞牛 Docker / Compose 图形界面创建应用，选择 `docker-compose.yml`。
-
-6. 启动后访问：
+1. 下载 Release 资产中的 `mmh.fpk`。
+2. 在飞牛应用中心或第三方应用入口安装该 `fpk`。
+3. 启动后访问：
 
    ```text
    http://飞牛IP:7777/
    ```
+
+首次启动需要拉取 MMH、MMH updater 和 PostgreSQL 镜像；这一步需要飞牛可以访问所配置的镜像源。当前包不把 Docker 镜像层离线塞进 `fpk`，否则包会变得很大，且更新也会变慢。
 
 ## 安全默认值
 
@@ -52,15 +46,13 @@
 
 ## 打包说明
 
-当前目录还不是最终 `.fpk` 成品。正式打包前需要确认飞牛的应用包 manifest、签名、图标和架构字段。
-
 本仓库提供正式飞牛包打包脚本：
 
 ```bash
 npm run build:fnos
 ```
 
-该命令必须在安装了 `fnpack` 的飞牛打包环境中运行，成功后生成单文件 `.fpk`。如果当前机器没有 `fnpack`，命令会失败；不要把调试归档当成正式飞牛包。
+该命令必须在安装了 `fnpack` 的飞牛打包环境中运行，成功后生成单文件 `release-artifacts/fnos/mmh.fpk`。如果当前机器没有 `fnpack`，命令会失败；不要把调试归档当成正式飞牛包。
 
 仅调试 FPK 工程结构时，可以运行：
 
@@ -74,10 +66,10 @@ npm run stage:fnos
 release-artifacts/fnos/mmh-版本-fnos-fpk-source.tgz
 ```
 
-这个归档只用于在飞牛上解压后排查 `manifest`、`cmd`、Compose 和图标结构，不是用户安装包。正式安装应使用：
+这个归档只用于在飞牛上解压后排查 `manifest`、`cmd`、Compose 和图标结构，不是用户安装包。正式安装应使用 Release 资产中的：
 
-```bash
-sudo appcenter-cli install-fpk mmh.fpk
+```text
+mmh.fpk
 ```
 
 ## 持续更新

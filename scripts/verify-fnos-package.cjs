@@ -14,6 +14,8 @@ const files = {
   repositoryApps: path.join(fnosDir, "repository", "apps.example.json"),
   repositoryReadme: path.join(fnosDir, "repository", "README.md"),
   fnosReleaseWorkflow: path.join(root, ".github", "workflows", "fnos-release.yml"),
+  dockerfile: path.join(root, "Dockerfile"),
+  dockerEntrypoint: path.join(root, "scripts", "docker-entrypoint.sh"),
 };
 
 const failures = [];
@@ -38,6 +40,8 @@ const manifestText = read("manifest");
 const repositoryAppsText = read("repositoryApps");
 const repositoryReadme = read("repositoryReadme");
 const fnosReleaseWorkflow = read("fnosReleaseWorkflow");
+const dockerfile = read("dockerfile");
+const dockerEntrypoint = read("dockerEntrypoint");
 read("postgresInit");
 
 expect(/MMH_DEPLOY_TARGET:\s*fnos/.test(compose), "Compose should mark MMH_DEPLOY_TARGET=fnos.");
@@ -49,6 +53,10 @@ expect(/\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/.test(compose), "Compo
 expect((compose.match(/no-new-privileges:true/g) ?? []).length >= 3, "All services should use no-new-privileges.");
 expect(/postgres:\s*\n[\s\S]*healthcheck:/.test(compose), "Postgres should have a healthcheck.");
 expect(/condition:\s*service_healthy/.test(compose), "App should wait for healthy Postgres.");
+expect(/app:\s*\n[\s\S]*image:\s*\$\{MMH_APP_IMAGE:-/.test(compose), "Compose should start the MMH app image.");
+expect(/updater:\s*\n[\s\S]*image:\s*\$\{MMH_UPDATER_IMAGE:-/.test(compose), "Compose should start the MMH updater image.");
+expect(/DATABASE_URL:\s*postgresql:\/\//.test(compose), "Compose should provide DATABASE_URL for Prisma.");
+expect(/pgdata:/.test(compose), "Compose should persist PostgreSQL data in a named volume.");
 
 expect(/POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"/.test(env), "env.example should keep password placeholder.");
 expect(!/sk-[a-zA-Z0-9]/.test(env), "env.example must not contain API keys.");
@@ -60,7 +68,17 @@ expect(/不暴露 MMH Web 端口 `7777`|只暴露 MMH Web 端口 `7777`/.test(re
 expect(/PostgreSQL 不映射到宿主机端口/.test(readme), "README should document that Postgres is not exposed.");
 expect(/Docker socket/.test(readme), "README should document updater Docker socket caveat.");
 expect(/\.fpk/.test(readme), "README should document .fpk as the release package.");
+expect(/Prisma/.test(readme), "README should document Prisma responsibility inside the app image.");
+expect(/完整 MMH/.test(readme), "README should state that the FPK installs the complete MMH stack.");
 expect(/\.fpk/.test(repositoryReadme), "Repository README should document .fpk-only release packages.");
+
+expect(/COPY --from=build \/app\/\.next\/standalone/.test(dockerfile), "Docker image should include Next standalone output.");
+expect(/COPY --from=build \/app\/prisma \.\/prisma/.test(dockerfile), "Docker image should include Prisma schema.");
+expect(/COPY --from=prisma-deps \/opt\/prisma-runtime\/node_modules \.\/node_modules/.test(dockerfile), "Docker image should include Prisma runtime dependencies.");
+expect(/postgresql-client/.test(dockerfile), "Docker image should include PostgreSQL readiness client.");
+expect(/pg_isready/.test(dockerEntrypoint), "Docker entrypoint should wait for PostgreSQL.");
+expect(/prisma db push/.test(dockerEntrypoint), "Docker entrypoint should initialize or sync Prisma schema.");
+expect(/exec node server\.js/.test(dockerEntrypoint), "Docker entrypoint should start Next standalone server.");
 expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
 expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
 expect(/platform=all/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare Docker package platform compatibility.");

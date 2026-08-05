@@ -5,8 +5,10 @@
 ## 目标
 
 - 用户不需要理解 Node、Prisma、Next.js 或数据库构建流程。
-- 飞牛包只负责安装入口、配置模板、Compose 编排、图标和说明。
-- 应用运行仍使用预构建镜像：`ghcr.io/frankluise5220/mmh:latest` 或用户选择的镜像源。
+- 用户安装 `mmh.fpk` 后应得到完整 MMH 功能栈：Web 应用、PostgreSQL 数据库、Prisma 初始化、系统更新助手。
+- 飞牛包负责安装入口、Compose 编排、图标、权限和应用中心元数据；不让用户手工导入 Compose。
+- 应用运行使用预构建镜像：`ghcr.io/frankluise5220/mmh:latest` 或用户选择的镜像源。
+- Next.js standalone、Prisma Client、Prisma schema、Prisma CLI/runtime 依赖和启动初始化脚本属于应用 Docker 镜像，不散装进 `.fpk`。
 - 数据目录和数据库卷必须可持久化，升级不得删除用户数据。
 - 默认安全边界清楚：只暴露 Web 端口，不暴露数据库端口。
 - 更新流程与 NAS Docker 安装保持一致：拉取新镜像并重启服务，不在 NAS 上 build。
@@ -54,6 +56,9 @@ miniBill 的速度优势主要来自轻量运行时边界：前端构建后作�
 - 本机 `.env`。
 - 私有调试脚本。
 - 数据库备份。
+- Docker 镜像层离线包。
+
+如果以后要求无网络离线安装，需要单独设计包含镜像层的离线分发包；这会显著增大包体积，并改变更新策略。当前产品目标是 `fpk` 一键安装并从镜像源拉取预构建镜像。
 
 ## Compose 策略
 
@@ -63,7 +68,16 @@ miniBill 的速度优势主要来自轻量运行时边界：前端构建后作�
 - `postgres`：PostgreSQL 数据库。
 - `updater`：系统更新助手。
 - `pgdata`：数据库持久卷。
-- 当前目录挂载到 updater 的 `/workspace`，用于读取 compose 和 `.env`。
+- 当前目录挂载到 updater 的 `/workspace`，用于读取 compose。
+
+完整启动链：
+
+1. 飞牛应用中心按 `docker-project` 资源启动 Compose 项目。
+2. `postgres` 初始化数据库、`public` schema 和必要扩展。
+3. `app` 等待 PostgreSQL healthcheck 通过。
+4. `app` 容器入口执行 `prisma db push`，创建或同步数据库结构。
+5. `app` 启动 Next.js standalone server，对外暴露 `7777`。
+6. `updater` 提供网页更新能力，后续只拉取新镜像，不在 NAS 上编译。
 
 飞牛版与普通 NAS 版的主要区别：
 
