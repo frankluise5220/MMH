@@ -365,7 +365,6 @@ if (fs.existsSync(standaloneDir)) {
     "@prisma/adapter-better-sqlite3",
     "better-sqlite3",
     "bindings",
-    "prebuild-install",
   ]) {
     copyRuntimeDependencyClosure(dependency);
   }
