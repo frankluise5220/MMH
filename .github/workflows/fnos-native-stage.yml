@@ -10,7 +10,7 @@ on:
       - "scripts/verify-fnos-native-package.cjs"
       - "prisma/schema.prisma"
       - "prisma/schema.native.prisma"
-      - "src/lib/db/prisma.ts"
+      - "src/**/*.ts"
       - "package.json"
       - "package-lock.json"
   workflow_dispatch:
