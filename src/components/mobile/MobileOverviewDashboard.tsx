@@ -47,6 +47,8 @@ export function MobileOverviewDashboard({
   accountList,
   creditAccountList,
   topPositions = [],
+  investmentAccountCount,
+  insuranceAccountCount,
   investmentMarketValue,
   isRedUp,
 }: OverviewDashboardProps) {
@@ -60,6 +62,13 @@ export function MobileOverviewDashboard({
   const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditAvailable = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.availableLimit), 0);
   const creditBill = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
+  const showInvestmentOverview = investmentAccountCount == null
+    ? topPositions.length > 0 || investMarketValue !== 0
+    : investmentAccountCount > 0;
+  const showInsuranceOverview = insuranceAccountCount == null
+    ? totals.insuranceAsset !== 0
+    : insuranceAccountCount > 0;
+  const headerMetricCount = 2 + (showInvestmentOverview ? 1 : 0) + (showInsuranceOverview ? 1 : 0);
 
   const amount = (value: number) => showAmounts ? formatMoneyYuan(value) : "****";
   const valueClass = (value: number) => {
@@ -90,10 +99,13 @@ export function MobileOverviewDashboard({
             </button>
           </div>
           <div className="mt-1 break-all text-[28px] font-bold tabular-nums">{amount(netWorth)}</div>
-          <div className="mt-4 grid grid-cols-4 gap-2 border-t border-white/15 pt-3">
+          <div
+            className="mt-4 grid gap-2 border-t border-white/15 pt-3"
+            style={{ gridTemplateColumns: `repeat(${headerMetricCount}, minmax(0, 1fr))` }}
+          >
             <HeaderMetric label="日常" value={amount(totals.dailyNetWorth)} />
-            <HeaderMetric label="投资" value={amount(investMarketValue)} />
-            <HeaderMetric label="保险" value={amount(totals.insuranceAsset)} />
+            {showInvestmentOverview ? <HeaderMetric label="投资" value={amount(investMarketValue)} /> : null}
+            {showInsuranceOverview ? <HeaderMetric label="保险" value={amount(totals.insuranceAsset)} /> : null}
             <HeaderMetric label={netDebtLabel} value={amount(netDebtAmount)} liability={netLiabilities > 0} />
           </div>
         </section>
@@ -122,11 +134,11 @@ export function MobileOverviewDashboard({
           </section>
         ) : null}
 
-        {topPositions.length > 0 ? (
+        {showInvestmentOverview ? (
           <section>
             <MobileSectionHeader label="投资账户" href="/investments" />
             <div className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-              {topPositions.slice(0, 6).map((position) => (
+              {topPositions.length > 0 ? topPositions.slice(0, 6).map((position) => (
                 <Link
                   key={`${position.accountId ?? ""}:${position.fundCode}`}
                   href={position.accountId ? `/?accountId=${position.accountId}&view=${getInvestmentAccountView(position)}` : "/investments"}
@@ -144,7 +156,9 @@ export function MobileOverviewDashboard({
                     <span className="mt-0.5 block text-[11px] tabular-nums text-slate-500">{showAmounts ? `${position.floatingPnLRate >= 0 ? "+" : ""}${(position.floatingPnLRate * 100).toFixed(2)}%` : "****"}</span>
                   </span>
                 </Link>
-              ))}
+              )) : (
+                <div className="px-3 py-6 text-center text-sm text-slate-400">暂无投资持仓</div>
+              )}
             </div>
           </section>
         ) : null}

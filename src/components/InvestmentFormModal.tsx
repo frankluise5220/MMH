@@ -115,6 +115,8 @@ type OpenInvestmentCreateDetail = {
   defaultDate?: string;
   defaultAmount?: number;
   defaultProductType?: ProductType;
+  defaultFundCode?: string;
+  defaultFundName?: string;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -898,6 +900,14 @@ export function InvestmentFormModal({
       }
       if ("defaultAccountId" in detail) setToAccountId(detail.defaultAccountId ?? "");
       if ("defaultCashAccountId" in detail) setCashAccountId(detail.defaultCashAccountId ?? "");
+      const nextFundCode = String(detail.defaultFundCode ?? "").trim();
+      if (nextFundCode && requestedProductType !== "metal") {
+        const nextFundName = String(detail.defaultFundName ?? "").trim() || findFundNameFromHoldings(nextFundCode) || nextFundCode;
+        setFundCode(nextFundCode);
+        setFundName(nextFundName);
+        setHoldingSearch(`${nextFundCode} ${nextFundName}`);
+        pendingFundCodeFetchRef.current = nextFundCode;
+      }
       investmentAccountTouchedRef.current = false;
       setOpen(true);
     }

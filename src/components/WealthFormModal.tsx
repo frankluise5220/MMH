@@ -666,6 +666,10 @@ export function WealthFormModal({
 
   function changeTradeDate(nextDate: string) {
     setDate(nextDate);
+    if (isHoldingAction) {
+      setHoldingFilterDate(nextDate);
+      autoFilledUnitsForRef.current = null;
+    }
     if (mode === "create" && isHoldingAction && !arrivalDateTouchedRef.current) {
       setArrivalDate(nextDate);
     }

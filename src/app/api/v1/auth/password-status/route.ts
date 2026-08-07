@@ -32,6 +32,7 @@ function degradedStatusResponse() {
     ok: true,
     degraded: true,
     hasPassword: true,
+    needsInitialLedgerSetup: false,
     passwordResetEnabled: false,
     users: [],
   });
@@ -101,6 +102,8 @@ export async function GET() {
   const cookieStore = await cookies();
   const householdId = cookieStore.get("householdId")?.value;
   const status = await withTimeout(Promise.all([
+    prisma.household.count(),
+    prisma.user.count(),
     prisma.user.findFirst({
       where: { passwordHash: { not: null } },
       select: { id: true },
@@ -128,12 +131,14 @@ export async function GET() {
     return degradedStatusResponse();
   }
 
-  const [userWithPassword, legacy, users, passwordResetEnabled] = status;
+  const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled] = status;
   const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
+  const needsInitialLedgerSetup = householdCount === 0 && userCount === 0 && !hasPassword;
 
   return NextResponse.json({
     ok: true,
     hasPassword,
+    needsInitialLedgerSetup,
     passwordResetEnabled,
     users: users.map(u => ({ id: u.id, name: u.name, hasPassword: !!u.passwordHash, role: u.role, isSystem: u.isSystem })),
   });
@@ -162,6 +167,11 @@ export async function POST(req: NextRequest) {
     const existingUser = await prisma.user.findFirst({ select: { id: true } });
     const isFirstUser = !existingUser;
     let householdId: string | null = null;
+
+    const householdCount = isFirstUser ? await prisma.household.count() : 0;
+    if (isFirstUser && householdCount === 0) {
+      return NextResponse.json({ ok: false, error: "请先创建第一个账簿" }, { status: 400 });
+    }
 
     if (isFirstUser) {
       householdId = await ensureInitialHousehold(username);

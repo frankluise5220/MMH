@@ -31,6 +31,8 @@ export default async function OverviewPage() {
       creditAccountList={summary.creditAccountList}
       debtAccountList={summary.debtAccountList}
       topPositions={summary.topPositions}
+      investmentAccountCount={summary.investmentAccountCount}
+      insuranceAccountCount={summary.insuranceAccountCount}
       investmentMarketValue={summary.investmentMarketValue}
       investmentCost={summary.investmentCost}
       investmentFloatingPnL={summary.investmentFloatingPnL}

@@ -5,7 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { addWorkdaysUtc, toNumber } from "@/lib/date-utils";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { getFundNav } from "@/lib/fund/navCache";
+import { getFundNav, refreshHeldFundLatestNavs } from "@/lib/fund/navCache";
 import { calculateConfirmedBuyUnits, allocateBuyFailedRefunds } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
@@ -18,9 +18,12 @@ import { logger } from "@/lib/logger";
  * POST /api/v1/fund/refresh-pending
  *
  * Scans the active household for fund buy rows whose confirmation date has arrived
- * but NAV or confirmed units are still missing. It fills NAV, fee, and units using
- * the canonical buy-refund rule: gross buy amount - linked refund amount - fee.
- * Response shape: { ok: true, checked, filled, navFilled, skippedFuture, skippedNoNav, failed }.
+ * but NAV or confirmed units are still missing, and refreshes latest NAV for all
+ * current fund-like holdings. It fills NAV, fee, and units using the canonical
+ * buy-refund rule: gross buy amount - linked refund amount - fee.
+ * Response shape: { ok: true, checked, filled, navFilled, skippedFuture,
+ * skippedNoNav, failed, holdingNavChecked, holdingNavRefreshed,
+ * holdingNavFailed, nameFixed, entryIds }.
  */
 function utcDate(dateStr: string) {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -68,9 +71,25 @@ export async function POST() {
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     });
+    const heldNavResult = await refreshHeldFundLatestNavs({ householdId });
 
     if (candidateRows.length === 0) {
-      return NextResponse.json({ ok: true, checked: 0, filled: 0, navFilled: 0, skippedFuture: 0, skippedNoNav: 0, failed: 0 });
+      if (heldNavResult.latestNavAvailable > 0 || heldNavResult.nameFixed > 0) {
+        revalidateAfterInvestChange();
+      }
+      return NextResponse.json({
+        ok: true,
+        checked: 0,
+        filled: 0,
+        navFilled: 0,
+        skippedFuture: 0,
+        skippedNoNav: 0,
+        failed: 0,
+        holdingNavChecked: heldNavResult.checked,
+        holdingNavRefreshed: heldNavResult.latestNavAvailable,
+        nameFixed: heldNavResult.nameFixed,
+        holdingNavFailed: heldNavResult.failed,
+      });
     }
 
     const fundAccountIds = Array.from(new Set(candidateRows.map((row) => row.toAccountId ?? row.accountId).filter(Boolean) as string[]));
@@ -200,6 +219,8 @@ export async function POST() {
         await recalcFundPositions(accountId, Array.from(codes)).catch(logger.catchLog("recalc", "fund/refresh-pending"));
         await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("balance", "fund/refresh-pending"));
       }
+    }
+    if (changedEntryIds.length > 0 || heldNavResult.latestNavAvailable > 0 || heldNavResult.nameFixed > 0) {
       revalidateAfterInvestChange();
     }
 
@@ -211,6 +232,10 @@ export async function POST() {
       skippedFuture,
       skippedNoNav,
       failed,
+      holdingNavChecked: heldNavResult.checked,
+      holdingNavRefreshed: heldNavResult.latestNavAvailable,
+      nameFixed: heldNavResult.nameFixed,
+      holdingNavFailed: heldNavResult.failed,
       entryIds: changedEntryIds,
     });
   } catch (error) {

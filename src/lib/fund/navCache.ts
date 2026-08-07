@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { queryFundNav } from "@/lib/fund/queryApi";
+import { AccountKind, FundProductType } from "@prisma/client";
 
 const NAV_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -427,4 +428,93 @@ export async function refreshLatestFundNav(
   );
 
   return getLatestFundNav(fundCode);
+}
+
+export type RefreshHeldFundLatestNavsResult = {
+  checked: number;
+  latestNavAvailable: number;
+  nameFixed: number;
+  failed: number;
+  fundCodes: string[];
+};
+
+/**
+ * Refresh latest NAV for currently held fund-like positions.
+ *
+ * Current holdings are rows with remaining units or pending buy cost. Closed
+ * historical holdings are skipped so daily background checks stay lightweight.
+ */
+export async function refreshHeldFundLatestNavs(options: {
+  householdId?: string;
+  accountId?: string;
+}): Promise<RefreshHeldFundLatestNavsResult> {
+  const householdId = options.householdId?.trim();
+  const accountId = options.accountId?.trim();
+  if (!householdId && !accountId) {
+    throw new Error("refreshHeldFundLatestNavs requires householdId or accountId");
+  }
+
+  const holdings = await prisma.fundHolding.findMany({
+    where: {
+      ...(accountId ? { accountId } : {}),
+      OR: [
+        { units: { gt: 0 } },
+        { pendingCost: { gt: 0 } },
+      ],
+      Account: {
+        ...(householdId ? { householdId } : {}),
+        kind: AccountKind.investment,
+        isActive: true,
+        isPlaceholder: false,
+        OR: [
+          { investProductType: null },
+          { investProductType: { in: [FundProductType.fund, FundProductType.money] } },
+        ],
+      },
+    },
+    select: {
+      accountId: true,
+      fundCode: true,
+      fundName: true,
+    },
+    orderBy: [
+      { accountId: "asc" },
+      { fundCode: "asc" },
+    ],
+  });
+
+  let latestNavAvailable = 0;
+  let nameFixed = 0;
+  let failed = 0;
+  const fundCodes = new Set<string>();
+
+  for (const holding of holdings) {
+    const fundCode = holding.fundCode.trim();
+    if (!fundCode) continue;
+    fundCodes.add(fundCode);
+    try {
+      const latestNav = await refreshLatestFundNav(fundCode, holding.accountId);
+      if (!latestNav) continue;
+      latestNavAvailable++;
+
+      const name = (latestNav.name ?? "").trim();
+      if (name && name !== fundCode && name !== (holding.fundName ?? "").trim()) {
+        await prisma.fundHolding.update({
+          where: { accountId_fundCode: { accountId: holding.accountId, fundCode } },
+          data: { fundName: name },
+        });
+        nameFixed++;
+      }
+    } catch {
+      failed++;
+    }
+  }
+
+  return {
+    checked: holdings.length,
+    latestNavAvailable,
+    nameFixed,
+    failed,
+    fundCodes: [...fundCodes],
+  };
 }

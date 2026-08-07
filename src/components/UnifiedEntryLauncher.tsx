@@ -43,11 +43,39 @@ type Props = {
     defaultDebtAccountId?: string;
     defaultDebtInstitutionId?: string;
     defaultScheduledTaskType?: "fund_regular_invest" | "loan_repayment" | "transfer" | "insurance_premium";
+    defaultFundCode?: string;
+    defaultFundName?: string;
   };
 };
 
 function makeRequestId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getCurrentFundContext(context?: Props["context"]) {
+  if (typeof window === "undefined") {
+    return {
+      fundCode: context?.defaultFundCode ?? "",
+      fundName: context?.defaultFundName ?? "",
+    };
+  }
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const view = q.get("view") ?? "";
+    const urlFundCode = view === "investfund" || view === "investmoney"
+      ? q.get("fundCode")?.trim() ?? ""
+      : "";
+    const defaultFundCode = context?.defaultFundCode?.trim() ?? "";
+    return {
+      fundCode: urlFundCode || defaultFundCode,
+      fundName: !urlFundCode || urlFundCode === defaultFundCode ? context?.defaultFundName?.trim() ?? "" : "",
+    };
+  } catch {
+    return {
+      fundCode: context?.defaultFundCode ?? "",
+      fundName: context?.defaultFundName ?? "",
+    };
+  }
 }
 
 function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
@@ -107,6 +135,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
       );
       return;
     case "investment":
+      const currentFund = getCurrentFundContext(context);
       window.dispatchEvent(
         new CustomEvent("mmh:investment:create", {
           detail: {
@@ -114,6 +143,8 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
             defaultAccountId: context?.defaultInvestmentAccountId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
             defaultProductType: "fund",
+            defaultFundCode: currentFund.fundCode,
+            defaultFundName: currentFund.fundName,
           },
         }),
       );

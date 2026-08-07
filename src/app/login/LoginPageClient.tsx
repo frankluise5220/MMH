@@ -29,6 +29,7 @@ type AuthVerifyResponse = {
 type PasswordStatusResponse = {
   ok: boolean;
   hasPassword: boolean;
+  needsInitialLedgerSetup?: boolean;
   passwordResetEnabled?: boolean;
   users?: { id: string; name: string }[];
 };
@@ -54,6 +55,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string } | null>(null);
+  const [initialLedgerSetup, setInitialLedgerSetup] = useState(false);
 
   const [setupUsername, setSetupUsername] = useState("admin");
   const [newPassword, setNewPassword] = useState("");
@@ -112,7 +114,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       .then((data) => {
         if (!mounted) return;
         if (data.ok) {
-          setMode(data.hasPassword ? "login" : "setup");
+          const needsInitialLedgerSetup = data.needsInitialLedgerSetup === true;
+          setInitialLedgerSetup(needsInitialLedgerSetup);
+          setMode(needsInitialLedgerSetup ? "create" : data.hasPassword ? "login" : "setup");
           setSystemUsers(data.users ?? []);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
           const firstUser = data.users?.[0];
@@ -121,6 +125,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           }
         } else {
           setMode("login");
+          setInitialLedgerSetup(false);
           setSystemUsers([]);
           setPasswordResetEnabled(false);
         }
@@ -131,6 +136,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       .catch(() => {
         if (!mounted) return;
         setMode("login");
+        setInitialLedgerSetup(false);
         setSystemUsers([]);
         setPasswordResetEnabled(false);
       })
@@ -278,10 +284,10 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     const trimmedAdminEmail = createAdminEmail.trim();
     const trimmedPassword = createPassword.trim();
     const trimmedConfirmPassword = createConfirmPassword.trim();
-    if (!trimmedInviteCode) { setError("请输入邀请码"); return; }
+    if (!initialLedgerSetup && !trimmedInviteCode) { setError("请输入邀请码"); return; }
     if (!trimmedLedgerName) { setError("请输入账簿名"); return; }
     if (!trimmedAdminName) { setError("请输入管理员用户名"); return; }
-    if (!trimmedAdminEmail) { setError("请输入管理员邮箱"); return; }
+    if (!initialLedgerSetup && !trimmedAdminEmail) { setError("请输入管理员邮箱"); return; }
     if (!trimmedPassword) { setError("请输入密码"); return; }
     if (trimmedPassword !== trimmedConfirmPassword) { setError("两次输入的密码不一致"); return; }
 
@@ -292,10 +298,10 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          inviteCode: trimmedInviteCode,
+          ...(initialLedgerSetup ? {} : { inviteCode: trimmedInviteCode }),
           name: trimmedLedgerName,
           adminName: trimmedAdminName,
-          adminEmail: trimmedAdminEmail,
+          adminEmail: trimmedAdminEmail || undefined,
           adminPassword: trimmedPassword,
         }),
       });
@@ -460,7 +466,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           </div>
           {mode === "login" && <div className="mt-1 text-xs text-slate-500">{t("login.continueHint")}</div>}
           {mode === "setup" && <div className="mt-1 text-xs text-slate-500">{t("login.setupHint")}</div>}
-          {mode === "create" && <div className="mt-1 text-xs text-slate-500">{t("login.createHint")}</div>}
+          {mode === "create" && (
+            <div className="mt-1 text-xs text-slate-500">
+              {initialLedgerSetup ? "首次使用，请先创建第一个账簿和管理员账号" : t("login.createHint")}
+            </div>
+          )}
         </div>
 
         {mode === "login" && (
@@ -728,18 +738,20 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
         {mode === "create" && (
           <div className="space-y-4 p-6">
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">邀请码</div>
-              <input
-                value={createInviteCode}
-                onChange={(event) => setCreateInviteCode(event.target.value)}
-                type="password"
-                autoComplete="off"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="输入新建账簿邀请码"
-                autoFocus
-              />
-            </div>
+            {!initialLedgerSetup && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">邀请码</div>
+                <input
+                  value={createInviteCode}
+                  onChange={(event) => setCreateInviteCode(event.target.value)}
+                  type="password"
+                  autoComplete="off"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  placeholder="输入新建账簿邀请码"
+                  autoFocus
+                />
+              </div>
+            )}
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">账簿名</div>
               <input
@@ -749,6 +761,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 autoComplete="organization"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 placeholder="输入新账簿名"
+                autoFocus={initialLedgerSetup}
               />
             </div>
             <div className="space-y-1">
@@ -763,7 +776,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
               />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">管理员邮箱</div>
+              <div className="text-xs font-medium text-slate-600">
+                {initialLedgerSetup ? "管理员邮箱（可选）" : "管理员邮箱"}
+              </div>
               <input
                 value={createAdminEmail}
                 onChange={(event) => setCreateAdminEmail(event.target.value)}
@@ -805,26 +820,28 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             >
               {loading ? t("login.creating") : t("login.createAndEnter")}
             </button>
-            <button
-              type="button"
-              className="w-full text-xs text-slate-500 hover:text-slate-700"
-              disabled={loading}
-              onClick={() => {
-                setError("");
-                setResetError("");
-                setResetInfo("");
-                setShowReset(false);
-                setCreateInviteCode("");
-                setCreateLedgerName("");
-                setCreateAdminName("admin");
-                setCreateAdminEmail("");
-                setCreatePassword("");
-                setCreateConfirmPassword("");
-                setMode("login");
-              }}
-            >
-              {t("login.enter")}
-            </button>
+            {!initialLedgerSetup && (
+              <button
+                type="button"
+                className="w-full text-xs text-slate-500 hover:text-slate-700"
+                disabled={loading}
+                onClick={() => {
+                  setError("");
+                  setResetError("");
+                  setResetInfo("");
+                  setShowReset(false);
+                  setCreateInviteCode("");
+                  setCreateLedgerName("");
+                  setCreateAdminName("admin");
+                  setCreateAdminEmail("");
+                  setCreatePassword("");
+                  setCreateConfirmPassword("");
+                  setMode("login");
+                }}
+              >
+                {t("login.enter")}
+              </button>
+            )}
           </div>
         )}
 

@@ -3616,6 +3616,10 @@ export default async function Home({
         : view === "investwealth"
           ? investwealthData
           : null;
+  const isFundLikeInvestView = view === "investfund" || view === "investmoney";
+  const currentFundDefault = currentInvestData && isFundLikeInvestView
+    ? currentInvestData.positions.find((position) => position.fundCode === currentInvestData.selectedFundCode)
+    : null;
 
   // 定投计划数据加载
   const regularInvestData = viewParam === "regularinvest" && accountId && selectedAccount
@@ -4434,6 +4438,8 @@ export default async function Home({
                   defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
                   defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
                   defaultDebtInstitutionId: selectedDebtObjectValue,
+                  defaultFundCode: isFundLikeInvestView ? currentFundDefault?.fundCode ?? currentInvestData?.selectedFundCode ?? "" : "",
+                  defaultFundName: currentFundDefault?.name ?? "",
                   defaultScheduledTaskType:
                     view === "regularinvest"
                       ? "fund_regular_invest"
@@ -4475,9 +4481,9 @@ export default async function Home({
                 accountId={defaultInvestmentCreateAccountId}
                 accountProductType={selectedAccount && isPureInvestmentAccount(selectedAccount) ? selectedAccount.investProductType ?? null : null}
                 defaults={{
-                  fundCode: currentInvestData?.selectedFundCode ?? undefined,
-                  fundName: currentInvestData?.positions.find(p => p.fundCode === currentInvestData?.selectedFundCode)?.name ?? undefined,
-                  fundUnits: currentInvestData?.positions.find(p => p.fundCode === currentInvestData?.selectedFundCode)?.units ?? undefined,
+                  fundCode: isFundLikeInvestView ? currentInvestData?.selectedFundCode ?? undefined : undefined,
+                  fundName: currentFundDefault?.name ?? undefined,
+                  fundUnits: currentFundDefault?.units ?? undefined,
                 }}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}

@@ -101,6 +101,8 @@ export type OverviewSummary = {
   accountList: AccountListRow[];
   topPositions: TopPositionRow[];
   investmentAccountList: TopPositionRow[];
+  investmentAccountCount: number;
+  insuranceAccountCount: number;
   dailyNetWorth: number;
   dailyAssetDistribution: AssetDistributionItem[];
   dailyAccountList: AccountListRow[];
@@ -483,6 +485,8 @@ export async function computeOverviewSummary(
     accountList: dailyAccountList,
     topPositions: investmentAccountList.slice(0, 5),
     investmentAccountList,
+    investmentAccountCount: pureInvestmentAccounts.length,
+    insuranceAccountCount: insuranceAccounts.length,
     dailyNetWorth,
     dailyAssetDistribution,
     dailyAccountList,

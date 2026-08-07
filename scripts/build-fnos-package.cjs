@@ -15,6 +15,7 @@ const stageOnly = process.argv.includes("--stage-only");
 const nodeTarball = process.env.FNOS_NODE_TARBALL || "";
 const isLinux = process.platform === "linux";
 const manualFpk = process.env.FNOS_MANUAL_FPK === "1";
+const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
 
 function mkdirp(target) {
   fs.mkdirSync(target, { recursive: true });
@@ -79,9 +80,149 @@ function writeSolidPng(file, size) {
   ]));
 }
 
+function readPngRgba(file) {
+  const input = fs.readFileSync(file);
+  if (input.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+    throw new Error(`${path.relative(root, file)} is not a PNG file.`);
+  }
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+
+  while (offset < input.length) {
+    const length = input.readUInt32BE(offset);
+    const type = input.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = input.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idatChunks.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+
+  if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
+    throw new Error(`${path.relative(root, file)} must be an 8-bit RGB or RGBA PNG.`);
+  }
+
+  const sourceBpp = colorType === 6 ? 4 : 3;
+  const rowLength = width * sourceBpp;
+  const inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+  const rgba = Buffer.alloc(width * height * 4);
+  let readOffset = 0;
+  let previous = Buffer.alloc(rowLength);
+
+  const paeth = (left, up, upLeft) => {
+    const p = left + up - upLeft;
+    const pa = Math.abs(p - left);
+    const pb = Math.abs(p - up);
+    const pc = Math.abs(p - upLeft);
+    if (pa <= pb && pa <= pc) return left;
+    return pb <= pc ? up : upLeft;
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[readOffset];
+    readOffset += 1;
+    const row = Buffer.from(inflated.subarray(readOffset, readOffset + rowLength));
+    readOffset += rowLength;
+
+    for (let x = 0; x < rowLength; x += 1) {
+      const left = x >= sourceBpp ? row[x - sourceBpp] : 0;
+      const up = previous[x] ?? 0;
+      const upLeft = x >= sourceBpp ? previous[x - sourceBpp] : 0;
+      if (filter === 1) row[x] = (row[x] + left) & 0xff;
+      else if (filter === 2) row[x] = (row[x] + up) & 0xff;
+      else if (filter === 3) row[x] = (row[x] + Math.floor((left + up) / 2)) & 0xff;
+      else if (filter === 4) row[x] = (row[x] + paeth(left, up, upLeft)) & 0xff;
+      else if (filter !== 0) throw new Error(`${path.relative(root, file)} uses unsupported PNG filter ${filter}.`);
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      const sourceOffset = x * sourceBpp;
+      const targetOffset = (y * width + x) * 4;
+      rgba[targetOffset] = row[sourceOffset];
+      rgba[targetOffset + 1] = row[sourceOffset + 1];
+      rgba[targetOffset + 2] = row[sourceOffset + 2];
+      rgba[targetOffset + 3] = sourceBpp === 4 ? row[sourceOffset + 3] : 0xff;
+    }
+    previous = row;
+  }
+
+  return { width, height, rgba };
+}
+
+function resizeRgbaNearestBox(image, size) {
+  const output = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    const yStart = Math.floor((y * image.height) / size);
+    const yEnd = Math.max(yStart + 1, Math.floor(((y + 1) * image.height) / size));
+    for (let x = 0; x < size; x += 1) {
+      const xStart = Math.floor((x * image.width) / size);
+      const xEnd = Math.max(xStart + 1, Math.floor(((x + 1) * image.width) / size));
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let count = 0;
+      for (let sourceY = yStart; sourceY < yEnd; sourceY += 1) {
+        for (let sourceX = xStart; sourceX < xEnd; sourceX += 1) {
+          const sourceOffset = (sourceY * image.width + sourceX) * 4;
+          r += image.rgba[sourceOffset];
+          g += image.rgba[sourceOffset + 1];
+          b += image.rgba[sourceOffset + 2];
+          a += image.rgba[sourceOffset + 3];
+          count += 1;
+        }
+      }
+      const targetOffset = (y * size + x) * 4;
+      output[targetOffset] = Math.round(r / count);
+      output[targetOffset + 1] = Math.round(g / count);
+      output[targetOffset + 2] = Math.round(b / count);
+      output[targetOffset + 3] = Math.round(a / count);
+    }
+  }
+  return output;
+}
+
+function writeRgbaPng(file, size, rgba) {
+  mkdirp(path.dirname(file));
+  const signature = Buffer.from("89504e470d0a1a0a", "hex");
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const rows = [];
+  for (let y = 0; y < size; y += 1) {
+    rows.push(Buffer.from([0]));
+    rows.push(rgba.subarray(y * size * 4, (y + 1) * size * 4));
+  }
+  fs.writeFileSync(file, Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
 function copyIcon(src, dest, size) {
   if (fs.existsSync(src)) {
-    copyFile(src, dest);
+    const icon = readPngRgba(src);
+    writeRgbaPng(dest, size, resizeRgbaNearestBox(icon, size));
     return;
   }
   writeSolidPng(dest, size);
@@ -99,6 +240,7 @@ function run(command, args, options = {}) {
     stdio: options.stdio || "pipe",
     shell: false,
     encoding: "utf8",
+    env: options.env ? { ...process.env, ...options.env } : process.env,
   });
 }
 
@@ -124,6 +266,27 @@ function hashFileMd5(file) {
   const hash = crypto.createHash("md5");
   hash.update(fs.readFileSync(file));
   return hash.digest("hex");
+}
+
+function findNodeHeadersDir() {
+  const candidates = [
+    path.dirname(path.dirname(process.execPath)),
+    "/usr/local",
+    "/usr",
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "include", "node", "node.h"))) || "";
+}
+
+function assertCompatibleGlibc() {
+  const ldd = run("ldd", ["--version"]);
+  const text = `${ldd.stdout || ""}\n${ldd.stderr || ""}`;
+  const match = text.match(/GLIBC\s+(\d+)\.(\d+)/i);
+  if (!match) return;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  if (major > 2 || (major === 2 && minor > 36)) {
+    throw new Error(`fnOS .fpk must be built on glibc <= 2.36. Current build environment reports GLIBC ${major}.${minor}.`);
+  }
 }
 
 const copiedRuntimePackages = new Set();
@@ -277,7 +440,68 @@ write(path.join(stageDir, "config", "resource"), JSON.stringify({
   },
 }, null, 2));
 
-write(path.join(stageDir, "wizard", "install"), JSON.stringify([], null, 2));
+write(path.join(stageDir, "wizard", "install"), JSON.stringify([
+  {
+    stepTitle: "服务端口",
+    items: [
+      {
+        type: "text",
+        field: "wizard_port",
+        label: "服务端口",
+        initValue: "7777",
+      },
+    ],
+  },
+  {
+    stepTitle: "数据目录",
+    items: [
+      {
+        type: "tips",
+        helpText: "SQLite 数据会保存在应用数据目录中，默认即可。",
+      },
+    ],
+  },
+], null, 2));
+write(path.join(stageDir, "wizard", "config"), JSON.stringify([
+  {
+    stepTitle: "服务端口",
+    items: [
+      {
+        type: "text",
+        field: "wizard_port",
+        label: "服务端口",
+        initValue: "7777",
+      },
+    ],
+  },
+], null, 2));
+write(path.join(stageDir, "wizard", "uninstall"), JSON.stringify([
+  {
+    stepTitle: "卸载 MMH",
+    items: [
+      {
+        type: "tips",
+        helpText: "卸载后 SQLite 数据会保留在应用数据目录中。若选择清除，所有用户和交易记录将不可恢复。",
+      },
+      {
+        type: "radio",
+        field: "wizard_delete_data",
+        label: "数据处理方式",
+        initValue: "false",
+        options: [
+          {
+            label: "保留账本数据",
+            value: "false",
+          },
+          {
+            label: "清除所有数据（不可恢复）",
+            value: "true",
+          },
+        ],
+      },
+    ],
+  },
+], null, 2));
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
     "mmh.Application": {
@@ -285,7 +509,7 @@ write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
       icon: "images/icon_{0}.png",
       type: "url",
       protocol: "http",
-      port: "{port}",
+      port: "7777",
       url: "/",
       allUsers: false,
     },
@@ -297,6 +521,205 @@ copyIcon(markIcon, path.join(stageDir, "ICON.PNG"), 64);
 copyIcon(markIcon, path.join(stageDir, "ICON_256.PNG"), 256);
 copyIcon(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
 copyIcon(markIcon, path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
+
+write(path.join(stageDir, "cmd", "app-layout"), `#!/bin/bash
+
+list_vol_app_dirs() {
+    local kind="$1"
+    local d
+    for d in /vol*/@"$kind"/"$TRIM_APPNAME" /usr/local/apps/@"$kind"/"$TRIM_APPNAME"; do
+        [ -d "$d" ] && echo "$d"
+    done
+}
+
+resolve_pkgvar() {
+    if [ -n "\${TRIM_PKGVAR:-}" ]; then
+        echo "\${TRIM_PKGVAR}"
+        return 0
+    fi
+    local d first=""
+    if [ -n "$TRIM_APPNAME" ]; then
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            if [ -z "$first" ]; then
+                first="$d"
+            fi
+            if [ -f "$d/data/mmh.db" ]; then
+                echo "$d"
+                return 0
+            fi
+        done <<EOF
+$(list_vol_app_dirs appdata)
+EOF
+        if [ -n "$first" ]; then
+            echo "$first"
+            return 0
+        fi
+        echo "/vol1/@appdata/$TRIM_APPNAME"
+        return 0
+    fi
+    echo ""
+}
+
+resolve_runtime_paths() {
+    local pkgvar
+    pkgvar="$(resolve_pkgvar)"
+    ENV_FILE="\${pkgvar}/mmh.env"
+    PID_FILE="\${pkgvar}/mmh.pid"
+    LOG_FILE="\${pkgvar}/mmh.log"
+    DATA_DIR="\${pkgvar}/data"
+}
+
+resolve_app_dest() {
+    local d
+    if [ -n "\${TRIM_APPDEST:-}" ] && [ -d "\${TRIM_APPDEST}" ]; then
+        echo "\${TRIM_APPDEST}"
+        return 0
+    fi
+    if [ -n "$TRIM_APPNAME" ]; then
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            echo "$d"
+            return 0
+        done <<EOF
+$(list_vol_app_dirs appcenter)
+EOF
+        if [ -d "/var/apps/$TRIM_APPNAME" ]; then
+            echo "/var/apps/$TRIM_APPNAME"
+            return 0
+        fi
+    fi
+    echo "/var/apps/$TRIM_APPNAME"
+}
+
+ensure_app_ready() {
+    local dest tgz
+    dest="$(resolve_app_dest)"
+    tgz="\${dest}/app.tgz"
+
+    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN="\${dest}/bin/node"
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
+
+    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
+        APP_ROOT="\${dest}/app"
+        APP_BIN="\${dest}/app/bin/node"
+        APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+
+    if [ ! -f "$tgz" ]; then
+        return 1
+    fi
+
+    mkdir -p "\${dest}/app"
+    tar -xzf "$tgz" -C "\${dest}/app"
+    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
+        APP_ROOT="\${dest}/app"
+        APP_BIN="\${dest}/app/bin/node"
+        APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+
+    tar -xzf "$tgz" -C "$dest"
+    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN="\${dest}/bin/node"
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
+
+    return 1
+}
+
+app_ui_config() {
+    local dest root
+    dest="$(resolve_app_dest)"
+    for root in "\${dest}/app/ui/config" "\${dest}/ui/config"; do
+        if [ -f "$root" ]; then
+            echo "$root"
+            return 0
+        fi
+    done
+    echo "\${dest}/ui/config"
+}
+`, 0o755);
+
+write(path.join(stageDir, "cmd", "apply-settings"), `#!/bin/bash
+
+read_env_value() {
+    local key="$1"
+    local env_file pkgvar line val
+    pkgvar="$(resolve_pkgvar)"
+    env_file="\${pkgvar}/mmh.env"
+    [ -f "$env_file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "\${key}="*)
+                val="\${line#\${key}=}"
+                val="\${val#\'}"
+                val="\${val%\'}"
+                val="\${val#\"}"
+                val="\${val%\"}"
+                printf '%s' "$val"
+                return 0
+                ;;
+        esac
+    done < "$env_file"
+}
+
+resolve_port() {
+    local pkgvar port_file env_port
+    pkgvar="$(resolve_pkgvar)"
+    port_file="\${pkgvar}/.port"
+
+    if [ -n "\${wizard_port:-}" ]; then
+        echo "\${wizard_port}"
+        return 0
+    fi
+    if [ -f "$port_file" ]; then
+        tr -d '[:space:]' < "$port_file"
+        return 0
+    fi
+    env_port="$(read_env_value PORT 2>/dev/null || true)"
+    if [ -n "$env_port" ]; then
+        echo "$env_port"
+        return 0
+    fi
+    if [ -n "\${TRIM_SERVICE_PORT:-}" ]; then
+        echo "\${TRIM_SERVICE_PORT}"
+        return 0
+    fi
+    echo "7777"
+}
+
+write_env_file() {
+    local port pkgvar
+    port="$(resolve_port)"
+    pkgvar="$(resolve_pkgvar)"
+    [ -n "$pkgvar" ] || return 1
+    mkdir -p "\${pkgvar}/data" 2>/dev/null || true
+
+    cat > "\${pkgvar}/mmh.env" <<EOF
+PORT=\${port}
+TZ=Asia/Shanghai
+EOF
+    chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
+
+    if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/ui/config" ]; then
+        sed -i "s/\"port\": \"[0-9]*\"/\"port\": \"\${port}\"/" "\${APP_ROOT}/ui/config"
+    fi
+
+    if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/manifest" ]; then
+        sed -i "s/^service_port[[:space:]]*=.*/service_port          = \${port}/" "\${APP_ROOT}/manifest"
+    fi
+
+    printf '%s' "$port"
+}
+`, 0o755);
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 
@@ -349,6 +772,15 @@ status_app () {
   exit 3
 }
 
+log_app () {
+  if [ -f "$LOG_FILE" ]; then
+    tail -n "\${2:-100}" "$LOG_FILE"
+    exit $?
+  fi
+  echo "log not found: $LOG_FILE" >&2
+  exit 1
+}
+
 case "\${1:-status}" in
 start)
   start_app
@@ -358,6 +790,9 @@ stop)
   ;;
 status)
   status_app
+  ;;
+log)
+  log_app "\${2:-100}"
   ;;
 *)
   exit 1
@@ -393,9 +828,12 @@ if (fs.existsSync(standaloneDir)) {
   copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
+  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
+    fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
+  }
   const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
-  const diff = run(commandName("npx"), [
-    "prisma",
+  const diff = run(process.execPath, [
+    prismaCli,
     "migrate",
     "diff",
     "--from-empty",
@@ -405,7 +843,10 @@ if (fs.existsSync(standaloneDir)) {
     "--output",
     initSql,
   ], { stdio: "inherit" });
-  if (diff.status !== 0) process.exit(diff.status || 1);
+  if (diff.status !== 0) {
+    if (diff.error) console.error(diff.error.message);
+    process.exit(diff.status || 1);
+  }
   write(path.join(stageDir, "app", "server", "scripts", "init-sqlite.cjs"), `const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
@@ -444,9 +885,6 @@ try {
     "bindings",
   ]) {
     copyRuntimeDependencyClosure(dependency);
-  }
-  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
-    fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
   }
   materializeStandaloneSymlinks(path.join(stageDir, "app", "server", ".next", "node_modules"));
   for (const dependency of [
@@ -496,11 +934,39 @@ try {
   if (!isLinux) {
     throw new Error("fnOS release packages must be built on Linux/fnOS so native Node modules match the target platform.");
   }
+  if (process.env.FNOS_SKIP_GLIBC_CHECK !== "1") {
+    assertCompatibleGlibc();
+  }
   requirePath(path.join(stageDir, "app", "server", "server.js"), "Run the fnOS standalone build before packaging: npm run build:fnos:app");
   requirePath(path.join(stageDir, "app", "bin", "node"), "Provide a Linux x64 Node runtime tarball via FNOS_NODE_TARBALL before building mmh.fpk.");
 } catch (error) {
   console.error(error.message);
   process.exit(1);
+}
+
+const rebuildEnv = {};
+const nodeHeadersDir = findNodeHeadersDir();
+if (nodeHeadersDir) rebuildEnv.npm_config_nodedir = nodeHeadersDir;
+const stagedServerDir = path.join(stageDir, "app", "server");
+if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
+  const verifyNative = run(process.execPath, [
+    "-e",
+    "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
+  ], {
+    cwd: stagedServerDir,
+    stdio: "inherit",
+  });
+  if (verifyNative.status !== 0) {
+    console.error("FNOS_SKIP_NATIVE_REBUILD was set, but staged better-sqlite3 could not be loaded.");
+    process.exit(verifyNative.status || 1);
+  }
+} else {
+  const nativeRebuild = run(commandName("npm"), ["rebuild", "better-sqlite3", "--build-from-source"], {
+    cwd: stagedServerDir,
+    stdio: "inherit",
+    env: rebuildEnv,
+  });
+  if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
 }
 
 if (manualFpk) {

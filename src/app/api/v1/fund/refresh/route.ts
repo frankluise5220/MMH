@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
-import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshLatestFundNav, NavListItem } from "@/lib/fund/navCache";
+import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshHeldFundLatestNavs, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
@@ -220,32 +220,7 @@ export async function POST(req: NextRequest) {
       await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 
-    // 额外刷新所有基金的名称（从外部API获取最新名称，直接写入）
-    const allHoldings = await prisma.fundHolding.findMany({
-      where: { accountId },
-      select: { fundCode: true, fundName: true },
-    });
-
-    let nameFixed = 0;
-    for (const h of allHoldings) {
-      if (!h.fundCode) continue;
-      try {
-        // 获取最新净值（同时带回基金名称）
-        const latestNav = await refreshLatestFundNav(h.fundCode, accountId);
-        if (!latestNav?.name) continue;
-
-        // 直接更新基金名称（如果名称不同）
-        if (latestNav.name !== h.fundName) {
-          await prisma.fundHolding.update({
-            where: { accountId_fundCode: { accountId, fundCode: h.fundCode } },
-            data: { fundName: latestNav.name },
-          });
-          nameFixed++;
-        }
-      } catch {
-        // 忽略单个基金名称获取失败
-      }
-    }
+    const heldNavResult = await refreshHeldFundLatestNavs({ accountId });
 
     // Client-side handles page refresh
 
@@ -254,8 +229,11 @@ export async function POST(req: NextRequest) {
       entryFilled,
       entryNavFilled,
       entryFailed,
-      nameFixed,
-      message: `补填确认净值 ${entryFilled} 笔${entryFailed > 0 ? `，${entryFailed} 笔失败` : ""}${nameFixed > 0 ? `，修正名称 ${nameFixed} 个` : ""}`,
+      holdingNavChecked: heldNavResult.checked,
+      holdingNavRefreshed: heldNavResult.latestNavAvailable,
+      holdingNavFailed: heldNavResult.failed,
+      nameFixed: heldNavResult.nameFixed,
+      message: `补填确认净值 ${entryFilled} 笔${entryFailed > 0 ? `，${entryFailed} 笔失败` : ""}${heldNavResult.nameFixed > 0 ? `，修正名称 ${heldNavResult.nameFixed} 个` : ""}`,
     });
   } catch (e) {
     return NextResponse.json(

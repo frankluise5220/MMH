@@ -19,6 +19,21 @@ function read(file) {
   return fs.readFileSync(file, "utf8");
 }
 
+function pngSize(file) {
+  if (!fs.existsSync(file)) return null;
+  const buffer = fs.readFileSync(file);
+  if (buffer.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return null;
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+function expectPngSize(file, size) {
+  const dimensions = pngSize(file);
+  expect(
+    dimensions?.width === size && dimensions?.height === size,
+    `${path.relative(root, file)} must be a ${size}x${size} PNG.`,
+  );
+}
+
 const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
@@ -55,6 +70,12 @@ expect(!/mmh-native\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow must not pub
 if (fs.existsSync(stageDir)) {
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
+  }
+  expectPngSize(path.join(stageDir, "ICON.PNG"), 64);
+  expectPngSize(path.join(stageDir, "ICON_256.PNG"), 256);
+  if (fs.existsSync(path.join(stageDir, "app"))) {
+    expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
+    expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
   }
 }
 

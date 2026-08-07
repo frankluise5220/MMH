@@ -51,6 +51,10 @@ export function parseImportAccountId(value?: string) {
 }
 
 const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
+  { canonical: "支付宝", aliases: ["Alipay"] },
+  { canonical: "微信", aliases: ["微信支付", "WeChat", "WeChat Pay"] },
+  { canonical: "京东金融", aliases: ["京东", "白条", "京东支付"] },
+  { canonical: "银联", aliases: ["云闪付", "银联支付"] },
   { canonical: "工商银行", aliases: ["中国工商银行", "工行"] },
   { canonical: "农业银行", aliases: ["中国农业银行", "农行"] },
   { canonical: "中国银行", aliases: ["中行"] },
@@ -384,6 +388,26 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     return null;
   }
 
+  function pickAlipayBalanceProduct(raw: string) {
+    const key = normalizeImportAccountMatchKey(raw);
+    if (!key || key.includes(normalizeImportAccountMatchKey("余利宝"))) return null;
+    const isGenericAlipayInvestment =
+      key.includes(normalizeImportAccountMatchKey("支付宝投资类")) ||
+      key.endsWith(normalizeImportAccountMatchKey("支付宝投资")) ||
+      key.includes(normalizeImportAccountMatchKey("支付宝理财类")) ||
+      key.endsWith(normalizeImportAccountMatchKey("支付宝理财"));
+    if (!key.includes(normalizeImportAccountMatchKey("余额宝")) && !isGenericAlipayInvestment) return null;
+
+    const alipayKeys = expandBankName("支付宝").map(normalizeImportAccountMatchKey).filter(Boolean);
+    const yuebaoKey = normalizeImportAccountMatchKey("余额宝");
+    const matches = indexed.filter((item) => {
+      if (item.account.kind && item.account.kind !== "ewallet") return false;
+      if (!bankKeyMatches(item, alipayKeys)) return false;
+      return item.keys.some((candidateKey) => candidateKey === yuebaoKey || candidateKey.includes(yuebaoKey));
+    });
+    return matches.length === 1 ? matches[0].account : null;
+  }
+
   return (accountName: string | undefined): ImportAccountMatchResult<T> => {
     const raw = String(accountName ?? "").trim();
     if (!raw) return result(null, [], { targetKind: null, targetBankNames: [] });
@@ -460,6 +484,9 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
       }
       if (byLast4.length > 1) return result(null, byLast4, { targetKind, targetBankNames });
     }
+
+    const alipayBalanceProduct = pickAlipayBalanceProduct(raw);
+    if (alipayBalanceProduct) return result(alipayBalanceProduct, [], { targetKind, targetBankNames });
 
     if (targetKind && targetBankKeys.length > 0) {
       const byBankAndKind = indexed.filter((item) => {

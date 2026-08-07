@@ -9,6 +9,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { findRecentTransactionDuplicate } from "@/lib/server/transaction-dedupe";
+import { createImportAccountMatcher } from "@/lib/account-import-match";
 
 export const runtime = "nodejs";
 
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
   const [accounts, categories, groups, users, institutions] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter },
-      include: { Institution: true, AccountGroup: true },
+      include: { Institution: true, AccountGroup: true, AccountAlias: true },
       orderBy: { name: "asc" },
     }),
     prisma.category.findMany({ where: { ...hidFilter }, orderBy: { name: "asc" } }),
@@ -111,6 +112,13 @@ export async function POST(req: NextRequest) {
   );
   const accountByAlias = new Map<string, (typeof accounts)[number]>();
   const requestAccount = requestAccountId ? accountById.get(requestAccountId) ?? null : null;
+  const matchImportAccount = createImportAccountMatcher(accounts);
+
+  for (const account of accounts) {
+    for (const alias of account.AccountAlias ?? []) {
+      accountByAlias.set(alias.alias.toLowerCase(), account);
+    }
+  }
 
   const BANK_KEYWORD_MAP: Record<string, string[]> = {
     "工商银行": ["工商", "工行", "ICBC"],
@@ -217,6 +225,9 @@ export async function POST(req: NextRequest) {
     const clean = name.trim();
     const creditByTail = findCreditAccountFromText(clean);
     if (creditByTail) return creditByTail;
+
+    const sharedMatch = matchImportAccount(clean).account;
+    if (sharedMatch) return sharedMatch;
 
     const exact = accountByName.get(clean);
     if (exact) return exact;
@@ -423,7 +434,7 @@ export async function POST(req: NextRequest) {
         institutionId: institutionId ?? undefined,
         userId: userId ?? undefined,
       },
-      include: { Institution: true, AccountGroup: true },
+      include: { Institution: true, AccountGroup: true, AccountAlias: true },
     });
 
     accounts.push(created);

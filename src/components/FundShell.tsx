@@ -35,6 +35,8 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
+import { RefreshNavButton } from "@/components/RefreshNavButton";
+
 import { AddNavButton } from "@/components/AddNavButton";
 
 import { DateStepper } from "@/components/DateStepper";
@@ -2420,6 +2422,10 @@ export function FundShell(props: Props) {
             >
               全部交易
             </Link>
+
+            {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
+              <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
+            ) : null}
 
           </div>
 

@@ -79,6 +79,8 @@ export type OverviewDashboardProps = {
   creditAccountList: CreditAccountItem[];
   debtAccountList?: AccountItem[];
   topPositions?: InvestmentOverviewItem[];
+  investmentAccountCount?: number;
+  insuranceAccountCount?: number;
   investmentMarketValue?: number;
   investmentCost?: number;
   investmentFloatingPnL?: number;
@@ -140,6 +142,8 @@ export function OverviewDashboard({
   creditAccountList,
   debtAccountList = [],
   topPositions = [],
+  investmentAccountCount,
+  insuranceAccountCount,
   investmentMarketValue,
   investmentCost,
   investmentFloatingPnL,
@@ -167,7 +171,23 @@ export function OverviewDashboard({
   const creditBillTotal = creditCards.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
   const creditPaidTotal = creditCards.reduce((sum, account) => sum + Math.max(0, Math.min(account.paid, account.currentBill)), 0);
   const debtAccounts = debtAccountList.filter((account) => account.balance !== 0);
-  const overviewModuleCount = 3 + (creditCards.length > 0 ? 1 : 0) + (debtAccounts.length > 0 ? 1 : 0);
+  const showInvestmentOverview = investmentAccountCount == null
+    ? topPositions.length > 0 || investMarketValue !== 0 || investCost !== 0
+    : investmentAccountCount > 0;
+  const showInsuranceOverview = insuranceAccountCount == null
+    ? (insuranceOverview?.productCount ?? 0) > 0 || totals.insuranceAsset !== 0
+    : insuranceAccountCount > 0;
+  const overviewModuleCount =
+    1 +
+    (showInvestmentOverview ? 1 : 0) +
+    (showInsuranceOverview ? 1 : 0) +
+    (creditCards.length > 0 ? 1 : 0) +
+    (debtAccounts.length > 0 ? 1 : 0);
+  const investmentModuleIndex = showInvestmentOverview ? 0 : -1;
+  const dailyModuleIndex = showInvestmentOverview ? 1 : 0;
+  const insuranceModuleIndex = dailyModuleIndex + 1;
+  const creditModuleIndex = dailyModuleIndex + 1 + (showInsuranceOverview ? 1 : 0);
+  const debtModuleIndex = creditModuleIndex + (creditCards.length > 0 ? 1 : 0);
   const moduleClass = (index: number) =>
     `panel-surface ${overviewModuleCount === 3 && index === 0 ? "xl:col-span-2" : ""}`;
 
@@ -184,6 +204,8 @@ export function OverviewDashboard({
         creditAccountList={creditAccountList}
         debtAccountList={debtAccountList}
         topPositions={topPositions}
+        investmentAccountCount={investmentAccountCount}
+        insuranceAccountCount={insuranceAccountCount}
         investmentMarketValue={investmentMarketValue}
         investmentCost={investmentCost}
         investmentFloatingPnL={investmentFloatingPnL}
@@ -207,55 +229,61 @@ export function OverviewDashboard({
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
               <MetricCard label={netDebtLabel} value={formatMoneyYuan(netDebtAmount)} valueClass={netDebtClass} />
-              <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
-              <MetricCard label="保险现金价值" value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
+              {showInvestmentOverview ? (
+                <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
+              ) : null}
+              {showInsuranceOverview ? (
+                <MetricCard label="保险现金价值" value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
+              ) : null}
             </div>
           </div>
         </section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <div className={moduleClass(0)}>
-            <div className="panel-header">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <PiggyBank className="h-4 w-4 text-emerald-500" />
-                投资总览
+          {showInvestmentOverview ? (
+            <div className={moduleClass(investmentModuleIndex)}>
+              <div className="panel-header">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <PiggyBank className="h-4 w-4 text-emerald-500" />
+                  投资总览
+                </div>
+                <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
               </div>
-              <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
-            </div>
-            <div className="space-y-4 px-4 py-4">
-              <InvestmentCostProfitBar
-                cost={investCost}
-                floatingPnL={investFloatingPnL}
-              />
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
-                <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
-                <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
-                <MetricCard label="浮盈率" value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
+              <div className="space-y-4 px-4 py-4">
+                <InvestmentCostProfitBar
+                  cost={investCost}
+                  floatingPnL={investFloatingPnL}
+                />
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
+                  <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
+                  <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
+                  <MetricCard label="浮盈率" value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
+                </div>
+              </div>
+              <div className="divide-y divide-slate-100 border-t border-slate-100">
+                {topPositions.length > 0 ? (
+                  topPositions.slice(0, 5).map((item) => (
+                    <Link
+                      key={item.accountId ?? item.fundCode}
+                      href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/investments"}
+                      scroll={false}
+                      className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
+                    >
+                      <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
+                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.marketValue, isRedUp)}`}>{formatMoney(item.marketValue)}</div>
+                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
+                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
+                    </Link>
+                  ))
+                ) : (
+                  <div className="px-4 py-8 text-center text-sm text-slate-400">暂无投资持仓</div>
+                )}
               </div>
             </div>
-            <div className="divide-y divide-slate-100 border-t border-slate-100">
-              {topPositions.length > 0 ? (
-                topPositions.slice(0, 5).map((item) => (
-                  <Link
-                    key={item.accountId ?? item.fundCode}
-                    href={item.accountId ? `/?accountId=${item.accountId}&view=${getInvestmentAccountView(item)}` : "/investments"}
-                    scroll={false}
-                    className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
-                  >
-                    <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
-                    <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.marketValue, isRedUp)}`}>{formatMoney(item.marketValue)}</div>
-                    <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
-                    <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
-                  </Link>
-                ))
-              ) : (
-                <div className="px-4 py-8 text-center text-sm text-slate-400">暂无投资持仓</div>
-              )}
-            </div>
-          </div>
+          ) : null}
 
-          <div className={moduleClass(1)}>
+          <div className={moduleClass(dailyModuleIndex)}>
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Wallet className="h-4 w-4 text-blue-500" />
@@ -289,10 +317,12 @@ export function OverviewDashboard({
             </div>
           </div>
 
-          <InsuranceOverviewCard className={moduleClass(2)} insuranceOverview={insuranceOverview} isRedUp={isRedUp} />
+          {showInsuranceOverview ? (
+            <InsuranceOverviewCard className={moduleClass(insuranceModuleIndex)} insuranceOverview={insuranceOverview} isRedUp={isRedUp} />
+          ) : null}
 
           {creditCards.length > 0 && (
-            <div className={moduleClass(3)}>
+            <div className={moduleClass(creditModuleIndex)}>
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <CreditCard className="h-4 w-4 text-amber-500" />
@@ -325,7 +355,7 @@ export function OverviewDashboard({
           )}
 
           {debtAccounts.length > 0 && (
-            <div className={moduleClass(creditCards.length > 0 ? 4 : 3)}>
+            <div className={moduleClass(debtModuleIndex)}>
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <HandCoins className="h-4 w-4 text-rose-500" />

@@ -12,6 +12,8 @@ import {
   LEDGER_CREATION_INVITE_CODE_KEY,
 } from "@/lib/households/create-ledger";
 
+const LEGACY_PASSWORD_KEY = "access_password";
+
 function resolveSessionMaxAge(req: NextRequest) {
   const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
   const days = Number(raw);
@@ -21,15 +23,17 @@ function resolveSessionMaxAge(req: NextRequest) {
 
 /**
  * POST /api/v1/auth/create-ledger
- * 公开入口：通过邀请码创建新账簿，并直接登录到新账簿管理员。
+ * 公开入口：创建新账簿，并直接登录到新账簿管理员。
+ * - 首次空库初始化第一本账簿时不需要邀请码。
+ * - 非首次创建必须校验系统设置中的账簿创建邀请码。
  *
  * Body:
  * {
- *   inviteCode: string,
+ *   inviteCode?: string,
  *   name: string,
  *   adminName: string,
  *   adminPassword: string,
- *   adminEmail: string
+ *   adminEmail?: string
  * }
  */
 export async function POST(req: NextRequest) {
@@ -40,9 +44,6 @@ export async function POST(req: NextRequest) {
   const adminPassword = String(body.adminPassword ?? "").trim();
   const adminEmail = String(body.adminEmail ?? "").trim();
 
-  if (!inviteCode) {
-    return NextResponse.json({ ok: false, error: "请输入邀请码" }, { status: 400 });
-  }
   if (!name || name.length > 50) {
     return NextResponse.json({ ok: false, error: "账簿名称不合法（1-50字）" }, { status: 400 });
   }
@@ -52,19 +53,35 @@ export async function POST(req: NextRequest) {
   if (!adminPassword) {
     return NextResponse.json({ ok: false, error: "请设置管理员密码" }, { status: 400 });
   }
-  if (!adminEmail) {
-    return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
-  }
 
-  const inviteSetting = await prisma.systemSetting.findUnique({
-    where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
-  });
-  const expectedInviteCode = inviteSetting?.value?.trim() ?? "";
-  if (!expectedInviteCode) {
-    return NextResponse.json({ ok: false, error: "当前未开放新建账簿，请联系管理员" }, { status: 403 });
-  }
-  if (inviteCode !== expectedInviteCode) {
-    return NextResponse.json({ ok: false, error: "邀请码不正确" }, { status: 403 });
+  const [householdCount, userCount, legacy] = await prisma.$transaction([
+    prisma.household.count(),
+    prisma.user.count(),
+    prisma.systemSetting.findUnique({
+      where: { key: LEGACY_PASSWORD_KEY },
+      select: { value: true },
+    }),
+  ]);
+  const isInitialLedgerSetup = householdCount === 0 && userCount === 0 && !(legacy?.value?.length);
+
+  if (!isInitialLedgerSetup) {
+    if (!inviteCode) {
+      return NextResponse.json({ ok: false, error: "请输入邀请码" }, { status: 400 });
+    }
+    if (!adminEmail) {
+      return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
+    }
+
+    const inviteSetting = await prisma.systemSetting.findUnique({
+      where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
+    });
+    const expectedInviteCode = inviteSetting?.value?.trim() ?? "";
+    if (!expectedInviteCode) {
+      return NextResponse.json({ ok: false, error: "当前未开放新建账簿，请联系管理员" }, { status: 403 });
+    }
+    if (inviteCode !== expectedInviteCode) {
+      return NextResponse.json({ ok: false, error: "邀请码不正确" }, { status: 403 });
+    }
   }
 
   const { household, adminUser } = await prisma.$transaction((tx) =>
@@ -78,6 +95,7 @@ export async function POST(req: NextRequest) {
 
   const response = NextResponse.json({
     ok: true,
+    initialSetup: isInitialLedgerSetup,
     household: { id: household.id, name: household.name },
   });
   const maxAge = resolveSessionMaxAge(req);

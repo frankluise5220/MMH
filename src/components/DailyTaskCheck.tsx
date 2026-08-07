@@ -15,7 +15,9 @@ function hasUsefulChange(result: unknown) {
   const executedCount = Number(data.executedCount ?? 0);
   const filled = Number(data.filled ?? data.entryFilled ?? 0);
   const navFilled = Number(data.navFilled ?? data.entryNavFilled ?? 0);
-  return executedCount > 0 || filled > 0 || navFilled > 0;
+  const holdingNavRefreshed = Number(data.holdingNavRefreshed ?? 0);
+  const nameFixed = Number(data.nameFixed ?? 0);
+  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
