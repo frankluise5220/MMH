@@ -515,7 +515,16 @@ if (manualFpk) {
   fs.appendFileSync(path.join(stageDir, "manifest"), `checksum=${hashFileMd5(appArchive)}\n`, "utf8");
   const fpkPath = path.join(outDir, `${appName}.fpk`);
   const versionedFpkPath = path.join(outDir, `${appName}-${version}.fpk`);
-  const fpkTar = run("tar", ["-cf", fpkPath, "-C", stageDir, "."]);
+  const fpkEntries = [
+    "app.tgz",
+    "cmd",
+    "config",
+    "ICON.PNG",
+    "ICON_256.PNG",
+    "manifest",
+    "wizard",
+  ];
+  const fpkTar = run("tar", ["-czf", fpkPath, "-C", stageDir, ...fpkEntries]);
   if (fpkTar.status !== 0) {
     console.error(fpkTar.stderr || fpkTar.stdout || "manual .fpk packaging failed");
     process.exit(fpkTar.status || 1);
