@@ -127,6 +127,7 @@ function hashFileMd5(file) {
 }
 
 const copiedRuntimePackages = new Set();
+let standaloneAppDir = null;
 const excludedRuntimePackages = new Set([
   "@electric-sql/pglite",
   "@electric-sql/pglite-socket",
@@ -169,7 +170,7 @@ function materializeStandaloneSymlinks(baseDir) {
       const absoluteTarget = path.isAbsolute(linkTarget)
         ? linkTarget
         : path.resolve(path.dirname(item), linkTarget);
-      const relativeFromStandaloneModules = path.relative(path.join(standaloneDir, "node_modules"), absoluteTarget);
+      const relativeFromStandaloneModules = path.relative(path.join(standaloneAppDir || standaloneDir, "node_modules"), absoluteTarget);
       const localTarget = path.join(stageDir, "app", "server", "node_modules", relativeFromStandaloneModules);
       fs.rmSync(item, { force: true });
       if (fs.existsSync(localTarget)) {
@@ -193,6 +194,25 @@ function removeRuntimeDependency(name) {
     recursive: true,
     force: true,
   });
+}
+
+function findStandaloneAppDir(baseDir) {
+  const directServer = path.join(baseDir, "server.js");
+  if (fs.existsSync(directServer)) return baseDir;
+
+  const queue = [baseDir];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || !fs.existsSync(current)) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === "node_modules") continue;
+      const child = path.join(current, entry.name);
+      if (fs.existsSync(path.join(child, "server.js"))) return child;
+      queue.push(child);
+    }
+  }
+  return baseDir;
 }
 
 fs.rmSync(stageDir, { recursive: true, force: true });
@@ -367,7 +387,8 @@ const staticDir = path.join(root, ".next", "static");
 const publicDir = path.join(root, "public");
 
 if (fs.existsSync(standaloneDir)) {
-  copyDir(standaloneDir, path.join(stageDir, "app", "server"));
+  standaloneAppDir = findStandaloneAppDir(standaloneDir);
+  copyDir(standaloneAppDir, path.join(stageDir, "app", "server"));
   copyDir(staticDir, path.join(stageDir, "app", "server", ".next", "static"));
   copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
