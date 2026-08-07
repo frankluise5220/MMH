@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
@@ -78,7 +79,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   ]);
 
   const allTags = await prisma.tag.findMany({
-    where: { ...hidFilter },
+    where: readableTagWhere(ctx.householdId),
     select: { id: true, name: true, color: true },
     orderBy: { name: "asc" },
   });

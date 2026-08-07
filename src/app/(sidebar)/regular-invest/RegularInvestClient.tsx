@@ -42,12 +42,13 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 };
 
 type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "none";
-type SortKey = "taskContent" | "startDate";
+type SortKey = "taskContent" | "startDate" | "nextRunDate";
 type SortDirection = "asc" | "desc";
 type RegularInvestColumnKey =
   | "taskContent"
   | "taskType"
   | "startDate"
+  | "nextRunDate"
   | "targetAccount"
   | "cashAccount"
   | "amount"
@@ -130,6 +131,7 @@ const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label
   { key: "taskContent", label: "任务内容" },
   { key: "taskType", label: "类型" },
   { key: "startDate", label: "开始日期" },
+  { key: "nextRunDate", label: "下次执行" },
   { key: "targetAccount", label: "目标账户" },
   { key: "cashAccount", label: "资金账户" },
   { key: "amount", label: "金额" },
@@ -142,6 +144,7 @@ const REGULAR_INVEST_COLUMN_WIDTHS: Record<RegularInvestColumnKey, number> = {
   taskContent: 260,
   taskType: 120,
   startDate: 110,
+  nextRunDate: 110,
   targetAccount: 180,
   cashAccount: 180,
   amount: 104,
@@ -157,6 +160,7 @@ const REGULAR_INVEST_TABLE_COLUMN_KEYS: ReadonlyArray<RegularInvestTableColumnKe
   "taskContent",
   "taskType",
   "startDate",
+  "nextRunDate",
   "targetAccount",
   "cashAccount",
   "amount",
@@ -169,6 +173,7 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, numb
   taskContent: 160,
   taskType: 88,
   startDate: 92,
+  nextRunDate: 92,
   targetAccount: 132,
   cashAccount: 132,
   amount: 86,
@@ -180,6 +185,7 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, numb
 const REGULAR_INVEST_SORT_COLUMNS: Partial<Record<RegularInvestColumnKey, SortKey>> = {
   taskContent: "taskContent",
   startDate: "startDate",
+  nextRunDate: "nextRunDate",
 };
 
 function isRegularInvestTableColumnKey(value: string): value is RegularInvestTableColumnKey {
@@ -332,6 +338,8 @@ function sortPlans(
       result = compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
     } else if (sortKey === "startDate") {
       result = compareNullableDate(left.startDate, right.startDate);
+    } else if (sortKey === "nextRunDate") {
+      result = compareNullableDate(left.nextRunDate, right.nextRunDate);
     }
     if (result !== 0) return result * factor;
     return compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
@@ -396,7 +404,7 @@ export function RegularInvestClient({
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupByMode>("fundGroup");
-  const [sortKey, setSortKey] = useState<SortKey>("startDate");
+  const [sortKey, setSortKey] = useState<SortKey>("nextRunDate");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [columnFilterOpen, setColumnFilterOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<RegularInvestColumnKey[]>([]);
@@ -1016,6 +1024,11 @@ export function RegularInvestClient({
     if (selectedTaskTypes.length > 0 && !selectedTaskTypes.includes(getPlanTaskLabel(plan))) return false;
     return true;
   });
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const overduePlans = filteredPlans.filter(
+    (plan) => plan.status === "active" && plan.nextRunDate && new Date(plan.nextRunDate).getTime() <= todayStart.getTime(),
+  );
   const sortedPlans = sortPlans(filteredPlans, sortKey, sortDirection);
   const groupedPlans = groupPlans(sortedPlans, groupBy);
   const visibleRegularInvestColumns = REGULAR_INVEST_COLUMNS.filter((column) => isColumnVisible(column.key));
@@ -1046,6 +1059,9 @@ export function RegularInvestClient({
         ) : null}
         {isColumnVisible("startDate") ? (
           <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">{formatDate(plan.startDate)}</td>
+        ) : null}
+        {isColumnVisible("nextRunDate") ? (
+          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-700">{formatDate(plan.nextRunDate)}</td>
         ) : null}
         {isColumnVisible("targetAccount") ? (
           <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
@@ -1152,6 +1168,11 @@ export function RegularInvestClient({
                 <span className="text-slate-500">
                   共 {filteredPlans.length} 个计划，{filteredPlans.filter((plan) => plan.status === "active").length} 个执行中
                 </span>
+                {overduePlans.length > 0 ? (
+                  <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
+                    待执行 {overduePlans.length}
+                  </span>
+                ) : null}
                 <select
                   value={groupBy}
                   onChange={(e) => setGroupBy(e.target.value as GroupByMode)}

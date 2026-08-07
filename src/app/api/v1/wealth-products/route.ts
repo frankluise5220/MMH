@@ -2,12 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 
 export const runtime = "nodejs";
-
-function normalizeCurrency(raw: unknown) {
-  return String(raw ?? "CNY").trim().toUpperCase() || "CNY";
-}
 
 function parsePositiveNumber(raw: unknown) {
   const value = Number(String(raw ?? "").trim());
@@ -82,7 +79,7 @@ export async function POST(req: NextRequest) {
     const shortName = String(body.shortName ?? "").trim() || null;
     const cashAccountId = String(body.cashAccountId ?? "").trim();
     const requestedWealthAccountId = String(body.wealthAccountId ?? "").trim() || null;
-    const currency = normalizeCurrency(body.currency);
+    const requestedCurrency = normalizeOptionalCurrency(body.currency);
     const annualRate = parsePositiveNumber(body.annualRate);
     const termDays = parsePositiveNumber(body.termDays);
     const note = String(body.note ?? "").trim() || null;
@@ -100,13 +97,17 @@ export async function POST(req: NextRequest) {
         where: { householdId, institutionId: resolvedAccount.institutionId, name },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
+      const targetCurrency = requestedCurrency ? normalizeCurrency(requestedCurrency) : normalizeCurrency(resolvedAccount.currency);
+      if (existing && normalizeCurrency(existing.currency) !== targetCurrency) {
+        throw new Error(`同名理财产品已存在，但币种是 ${normalizeCurrency(existing.currency)}，当前理财账户币种是 ${targetCurrency}`);
+      }
       const resolvedProduct = existing ?? await tx.wealthProduct.create({
         data: {
           householdId,
           name,
           shortName,
           institutionId: resolvedAccount.institutionId,
-          currency: currency || resolvedAccount.currency,
+          currency: targetCurrency,
           annualRate,
           termDays: termDays == null ? null : Math.round(termDays),
           note,

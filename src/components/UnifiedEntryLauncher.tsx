@@ -8,6 +8,7 @@ type EntryKind =
   | "transaction"
   | "advance"
   | "transfer"
+  | "fx"
   | "investment"
   | "metal"
   | "wealth"
@@ -84,6 +85,20 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
             requestId,
             source: "launcher",
             item: { type: "transfer" },
+            defaultAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
+            defaultFromAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
+            defaultToAccountId: context?.defaultTransferToAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "fx":
+      window.dispatchEvent(
+        new CustomEvent("mmh:create-transaction:open", {
+          detail: {
+            requestId,
+            source: "launcher",
+            item: { type: "fx" },
             defaultAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
             defaultFromAccountId: context?.defaultTransferFromAccountId ?? context?.defaultAccountId ?? "",
             defaultToAccountId: context?.defaultTransferToAccountId ?? "",

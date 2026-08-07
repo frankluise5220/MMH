@@ -4,6 +4,9 @@ import { toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { debtPrincipalForAccountSide } from "@/lib/debt";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
+
+const FX_CONVERSION_SOURCE = "fx_conversion";
 
 type AccountBalanceLike = {
   id: string;
@@ -93,10 +96,7 @@ export async function computeAccountDisplayBalances(
     const txRows = await prisma.txRecord.findMany({
       where: {
         ...txWhere,
-        OR: [
-          { accountId: { in: nonDepositAccountIds } },
-          { toAccountId: { in: nonDepositAccountIds } },
-        ],
+        ...txRecordAccountScopeWhere(nonDepositAccountIds),
       },
       select: {
         id: true,
@@ -124,7 +124,7 @@ export async function computeAccountDisplayBalances(
       if (entry.accountId && txByAccountId.has(entry.accountId)) {
         txByAccountId.get(entry.accountId)?.push(entry);
       }
-      if (entry.toAccountId && txByAccountId.has(entry.toAccountId)) {
+      if (entry.source !== FX_CONVERSION_SOURCE && entry.toAccountId && txByAccountId.has(entry.toAccountId)) {
         txByAccountId.get(entry.toAccountId)?.push(entry);
       }
     }

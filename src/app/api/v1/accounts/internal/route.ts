@@ -9,6 +9,8 @@ import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
+import { normalizeCurrency } from "@/lib/currency";
 
 function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProductType?: string | null }>(account: T): T {
   if (account.kind === AccountKind.investment && account.investProductType === "deposit") {
@@ -51,7 +53,8 @@ export async function GET(request: Request) {
   try {
     const includeBalances = request.url ? new URL(request.url).searchParams.get("balances") !== "false" : true;
     const ctx = await getHouseholdScope();
-    const { hidFilter } = ctx;
+    const { householdId, hidFilter } = ctx;
+    const baseCurrency = await getHouseholdBaseCurrency(householdId);
 
     const [accounts, groups, institutions, counterparties, users] = await Promise.all([
       prisma.account.findMany({
@@ -69,7 +72,7 @@ export async function GET(request: Request) {
     ]);
 
     if (!includeBalances) {
-      return NextResponse.json({ ok: true, accounts: accounts.map(withAccountDisplayFields), groups, institutions, counterparties, users });
+      return NextResponse.json({ ok: true, baseCurrency, accounts: accounts.map(withAccountDisplayFields), groups, institutions, counterparties, users });
     }
 
     // For investment accounts, use market value instead of raw balance
@@ -132,8 +135,42 @@ export async function GET(request: Request) {
       const displayBalance = cashDisplayBalanceByAccountId.get(a.id);
       return displayBalance == null ? a : { ...a, balance: displayBalance };
     });
+    const conversion = await convertCurrencyAmounts({
+      householdId,
+      toCurrency: baseCurrency,
+      refreshMissing: false,
+      amounts: enrichedAccounts.map((account) => ({
+        amount: Number(account.balance ?? 0),
+        currency: account.currency,
+      })),
+    });
+    const rateByCurrency = new Map(conversion.rates.map((rate) => [rate.fromCurrency, rate]));
+    const convertedAccounts = enrichedAccounts.map((account) => {
+      const currency = normalizeCurrency(account.currency);
+      const rate = rateByCurrency.get(currency);
+      const convertedBalance = rate?.rate == null ? null : Number(account.balance ?? 0) * rate.rate;
+      return {
+        ...account,
+        convertedBalance,
+        baseCurrency,
+        fxRate: rate?.rate ?? null,
+        fxRateDate: rate?.rateDate ?? null,
+        fxRateMissing: rate?.missing ?? false,
+      };
+    });
 
-    return NextResponse.json({ ok: true, accounts: enrichedAccounts.map(withAccountDisplayFields), groups, institutions, counterparties, users });
+    return NextResponse.json({
+      ok: true,
+      baseCurrency,
+      totalConvertedBalance: conversion.total,
+      missingFxCurrencies: conversion.missingCurrencies,
+      rates: conversion.rates,
+      accounts: convertedAccounts.map(withAccountDisplayFields),
+      groups,
+      institutions,
+      counterparties,
+      users,
+    });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "查询失败" },

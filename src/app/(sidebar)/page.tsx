@@ -49,8 +49,9 @@ import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-se
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
-import { formatMoney } from "@/lib/format";
+import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
+import { AccountFxRateInline } from "@/components/AccountFxRateInline";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
@@ -90,9 +91,11 @@ import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
-import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
@@ -2619,12 +2622,12 @@ export default async function Home({
   const isRedUp = colorScheme === "red_up_green_down";
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
+  const baseCurrency = await getHouseholdBaseCurrency(householdId);
   // 颜色辅助函数
   const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
   const pnlBinCls = (cond: boolean) => cond ? upCls : downCls;
-
   // Common data: 跨账户共享，跨请求缓存
   const common = await loadCommonData(hidFilter);
   const { categories, tags, groups, institutions, counterparties, preciousMetalDictionaries } = common;
@@ -2682,7 +2685,7 @@ export default async function Home({
   const hid = { householdId };
   const where = accountId
     ? {
-        OR: [{ accountId }, { toAccountId: accountId }],
+        ...txRecordAccountScopeWhere(accountId),
         deletedAt: null,
         ...hid,
       }
@@ -2740,10 +2743,7 @@ export default async function Home({
               where: {
                 ...hid,
                 deletedAt: null,
-                OR: [
-                  { accountId: { in: billAccountIds } },
-                  { toAccountId: { in: billAccountIds } },
-                ],
+                ...txRecordAccountScopeWhere(billAccountIds),
               },
               include: {
                 EntryTag: { include: { Tag: true } },
@@ -3064,18 +3064,40 @@ export default async function Home({
     { in: 0, out: 0, net: 0 },
   );
 
-  const totalNetWorthValue = accounts.reduce((sum, account) => {
-    if (isPureInvestmentAccount(account)) {
-      return sum + (investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance));
-    }
-    if (account.kind === AccountKind.insurance) {
-      return sum + (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0);
-    }
-    if (account.kind === AccountKind.loan) {
-      return sum + (debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
-    }
-    return sum + (cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance));
-  }, 0);
+  const accountDisplayValueById = new Map<string, number>();
+  for (const account of accounts) {
+    const value = isPureInvestmentAccount(account)
+      ? investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance)
+      : account.kind === AccountKind.insurance
+        ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
+        : account.kind === AccountKind.loan
+          ? debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
+          : cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+    accountDisplayValueById.set(account.id, value);
+  }
+  const netWorthConversion = await convertCurrencyAmounts({
+    householdId,
+    amounts: accounts.map((account) => ({
+      amount: accountDisplayValueById.get(account.id) ?? 0,
+      currency: account.currency,
+    })),
+    toCurrency: baseCurrency,
+    refreshMissing: true,
+  });
+  const fxRateByCurrency = new Map(netWorthConversion.rates.map((rate) => [rate.fromCurrency, rate]));
+  const convertedAccountValueById = new Map<string, number | null>();
+  for (const account of accounts) {
+    const rate = fxRateByCurrency.get(normalizeCurrency(account.currency));
+    convertedAccountValueById.set(
+      account.id,
+      rate?.rate == null ? null : (accountDisplayValueById.get(account.id) ?? 0) * rate.rate,
+    );
+  }
+  const totalNetWorthValue = netWorthConversion.total;
+  const missingFxCurrencies = netWorthConversion.missingCurrencies;
+  const debtDisplaySummaryValue = accounts
+    .filter((account) => account.kind === AccountKind.loan)
+    .reduce((sum, account) => sum + (convertedAccountValueById.get(account.id) ?? 0), 0);
   const monthGrowthValue = 0; // TODO: Real calculation
 
   const balanceByEntryId = new Map<string, number>();
@@ -3555,7 +3577,7 @@ export default async function Home({
     isCreditCardRepaymentForDisplay,
   });
 
-  const selectedAccountBalanceValue = selectedAccount
+  const selectedAccountRawBalanceValue = selectedAccount
     ? isPureInvestmentAccount(selectedAccount)
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
       : selectedAccount.kind === AccountKind.bank_credit
@@ -3564,6 +3586,9 @@ export default async function Home({
         ? debtDisplaySummary.balanceByAccountId.get(selectedAccount.id) ?? cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
         : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
     : 0;
+  const selectedAccountFxRate = selectedAccount ? fxRateByCurrency.get(normalizeCurrency(selectedAccount.currency)) : null;
+  const selectedAccountCurrency = selectedAccount ? normalizeCurrency(selectedAccount.currency) : baseCurrency;
+  const showSelectedAccountFxInline = !!selectedAccount && selectedAccountCurrency !== baseCurrency;
 
   const investDataParams = JSON.stringify({
     fundSortParam,
@@ -3752,6 +3777,7 @@ export default async function Home({
     createdAt: toIsoOrNull(e.createdAt),
     dayOrder: e.dayOrder ?? 0,
     amount: linkedWealthAmount,
+    currency: e.currency ?? "CNY",
     runningBalance: balanceByEntryId.get(e.id) ?? null,
     type: e.type,
     categoryId: e.categoryId,
@@ -4335,25 +4361,42 @@ export default async function Home({
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
               <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
               {view === "debt" ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummary.net)}`}>
-                  {formatMoney(debtDisplaySummary.net)}
+                <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummaryValue)}`}>
+                  {formatCurrencyMoney(debtDisplaySummaryValue, baseCurrency)}
                 </span>
               ) : !selectedAccount ? (
-                <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} />
+                <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} baseCurrency={baseCurrency} />
               ) : currentInvestData ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(currentInvestData.totalMarketValue)}`}>{formatMoney(currentInvestData.totalMarketValue)}</span>
+                <span className={`tabular-nums font-semibold ${pnlCls(selectedAccountRawBalanceValue)}`}>{formatCurrencyMoney(selectedAccountRawBalanceValue, selectedAccountCurrency)}</span>
               ) : view === "deposit" && selectedAccount ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(depositViewBalance)}`}>{formatMoney(depositViewBalance)}</span>
+                <span className={`tabular-nums font-semibold ${pnlCls(selectedAccountRawBalanceValue)}`}>{formatCurrencyMoney(selectedAccountRawBalanceValue, selectedAccountCurrency)}</span>
               ) : (
                 <LiveAccountBalance
                   mode="account"
                   accountId={selectedAccount.id}
-                  initialValue={selectedAccountBalanceValue}
+                  initialValue={selectedAccountRawBalanceValue}
                   isRedUp={isRedUp}
                   semantic={selectedAccount.kind === AccountKind.bank_credit ? "liability" : "default"}
                   displayMultiplier={selectedAccount.kind === AccountKind.bank_credit ? -1 : 1}
+                  baseCurrency={selectedAccountCurrency}
+                  accountDisplayMode="original"
                 />
               )}
+              {showSelectedAccountFxInline ? (
+                <AccountFxRateInline
+                  fromCurrency={selectedAccountCurrency}
+                  toCurrency={baseCurrency}
+                  accountBalance={selectedAccountRawBalanceValue}
+                  initialRate={selectedAccountFxRate?.rate ?? null}
+                  initialRateDate={selectedAccountFxRate?.rateDate ?? null}
+                  initialSource={selectedAccountFxRate?.source ?? null}
+                />
+              ) : null}
+              {missingFxCurrencies.length > 0 ? (
+                <span className="text-xs text-amber-700">
+                  缺少汇率：{missingFxCurrencies.join("、")}，相关金额暂未折算
+                </span>
+              ) : null}
             </div>
             <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden md:flex" : ""}`}>
               <UnifiedEntryLauncher
@@ -4402,6 +4445,7 @@ export default async function Home({
                   { key: "transaction", label: "收支记账" },
                   { key: "advance", label: "代付" },
                   { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
+                  { key: "fx", label: "购入外汇" },
                   { key: "investment", label: "开放式基金 / 货币基金" },
                   { key: "metal", label: "贵金属" },
                   { key: "wealth", label: "银行理财" },
@@ -4472,6 +4516,22 @@ export default async function Home({
                 metalTypes={metalTypes}
                 metalUnits={metalUnits}
                 nestedFieldData={nestedFieldData}
+                holdings={currentInvestData?.positions.map(p => ({ fundCode: p.fundCode, name: p.name, units: p.units })) ?? undefined}
+                allEntries={currentInvestData?.allEntries.map(e => ({
+                  id: e.id,
+                  date: toYmdOrNull(e.date) ?? "",
+                  createdAt: toIsoOrNull(e.createdAt),
+                  fundConfirmDate: toYmdOrNull(e.fundConfirmDate),
+                  fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
+                  fundSourceEntryId: e.fundSourceEntryId ?? null,
+                  fundCode: e.fundCode ?? "",
+                  fundSubtype: e.fundSubtype ?? "",
+                  fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
+                  source: e.source ?? null,
+                  accountId: e.accountId ?? null,
+                  toAccountId: e.toAccountId ?? null,
+                  amount: e.amount != null ? Number(e.amount) : 0,
+                })) ?? undefined}
                 createAction={createTransaction}
                 editAction={editInvestment}
                 fundUnitsDecimals={fundUnitsDecimals}
@@ -4852,7 +4912,7 @@ export default async function Home({
                     selectedAccount?.kind === AccountKind.ewallet
                   }
                   accountLabel={selectedAccountLabel}
-                  currentBalance={selectedAccountBalanceValue}
+                  currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}
                 />
               </div>

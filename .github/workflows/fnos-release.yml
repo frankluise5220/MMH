@@ -1,17 +1,22 @@
-name: Release fnOS FPK
+name: Release fnOS SQLite FPK
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      package_version:
+        description: "fnOS FPK package version"
+        required: false
+        default: "0.1.0-fnos"
 
 permissions:
   contents: write
 
 jobs:
   build-fpk:
-    name: Build and upload fnOS FPK
-    runs-on: ubuntu-latest
+    name: Build and upload fnOS SQLite FPK
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +25,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Verify fnOS package sources
         run: npm run check:fnos
@@ -38,12 +47,12 @@ jobs:
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "${ASSETS_URL}" |
-            node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const a=JSON.parse(s);console.log(a.some(x=>typeof x.name==='string'&&x.name.endsWith('.fpk'))?'true':'false')})"
+            node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const a=JSON.parse(s);console.log(a.some(x=>x.name==='mmh.fpk'||/^mmh-.+\\.fpk$/.test(String(x.name||'')))?'true':'false')})"
           )"
           echo "found=${FOUND}" >> "$GITHUB_OUTPUT"
 
       - name: Verify fnpack
-        if: steps.existing-fpk.outputs.found != 'true'
+        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -53,12 +62,34 @@ jobs:
             exit 1
           fi
 
+      - name: Download Linux Node runtime
+        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/fnos/runtime
+          NODE_VERSION="$(node -p "process.versions.node")"
+          NODE_TARBALL="node-v${NODE_VERSION}-linux-x64.tar.gz"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" \
+            -o "release-artifacts/fnos/runtime/${NODE_TARBALL}"
+          echo "FNOS_NODE_TARBALL=${PWD}/release-artifacts/fnos/runtime/${NODE_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Build fnOS SQLite app
+        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
+        env:
+          DATABASE_URL: file:./native-build.db
+          MMH_DEPLOY_TARGET: fnos
+        run: npm run build:fnos:app
+
       - name: Build fnOS FPK
-        if: steps.existing-fpk.outputs.found != 'true'
+        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
+        env:
+          FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
+          FNOS_NODE_TARBALL: ${{ env.FNOS_NODE_TARBALL }}
         run: npm run build:fnos
 
       - name: Upload fnOS FPK artifact
-        if: steps.existing-fpk.outputs.found != 'true'
+        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mmh-fnos-fpk

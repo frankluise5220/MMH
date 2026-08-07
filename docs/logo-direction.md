@@ -1,12 +1,13 @@
 # MMH Logo 方向
 
-当前先保留可控的 SVG 方案，不依赖图片生成服务。所有文件都在 `public/branding/` 下，可直接用于 Web、favicon、README、App 图标草案。
+当前使用用户确认的位图 Logo：源文件为项目根目录 `mmh.png`，不再尝试用 SVG 复刻金属质感。所有正式文件都在 `public/branding/` 下，可直接用于 Web、favicon、README、App 图标草案。
 
 ## 候选方向
 
 | 文件 | 方向 | 适合用途 |
 | --- | --- | --- |
-| `mmh-logo-mark.svg` | 当前主标：纯字母驱动的 M monogram | 当前已接入界面 |
+| `mmh-logo-final.png` | 用户确认的 `mmh.png` 主图 | 品牌展示、较大尺寸 |
+| `mmh-logo-final.square.png` | 由 `mmh.png` 生成的方形图标版 | 当前已接入界面 |
 | `mmh-logo-v2-luxury.svg` | 奢华极简：更强的高级感和 monogram 感 | 官网、README、品牌展示 |
 | `mmh-logo-v3-warm-home.svg` | 温暖家庭：更柔和，更像家庭财务产品 | 登录页、面向普通用户说明 |
 | `mmh-logo-v4-secure-tech.svg` | 安全科技：盾牌感更强，偏隐私和安全 | 安全页、API/自托管说明 |
@@ -25,13 +26,13 @@
 
 - 不使用美元符号、硬币堆、银行大楼等陈词滥调。
 - 保持几何、克制、可长期使用，同时保证小尺寸下足够醒目。
-- 优先围绕字母 `M` 做识别，不强行堆砌房子、盾牌、金库等寓意。
+- 优先围绕字母 `M` 做识别；当前主标直接使用用户确认的 `mmh.png`，避免继续偏离参考方向。
 - 小尺寸优先，16px 下仍要有清楚轮廓。
 - 品牌核心是：本地优先、家庭财务、安全可信、长期维护。
 
 ## 当前建议
 
-- 主 Logo：`mmh-logo-mark.svg`
-- favicon：`mmh-logo-v5-favicon.svg`
+- 主 Logo：`mmh-logo-final.png`
+- favicon / PWA / 站内小图标：`mmh-logo-final.square.png`
 - 如果想更亲和：可把主 Logo 换成 `mmh-logo-v3-warm-home.svg`
 - 如果想更高端：可把主 Logo 换成 `mmh-logo-v2-luxury.svg`

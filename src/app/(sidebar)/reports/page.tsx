@@ -18,6 +18,7 @@ import {
   type IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 
 export const dynamic = "force-dynamic";
@@ -202,7 +203,7 @@ export default async function ReportsPage({
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
     prisma.tag.findMany({
-      where: ctx.hidFilter,
+      where: readableTagWhere(ctx.householdId),
       select: { id: true, name: true, color: true },
       orderBy: { name: "asc" },
     }),

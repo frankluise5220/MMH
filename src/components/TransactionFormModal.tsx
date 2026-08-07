@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftRight, ArrowRight } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
@@ -18,6 +18,7 @@ import {
   fetchSettingsAccountData,
   fetchSettingsCategories,
   fetchSettingsTags,
+  notifySettingsDataChanged,
   SETTINGS_DATA_CHANGED_EVENT,
   type SettingsCategory,
   type SettingsDataChangedDetail,
@@ -30,7 +31,7 @@ import {
 } from "@/lib/credit/installment";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 
-type TxType = "expense" | "income" | "advance" | "transfer" | "investment";
+type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
 type DebtTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
 type AccountOption = {
@@ -58,7 +59,7 @@ type CategoryOption = {
 
 type AiPrefillItem = {
   rawText?: string;
-  type?: "expense" | "income" | "transfer" | "investment";
+  type?: "expense" | "income" | "transfer" | "fx" | "investment";
   date?: string;
   amount?: number;
   account?: string;
@@ -73,6 +74,9 @@ type OpenFromAiDetail = {
   requestId: string;
   item: AiPrefillItem;
   source?: "launcher";
+  defaultAccountId?: string;
+  defaultFromAccountId?: string;
+  defaultToAccountId?: string;
 };
 
 function normalizeYmd(value: string | undefined) {
@@ -117,6 +121,31 @@ function dateInputToUtcDate(value: string) {
 function parseMoneyDraft(value: string) {
   const parsed = Number(String(value ?? "").replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeCurrencyLabel(value: string | null | undefined) {
+  const text = String(value ?? "CNY").trim().toUpperCase();
+  return text || "CNY";
+}
+
+function formatFxRate(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return value.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatFxQuoteAmount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return value.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+const COMMON_CURRENCY_OPTIONS = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"];
+const BASE_CASH_CURRENCY = "CNY";
+
+function isForeignCurrency(value: string | null | undefined) {
+  return normalizeCurrencyLabel(value) !== BASE_CASH_CURRENCY;
 }
 
 function storedAmountToDialogAmount(type: TxType, value: number) {
@@ -228,6 +257,15 @@ type TagOption = {
   color?: string | null;
 };
 
+type EditTagOption = {
+  id?: string;
+  tagId?: string;
+  name?: string | null;
+  label?: string | null;
+  color?: string | null;
+  Tag?: { name?: string | null; color?: string | null } | null;
+};
+
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
@@ -319,6 +357,39 @@ export function TransactionFormModal({
     const seen = new Set(merged.map((opt) => opt.id));
     for (const opt of extra ?? []) {
       if (!seen.has(opt.id)) merged.push(opt);
+    }
+    return merged;
+  }
+
+  function normalizeEditTagOptions(tags: EditTagOption[] | undefined): TagOption[] {
+    const normalized: TagOption[] = [];
+    const seen = new Set<string>();
+    for (const tag of tags ?? []) {
+      const id = String(tag.id ?? tag.tagId ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      const name = String(tag.name ?? tag.label ?? tag.Tag?.name ?? "").trim();
+      if (!name) continue;
+      normalized.push({ id, name, color: tag.color ?? tag.Tag?.color ?? null });
+      seen.add(id);
+    }
+    return normalized;
+  }
+
+  function mergeTagOptions(base: TagOption[], extra: TagOption[]) {
+    if (extra.length === 0) return base;
+    const merged = [...base];
+    const byId = new Map(merged.map((tag, index) => [tag.id, index]));
+    for (const tag of extra) {
+      const existingIndex = byId.get(tag.id);
+      if (existingIndex == null) {
+        byId.set(tag.id, merged.length);
+        merged.push(tag);
+        continue;
+      }
+      const existing = merged[existingIndex];
+      if (!existing.name && tag.name) {
+        merged[existingIndex] = { ...existing, name: tag.name, color: existing.color ?? tag.color ?? null };
+      }
     }
     return merged;
   }
@@ -494,6 +565,12 @@ export function TransactionFormModal({
   const [postedAt, setPostedAt] = useState(() => toDateInputValue(today));
   const [postedAtEdited, setPostedAtEdited] = useState(false);
   const [amount, setAmount] = useState("");
+  const [fxToAmount, setFxToAmount] = useState("");
+  const [fxRate, setFxRate] = useState("");
+  const [fxFeeAmount, setFxFeeAmount] = useState("");
+  const [fxFromCurrencyDraft, setFxFromCurrencyDraft] = useState("CNY");
+  const [fxToCurrencyDraft, setFxToCurrencyDraft] = useState("USD");
+  const [fetchingFxRate, setFetchingFxRate] = useState(false);
   const [createInstallment, setCreateInstallment] = useState(false);
   const [installmentAmount, setInstallmentAmount] = useState("");
   const [installmentAmountEdited, setInstallmentAmountEdited] = useState(false);
@@ -648,6 +725,109 @@ export function TransactionFormModal({
   }, [accountList, localAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
   const selectedAccountIsCreditCard = accountMetaById.get(accountId)?.kind === "bank_credit"
     || (isCreditCardAccount && accountId === (defaultAccountId ?? accountId));
+  const fxFromCurrency = fromAccountId
+    ? normalizeCurrencyLabel(accountMetaById.get(fromAccountId)?.currency)
+    : fxFromCurrencyDraft;
+  const fxToCurrency = toAccountId
+    ? normalizeCurrencyLabel(accountMetaById.get(toAccountId)?.currency)
+    : fxToCurrencyDraft;
+  const fxComputedRate = useMemo(() => {
+    const fromValue = parseMoneyDraft(amount);
+    const toValue = parseMoneyDraft(fxToAmount);
+    return fromValue > 0 && toValue > 0 ? toValue / fromValue : null;
+  }, [amount, fxToAmount]);
+  const fxCurrencyOptions = useMemo(() => {
+    const currencies = new Set(COMMON_CURRENCY_OPTIONS);
+    for (const option of displayTransferOptions) {
+      const currency = normalizeCurrencyLabel((option as AccountOption).currency);
+      if (currency) currencies.add(currency);
+    }
+    return Array.from(currencies)
+      .filter(isForeignCurrency)
+      .sort((a, b) => COMMON_CURRENCY_OPTIONS.indexOf(a) - COMMON_CURRENCY_OPTIONS.indexOf(b));
+  }, [displayTransferOptions]);
+  const fxFromAccountOptions = useMemo(
+    () => displayTransferOptions.filter((option) => (option as AccountOption).kind === "bank_debit"),
+    [displayTransferOptions],
+  );
+  const fxToAccountOptions = useMemo(
+    () => displayTransferOptions.filter((option) => {
+      const account = option as AccountOption;
+      return account.id !== fromAccountId
+        && account.kind !== "bank_credit"
+        && account.kind !== "loan"
+        && isForeignCurrency(account.currency);
+    }),
+    [displayTransferOptions, fromAccountId],
+  );
+  function formatFxAmount(value: number) {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  }
+  function updateFxFromAmount(value: string) {
+    setAmount(value);
+    const fromValue = parseMoneyDraft(value);
+    const rateValue = parseMoneyDraft(fxRate);
+    if (fromValue > 0 && rateValue > 0) setFxToAmount(formatFxAmount(fromValue * rateValue));
+  }
+  function updateFxRate(value: string) {
+    setFxRate(value);
+    const fromValue = parseMoneyDraft(amount);
+    const rateValue = parseMoneyDraft(value);
+    if (fromValue > 0 && rateValue > 0) setFxToAmount(formatFxAmount(fromValue * rateValue));
+  }
+  function updateFxToAmount(value: string) {
+    setFxToAmount(value);
+    const fromValue = parseMoneyDraft(amount);
+    const toValue = parseMoneyDraft(value);
+    if (fromValue > 0 && toValue > 0) setFxRate(formatFxRate(toValue / fromValue));
+  }
+  async function fetchFxRateForForm() {
+    if (fetchingFxRate) return;
+    if (!fxFromCurrency || !fxToCurrency || fxFromCurrency === fxToCurrency) {
+      window.alert("请先选择不同的换出币种和换入币种");
+      return;
+    }
+    setFetchingFxRate(true);
+    try {
+      const params = new URLSearchParams({
+        from: fxFromCurrency,
+        to: fxToCurrency,
+        refresh: "1",
+      });
+      const res = await fetch(`/api/v1/fx-rates?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok || !Array.isArray(data.rates)) {
+        throw new Error(data?.error || "汇率获取失败");
+      }
+      const rateRow = data.rates.find((rate: { fromCurrency?: string; toCurrency?: string }) =>
+        normalizeCurrencyLabel(rate.fromCurrency) === fxFromCurrency &&
+        normalizeCurrencyLabel(rate.toCurrency) === fxToCurrency
+      );
+      const rate = Number(rateRow?.rate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new Error("未获取到可用汇率，可手工填写");
+      }
+      const formattedRate = formatFxRate(rate);
+      setFxRate(formattedRate);
+      const fromValue = parseMoneyDraft(amount);
+      if (fromValue > 0) setFxToAmount(formatFxAmount(fromValue * rate));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "汇率获取失败，可手工填写");
+    } finally {
+      setFetchingFxRate(false);
+    }
+  }
+  const fxCommonQuoteText = useMemo(() => {
+    if (fxFromCurrency === fxToCurrency) return "换出币种和换入币种相同，请选择不同币种账户";
+    const fromValue = parseMoneyDraft(amount);
+    const toValue = parseMoneyDraft(fxToAmount);
+    if (fromValue <= 0 || toValue <= 0) return "";
+    const quoteBase = 100;
+    const quoteAmount = (fromValue / toValue) * quoteBase;
+    if (!Number.isFinite(quoteAmount) || quoteAmount <= 0) return "";
+    return `当前折算：${quoteBase} ${fxToCurrency} = ${formatFxQuoteAmount(quoteAmount)} ${fxFromCurrency}`;
+  }, [amount, fxFromCurrency, fxToAmount, fxToCurrency]);
   const installmentPreview = useMemo(() => {
     if (!createInstallment) return null;
     const account = accountMetaById.get(accountId);
@@ -800,6 +980,11 @@ export function TransactionFormModal({
     setPostedAt(toDateInputValue(today));
     setPostedAtEdited(false);
     setAmount("");
+    setFxToAmount("");
+    setFxRate("");
+    setFxFeeAmount("");
+    setFxFromCurrencyDraft("CNY");
+    setFxToCurrencyDraft("USD");
     setCreateInstallment(false);
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
@@ -832,6 +1017,9 @@ export function TransactionFormModal({
 
   function repeatDraft() {
     setAmount("");
+    setFxToAmount("");
+    setFxRate("");
+    setFxFeeAmount("");
     setCreateInstallment(false);
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
@@ -840,7 +1028,7 @@ export function TransactionFormModal({
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
     setEditOriginalTransferAccounts(null);
-    if (txType === "transfer" && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
+    if ((txType === "transfer" || txType === "fx") && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
   }
@@ -854,7 +1042,7 @@ export function TransactionFormModal({
 
   function switchType(nextType: TxType) {
     const currentType = txType;
-    if (nextType === "transfer" && currentType !== "transfer") {
+    if ((nextType === "transfer" || nextType === "fx") && currentType !== "transfer" && currentType !== "fx") {
       setAmount((value) => {
         const numericValue = Number(String(value).replace(/,/g, ""));
         return Number.isFinite(numericValue) && numericValue !== 0 ? String(Math.abs(numericValue)) : value;
@@ -870,7 +1058,7 @@ export function TransactionFormModal({
         setFromAccountIdEdited(true);
       }
       setCategoryId("");
-    } else if (currentType === "transfer" && nextType !== "transfer") {
+    } else if ((currentType === "transfer" || currentType === "fx") && nextType !== "transfer" && nextType !== "fx") {
       const transferFromAccountId = fromAccountId || editOriginalTransferAccounts?.fromAccountId || "";
       const transferToAccountId = toAccountId || editOriginalTransferAccounts?.toAccountId || "";
       const nextAccountId = nextType === "income"
@@ -893,6 +1081,8 @@ export function TransactionFormModal({
           ? "income"
           : item.type === "transfer"
             ? "transfer"
+            : item.type === "fx"
+              ? "fx"
             : item.type === "investment"
               ? "investment"
               : "expense";
@@ -913,9 +1103,25 @@ export function TransactionFormModal({
       const noteText = (item.remark ?? "").trim() || (item.counterparty ?? "").trim() || (item.rawText ?? "").trim();
       setNote(noteText);
 
-      if (mappedType === "transfer") {
-        setFromAccountId(findAccountIdByLabel(item.fromAccount, transferAccounts) || (defaultAccountId ?? ""));
-        setToAccountId(findAccountIdByLabel(item.toAccount ?? item.account, transferAccounts));
+      setFxToAmount("");
+      setFxRate("");
+      setFxFeeAmount("");
+
+      if (mappedType === "transfer" || mappedType === "fx") {
+        const nextFromAccountId = findAccountIdByLabel(item.fromAccount, transferAccounts) || detail.defaultFromAccountId || detail.defaultAccountId || (defaultAccountId ?? "");
+        const rawNextToAccountId = findAccountIdByLabel(item.toAccount ?? item.account, transferAccounts) || detail.defaultToAccountId || "";
+        const rawNextToAccount = transferAccounts.find((account) => account.id === rawNextToAccountId);
+        const nextToAccountId = mappedType === "fx" && rawNextToAccount && !isForeignCurrency(rawNextToAccount.currency)
+          ? ""
+          : rawNextToAccountId;
+        setFromAccountId(nextFromAccountId);
+        setToAccountId(nextToAccountId);
+        if (mappedType === "fx") {
+          const fromCurrency = transferAccounts.find((account) => account.id === nextFromAccountId)?.currency;
+          const toCurrency = transferAccounts.find((account) => account.id === nextToAccountId)?.currency;
+          setFxFromCurrencyDraft(normalizeCurrencyLabel(fromCurrency));
+          setFxToCurrencyDraft(toCurrency ? normalizeCurrencyLabel(toCurrency) : "USD");
+        }
         setCategoryId("");
         setAccountId("");
       } else {
@@ -966,6 +1172,7 @@ export function TransactionFormModal({
         fundFee?: number;
         fundProductType?: string;
         tagIds?: string[];
+        tags?: EditTagOption[];
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -987,7 +1194,16 @@ export function TransactionFormModal({
       );
       setNote(detail.note ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
-      setSelectedTagIds(detail.tagIds ?? []);
+      const detailTags = normalizeEditTagOptions(detail.tags);
+      const nextTagIds = detail.tagIds?.length ? detail.tagIds : detailTags.map((tag) => tag.id);
+      setTagList((prev) => {
+        const knownIds = new Set([...prev.map((tag) => tag.id), ...detailTags.map((tag) => tag.id)]);
+        const missingSelectedTags = nextTagIds
+          .filter((id) => !knownIds.has(id))
+          .map((id) => ({ id, name: "未知标签", color: null }));
+        return mergeTagOptions(prev, [...detailTags, ...missingSelectedTags]);
+      });
+      setSelectedTagIds(nextTagIds);
       if (detail.type === "transfer") {
         const nextToAccountId = detail.toAccountId ?? "";
         const nextFromAccountId = detail.fromAccountId && detail.fromAccountId !== nextToAccountId
@@ -1053,6 +1269,42 @@ export function TransactionFormModal({
   }, [date, open, postedAtEdited, today, txType]);
 
   useEffect(() => {
+    if (!open || txType !== "fx" || !editEntryId) return;
+    let cancelled = false;
+    fetch(`/api/v1/fx-conversions?entryId=${encodeURIComponent(editEntryId)}`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (cancelled || !data?.ok || !data.conversion) return;
+        const conversion = data.conversion as {
+          date?: string;
+          fromAccountId?: string;
+          toAccountId?: string;
+          fromCurrency?: string;
+          toCurrency?: string;
+          fromAmount?: number;
+          toAmount?: number;
+          exchangeRate?: number;
+          feeAmount?: number | null;
+          note?: string | null;
+        };
+        setDate(conversion.date || today);
+        setFromAccountId(conversion.fromAccountId ?? "");
+        setToAccountId(conversion.toAccountId ?? "");
+        setFxFromCurrencyDraft(normalizeCurrencyLabel(conversion.fromCurrency));
+        setFxToCurrencyDraft(normalizeCurrencyLabel(conversion.toCurrency));
+        setAmount(formatFxAmount(Number(conversion.fromAmount ?? 0)));
+        setFxToAmount(formatFxAmount(Number(conversion.toAmount ?? 0)));
+        setFxRate(formatFxRate(Number(conversion.exchangeRate ?? 0)));
+        setFxFeeAmount(conversion.feeAmount == null ? "" : formatFxAmount(Number(conversion.feeAmount)));
+        setNote(conversion.note ?? "");
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [editEntryId, open, today, txType]);
+
+  useEffect(() => {
     if (!open || !isCreditCardAccount || txType !== "transfer") return;
     if (fromAccountIdEdited || !toAccountId) return;
     if (accountMetaById.get(toAccountId)?.kind !== "bank_credit") return;
@@ -1102,6 +1354,88 @@ export function TransactionFormModal({
       }
     }
     
+    if (txType === "fx") {
+      const fromValue = parseMoneyDraft(amount);
+      const toValue = parseMoneyDraft(fxToAmount);
+      const feeValue = String(fxFeeAmount ?? "").trim() ? parseMoneyDraft(fxFeeAmount) : null;
+      if (!fromAccountId) {
+        window.alert("请选择换出账户");
+        return;
+      }
+      if (accountMetaById.get(fromAccountId)?.kind !== "bank_debit") {
+        window.alert("换出账户只能选择借记卡");
+        return;
+      }
+      if (toAccountId && fromAccountId === toAccountId) {
+        window.alert("换出账户和换入账户不能相同");
+        return;
+      }
+      if (toAccountId && !isForeignCurrency(accountMetaById.get(toAccountId)?.currency)) {
+        window.alert("换入账户只能选择外币账户");
+        return;
+      }
+      if (!toAccountId && !isForeignCurrency(fxToCurrencyDraft)) {
+        window.alert("换入币种只能选择外币");
+        return;
+      }
+      if (fxFromCurrency === fxToCurrency) {
+        window.alert("同币种账户请使用普通转账，跨币种才使用换汇");
+        return;
+      }
+      if (fromValue <= 0 || toValue <= 0) {
+        window.alert("换出金额和换入金额必须大于 0");
+        return;
+      }
+      if (feeValue != null && feeValue <= 0) {
+        window.alert("手续费必须大于 0，或留空");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await fetch("/api/v1/fx-conversions", {
+          method: editEntryId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entryId: editEntryId,
+            date,
+            fromAccountId,
+            toAccountId,
+            toCurrency: fxToCurrencyDraft,
+            fromAmount: fromValue,
+            toAmount: toValue,
+            exchangeRate: fxComputedRate,
+            feeAmount: feeValue,
+            note,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          window.alert(data?.error ?? "换汇保存失败");
+          return;
+        }
+        if (requestId) {
+          window.dispatchEvent(new CustomEvent(editEntryId ? "mmh:transaction:edit:success" : "mmh:create-transaction:success", { detail: { requestId } }));
+        }
+        void notifySettingsDataChanged({ scope: "accounts", reason: "fx:auto-account", prefetch: true });
+        requestAnimationFrame(() => {
+          dispatchFinanceDataChanged({ reason: "transaction-save" });
+        });
+        if (submitModeRef.current === "repeat" && !editEntryId) {
+          repeatDraft();
+        } else {
+          setOpen(false);
+          resetDraft();
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "换汇保存失败";
+        window.alert(msg);
+      } finally {
+        submitModeRef.current = "close";
+        setSubmitting(false);
+      }
+      return;
+    }
+
     let formData: FormData;
     if (txType === "investment") {
       formData = new FormData(e.currentTarget);
@@ -1183,6 +1517,7 @@ export function TransactionFormModal({
           defaultAction="transaction"
           actions={[
             { key: "transaction", label: "记账" },
+            { key: "fx", label: "换汇 / 购汇" },
             { key: "investment", label: "开放式基金 / 货币基金 / 贵金属", disabled: !showInvestment },
             { key: "wealth", label: "银行理财" },
             { key: "deposit-buy", label: "存款存入" },
@@ -1201,7 +1536,9 @@ export function TransactionFormModal({
         <div className="app-modal-backdrop z-50">
           <div className="app-modal-panel mobile-transaction-modal max-w-xl">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{editEntryId ? "编辑记录" : "记一笔"}</div>
+              <div className="text-sm font-semibold text-slate-800">
+                {txType === "fx" ? "换汇 / 购汇" : editEntryId ? "编辑记录" : "记一笔"}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -1215,7 +1552,8 @@ export function TransactionFormModal({
             </div>
 
             <form ref={formRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
-              <div className="flex justify-center gap-2">
+              {txType !== "fx" ? (
+              <div className="flex flex-wrap justify-center gap-2">
                 {isCreditCardAccount ? (
                   <>
                     <button
@@ -1312,6 +1650,7 @@ export function TransactionFormModal({
                   </>
                 )}
               </div>
+              ) : null}
 
               {txType === "investment" && (
                 <div className="space-y-2 pt-1">
@@ -1637,6 +1976,124 @@ export function TransactionFormModal({
                 </div>
               )}
 
+              {txType === "fx" && (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <div className="form-label">日期</div>
+                    <DateStepper name="date" value={date} onChange={setDate} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">换出账户</div>
+                      <SmartSelect mode="single" value={fromAccountId} onChange={(v) => {
+                        setFromAccountId(v);
+                        const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
+                        if (currency) setFxFromCurrencyDraft(currency);
+                        if (v && v === toAccountId) setToAccountId("");
+                        recordRecentAccount(v);
+                      }}
+                        options={fxFromAccountOptions} placeholder="只能选择借记卡"
+                        onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增借记卡账户"
+                        onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                        behavior={compactAccountSelectBehavior} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">换入账户</div>
+                      <SmartSelect mode="single" value={toAccountId} onChange={(v) => {
+                        setToAccountId(v);
+                        const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
+                        if (currency) setFxToCurrencyDraft(currency);
+                        recordRecentAccount(v);
+                      }}
+                        options={fxToAccountOptions}
+                        placeholder={`不选择时，将按 ${fxToCurrencyDraft} 自动建立同机构外币账户`}
+                        onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                        onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                        behavior={compactAccountSelectBehavior} />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">换出币种</div>
+                      <div className="form-input flex h-9 items-center bg-slate-50 text-slate-700">
+                        {fromAccountId ? fxFromCurrency : "选择换出账户后自动读取"}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">换入币种</div>
+                      {toAccountId ? (
+                        <div className="form-input flex h-9 items-center bg-slate-50 text-slate-700">
+                          {fxToCurrency}
+                        </div>
+                      ) : (
+                        <select
+                          value={fxToCurrencyDraft}
+                          onChange={(event) => setFxToCurrencyDraft(event.target.value)}
+                          className="form-input"
+                        >
+                          {fxCurrencyOptions.map((currency) => (
+                            <option key={`to-${currency}`} value={currency}>{currency}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">换出金额 ({fxFromCurrency})</div>
+                      <CalcInput value={amount} onChange={updateFxFromAmount} placeholder="例如：1000.00" label="换出金额" precision={2} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">汇率（可手工填写）</div>
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <CalcInput value={fxRate} onChange={updateFxRate} placeholder={`1 ${fxFromCurrency} = ? ${fxToCurrency}`} label="汇率" precision={8} />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void fetchFxRateForForm()}
+                          disabled={fetchingFxRate || fxFromCurrency === fxToCurrency}
+                          className="secondary-button h-9 shrink-0 gap-1 px-2 text-[11px] disabled:opacity-50"
+                          title="获取当前币种对汇率，并填入汇率框"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${fetchingFxRate ? "animate-spin" : ""}`} />
+                          {fetchingFxRate ? "获取中" : "获取汇率"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">手续费</div>
+                      <CalcInput value={fxFeeAmount} onChange={setFxFeeAmount} placeholder="可选，已含在换出金额" label="手续费" precision={2} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">换入金额 ({fxToCurrency})</div>
+                      <CalcInput value={fxToAmount} onChange={updateFxToAmount} placeholder="例如：21500.00" label="换入金额" precision={2} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    {fxCommonQuoteText || "可填写汇率自动计算换入金额，也可以直接填写换入金额反算汇率。"}
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="form-label">备注</div>
+                    <input
+                      name="note"
+                      placeholder="例如：购汇：日元"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      className="form-input"
+                    />
+                  </div>
+                </div>
+              )}
+
               {txType === "transfer" && (
                 <div className="space-y-3">
                   {/* 第一行：日期 | 收支机构 */}
@@ -1800,7 +2257,7 @@ export function TransactionFormModal({
           const groupName = extra?.groupName?.trim();
           const label = institutionLabel ? `${institutionLabel}·${name}` : name;
           const subLabel = kindLabel(kind);
-          const option = { id, label, subLabel, kind };
+          const option = { id, label, subLabel, kind, currency: extra?.currency };
           setAccountList(prev => [...prev, option]);
           setTransferAccountList(prev => [...prev, option]);
           setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));

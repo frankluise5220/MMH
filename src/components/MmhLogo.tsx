@@ -1,3 +1,4 @@
+import Image from "next/image";
 import type { CSSProperties } from "react";
 
 type MmhLogoProps = {
@@ -14,25 +15,15 @@ export function MmhLogo({
   style,
 }: MmhLogoProps) {
   const mark = (
-    <svg
+    <Image
       aria-hidden="true"
       className="shrink-0"
       width={size}
       height={size}
-      viewBox="0 0 128 128"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <rect width="128" height="128" rx="30" fill="#193B3A" />
-      <path
-        d="M27 96V59C27 40 42.5 27 64 27C85.5 27 101 40 101 59V96"
-        fill="none"
-        stroke="#FFF9F0"
-        strokeLinecap="round"
-        strokeWidth="13"
-      />
-      <path d="M64 54V96" fill="none" stroke="#E56F4D" strokeLinecap="round" strokeWidth="11" />
-    </svg>
+      src="/branding/mmh-logo-final.square.png"
+      alt=""
+      style={{ objectFit: "contain" }}
+    />
   );
 
   if (!showWordmark) {

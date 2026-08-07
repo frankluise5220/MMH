@@ -26,6 +26,7 @@ import {
   cancelImportProgress,
 } from "@/lib/server/import-progress";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
   CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
@@ -447,7 +448,7 @@ async function buildImportContext(): Promise<ImportContext> {
       },
     }),
     prisma.tag.findMany({
-      where: { householdId },
+      where: readableTagWhere(householdId),
       select: { id: true, name: true },
     }),
     prisma.institution.findMany({

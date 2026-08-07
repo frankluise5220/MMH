@@ -2,7 +2,7 @@
 
 这份文档给最终用户使用。推荐先用 NAS 自带的 Docker 图形界面安装；终端命令只作为备用方案。
 
-飞牛 fnOS 用户后续可以优先参考仓库里的 `deploy/fnos/README.md`。飞牛包方向仍然使用预构建 Docker 镜像，不在 NAS 上编译源码。
+飞牛 fnOS 用户后续可以优先参考仓库里的 `deploy/fnos/README.md`。本 NAS 安装手册仍只维护 Docker 安装与更新路径；飞牛包是额外分发形式，不改变这里的 Docker 方向。
 
 安装只需要三件事：
 

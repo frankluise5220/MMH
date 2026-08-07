@@ -2,7 +2,7 @@
 
 import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { toNumber } from "@/lib/date-utils";
-import { formatMoney } from "@/lib/format";
+import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { dispatchEntryEdit, EntryRowActions, type EditPayload } from "./EntryRowActions";
@@ -43,6 +43,7 @@ export type DetailEntry = {
   createdAt?: string | null;
   dayOrder?: number | null;
   amount: number;
+  currency?: string | null;
   runningBalance?: number | null;
   type: string;
   categoryId: string | null;
@@ -121,7 +122,7 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
     transactionId: entry.id,
     date: (entry.date ?? "").slice(0, 10),
     postedAt: entry.postedAt ?? null,
-    type: (entry.source === "advance" ? "advance" : entry.type) as EditPayload["type"],
+    type: (entry.source === "advance" ? "advance" : entry.source === "fx_conversion" ? "fx" : entry.type) as EditPayload["type"],
     amount: dialogAmount,
     note: entry.note ?? "",
     toNote: entry.toNote ?? "",
@@ -136,6 +137,11 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
     toAccountId: entry.toAccountId ?? undefined,
     toAccountName: entry.toAccountName ?? undefined,
     tagIds: entry.entryTags?.map((item) => item.tagId) ?? [],
+    tags: entry.entryTags?.map((item) => ({
+      id: item.tagId,
+      name: item.Tag?.name ?? "",
+      color: item.Tag?.color ?? null,
+    })) ?? [],
   };
 }
 
@@ -250,6 +256,15 @@ function formatType(type: string, t: (key: string) => string) {
   if (type === "transfer") return t("transaction.type.transfer");
   if (type === "investment") return t("transaction.type.investment");
   return type;
+}
+
+function entryCurrency(entry: { currency?: string | null }) {
+  return String(entry.currency ?? "CNY").trim().toUpperCase() || "CNY";
+}
+
+function formatEntryCurrencyMoney(amount: number, entry: { currency?: string | null }) {
+  const currency = entryCurrency(entry);
+  return formatCurrencyMoney(amount, currency);
 }
 
 function isCreditCardRepaymentDisplayEntry(entry: DetailEntry) {
@@ -648,6 +663,19 @@ export function DetailViewClient({
     }
     return text;
   };
+  const detailCategoryLabel = useCallback((entry: DetailEntry) => {
+    const debtLabel = debtCategoryLabel(entry, accountOptionById);
+    if (debtLabel) return debtLabel;
+    const entryFundProductType =
+      entry.fundProductType ??
+      (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
+      (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
+      null;
+    if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType);
+    if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
+    if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
+    return entry.categoryName ?? "";
+  }, [accountOptionById, investmentProductTypeByAccountId, t]);
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
@@ -1077,7 +1105,7 @@ export function DetailViewClient({
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
-        return <span className={`tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>{inflow !== null ? formatMoney(inflow) : ""}</span>;
+        return <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>{inflow !== null ? formatEntryCurrencyMoney(inflow, e) : ""}</span>;
       },
     },
     {
@@ -1097,8 +1125,17 @@ export function DetailViewClient({
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
-        return <span className={`tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>{outflow !== null ? formatMoney(outflow) : ""}</span>;
+        return <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>{outflow !== null ? formatEntryCurrencyMoney(outflow, e) : ""}</span>;
       },
+    },
+    {
+      key: "currency",
+      label: t("detail.column.currency"),
+      width: 68,
+      minWidth: 54,
+      hideable: true,
+      filterText: (e) => entryCurrency(e),
+      render: (e) => <span className="block truncate text-center text-xs font-medium tabular-nums text-slate-500">{entryCurrency(e)}</span>,
     },
     {
       key: "type",
@@ -1153,32 +1190,9 @@ export function DetailViewClient({
       label: t("detail.column.category"),
       width: 140,
       minWidth: 90,
-      filterText: (e) => {
-        const debtLabel = debtCategoryLabel(e, accountOptionById);
-        if (debtLabel) return debtLabel;
-        const entryFundProductType =
-          e.fundProductType ??
-          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-          null;
-        return e.type === "investment"
-          ? investmentCategoryLabel(e, entryFundProductType)
-          : isCreditCardRepaymentDisplayEntry(e)
-            ? t("transaction.category.creditCardRepayment")
-          : getInsuranceDetailCategoryName(e);
-      },
+      filterText: (e) => detailCategoryLabel(e),
       render: (e) => {
-        const debtLabel = debtCategoryLabel(e, accountOptionById);
-        const entryFundProductType =
-          e.fundProductType ??
-          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-          null;
-        const text = debtLabel ?? (e.type === "investment"
-          ? investmentCategoryLabel(e, entryFundProductType)
-          : isCreditCardRepaymentDisplayEntry(e)
-            ? t("transaction.category.creditCardRepayment")
-          : getInsuranceDetailCategoryName(e));
+        const text = detailCategoryLabel(e);
         return <span className="block truncate text-slate-500" title={text}>{text || <span className="text-slate-300">-</span>}</span>;
       },
     },
@@ -1230,7 +1244,7 @@ export function DetailViewClient({
       align: "right" as const,
       hideable: true,
       defaultHidden: runningBalanceDefaultHidden,
-      render: (e: DetailEntry) => <span className="text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatMoney(toNumber(e.runningBalance)) : ""}</span>,
+      render: (e: DetailEntry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatEntryCurrencyMoney(toNumber(e.runningBalance), e) : ""}</span>,
     } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
     {
       key: "tags",
@@ -1269,7 +1283,7 @@ export function DetailViewClient({
       },
     },
     { key: "attachment", label: t("detail.column.attachment"), width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1340,10 +1354,10 @@ export function DetailViewClient({
                       </span>
                       <span className="shrink-0 text-right">
                         <span className={`block text-sm font-semibold tabular-nums ${effectiveAmount >= 0 ? inflowCls : outflowCls}`}>
-                          {effectiveAmount >= 0 ? "+" : "-"}{formatMoney(Math.abs(effectiveAmount))}
+                          {effectiveAmount >= 0 ? "+" : "-"}{formatEntryCurrencyMoney(Math.abs(effectiveAmount), entry)}
                         </span>
                         {showRunningBalance && entry.runningBalance != null ? (
-                          <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">余额 {formatMoney(toNumber(entry.runningBalance))}</span>
+                          <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">余额 {formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry)}</span>
                         ) : null}
                       </span>
                       <span className="text-slate-300">›</span>

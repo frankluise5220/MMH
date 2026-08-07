@@ -1,13 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
   <title id="title">MMH logo mark</title>
-  <desc id="desc">A shared roof and two balanced spaces representing one household.</desc>
-  <rect width="128" height="128" rx="30" fill="#193B3A"/>
-  <path
-    d="M27 96V59C27 40 42.5 27 64 27C85.5 27 101 40 101 59V96"
-    fill="none"
-    stroke="#FFF9F0"
-    stroke-width="13"
-    stroke-linecap="round"
-  />
-  <path d="M64 54V96" stroke="#E56F4D" stroke-width="11" stroke-linecap="round"/>
+  <desc id="desc">A block M and mirrored M forming an H-shaped negative space.</desc>
+  <defs>
+    <linearGradient id="mmhGold" x1="22" y1="18" x2="106" y2="110" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF3B8"/>
+      <stop offset="0.24" stop-color="#E6B84A"/>
+      <stop offset="0.52" stop-color="#FFF0A5"/>
+      <stop offset="0.74" stop-color="#C88A24"/>
+      <stop offset="1" stop-color="#7A4B12"/>
+    </linearGradient>
+    <filter id="mmhRelief" x="10" y="14" width="108" height="104" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="1.2" flood-color="#160C02" flood-opacity="0.6"/>
+      <feDropShadow dx="0" dy="-1" stdDeviation="0.45" flood-color="#FFF7C8" flood-opacity="0.44"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="#17130D"/>
+  <g filter="url(#mmhRelief)">
+    <path d="M20 58V24H48L64 40L80 24H108V58H91V41L73 60H55L37 41V58H20Z" fill="url(#mmhGold)" stroke="#FFE9A0" stroke-width="1"/>
+    <path d="M20 58V24H48L64 40L80 24H108V58H91V41L73 60H55L37 41V58H20Z" fill="url(#mmhGold)" stroke="#FFE9A0" stroke-width="1" transform="translate(0 128) scale(1 -1)"/>
+  </g>
+  <path d="M48 38H58V57H70V38H80V90H70V71H58V90H48V38Z" fill="#17130D"/>
+  <path d="M16 64H112" stroke="#0A0704" stroke-width="3" stroke-linecap="square"/>
+  <path d="M20 62.8H108" stroke="#D8A63A" stroke-width="0.8" stroke-linecap="square" opacity="0.9"/>
 </svg>

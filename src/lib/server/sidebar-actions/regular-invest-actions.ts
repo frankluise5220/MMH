@@ -343,6 +343,13 @@ async function updateRegularInvest(formData: FormData) {
     : plan.startDate;
   const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
   const taskTypeChanged = taskType !== existingTaskType;
+  const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : plan.executionDay;
+  const scheduleChanged =
+    startDateChanged ||
+    taskTypeChanged ||
+    effectiveIntervalUnit !== plan.intervalUnit ||
+    effectiveIntervalValue !== plan.intervalValue ||
+    effectiveExecutionDay !== normalizedExistingExecutionDay;
   let linkedRecordCount: number | null = null;
   const getLinkedRecordCount = async () => {
     if (linkedRecordCount == null) {
@@ -368,16 +375,18 @@ async function updateRegularInvest(formData: FormData) {
   if (parsedStartDate) updateData.startDate = nextStoredStartDate;
   if (effectiveIntervalUnit === "year") updateData.executionDay = null;
   else if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
-  updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
-    id: plan.id,
-    householdId,
-    taskType,
-    startDate: nextStoredStartDate,
-    lastRunDate: plan.lastRunDate,
-    intervalUnit: effectiveIntervalUnit,
-    intervalValue: effectiveIntervalValue,
-    executionDay: effectiveExecutionDay,
-  });
+  if (scheduleChanged) {
+    updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
+      id: plan.id,
+      householdId,
+      taskType,
+      startDate: nextStoredStartDate,
+      lastRunDate: plan.lastRunDate,
+      intervalUnit: effectiveIntervalUnit,
+      intervalValue: effectiveIntervalValue,
+      executionDay: effectiveExecutionDay,
+    });
+  }
   if (endDateStr) {
     const endDate = parseDateOnlyUtc(endDateStr);
     if (!endDate) return { ok: false as const, error: "结束日期不正确" };

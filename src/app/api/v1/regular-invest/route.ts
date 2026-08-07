@@ -464,6 +464,13 @@ export async function PUT(req: NextRequest) {
       : existing.startDate;
     const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, existing.startDate);
     const taskTypeChanged = nextTaskType !== existingTaskType;
+    const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : existing.executionDay;
+    const scheduleChanged =
+      startDateChanged ||
+      taskTypeChanged ||
+      effectiveIntervalUnit !== existing.intervalUnit ||
+      effectiveIntervalValue !== existing.intervalValue ||
+      effectiveExecutionDay !== normalizedExistingExecutionDay;
     let linkedRecordCount: number | null = null;
     const getLinkedRecordCount = async () => {
       if (linkedRecordCount == null) {
@@ -503,16 +510,18 @@ export async function PUT(req: NextRequest) {
     }
     if (effectiveIntervalUnit === IntervalUnit.year) updateData.executionDay = null;
     else if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
-    updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
-      id: existing.id,
-      householdId,
-      taskType: nextTaskType,
-      startDate: nextStoredStartDate,
-      lastRunDate: existing.lastRunDate,
-      intervalUnit: effectiveIntervalUnit,
-      intervalValue: effectiveIntervalValue,
-      executionDay: effectiveExecutionDay,
-    });
+    if (scheduleChanged) {
+      updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
+        id: existing.id,
+        householdId,
+        taskType: nextTaskType,
+        startDate: nextStoredStartDate,
+        lastRunDate: existing.lastRunDate,
+        intervalUnit: effectiveIntervalUnit,
+        intervalValue: effectiveIntervalValue,
+        executionDay: effectiveExecutionDay,
+      });
+    }
     if (endDate != null) updateData.endDate = parsedEndDate;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
     if (feeRate != null) updateData.feeRate = parseFloat(feeRate);

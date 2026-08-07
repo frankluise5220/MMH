@@ -5,12 +5,12 @@
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
       "version": "1.0.3",
-      "platform": "all",
-      "description": "一套本地部署、致力于化繁为简的家庭账务管理系统。",
+      "platform": "x86",
+      "description": "飞牛专用 SQLite 原生包，内置 Next standalone、Linux Node runtime 与 Prisma runtime。",
       "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.8.5-fnos3/mmh.fpk",
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "首次飞牛专属包测试版，使用预构建 Docker 镜像安装 MMH。",
-      "tags": ["finance", "bookkeeping", "docker", "local-first"]
+      "changelog": "飞牛专用 SQLite 包，不依赖 Docker/PostgreSQL。",
+      "tags": ["finance", "bookkeeping", "sqlite", "local-first"]
     }
   ]
 }

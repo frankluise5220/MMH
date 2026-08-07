@@ -83,7 +83,12 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
       ORDER BY cash."date" ASC, cash."createdAt" ASC
     `);
     const primaryCashRow = linkedCashRows[0] ?? null;
-    const cashAccountId = primaryCashRow?.accountId ?? cashAccountIdOf(main);
+    const projectedCashAccountId = cashAccountIdOf(main);
+    const legacyCombinedCashRow = primaryCashRow?.id === main.id;
+    const primaryCashFlowAccountId = legacyCombinedCashRow
+      ? projectedCashAccountId
+      : primaryCashRow?.accountId ?? projectedCashAccountId;
+    const cashAccountId = primaryCashFlowAccountId;
 
     const ft = await client.fundTransaction.upsert({
       where: { cashEntryId: main.id },
@@ -200,7 +205,7 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
             ? row.fundArrivalDate ?? row.date
             : row.date,
           accountId: row.id === primaryCashRow?.id
-            ? row.accountId
+            ? primaryCashFlowAccountId
             : isCashReceiptSubtype(row.fundSubtype) || isRefundRow(row)
             ? row.toAccountId
             : row.accountId,

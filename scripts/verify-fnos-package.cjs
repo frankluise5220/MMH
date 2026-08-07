@@ -2,26 +2,16 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
-const fnosDir = path.join(root, "deploy", "fnos");
-const files = {
-  compose: path.join(fnosDir, "docker-compose.yml"),
-  env: path.join(fnosDir, "env.example"),
-  readme: path.join(fnosDir, "README.md"),
-  manifest: path.join(fnosDir, "manifest.example.json"),
-  postgresInit: path.join(fnosDir, "postgres-entrypoint.sh"),
-  repositoryApps: path.join(fnosDir, "repository", "apps.example.json"),
-  repositoryReadme: path.join(fnosDir, "repository", "README.md"),
-  fnosReleaseWorkflow: path.join(root, ".github", "workflows", "fnos-release.yml"),
-  dockerfile: path.join(root, "Dockerfile"),
-  dockerEntrypoint: path.join(root, "scripts", "docker-entrypoint.sh"),
-};
-
 const failures = [];
 
-function read(fileKey) {
-  const file = files[fileKey];
+function expect(condition, message) {
+  if (!condition) failures.push(message);
+}
+
+function read(file) {
   if (!fs.existsSync(file)) {
     failures.push(`Missing ${path.relative(root, file)}`);
     return "";
@@ -29,94 +19,58 @@ function read(fileKey) {
   return fs.readFileSync(file, "utf8");
 }
 
-function expect(condition, message) {
-  if (!condition) failures.push(message);
-}
+const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
+const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
+const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
+const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
+const prismaConfig = read(path.join(root, "prisma.config.ts"));
+const dbClient = read(path.join(root, "src", "lib", "db", "prisma.ts"));
+const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
+const stageDir = path.join(root, "release-artifacts", "fnos", "mmh-fpk");
+const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
 
-const compose = read("compose");
-const env = read("env");
-const readme = read("readme");
-const manifestText = read("manifest");
-const repositoryAppsText = read("repositoryApps");
-const repositoryReadme = read("repositoryReadme");
-const fnosReleaseWorkflow = read("fnosReleaseWorkflow");
-const dockerfile = read("dockerfile");
-const dockerEntrypoint = read("dockerEntrypoint");
-read("postgresInit");
-
-expect(/MMH_DEPLOY_TARGET:\s*fnos/.test(compose), "Compose should mark MMH_DEPLOY_TARGET=fnos.");
-expect(/"\$\{MMH_WEB_PORT:-7777\}:7777"/.test(compose), "Compose should expose only configurable Web port 7777.");
-expect(!/env_file:\s*\n\s*-\s*\.env/.test(compose), "fnOS Compose should not require a missing .env file.");
-expect(/MMH_COMPOSE_FILE:\s*\/workspace\/docker-compose\.yaml/.test(compose), "fnOS updater should point to docker-compose.yaml.");
-expect(!/5433:5432/.test(compose) && !/"5432:5432"/.test(compose), "Compose must not expose Postgres to host.");
-expect(/\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/.test(compose), "Compose should explicitly declare updater Docker socket dependency.");
-expect((compose.match(/no-new-privileges:true/g) ?? []).length >= 3, "All services should use no-new-privileges.");
-expect(/postgres:\s*\n[\s\S]*healthcheck:/.test(compose), "Postgres should have a healthcheck.");
-expect(/condition:\s*service_healthy/.test(compose), "App should wait for healthy Postgres.");
-expect(/app:\s*\n[\s\S]*image:\s*\$\{MMH_APP_IMAGE:-/.test(compose), "Compose should start the MMH app image.");
-expect(/updater:\s*\n[\s\S]*image:\s*\$\{MMH_UPDATER_IMAGE:-/.test(compose), "Compose should start the MMH updater image.");
-expect(/DATABASE_URL:\s*postgresql:\/\//.test(compose), "Compose should provide DATABASE_URL for Prisma.");
-expect(/pgdata:/.test(compose), "Compose should persist PostgreSQL data in a named volume.");
-expect(/^version:\s*"3\.8"/m.test(compose), "Compose should keep a Docker Compose version header for fnOS appcenter compatibility.");
-
-expect(/POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"/.test(env), "env.example should keep password placeholder.");
-expect(!/sk-[a-zA-Z0-9]/.test(env), "env.example must not contain API keys.");
-expect(!/password=.*[^"\n]+@/i.test(env), "env.example must not contain embedded private credentials.");
-expect(/MMH_IMAGE_SOURCE="dockerproxy"/.test(env), "env.example should keep a reachable default image source.");
-expect(/MMH_WEB_PORT="7777"/.test(env), "env.example should expose configurable Web port.");
-
-expect(/不暴露 MMH Web 端口 `7777`|只暴露 MMH Web 端口 `7777`/.test(readme), "README should document exposed Web port.");
-expect(/PostgreSQL 不映射到宿主机端口/.test(readme), "README should document that Postgres is not exposed.");
-expect(/Docker socket/.test(readme), "README should document updater Docker socket caveat.");
-expect(/\.fpk/.test(readme), "README should document .fpk as the release package.");
-expect(/Prisma/.test(readme), "README should document Prisma responsibility inside the app image.");
-expect(/完整 MMH/.test(readme), "README should state that the FPK installs the complete MMH stack.");
-expect(/\.fpk/.test(repositoryReadme), "Repository README should document .fpk-only release packages.");
-
-expect(/COPY --from=build \/app\/\.next\/standalone/.test(dockerfile), "Docker image should include Next standalone output.");
-expect(/COPY --from=build \/app\/prisma \.\/prisma/.test(dockerfile), "Docker image should include Prisma schema.");
-expect(/COPY --from=prisma-deps \/opt\/prisma-runtime\/node_modules \.\/node_modules/.test(dockerfile), "Docker image should include Prisma runtime dependencies.");
-expect(/postgresql-client/.test(dockerfile), "Docker image should include PostgreSQL readiness client.");
-expect(/pg_isready/.test(dockerEntrypoint), "Docker entrypoint should wait for PostgreSQL.");
-expect(/prisma db push/.test(dockerEntrypoint), "Docker entrypoint should initialize or sync Prisma schema.");
-expect(/exec node server\.js/.test(dockerEntrypoint), "Docker entrypoint should start Next standalone server.");
-expect(/docker-project/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare fnOS docker-project resources.");
-expect(/run-as": "package"/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should use fnOS Docker package privilege defaults.");
-expect(/arch=x86_64/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare x86_64 architecture for the current fnOS package.");
-expect(/platform=x86/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should declare x86 platform compatibility.");
-expect(/docker compose -f "\$COMPOSE_FILE" up -d/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script cmd/main should start the compose stack through fnOS app destination.");
-expect(/path\.join\(outDir, "mmh\.fpk"\)/.test(fs.readFileSync(path.join(root, "scripts", "build-fnos-package.cjs"), "utf8")), "Build script should produce an appname.fpk release file.");
+expect(/provider = "sqlite"/.test(schemaScript), "Native schema generator must switch datasource provider to sqlite.");
+expect(/@db\\\./.test(schemaScript), "Native schema generator must strip PostgreSQL native column annotations.");
+expect(/PRISMA_SCHEMA_PATH/.test(prismaConfig), "Prisma config must allow selecting the native schema.");
+expect(/PrismaBetterSqlite3/.test(dbClient), "Database client must support the SQLite adapter.");
+expect(/connectionString\.startsWith\("file:"\)/.test(dbClient), "Database client must route file: URLs to SQLite.");
+expect(/FNOS_NODE_TARBALL/.test(buildScript), "fnOS package build must require an explicit Linux Node runtime input.");
+expect(/process\.platform === "linux"/.test(buildScript), "fnOS release builds must be guarded to Linux/fnOS.");
+expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(buildScript), "fnOS start script must store SQLite data in the fnOS data directory.");
+expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
+expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
+expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");
+expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
+expect(/npm ci/.test(fnosReleaseWorkflow), "fnOS workflow should install Linux native dependencies.");
+expect(/FNOS_NODE_TARBALL/.test(fnosReleaseWorkflow), "fnOS workflow should provide a Linux Node runtime tarball.");
+expect(/npm run build:fnos:app/.test(fnosReleaseWorkflow), "fnOS workflow should build the Linux SQLite standalone app.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
-expect(!/release-artifacts\/fnos\/\*\.tgz/.test(fnosReleaseWorkflow), "fnOS workflow must not upload stage-only .tgz files.");
+expect(!/path:\s*release-artifacts\/fnos\/\*-fpk-source\.tgz/.test(fnosReleaseWorkflow), "fnOS release workflow must not upload stage-only .tgz files.");
 expect(/fnpack was not found/.test(fnosReleaseWorkflow), "fnOS workflow should fail clearly when fnpack is unavailable.");
-expect(/Check existing Release FPK/.test(fnosReleaseWorkflow), "fnOS workflow should detect manually attached .fpk assets.");
-expect(/steps\.existing-fpk\.outputs\.found != 'true'/.test(fnosReleaseWorkflow), "fnOS workflow should skip rebuilding when Release already has a .fpk asset.");
+expect(/mmh\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should detect existing mmh.fpk assets.");
+expect(!/mmh-native\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow must not publish a second mmh-native.fpk package.");
 
-try {
-  const manifest = JSON.parse(manifestText);
-  expect(manifest.id === "mmh", "Manifest id should be mmh.");
-  expect(Array.isArray(manifest.architectures) && manifest.architectures.length > 0, "Manifest should declare architectures.");
-} catch (error) {
-  failures.push(`manifest.example.json is not valid JSON: ${error.message}`);
+if (fs.existsSync(stageDir)) {
+  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
+    expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
+  }
 }
 
-try {
-  const repositoryApps = JSON.parse(repositoryAppsText);
-  const app = Array.isArray(repositoryApps.apps) ? repositoryApps.apps.find((item) => item?.id === "mmh") : null;
-  expect(Boolean(app), "Repository apps example should include mmh.");
-  expect(typeof app?.download_url === "string" && app.download_url.endsWith("/mmh.fpk"), "Repository download_url must point to appname.fpk.");
-  expect(app?.platform === "x86" || app?.platform === "all", "Repository app should declare fnOS platform.");
-  expect(typeof app?.version === "string" && app.version.length > 0, "Repository app should declare version.");
-} catch (error) {
-  failures.push(`repository/apps.example.json is not valid JSON: ${error.message}`);
+if (fs.existsSync(nativeSchema)) {
+  const validate = spawnSync(process.execPath, [prismaCli, "validate", "--schema", nativeSchema], {
+    cwd: root,
+    encoding: "utf8",
+    shell: false,
+  });
+  expect(validate.status === 0, `Native Prisma schema should validate.\n${validate.stderr || validate.stdout || validate.error?.message}`);
 }
 
 if (failures.length > 0) {
-  console.error("FNOS package verification failed:");
+  console.error("fnOS package verification failed:");
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
 
-console.log("FNOS package verification passed.");
+console.log("fnOS package verification passed.");

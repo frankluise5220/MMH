@@ -45,6 +45,26 @@ export function formatMoneyYuan(amount: number): string {
   return `¥${formatMoney(amount)}`;
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  CNY: "¥",
+  JPY: "¥",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  HKD: "HK$",
+};
+
+/** 格式化指定币种金额；未知币种显示为币种代码前缀。 */
+export function formatCurrencyMoney(amount: number, currency = "CNY"): string {
+  const code = String(currency || "CNY").trim().toUpperCase() || "CNY";
+  const prefix = CURRENCY_SYMBOLS[code] ?? `${code} `;
+  const digits = code === "JPY" ? 0 : 2;
+  const rounded = roundDisplayNumber(amount, digits);
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded);
+  return `${sign}${prefix}${abs.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
 /** 格式化金额，接受 string | number 输入（Prisma Decimal 等），非有限数字返回 "-" */
 export function formatMoneyLoose(v: string | number): string {
   const n = typeof v === "string" ? parseFloat(v) : v;

@@ -2007,6 +2007,8 @@ export function FundShell(props: Props) {
 
   const batchTargetIds = useMemo(() => Array.from(selectedIds).filter((id) => filteredByColumnsIdSet.has(id)), [selectedIds, filteredByColumnsIdSet]);
 
+  const selectedDetailCount = batchTargetIds.length;
+
 
 
   const totalPages = Math.max(1, Math.ceil(filteredByColumns.length / fundPageSize));
@@ -3071,6 +3073,17 @@ export function FundShell(props: Props) {
               <Upload className="w-3 h-3" />导入
 
             </Link>
+
+            <span
+              className={`h-6 rounded border px-2 leading-6 tabular-nums ${
+                selectedDetailCount > 0
+                  ? "border-blue-200 bg-blue-50 font-medium text-blue-700"
+                  : "border-slate-200 bg-white text-slate-400"
+              }`}
+              title={`当前筛选结果已选 ${selectedDetailCount} 条`}
+            >
+              已选 {selectedDetailCount} 条
+            </span>
 
             {hasAnyFilters && (
 
@@ -4158,7 +4171,9 @@ export function FundShell(props: Props) {
                             metalTypes={metalTypes}
                             metalUnits={metalUnits}
 
-                           nestedFieldData={nestedFieldData}
+                            nestedFieldData={nestedFieldData}
+
+                            holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
 
                             allEntries={linkedCandidateEntries}
 

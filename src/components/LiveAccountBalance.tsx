@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatMoney } from "@/lib/format";
+import { formatCurrencyMoney } from "@/lib/format";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 
 function pnlCls(value: number, isRedUp: boolean) {
@@ -23,6 +23,8 @@ export function LiveAccountBalance({
   mode,
   semantic = "default",
   displayMultiplier = 1,
+  baseCurrency = "CNY",
+  accountDisplayMode = "converted",
 }: {
   accountId?: string | null;
   initialValue: number;
@@ -30,14 +32,18 @@ export function LiveAccountBalance({
   mode: "total" | "account";
   semantic?: "default" | "liability";
   displayMultiplier?: 1 | -1;
+  baseCurrency?: string;
+  accountDisplayMode?: "converted" | "original";
 }) {
   const [value, setValue] = useState(initialValue);
+  const [displayCurrency, setDisplayCurrency] = useState(baseCurrency);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const refreshBusy = useRef(false);
 
   useEffect(() => {
     setValue(initialValue);
-  }, [accountId, initialValue, mode]);
+    setDisplayCurrency(baseCurrency);
+  }, [accountId, baseCurrency, initialValue, mode]);
 
   useEffect(() => {
     const refresh = () => {
@@ -49,14 +55,31 @@ export function LiveAccountBalance({
           const res = await fetch("/api/v1/accounts/internal", { cache: "no-store" });
           const data = await res.json();
           if (!data?.ok || !Array.isArray(data.accounts)) return;
-          const accounts = data.accounts as Array<{ id?: string | null; balance?: number | string | null }>;
+          const accounts = data.accounts as Array<{
+            id?: string | null;
+            balance?: number | string | null;
+            convertedBalance?: number | string | null;
+            currency?: string | null;
+            baseCurrency?: string | null;
+            fxRateMissing?: boolean;
+          }>;
           if (mode === "total") {
-            setValue(accounts.reduce((sum, account) => sum + Number(account.balance ?? 0), 0));
+            const total = Number(data.totalConvertedBalance);
+            setDisplayCurrency(String(data.baseCurrency || baseCurrency));
+            setValue(Number.isFinite(total)
+              ? total
+              : accounts.reduce((sum, account) => sum + Number(account.convertedBalance ?? account.balance ?? 0), 0));
             return;
           }
           const matched = accounts.find((account) => account.id === accountId);
           if (matched) {
-            setValue(Number(matched.balance ?? 0));
+            if (accountDisplayMode === "original" || matched.fxRateMissing) {
+              setDisplayCurrency(String(matched.currency || baseCurrency));
+              setValue(Number(matched.balance ?? 0));
+            } else {
+              setDisplayCurrency(String(matched.baseCurrency || data.baseCurrency || baseCurrency));
+              setValue(Number(matched.convertedBalance ?? matched.balance ?? 0));
+            }
           }
         } catch {
         } finally {
@@ -72,9 +95,9 @@ export function LiveAccountBalance({
       window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
-  }, [accountId, mode]);
+  }, [accountDisplayMode, accountId, baseCurrency, mode]);
 
   const displayValue = value * displayMultiplier;
   const cls = semantic === "liability" ? liabilityCls(displayValue, isRedUp) : pnlCls(displayValue, isRedUp);
-  return <span className={`tabular-nums font-semibold ${cls}`}>{formatMoney(displayValue)}</span>;
+  return <span className={`tabular-nums font-semibold ${cls}`}>{formatCurrencyMoney(displayValue, displayCurrency)}</span>;
 }

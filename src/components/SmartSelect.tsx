@@ -440,17 +440,6 @@ export function SmartSelect(props: SmartSelectProps) {
     ? Math.max(2, Math.min(6, Math.floor(expandedGroupColumns)))
     : undefined;
   const fullGridRowStyle = singleGridColumns ? { gridColumn: "1 / -1" } : undefined;
-  const hasOptionSubLabels = useMemo(
-    () => effectiveOptions.some((option) => !!option.subLabel && isSelectable(option, selectableGroups)),
-    [effectiveOptions, selectableGroups],
-  );
-  const defaultDropdownMinWidth = singleGridColumns
-    ? 0
-    : hasOptionSubLabels
-      ? 360
-      : compact
-        ? 300
-        : 320;
   const resolvedDropdownMaxHeight = dropdownMaxHeight ?? (compact ? 320 : 360);
 
   const isSingleCreateButton = mode === "single" && create?.type === "button" ? create : undefined;
@@ -494,6 +483,25 @@ export function SmartSelect(props: SmartSelectProps) {
     () => buildVisibleOptions(filtered, collapsedGroups, search.trim().length > 0, hierarchy),
     [collapsedGroups, filtered, hierarchy, search],
   );
+  const visibleOptionById = useMemo(
+    () => new Map(visible.map((option) => [option.id, option])),
+    [visible],
+  );
+  const visibleIndexById = useMemo(
+    () => new Map(visible.map((option, index) => [option.id, index])),
+    [visible],
+  );
+  const visibleChildrenByParentId = useMemo(() => {
+    const children = new Map<string, SmartSelectOption[]>();
+    for (const option of visible) {
+      if (!option.parentId) continue;
+      const list = children.get(option.parentId) ?? [];
+      list.push(option);
+      children.set(option.parentId, list);
+    }
+    return children;
+  }, [visible]);
+  const groupedSingleHierarchy = !!singleGridColumns && hierarchy && search.trim().length === 0;
 
   const closeDropdown = useCallback(() => {
     setOpen(false);
@@ -512,10 +520,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const boundaryLeft = (boundaryRect?.left ?? 0) + boundaryPadding;
     const boundaryRight = (boundaryRect?.right ?? window.innerWidth) - boundaryPadding;
     const boundaryBottom = (boundaryRect?.bottom ?? window.innerHeight) - boundaryPadding;
-    const behaviorMinWidth = minDropdownWidth && minDropdownWidth > 0
-      ? minDropdownWidth
-      : defaultDropdownMinWidth;
-    const minWidth = Math.max(isSingleCreateButton && !compact ? 300 : 0, behaviorMinWidth);
+    const minWidth = minDropdownWidth && minDropdownWidth > 0 ? minDropdownWidth : 0;
     const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
     const width = Math.min(Math.max(rect.width, minWidth), availableWidth);
     const left = Math.min(Math.max(boundaryLeft, rect.left), Math.max(boundaryLeft, boundaryRight - width));
@@ -534,7 +539,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
     setDropdownPos({ top, left, width, maxHeight });
-  }, [compact, defaultDropdownMinWidth, effectiveOptions.length, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, visible.length]);
+  }, [effectiveOptions.length, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -626,9 +631,11 @@ export function SmartSelect(props: SmartSelectProps) {
   useEffect(() => {
     if (!open || focusedIndex < 0) return;
     const listNode = listRef.current;
-    const row = listNode?.children[focusedIndex] as HTMLElement | undefined;
+    const row =
+      document.getElementById(`${listId}-${focusedIndex}`) ??
+      (listNode?.children[focusedIndex] as HTMLElement | undefined);
     row?.scrollIntoView({ block: "nearest" });
-  }, [focusedIndex, open]);
+  }, [focusedIndex, listId, open]);
 
   useEffect(() => {
     if (!showNew) return;
@@ -811,6 +818,213 @@ export function SmartSelect(props: SmartSelectProps) {
     if (!searchable) handleDropdownKeyDown(event);
   }
 
+  function isGroupedPanelParent(option: SmartSelectOption) {
+    return groupedSingleHierarchy
+      && !!option.isGroup
+      && !collapsedGroups.has(option.id)
+      && (visibleChildrenByParentId.get(option.id)?.length ?? 0) > 0;
+  }
+
+  function hasGroupedPanelAncestor(option: SmartSelectOption) {
+    if (!groupedSingleHierarchy) return false;
+    let parentId = option.parentId;
+    while (parentId) {
+      const parent = visibleOptionById.get(parentId);
+      if (!parent) return false;
+      if (isGroupedPanelParent(parent)) return true;
+      parentId = parent.parentId;
+    }
+    return false;
+  }
+
+  function renderSingleGroupOption(option: SmartSelectOption, insidePanel = false) {
+    const index = visibleIndexById.get(option.id) ?? 0;
+    const selected = option.id === value;
+    const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
+    return (
+      <button
+        key={option.id}
+        id={`${listId}-${index}`}
+        style={insidePanel || singleGridColumns ? undefined : fullGridRowStyle}
+        type="button"
+        role="option"
+        aria-selected={selected}
+        title={option.title || stripIndent(option.label)}
+        onClick={() => {
+          if ((!selectableGroups || groupSelectOnDoubleClick) && hierarchy && collapsibleGroups) {
+            toggleGroup(option.id);
+            return;
+          }
+          selectSingle(option.id);
+        }}
+        onDoubleClick={() => {
+          if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);
+        }}
+        onMouseEnter={() => setFocusedIndex(index)}
+        className={
+          insidePanel
+            ? `relative flex h-8 min-w-0 items-center justify-center rounded-md border px-2 text-center text-xs transition-colors ${
+                index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-transparent bg-white hover:border-slate-200 hover:bg-white"
+              } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+            : singleGridColumns
+              ? `relative flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                  index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
+                } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+              : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                  index === focusedIndex ? "bg-blue-50" : ""
+                } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`
+        }
+      >
+        <span
+          onClick={(event) => {
+            event.stopPropagation();
+            if (hierarchy && collapsibleGroups) toggleGroup(option.id);
+          }}
+          className={(singleGridColumns || insidePanel)
+            ? "absolute right-1 top-1 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+            : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
+        >
+          {hierarchy && collapsibleGroups ? (
+            <>
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded">
+                {collapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </span>
+              <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span>
+            </>
+          ) : null}
+        </span>
+        <span
+          className={(singleGridColumns || insidePanel) ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}
+          title={option.title || stripIndent(option.label)}
+        >
+          {(singleGridColumns || insidePanel) ? stripIndent(option.label) : option.label}
+        </span>
+        {!singleGridColumns && !insidePanel && option.subLabel ? (
+          <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
+        ) : null}
+      </button>
+    );
+  }
+
+  function renderSingleLeafOption(option: SmartSelectOption, insidePanel = false) {
+    const index = visibleIndexById.get(option.id) ?? 0;
+    const selected = option.id === value;
+    const optionLabel = (singleGridColumns || insidePanel) ? stripIndent(option.label) : option.label;
+    return (
+      <button
+        key={option.id}
+        id={`${listId}-${index}`}
+        type="button"
+        role="option"
+        aria-selected={selected}
+        title={option.title || optionLabel}
+        onClick={() => selectSingle(option.id)}
+        onMouseEnter={() => setFocusedIndex(index)}
+        className={
+          insidePanel
+            ? `flex h-8 min-w-0 items-center justify-center rounded-md border px-2 text-center text-xs transition-colors ${
+                index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-transparent bg-white hover:border-slate-200 hover:bg-white"
+              } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+            : singleGridColumns
+              ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                  index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
+                } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
+              : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                  index === focusedIndex ? "bg-blue-50" : ""
+                } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`
+        }
+      >
+        <span className="min-w-0 flex-1 truncate" title={option.title || optionLabel}>{optionLabel}</span>
+        {!insidePanel && option.subLabel ? (
+          <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
+        ) : null}
+      </button>
+    );
+  }
+
+  function renderGroupedChildrenPanel(parent: SmartSelectOption, depth = 0): ReactNode {
+    if (!isGroupedPanelParent(parent)) return null;
+    const children = visibleChildrenByParentId.get(parent.id) ?? [];
+    return (
+      <div
+        key={`${parent.id}:children`}
+        style={depth === 0 ? fullGridRowStyle : { gridColumn: "1 / -1" }}
+        className={[
+          "my-0.5 rounded-md border p-1.5",
+          depth === 0
+            ? "border-slate-200/70 bg-slate-50/95 shadow-inner"
+            : "border-slate-200/60 bg-slate-100/70",
+        ].join(" ")}
+      >
+        <div
+          className="grid gap-1"
+          style={{ gridTemplateColumns: `repeat(${singleGridColumns ?? 2}, minmax(0, 1fr))` }}
+        >
+          {children.map((child) => {
+            if (child.isHeader) return null;
+            if (child.isGroup) {
+              return [
+                renderSingleGroupOption(child, true),
+                renderGroupedChildrenPanel(child, depth + 1),
+              ];
+            }
+            return renderSingleLeafOption(child, true);
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function renderGroupedSingleOptions() {
+    return visible.map((option, index) => {
+      if (hasGroupedPanelAncestor(option)) return null;
+      if (option.isHeader) {
+        const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
+        return (
+          <div
+            key={option.id}
+            style={fullGridRowStyle}
+            className={`flex ${micro ? "h-4 px-1.5" : dense ? "h-6 px-2" : compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
+              index === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
+            }`}
+            onMouseEnter={() => setFocusedIndex(index)}
+          >
+            <button
+              type="button"
+              onClick={() => hierarchy && collapsibleGroups && toggleGroup(option.id)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pl-0.5 text-left text-slate-600"
+            >
+              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded">
+                {hierarchy && collapsibleGroups ? (
+                  collapsed
+                    ? <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+                    : <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+                ) : null}
+              </span>
+              <span className="truncate">{option.label}</span>
+            </button>
+            {!search.trim() && hierarchy ? (
+              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400">
+                {groupChildCounts.get(option.id) ?? 0}
+              </span>
+            ) : null}
+          </div>
+        );
+      }
+      if (option.isGroup) {
+        return [
+          renderSingleGroupOption(option),
+          renderGroupedChildrenPanel(option),
+        ];
+      }
+      return renderSingleLeafOption(option);
+    });
+  }
+
   const dropdown = (
     <div
       ref={dropdownRef}
@@ -878,7 +1092,7 @@ export function SmartSelect(props: SmartSelectProps) {
               ...(singleGridColumns ? { gridTemplateColumns: `repeat(${singleGridColumns}, minmax(0, 1fr))` } : {}),
             }}
           >
-            {visible.map((option, index) => {
+            {groupedSingleHierarchy ? renderGroupedSingleOptions() : visible.map((option, index) => {
               if (option.isHeader) {
                 const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
                 return (

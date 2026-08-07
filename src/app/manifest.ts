@@ -17,20 +17,14 @@ export default function manifest(): MetadataRoute.Manifest {
     categories: ["finance", "productivity"],
     icons: [
       {
-        src: "/branding/mmh-logo-mark.svg",
-        sizes: "any",
-        type: "image/svg+xml",
-        purpose: "any",
-      },
-      {
-        src: "/branding/mmh-logo-mark.preview.png",
-        sizes: "512x512",
+        src: "/branding/mmh-logo-final.square.png",
+        sizes: "1024x1024",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/branding/mmh-logo-mark.preview.png",
-        sizes: "512x512",
+        src: "/branding/mmh-logo-final.square.png",
+        sizes: "1024x1024",
         type: "image/png",
         purpose: "maskable",
       },
@@ -42,8 +36,8 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/overview",
         icons: [
           {
-            src: "/branding/mmh-logo-mark.preview.png",
-            sizes: "512x512",
+            src: "/branding/mmh-logo-final.square.png",
+            sizes: "1024x1024",
             type: "image/png",
           },
         ],
@@ -54,8 +48,8 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/?quickEntry=1",
         icons: [
           {
-            src: "/branding/mmh-logo-mark.preview.png",
-            sizes: "512x512",
+            src: "/branding/mmh-logo-final.square.png",
+            sizes: "1024x1024",
             type: "image/png",
           },
         ],

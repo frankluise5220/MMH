@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
 import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
+import { normalizeCurrency } from "@/lib/currency";
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
@@ -26,6 +27,7 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
     include: wealthAccountInclude,
   });
   if (!cashAccount) throw new Error("资金来源账户不存在或已停用");
+  const cashCurrency = normalizeCurrency(cashAccount.currency);
 
   const requestedAccountId = input.requestedAccountId?.trim() || "";
   if (requestedAccountId) {
@@ -35,6 +37,9 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
     });
     if (!requested || requested.kind !== "investment" || requested.investProductType !== "wealth") {
       throw new Error("理财账户不存在或类型不正确");
+    }
+    if (normalizeCurrency(requested.currency) !== cashCurrency) {
+      throw new Error(`理财账户币种必须与资金来源账户一致。资金来源是 ${cashCurrency}，理财账户是 ${normalizeCurrency(requested.currency)}`);
     }
     if (!isWealthAccountAllowedForCashAccount({
       cashGroupId: cashAccount.groupId,
@@ -59,6 +64,7 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
       institutionId: cashAccount.institutionId,
       kind: "investment",
       investProductType: "wealth",
+      currency: cashCurrency,
     },
     include: wealthAccountInclude,
     orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
@@ -77,7 +83,7 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
       name: "理财",
       kind: "investment",
       investProductType: "wealth",
-      currency: cashAccount.currency || "CNY",
+      currency: cashCurrency,
       householdId: input.householdId,
       groupId: cashAccount.groupId,
       institutionId: cashAccount.institutionId,

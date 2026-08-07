@@ -8,6 +8,12 @@ export function normalizeCurrency(value: unknown) {
   return text || "CNY";
 }
 
+export function normalizeOptionalCurrency(value: unknown) {
+  if (value == null) return null;
+  const text = String(value).trim().toUpperCase();
+  return text || null;
+}
+
 export function resolveSameCurrencyTransfer(fromAccount: AccountCurrencyLike, toAccount: AccountCurrencyLike) {
   const fromCurrency = normalizeCurrency(fromAccount.currency);
   const toCurrency = normalizeCurrency(toAccount.currency);

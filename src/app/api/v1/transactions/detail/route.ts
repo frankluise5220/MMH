@@ -24,6 +24,10 @@
  * - 资金流水分类保存投资分类树中的动作分类，例如理财买入、理财赎回。
  * - 同一理财账户下同一产品已有份额记录时，继续买入必须提供 fundUnits。
  *
+ * 金额与币种:
+ * - amount 为交易原始币种金额，currency 返回该流水的原始币种。
+ * - 跨账户汇总/侧栏折算应使用账户余额和汇率口径，不得用 detail amount 自行按 1:1 折算。
+ *
  * 接受的实体类型: id/entryId 为 TxRecord.id；businessTransactionId 为 WealthTransaction.id。
  *
  * 认证方式（混合）：
@@ -63,7 +67,7 @@ import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
-import { resolveSameCurrencyTransfer } from "@/lib/currency";
+import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
@@ -80,6 +84,7 @@ import {
   type EntryBusinessType,
 } from "@/lib/server/entry-business-link";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
 export const runtime = "nodejs";
 
@@ -329,12 +334,14 @@ async function resolveWealthProductInTx(
 ) {
   const productId = String(params.productId ?? "").trim();
   const productName = String(params.productName ?? "").trim();
+  const currency = normalizeCurrency(params.currency);
   if (productId) {
     return tx.wealthProduct.findFirst({
       where: {
         id: productId,
         householdId: params.householdId,
         institutionId: params.institutionId ?? null,
+        currency,
         isActive: true,
       },
     });
@@ -345,6 +352,7 @@ async function resolveWealthProductInTx(
       householdId: params.householdId,
       institutionId: params.institutionId ?? null,
       name: productName,
+      currency,
       isActive: true,
     },
   });
@@ -353,10 +361,26 @@ async function resolveWealthProductInTx(
       householdId: params.householdId,
       institutionId: params.institutionId ?? null,
       name: productName,
-      currency: params.currency ?? "CNY",
+      currency,
       annualRate: params.annualRate ?? undefined,
     },
   });
+}
+
+function assertSameWealthCurrency(
+  cashAcc: { name?: string | null; currency?: string | null },
+  wealthAcc: { name?: string | null; currency?: string | null },
+  wealthProduct: { name?: string | null; currency?: string | null },
+) {
+  const cashCurrency = normalizeCurrency(cashAcc.currency);
+  const wealthCurrency = normalizeCurrency(wealthAcc.currency);
+  const productCurrency = normalizeCurrency(wealthProduct.currency);
+  if (cashCurrency !== wealthCurrency) {
+    throw new Error(`理财资金账户与理财账户币种不一致。资金账户是 ${cashCurrency}，理财账户是 ${wealthCurrency}；请先换汇或选择同币种账户。`);
+  }
+  if (productCurrency !== wealthCurrency) {
+    throw new Error(`理财产品币种与理财账户不一致。产品是 ${productCurrency}，理财账户是 ${wealthCurrency}；请先换汇或选择同币种产品。`);
+  }
 }
 
 async function assertWealthUnitsWhenRequiredInTx(
@@ -455,6 +479,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
     if (!isCashIn && !isDividend) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
@@ -661,6 +686,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
     if (!isCashIn && !isDividend) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
@@ -812,6 +838,7 @@ async function loadApiDetailRecord(entryId: string) {
     postedAt: toDateOnlyLocal(entry.postedAt),
     dayOrder: entry.dayOrder,
     amount: toNumber(entry.amount),
+    currency: entry.currency ?? "CNY",
     type: entry.type,
     categoryId: entry.categoryId,
     categoryName: entry.categoryName,
@@ -1149,6 +1176,7 @@ export async function GET(req: Request) {
         postedAt: toDateOnlyLocal(record.postedAt),
         dayOrder: record.dayOrder,
         amount: toNumber(record.amount),
+        currency: record.currency ?? "CNY",
         type: record.type,
         categoryId: record.categoryId,
         categoryName: record.categoryName,
@@ -1223,14 +1251,14 @@ export async function GET(req: Request) {
       prisma.account.findUnique({ where: { id: accountId } }),
       prisma.txRecord.count({
         where: {
-          OR: [{ accountId }, { toAccountId: accountId }],
+          ...txRecordAccountScopeWhere(accountId),
           deletedAt: null,
           ...hidFilter,
         },
       }),
       prisma.txRecord.findMany({
         where: {
-          OR: [{ accountId }, { toAccountId: accountId }],
+          ...txRecordAccountScopeWhere(accountId),
           deletedAt: null,
           ...hidFilter,
         },
@@ -1290,6 +1318,7 @@ export async function GET(req: Request) {
       createdAt: e.createdAt?.toISOString?.() ?? null,
       dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
+      currency: e.currency ?? "CNY",
       runningBalance: runningBalanceById.get(e.id) ?? null,
       type: e.type,
       categoryId: e.categoryId,
@@ -1968,6 +1997,10 @@ export async function POST(req: Request) {
                 : null)
           : null;
         if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+        if (fundProductType === "wealth" && wealthProduct) {
+          if (!cashAcc) throw new Error("请选择理财资金账户");
+          assertSameWealthCurrency(cashAcc, investAcc, wealthProduct);
+        }
 
         const isMetalProduct = fundProductType === "metal";
         const entryFundCode = isMetalProduct ? null : fundCode || null;
@@ -2316,6 +2349,7 @@ export async function POST(req: Request) {
             postedAt: toDateOnlyLocal(created.postedAt),
             dayOrder: created.dayOrder,
             amount: toNumber(created.amount),
+            currency: created.currency ?? "CNY",
             type: created.type,
             categoryId: created.categoryId,
             categoryName: created.categoryName,
@@ -2686,22 +2720,27 @@ export async function PUT(req: Request) {
 
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
+        let cashAccCurrency: string | null = null;
         if (cashAccountIdFormData) {
           const cashAcc = await tx.account.findUnique({ where: { id: cashAccountIdFormData } });
-          if (cashAcc) { cashAccId = cashAcc.id; cashAccName = cashAcc.name; }
+          if (cashAcc) { cashAccId = cashAcc.id; cashAccName = cashAcc.name; cashAccCurrency = cashAcc.currency; }
         }
         if (!cashAccId) {
           if (redeemLike) {
             if (entry.toAccountId) {
               const acc = await tx.account.findUnique({ where: { id: entry.toAccountId } });
-              if (acc) { cashAccId = acc.id; cashAccName = acc.name; }
+              if (acc) { cashAccId = acc.id; cashAccName = acc.name; cashAccCurrency = acc.currency; }
             }
           } else {
             if (entry.accountId && entry.accountId !== investAcc.id) {
               const acc = await tx.account.findUnique({ where: { id: entry.accountId } });
-              if (acc) { cashAccId = acc.id; cashAccName = acc.name; }
+              if (acc) { cashAccId = acc.id; cashAccName = acc.name; cashAccCurrency = acc.currency; }
             }
           }
+        }
+        if (productType === "wealth" && wealthProduct) {
+          if (!cashAccId) throw new Error("请选择理财资金账户");
+          assertSameWealthCurrency({ name: cashAccName, currency: cashAccCurrency }, investAcc, wealthProduct);
         }
 
         let recordAccountId: string;
@@ -3078,6 +3117,7 @@ return;
         postedAt: toDateOnlyLocal(updated.postedAt),
         dayOrder: updated.dayOrder,
         amount: toNumber(updated.amount),
+        currency: updated.currency ?? "CNY",
         type: updated.type,
         categoryId: updated.categoryId,
         categoryName: updated.categoryName,

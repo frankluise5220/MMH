@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 
 type EntryTagTx = {
   tag: Pick<typeof prisma.tag, "findMany">;
@@ -23,9 +24,7 @@ export async function resolveWritableTagIds(
   const tags = await tx.tag.findMany({
     where: {
       id: { in: ids },
-      OR: householdId
-        ? [{ householdId }, { householdId: null }]
-        : [{ householdId: null }],
+      ...readableTagWhere(householdId),
     },
     select: { id: true },
   });

@@ -28,7 +28,7 @@ import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { InitModal } from "../InitModal";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { LanguageSwitcher } from "../LanguageSwitcher";
-import { formatMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
+import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 import {
@@ -57,6 +57,10 @@ type AccountItem = {
   shortLabel?: string;
   hoverTitle?: string;
   balance: number;
+  convertedBalance?: number | null;
+  currency?: string | null;
+  baseCurrency?: string | null;
+  fxRateMissing?: boolean;
   kind: string;
   groupName?: string;
   institution?: string;
@@ -241,7 +245,7 @@ export function SidebarClient({
   initialPreferences,
 }: {
   items: AccountItem[];
-  household: { id: string; name: string } | null;
+  household: { id: string; name: string; baseCurrency?: string | null } | null;
   isRedUp: boolean;
   user: { id: string; name: string; role: string } | null;
   initialPreferences?: {
@@ -560,8 +564,12 @@ export function SidebarClient({
     const rounded = roundDisplayNumber(n);
     return rounded > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : rounded < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
   };
-  const displayBalance = (item: AccountItem) => roundDisplayNumber(item.kind === "bank_credit" ? -item.balance : item.balance);
-  const displaySectionTotal = (kind: string, value: number) => roundDisplayNumber(kind === "信用卡" ? -value : value);
+  const baseCurrency = household?.baseCurrency || "CNY";
+  const displayBalance = (item: AccountItem) => {
+    const value = item.convertedBalance ?? item.balance;
+    return roundDisplayNumber(item.kind === "bank_credit" ? -value : value);
+  };
+  const displaySectionTotal = (_kind: string, value: number) => roundDisplayNumber(value);
   const itemBalanceCls = (item: AccountItem) => balCls(displayBalance(item));
   const sectionBalanceCls = (kind: string, value: number) => balCls(displaySectionTotal(kind, value));
   const sectionLabel = (label: string) => {
@@ -623,6 +631,7 @@ export function SidebarClient({
         ...item,
         children,
         balance: children.reduce((sum, child) => sum + child.balance, 0),
+        convertedBalance: children.reduce((sum, child) => sum + (child.convertedBalance ?? child.balance), 0),
       }];
     });
   }, [items, hideZero, selectedOwnerFilter]);
@@ -692,7 +701,7 @@ export function SidebarClient({
                   key: subgroup.key,
                   label: subgroup.label,
                   accounts,
-                  total: accounts.reduce((sum, account) => sum + account.balance, 0),
+                  total: accounts.reduce((sum, account) => sum + displayBalance(account), 0),
                 };
               }).filter((subgroup) => subgroup.accounts.length > 0);
               const coveredKinds = new Set(ASSET_SUBGROUPS.flatMap((subgroup) => subgroup.kinds));
@@ -702,7 +711,7 @@ export function SidebarClient({
                   key: "other_asset",
                   label: "其他资产",
                   accounts: fallbackAccounts,
-                  total: fallbackAccounts.reduce((sum, account) => sum + account.balance, 0),
+                  total: fallbackAccounts.reduce((sum, account) => sum + displayBalance(account), 0),
                 });
               }
               return subgroupItems;
@@ -710,7 +719,7 @@ export function SidebarClient({
           : [];
       return {
         kind: g.label, label: g.label, accounts: sortAccountsByUsage(filtered),
-        total: filtered.reduce((s, a) => s + a.balance, 0),
+        total: filtered.reduce((s, a) => s + displayBalance(a), 0),
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
@@ -1013,7 +1022,7 @@ export function SidebarClient({
                         </span>
                         <span className="min-w-0 flex-1 truncate">{sectionLabel(sec.label)}</span>
                         <span className={`text-xs font-semibold tabular-nums ${sectionBalanceCls(sec.kind, sec.total)}`}>
-                          {formatMoney(displaySectionTotal(sec.kind, sec.total))}
+                          {formatCurrencyMoney(displaySectionTotal(sec.kind, sec.total), baseCurrency)}
                         </span>
                       </button>
                       <button
@@ -1041,7 +1050,7 @@ export function SidebarClient({
                                 <div className="text-[10px] font-medium text-slate-400">{assetSubgroupLabel(group.label)}</div>
                                 <div className="h-px flex-1 bg-slate-100" />
                                 <div className={`text-[10px] font-medium tabular-nums ${sectionBalanceCls(sec.kind, group.total)}`}>
-                                  {formatMoney(displaySectionTotal(sec.kind, group.total))}
+                                  {formatCurrencyMoney(displaySectionTotal(sec.kind, group.total), baseCurrency)}
                                 </div>
                                 <ChevronDown
                                   size={14}
@@ -1099,7 +1108,7 @@ export function SidebarClient({
                                       : it.label}
                                     </span>
                                   </span>
-                                  <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatMoney(displayBalance(it))}</span>
+                                  <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatCurrencyMoney(displayBalance(it), baseCurrency)}</span>
                                 </Link>
                               );
                             })}

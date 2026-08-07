@@ -162,11 +162,20 @@
 - `/api/v1/business-transactions/integrity` 用于迁移期检查和修复资金流水与独立业务交易表的一致性。`GET` 返回各业务类型的 expected/existing/linked/missing 统计和问题列表；`POST { limit? }` 会复用正式同步逻辑补齐缺失的业务交易和 `EntryBusinessLink`，不直接清空 `TxRecord` 兼容字段。
 - `/api/v1/business-transactions/link-cash-flow` 用于从独立业务交易补建或恢复资金侧流水并建立 `EntryBusinessLink`。`POST { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund", businessTransactionId }`，成功返回 `{ ok:true, data:{ cashEntryId, businessTransactionId } }`；缺少资金账户、业务记录 ID 或不支持的类型时返回 `{ ok:false, error }`。
 - `/api/v1/business-transactions/insurance?accountId=...` 从独立 `InsuranceTransaction` 表读取某个保险账户的业务交易明细，返回 `{ ok:true, data:{ entries } }`。保险页面保存后的刷新应使用该接口，不再通过 `/api/v1/transactions/detail` 筛选 `source=insurance` 作为业务台账来源。
+- `/api/v1/accounts/internal` 返回账户刷新数据时包含当前账簿 `baseCurrency`。当账户币种与 `baseCurrency` 不同时，账户项可包含 `convertedBalance`、`baseCurrency`、`fxRate`、`fxRateDate`、`fxRateMissing`；响应可包含 `totalConvertedBalance` 和 `missingFxCurrencies`。缺少汇率的账户金额不得按 1:1 混入折算合计。
+
+### Currency And FX Rates
+
+- 当前显示币种是账簿级设置，保存在 `Household.baseCurrency`。交易和账户仍保存自己的原始 `currency`。
+- `GET /api/v1/fx-rates?from=JPY,USD&to=CNY&refresh=1` 返回 `{ ok:true, baseCurrency, rates }`。`from` 省略时使用当前账簿启用账户中的币种；`to` 省略时使用账簿当前显示币种；`refresh=1` 会尝试获取缺失汇率并写入缓存。
+- `rates[]` 形如 `{ fromCurrency, toCurrency, rate, rateDate, source, missing }`。`rate` 表示 `1 fromCurrency = rate toCurrency`；`missing=true` 时客户端应提示缺少汇率，不得自行按 1:1 折算。
+- `POST /api/v1/fx-rates` 支持 `{ baseCurrency }` 修改当前显示币种，也支持 `{ fromCurrency, toCurrency?, rate, rateDate?, source? }` 写入手工汇率。手工汇率必须是正数，同币种不需要写入。
 
 ### Transactions
 
 - 普通转账只接受普通资金或信用卡目标账户。目标账户如果是基金/投资、存款或往来款，应按对应业务类型提交投资、存款或往来款交易，不能保存为普通转账。
 - 普通转账只支持同币种账户，并会把账户币种写入交易 `currency`。跨币种转账必须走后续专用的换汇/跨币种流程，不能用一个金额同时代表两边账户。
+- `POST /api/v1/fx-conversions` 创建换汇/购汇交易。Body: `{ date:"YYYY-MM-DD", fromAccountId, toAccountId?, toCurrency?, fromAmount, toAmount, exchangeRate?, feeAmount?, note? }`。`fromAccountId` 必须是借记卡账户；`toAccountId` 可省略，省略时必须传 `toCurrency`，服务端会在换出账户同账簿、同所有人/分组、同机构下复用或自动创建该币种账户。服务端要求两个账户属于同一账簿、账户不同、币种不同、金额为正数；成功后生成两条 `source="fx_conversion"` 的单边 `TxRecord` 并用 `FxConversion` 绑定，返回 `{ ok:true, conversion, entries:{ fromEntry, toEntry } }`。`exchangeRate` 表示 `toCurrency / fromCurrency`，例如 `1000 CNY -> 21500 JPY` 的汇率为 `21.5`。`feeAmount` 仅用于记录手续费信息；实际现金扣减应包含在 `fromAmount` 中。
 - 现金、借记卡或电子钱包账户转入信用卡账户时，存储和显示类型均为 `type = "transfer"`，分类为“信用卡还款”；客户端可用 `accountKind` + `toAccountKind` 校验和补充该分类，不得计入收入或支出。
 - 信用卡与借记卡都支持 `expense | income | advance | transfer` 四种业务输入。`advance` 保存为内部 `transfer`，并写入 `source = "advance"`、往来对象快照和信用卡账期；`amount > 0` 表示资金账户流出并增加应收往来，`amount < 0` 表示往来对象返还、资金账户流入并减少应收往来。普通还款仍按上一条的“信用卡还款”转账规则处理。
 - `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端以转账记录落库并写入“信用卡还款”分类。
@@ -178,6 +187,7 @@
 - 账单导入项可用 `inflow` / `outflow` 表达账户侧方向。原支出的退款、退货、退回或冲正应提交为 `type="expense"`，并把金额放在 `inflow` 中，服务端保存为账户侧流入以抵减原支出分类，而不是保存为收入。
 - 导入账户名称只有“机构 + 账户类型”而没有后四位时，只在该机构下恰好存在一个启用的对应类型账户时自动匹配；存在多个候选时不自动选择。
 - `/api/v1/transactions` 与 `/api/v1/transactions/detail` 的交易项会返回 `accountKind` 和 `toAccountKind`，用于跨客户端判断转账、还款、以及特殊账户目标语义。
+- `/api/v1/transactions/detail` 的交易项返回 `currency`，表示该流水原始币种。客户端明细金额应显示原币种；侧栏、净值和跨账户统计应使用账簿当前显示币种折算口径，不能把缺失汇率的外币金额按 1:1 混入。
 - 交易项中的 `date` 是业务发生日期。支出记录可带 `postedAt` 表示实际入账日期，格式为 `YYYY-MM-DD`；未提供时服务端在新增支出时默认按 `date` 写入，收入、转账和投资记录通常为 `null`。
 - 信用卡邮箱账单导入调用 `/api/v1/statement/import` 时，`mailSource` 可携带 `{ emailAccountId, uid, hash, subject, from, date }`。服务端会用 UID、邮件列表 hash 和解析后的稳定账单指纹阻止重复导入；稳定账单指纹只使用机构、卡号后四位、账单月份/周期，避免分类、备注、明细文本等解析规则变化造成同一账单被当作新账单。
 

@@ -28,6 +28,6 @@ run("npx", ["prisma", "generate", "--schema", nativeSchema], {
 run("npm", ["run", "build"], {
   DATABASE_URL: "file:./native-build.db",
   PRISMA_SCHEMA_PATH: nativeSchema,
-  MMH_DEPLOY_TARGET: "fnos-native",
+  MMH_DEPLOY_TARGET: "fnos",
 });
 run("npx", ["prisma", "generate", "--schema", pgSchema], {});

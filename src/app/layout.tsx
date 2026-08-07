@@ -10,9 +10,9 @@ export const metadata: Metadata = {
   description: "Local-first family finance system",
   manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/branding/mmh-logo-mark.svg",
-    shortcut: "/branding/mmh-logo-mark.svg",
-    apple: "/branding/mmh-logo-mark.preview.png",
+    icon: "/branding/mmh-logo-final.square.png",
+    shortcut: "/branding/mmh-logo-final.square.png",
+    apple: "/branding/mmh-logo-final.square.png",
   },
   appleWebApp: {
     capable: true,

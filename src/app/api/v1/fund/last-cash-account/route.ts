@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
+/**
+ * GET /api/v1/fund/last-cash-account
+ * Query params: accountId=<investment account id>&fundCode=<optional fund code>
+ * Returns the preferred cash account for a new fund transaction, prioritizing
+ * recent buy-side cash accounts for the same fund before generic last-used fallbacks.
+ */
 export async function GET(req: NextRequest) {
   const { hidFilter } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
@@ -18,6 +25,28 @@ export async function GET(req: NextRequest) {
   const where = fundCode
     ? { ...baseWhere, fundCode }
     : baseWhere;
+
+  const preferredBuy = await prisma.txRecord.findFirst({
+    where: {
+      ...hidFilter,
+      AND: [
+        where,
+        {
+          OR: [
+            { fundSubtype: FundSubtype.buy },
+            { fundSubtype: FundSubtype.buy_failed, source: { not: "regular_invest_refund" } },
+            { fundSubtype: FundSubtype.switch_in },
+          ],
+        },
+      ],
+    },
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    select: { accountId: true },
+  });
+
+  if (preferredBuy?.accountId) {
+    return NextResponse.json({ ok: true, cashAccountId: preferredBuy.accountId, source: "recent_buy" });
+  }
 
   const last = await prisma.txRecord.findFirst({
     where: { ...where, ...hidFilter },

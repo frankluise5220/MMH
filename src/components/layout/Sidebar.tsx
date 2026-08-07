@@ -14,6 +14,8 @@ import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { convertCurrencyAmounts } from "@/lib/server/fx-rates";
+import { normalizeCurrency } from "@/lib/currency";
 
 type CurrentCreditCycle = {
   accountId: string;
@@ -38,7 +40,7 @@ async function getSidebarData() {
   const [household, accounts, investBalByAccountId] = await Promise.all([
     prisma.household.findUnique({
       where: { id: householdId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, baseCurrency: true },
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, name: { not: "未指定账户" }, ...hidFilter, isActive: true },
@@ -83,7 +85,8 @@ async function getSidebarData() {
       creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
-  const items = accounts.map((account) => {
+  const baseCurrency = normalizeCurrency(household?.baseCurrency);
+  const rawItems = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
     const balance = isInvest
@@ -115,6 +118,7 @@ async function getSidebarData() {
       shortLabel: display.selectorCoreLabel,
       hoverTitle: display.hoverTitle,
       balance,
+      currency: normalizeCurrency(account.currency),
       kind: account.kind as string,
       groupName: display.groupName || (account.kind === AccountKind.loan ? "" : "未设置所有人"),
       institution: display.institutionName || undefined,
@@ -122,6 +126,22 @@ async function getSidebarData() {
       institutionType: account.Institution?.type ?? null,
       counterpartyId: account.counterpartyId ?? null,
       investProductType: account.investProductType || undefined,
+    };
+  });
+  const conversion = await convertCurrencyAmounts({
+    householdId,
+    toCurrency: baseCurrency,
+    refreshMissing: true,
+    amounts: rawItems.map((item) => ({ amount: item.balance, currency: item.currency })),
+  });
+  const rateByCurrency = new Map(conversion.rates.map((rate) => [rate.fromCurrency, rate]));
+  const items = rawItems.map((item) => {
+    const rate = rateByCurrency.get(item.currency);
+    return {
+      ...item,
+      baseCurrency,
+      convertedBalance: rate?.rate == null ? null : item.balance * rate.rate,
+      fxRateMissing: rate?.missing ?? false,
     };
   });
 

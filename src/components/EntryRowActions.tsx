@@ -12,7 +12,7 @@ export type EditPayload = {
   cashEntryId?: string | null;
   businessTransactionId?: string | null;
   targetEntryId?: string;
-  type: "expense" | "income" | "advance" | "transfer" | "investment";
+  type: "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
   date: string;
   confirmDate?: string;
   postedAt?: string | null;
@@ -24,6 +24,7 @@ export type EditPayload = {
   accountName?: string;
   accountLabel?: string;
   categoryId?: string;
+  categoryName?: string;
   counterpartyInstitutionId?: string;
   fromAccountId?: string;
   fromAccountName?: string;
@@ -73,6 +74,14 @@ export type EditPayload = {
     amount?: number;
   }>;
   tagIds?: string[];
+  tags?: Array<{
+    id?: string;
+    tagId?: string;
+    name?: string | null;
+    label?: string | null;
+    color?: string | null;
+    Tag?: { name?: string | null; color?: string | null } | null;
+  }>;
 };
 
 export function dispatchEntryEdit({

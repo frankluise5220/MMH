@@ -1088,16 +1088,30 @@ export function InvestmentFormModal({
     window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
-  // 赎回时只计算申请日前已确认或已到账的可用份额。
+  // 赎回时按到账日期口径回放赎回日可用份额；编辑当前赎回时排除自身，避免被自身扣减。
   const holdingsAsOfDate = useMemo(() => {
     if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
     const investmentAccountId = (toAccountId || defaultAccountId || "").trim();
+    const excludedEntryIds = new Set<string>();
+    if (mode === "edit" && currentEditEntry) {
+      for (const id of [currentEditEntry.id, currentEditEntry.transactionId]) {
+        const normalized = String(id ?? "").trim();
+        if (normalized) excludedEntryIds.add(normalized);
+      }
+    }
     const seenEntryIds = new Set<string>();
-    const map = new Map<string, number>();
+    const replayRows: Array<{
+      code: string;
+      availableDate: string;
+      date: string;
+      createdAt: string;
+      delta: number;
+    }> = [];
     for (const e of allEntries) {
       if (!e.fundCode) continue;
       if (investmentAccountId && e.accountId !== investmentAccountId && e.toAccountId !== investmentAccountId) continue;
       const entryId = String(e.id ?? "").trim();
+      if (entryId && excludedEntryIds.has(entryId)) continue;
       if (entryId) {
         if (seenEntryIds.has(entryId)) continue;
         seenEntryIds.add(entryId);
@@ -1105,48 +1119,115 @@ export function InvestmentFormModal({
       const sub = e.fundSubtype;
       const availableDate = sub === "buy" || sub === "dividend_reinvest"
         ? (e.fundArrivalDate ?? e.fundConfirmDate ?? e.date)
+        : sub === "redeem" || sub === "switch_out" || (sub === "buy_failed" && e.source === "regular_invest_refund")
+        ? (e.fundArrivalDate ?? e.date)
         : e.date;
       if (availableDate > applyDate) continue;
+      const code = e.fundCode.trim();
+      if (!code) continue;
       let delta = 0;
       if (sub === "buy" || sub === "dividend_reinvest") {
         delta = roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
       } else if (sub === "redeem") {
         delta = -roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
-      } else if (sub === "buy_failed" && e.source === "regular_invest_refund") {
-        delta = -roundFundUnits(e.fundUnits ?? 0, fundUnitsDecimals);
       }
-      map.set(e.fundCode, roundFundUnits((map.get(e.fundCode) ?? 0) + delta, fundUnitsDecimals));
+      replayRows.push({
+        code,
+        availableDate,
+        date: e.date,
+        createdAt: e.createdAt ? String(e.createdAt) : "",
+        delta,
+      });
+    }
+    replayRows.sort((left, right) =>
+      left.availableDate.localeCompare(right.availableDate) ||
+      left.date.localeCompare(right.date) ||
+      left.createdAt.localeCompare(right.createdAt)
+    );
+    const map = new Map<string, number>();
+    for (const row of replayRows) {
+      const nextUnits = roundFundUnits((map.get(row.code) ?? 0) + row.delta, fundUnitsDecimals);
+      map.set(row.code, Math.max(0, nextUnits));
     }
     return map;
-  }, [allEntries, applyDate, defaultAccountId, fundUnitsDecimals, subtype, toAccountId]);
+  }, [allEntries, applyDate, currentEditEntry, defaultAccountId, fundUnitsDecimals, mode, subtype, toAccountId]);
 
-  const effectiveHoldings = useMemo(() => {
-    if (!holdings) return undefined;
-    if (!holdingsAsOfDate) return holdings;
-    // 赎回模式保留全部持仓选项，份额为 0 的历史数据也允许手动补录。
-    return holdings.map(h => ({
-      ...h,
-      units: holdingsAsOfDate.has(h.fundCode) ? holdingsAsOfDate.get(h.fundCode)! : 0,
-    }));
-  }, [holdings, holdingsAsOfDate]);
-
-  const isFundRedeemCreate =
-    mode === "create" &&
+  const isFundRedeemAsOfMode =
     isRedeemLike(subtype) &&
     (productType === "fund" || productType === "money");
 
+  const holdingUnitsByFund = useMemo(() => {
+    return new Map((holdings ?? []).map((holding) => [
+      holding.fundCode,
+      roundFundUnits(holding.units ?? 0, fundUnitsDecimals),
+    ]));
+  }, [fundUnitsDecimals, holdings]);
+
+  const redeemAvailableUnitsByFund = useMemo(() => {
+    if (!holdingsAsOfDate) return null;
+    const adjusted = new Map(holdingsAsOfDate);
+    if (mode === "edit" && currentEditEntry && isRedeemLike(subtype)) {
+      const originalCode = String(currentEditEntry.fundCode ?? "").trim();
+      const originalDate = normalizeYmd(currentEditEntry.date);
+      const savedUnits = roundFundUnits(
+        Math.abs(Number(currentEditEntry.displayFundUnits ?? currentEditEntry.fundUnits ?? 0)),
+        fundUnitsDecimals,
+      );
+      if (originalCode && originalDate === applyDate && savedUnits > 0) {
+        adjusted.set(originalCode, Math.max(adjusted.get(originalCode) ?? 0, savedUnits));
+      }
+    }
+    return adjusted;
+  }, [applyDate, currentEditEntry, fundUnitsDecimals, holdingsAsOfDate, mode, subtype]);
+
+  const effectiveHoldings = useMemo(() => {
+    if (!holdings) return undefined;
+    if (!redeemAvailableUnitsByFund) return holdings;
+    // 赎回模式优先用赎回日可用份额；日期回放异常但当前仍持仓时，保留当前持仓份额供手动修正。
+    return holdings.map(h => ({
+      ...h,
+      units: (redeemAvailableUnitsByFund.get(h.fundCode) ?? 0) > 0.0001
+        ? redeemAvailableUnitsByFund.get(h.fundCode)!
+        : (holdingUnitsByFund.get(h.fundCode) ?? 0),
+    }));
+  }, [holdingUnitsByFund, holdings, redeemAvailableUnitsByFund]);
+
   const redeemFundOptions = useMemo<SmartSelectOption[]>(() => {
-    if (!isFundRedeemCreate || !holdingsAsOfDate) return [];
+    if (!isFundRedeemAsOfMode || !redeemAvailableUnitsByFund) return [];
     const names = new Map((holdings ?? []).map((holding) => [holding.fundCode, holding.name]));
-    return Array.from(holdingsAsOfDate.entries())
-      .filter(([, availableUnits]) => availableUnits > 0.0001)
-      .map(([code, availableUnits]) => ({
-        id: code,
-        label: names.get(code)?.trim() || code,
-        subLabel: `${code} · 剩余 ${formatFundUnitsValue(availableUnits, fundUnitsDecimals)} 份`,
-      }))
+    if (fundCode.trim() && fundName.trim() && !names.has(fundCode.trim())) {
+      names.set(fundCode.trim(), fundName.trim());
+    }
+    const optionCodes = new Set([
+      ...Array.from(redeemAvailableUnitsByFund.keys()),
+      ...Array.from(holdingUnitsByFund.keys()),
+      ...(fundCode.trim() ? [fundCode.trim()] : []),
+    ]);
+    return Array.from(optionCodes)
+      .map((code) => {
+        const availableUnits = redeemAvailableUnitsByFund.get(code) ?? 0;
+        const currentUnits = holdingUnitsByFund.get(code) ?? 0;
+        return {
+          code,
+          availableUnits,
+          currentUnits,
+          visible: availableUnits > 0.0001 || currentUnits > 0.0001 || code === fundCode.trim(),
+        };
+      })
+      .filter((item) => item.visible)
+      .map(({ code, availableUnits, currentUnits }) => {
+        const displayAvailable = Math.max(0, availableUnits);
+        const currentText = currentUnits > displayAvailable + 0.0001
+          ? ` · 当前 ${formatFundUnitsValue(currentUnits, fundUnitsDecimals)} 份`
+          : "";
+        return {
+          id: code,
+          label: names.get(code)?.trim() || code,
+          subLabel: `${code} · 日期剩余 ${formatFundUnitsValue(displayAvailable, fundUnitsDecimals)} 份${currentText}`,
+        };
+      })
       .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
-  }, [fundUnitsDecimals, holdings, holdingsAsOfDate, isFundRedeemCreate]);
+  }, [fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundRedeemAsOfMode, redeemAvailableUnitsByFund]);
 
   function selectRedeemFund(code: string) {
     const nextCode = code.trim();
@@ -1159,9 +1240,10 @@ export function InvestmentFormModal({
       return;
     }
     const holding = holdings?.find((item) => item.fundCode === nextCode);
-    const availableUnits = holdingsAsOfDate?.get(nextCode) ?? 0;
+    const availableUnits = redeemAvailableUnitsByFund?.get(nextCode) ?? 0;
+    const currentUnits = holdingUnitsByFund.get(nextCode) ?? 0;
     setFundName(holding?.name ?? "");
-    setUnits(availableUnits > 0 ? formatUnits(availableUnits) : "");
+    setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : currentUnits > 0.0001 ? formatUnits(currentUnits) : "");
   }
 
   function findFundNameFromHoldings(code: string) {
@@ -1582,14 +1664,17 @@ export function InvestmentFormModal({
     }
   }
 
-  // 新建基金赎回按申请日限定基金和份额；其他模式保留原有联动。
+  // 基金赎回按赎回日限定基金和份额；编辑打开时保留已保存份额，避免无意改成全额赎回。
   useEffect(() => {
-    if (isFundRedeemCreate) {
-      if (!holdingsAsOfDate || !fundCode) return;
-      const availableUnits = holdingsAsOfDate.get(fundCode) ?? 0;
+    if (isFundRedeemAsOfMode) {
+      if (!redeemAvailableUnitsByFund || !fundCode) return;
+      const availableUnits = redeemAvailableUnitsByFund.get(fundCode) ?? 0;
+      const currentUnits = holdingUnitsByFund.get(fundCode) ?? 0;
+      const selectableUnits = availableUnits > 0.0001 ? availableUnits : currentUnits;
+      if (mode !== "create") return;
       unitsEditedRef.current = false;
-      if (availableUnits > 0.0001) {
-        setUnits(formatUnits(availableUnits));
+      if (selectableUnits > 0.0001) {
+        setUnits(formatUnits(selectableUnits));
       } else {
         changeFundCode("");
         setFundName("");
@@ -1601,7 +1686,7 @@ export function InvestmentFormModal({
     if (!isRedeemLike(subtype) || unitsEditedRef.current || !fundCode || !effectiveHoldings) return;
     const h = effectiveHoldings.find(p => p.fundCode === fundCode);
     if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
-  }, [applyDate, effectiveHoldings, fundCode, holdingsAsOfDate, isFundRedeemCreate, subtype]);
+  }, [applyDate, effectiveHoldings, fundCode, holdingUnitsByFund, isFundRedeemAsOfMode, mode, redeemAvailableUnitsByFund, subtype]);
 
   useEffect(() => {
     const code = fundCode.trim();
@@ -1833,18 +1918,20 @@ export function InvestmentFormModal({
     const finalFundCode = productType === "metal" ? "" : fundCode.trim();
     const finalFundName = productType === "metal" ? "" : fundName.trim();
 
-    if (isFundRedeemCreate) {
-      const availableUnits = holdingsAsOfDate?.get(finalFundCode) ?? 0;
-      if (!finalFundCode || availableUnits <= 0.0001) {
-        window.alert("请选择赎回日期仍有持仓的基金");
+    if (isFundRedeemAsOfMode && (mode === "create" || redeemAvailableUnitsByFund)) {
+      const availableUnits = redeemAvailableUnitsByFund?.get(finalFundCode) ?? 0;
+      const currentUnits = holdingUnitsByFund.get(finalFundCode) ?? 0;
+      const redeemLimitUnits = availableUnits > 0.0001 ? availableUnits : currentUnits;
+      if (!finalFundCode || redeemLimitUnits <= 0.0001) {
+        window.alert("请选择赎回日期或当前仍有持仓的基金");
         return;
       }
       if (p(units) <= 0) {
         window.alert("赎回份额必须大于 0");
         return;
       }
-      if (p(units) > availableUnits + 0.0001) {
-        window.alert(`赎回份额不能超过该日期的可用份额（${formatUnits(availableUnits)}）`);
+      if (p(units) > redeemLimitUnits + 0.0001) {
+        window.alert(`赎回份额不能超过该日期/当前可用份额（${formatUnits(redeemLimitUnits)}）`);
         return;
       }
     }
@@ -2343,7 +2430,7 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  {productType === "metal" ? renderMetalFields() : isFundRedeemCreate ? (
+                  {productType === "metal" ? renderMetalFields() : isFundRedeemAsOfMode && redeemAvailableUnitsByFund ? (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">基金</div>
                       <SmartSelect

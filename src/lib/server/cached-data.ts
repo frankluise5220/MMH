@@ -19,6 +19,8 @@ import {
   loadPreciousMetalTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 
 // ── 类型 ──
 
@@ -42,7 +44,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
     prisma.tag.findMany({
-      where: { ...hidFilter },
+      where: readableTagWhere(hidFilter.householdId),
       orderBy: { name: "asc" },
     }),
     prisma.accountGroup.findMany({
@@ -89,7 +91,7 @@ async function _loadEntriesForAccount(
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
   const hid = { householdId: hidFilter.householdId };
   const where = {
-    OR: [{ accountId }, { toAccountId: accountId }],
+    ...txRecordAccountScopeWhere(accountId),
     deletedAt: null,
     ...hid,
   };

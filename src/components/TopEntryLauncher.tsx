@@ -8,6 +8,7 @@ export function TopEntryLauncher({
   defaultAction?:
     | "transaction"
     | "transfer"
+    | "fx"
     | "investment"
     | "wealth"
     | "deposit-buy"
@@ -22,6 +23,7 @@ export function TopEntryLauncher({
       actions={[
         { key: "transaction", label: "收支记账" },
         { key: "transfer", label: "转账" },
+        { key: "fx", label: "购入外汇" },
         { key: "investment", label: "开放式基金 / 货币基金" },
         { key: "wealth", label: "银行理财" },
         { key: "deposit-buy", label: "存款存入" },

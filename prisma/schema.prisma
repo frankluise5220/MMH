@@ -75,6 +75,8 @@ model Account {
   PreciousMetalTransactionCashAccount                        PreciousMetalTransaction[]  @relation("PreciousMetalTransaction_cashAccount")
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[]         @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[]         @relation("RegularInvestPlan_cashAccountIdToAccount")
+  FxConversionFromAccount                                    FxConversion[]              @relation("FxConversion_fromAccount")
+  FxConversionToAccount                                      FxConversion[]              @relation("FxConversion_toAccount")
   transactions_accountIdToAccount                            TxRecord[]                  @relation("transactions_accountIdToAccount")
   transactions_toAccountIdToAccount                          TxRecord[]                  @relation("transactions_toAccountIdToAccount")
 
@@ -614,6 +616,7 @@ model EntryBusinessLink {
 model Household {
   id                        String                      @id @default(cuid())
   name                      String
+  baseCurrency              String                      @default("CNY")
   createdAt                 DateTime                    @default(now())
   updatedAt                 DateTime                    @default(now()) @updatedAt
   Account                   Account[]
@@ -638,10 +641,30 @@ model Household {
   PreciousMetalHolding      PreciousMetalHolding[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
+  FxConversion              FxConversion[]
+  FxRate                    FxRate[]
   Tag                       Tag[]
   User                      User[]
   WealthProduct             WealthProduct[]
   transactions              TxRecord[]
+}
+
+model FxRate {
+  id            String   @id @default(cuid())
+  householdId   String?
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal  @db.Decimal(20, 8)
+  rateDate      DateTime
+  source        String   @default("manual")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  Household Household? @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, baseCurrency, quoteCurrency, rateDate])
+  @@index([baseCurrency, quoteCurrency, rateDate])
+  @@index([householdId, rateDate])
 }
 
 model Counterparty {
@@ -1103,6 +1126,8 @@ model TxRecord {
   CreditCardInstallmentSource CreditCardInstallmentPlan[] @relation("CreditCardInstallmentSource")
   EntryBusinessLinkCash       EntryBusinessLink[]         @relation("EntryBusinessLink_cashEntry")
   EntryBusinessLinkBusiness   EntryBusinessLink[]         @relation("EntryBusinessLink_businessEntry")
+  FxConversionFromEntry       FxConversion?               @relation("FxConversion_fromEntry")
+  FxConversionToEntry         FxConversion?               @relation("FxConversion_toEntry")
 
   @@index([accountId, date])
   @@index([accountId, date, dayOrder])
@@ -1121,6 +1146,36 @@ model TxRecord {
   @@index([toAccountId, fundProductType])
   @@index([type])
   @@map("transactions")
+}
+
+model FxConversion {
+  id            String   @id @default(cuid())
+  date          DateTime
+  householdId   String
+  fromEntryId   String   @unique
+  toEntryId     String   @unique
+  fromAccountId String
+  toAccountId   String
+  fromCurrency  String
+  toCurrency    String
+  fromAmount    Decimal  @db.Decimal(18, 2)
+  toAmount      Decimal  @db.Decimal(18, 2)
+  exchangeRate  Decimal  @db.Decimal(20, 8)
+  feeAmount     Decimal? @db.Decimal(18, 2)
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  Household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  FromAccount Account   @relation("FxConversion_fromAccount", fields: [fromAccountId], references: [id], onDelete: Cascade)
+  ToAccount   Account   @relation("FxConversion_toAccount", fields: [toAccountId], references: [id], onDelete: Cascade)
+  FromEntry   TxRecord  @relation("FxConversion_fromEntry", fields: [fromEntryId], references: [id], onDelete: Cascade)
+  ToEntry     TxRecord  @relation("FxConversion_toEntry", fields: [toEntryId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, date])
+  @@index([fromAccountId, date])
+  @@index([toAccountId, date])
+  @@index([fromCurrency, toCurrency])
 }
 
 model UndoOperation {

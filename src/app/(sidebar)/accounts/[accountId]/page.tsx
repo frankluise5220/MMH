@@ -9,6 +9,7 @@ import { formatDateLocal, toNumber } from "@/lib/date-utils";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +58,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
       where: {
         deletedAt: null,
         ...hidFilter,
-        OR: [{ accountId }, { toAccountId: accountId }],
+        ...txRecordAccountScopeWhere(accountId),
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       take: 200,
