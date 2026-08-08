@@ -101,6 +101,7 @@ export type AdvancedDataTableProps<T> = {
   onRowReorder?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => void | Promise<void>;
   selectable?: boolean;
   selectOnRowClick?: boolean;
+  selectAllScope?: "allRows" | "renderedRows";
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
   batchActions?: AdvancedDataTableBatchAction[];
@@ -235,6 +236,7 @@ export function AdvancedDataTable<T>({
   onRowReorder,
   selectable = false,
   selectOnRowClick = false,
+  selectAllScope = "allRows",
   selectedKeys,
   onSelectionChange,
   batchActions = [],
@@ -533,6 +535,12 @@ export function AdvancedDataTable<T>({
         virtualRow,
       })).filter((entry): entry is { item: RowItem<T>; displayIndex: number; virtualRow: (typeof virtualRows)[number] } => !!entry.item)
     : displayRowItems.map((item, displayIndex) => ({ item, displayIndex, virtualRow: null }));
+  const selectableRowKeys = useMemo(
+    () => selectAllScope === "renderedRows"
+      ? renderedRowItems.map(({ item }) => item.key)
+      : allRowKeys,
+    [allRowKeys, renderedRowItems, selectAllScope],
+  );
   const virtualPaddingTop = shouldVirtualizeRows ? virtualRows[0]?.start ?? 0 : 0;
   const virtualPaddingBottom = shouldVirtualizeRows
     ? Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0))
@@ -658,7 +666,12 @@ export function AdvancedDataTable<T>({
   }
 
   function toggleAllRows(checked: boolean) {
-    setSelection(checked ? new Set(allRowKeys) : new Set());
+    const next = new Set(effectiveSelectedKeys);
+    for (const key of selectableRowKeys) {
+      if (checked) next.add(key);
+      else next.delete(key);
+    }
+    setSelection(next);
   }
 
   function toggleRow(key: string, checked: boolean) {
@@ -884,7 +897,8 @@ export function AdvancedDataTable<T>({
   }, [draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, updateGlobalDragTarget]);
 
   const selectedCount = effectiveSelectedKeys.size;
-  const allSelected = allRowKeys.length > 0 && allRowKeys.every((key) => effectiveSelectedKeys.has(key));
+  const allSelected = selectableRowKeys.length > 0 && selectableRowKeys.every((key) => effectiveSelectedKeys.has(key));
+  const partiallySelected = !allSelected && selectableRowKeys.some((key) => effectiveSelectedKeys.has(key));
   const hasAnyFilters = showFilters && Object.values(filters).some((values) => (values?.length ?? 0) > 0);
   const headerPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const cellPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
@@ -998,7 +1012,16 @@ export function AdvancedDataTable<T>({
               {(selectable || draggableRows) ? (
                 <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
                   {selectable ? (
-                    <input type="checkbox" checked={allSelected} onChange={(event) => toggleAllRows(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectAll")} />
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(input) => {
+                        if (input) input.indeterminate = partiallySelected;
+                      }}
+                      onChange={(event) => toggleAllRows(event.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-slate-300"
+                      aria-label={t("table.selectAll")}
+                    />
                   ) : null}
                 </th>
               ) : null}

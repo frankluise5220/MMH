@@ -1383,6 +1383,7 @@ export function DetailViewClient({
       emptyText={emptyText === "暂无记录" ? t("detail.empty") : emptyText}
       selectable
       selectOnRowClick
+      selectAllScope="renderedRows"
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
       onRowDoubleClick={(entry) => {
