@@ -42,6 +42,7 @@ import { AddNavButton } from "@/components/AddNavButton";
 import { DateStepper } from "@/components/DateStepper";
 
 import { TableColumnFilter } from "@/components/TableColumnFilter";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 
 
 
@@ -625,7 +626,7 @@ export function FundShell(props: Props) {
 
   const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
 
-  const formatFundUnits = (value: number) => value.toFixed(fundUnitsDecimals);
+  const formatFundUnits = useCallback((value: number) => value.toFixed(fundUnitsDecimals), [fundUnitsDecimals]);
   const accountProductType = selectedAccount?.investProductType ?? null;
   const isMetalAccount = accountProductType === "metal";
   const isWealthAccount = accountProductType === "wealth";
@@ -817,7 +818,8 @@ export function FundShell(props: Props) {
 
   const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
 
-  const pnl = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
+  const pnl = useCallback((n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600", [downCls, upCls]);
+  const positionDefaultSort = useMemo(() => ({ key: "marketValue", direction: "desc" as const }), []);
 
   useEffect(() => {
     try {
@@ -929,10 +931,6 @@ export function FundShell(props: Props) {
     return { tableWidth: targetWidth, colWidths };
   }, [colWidth]);
 
-  const positionLayout = useMemo(
-    () => tableLayout("positions", positionCols, minFundTableWidth("positions", positionCols), tableViewportWidths.summary),
-    [positionCols, tableLayout, tableViewportWidths.summary],
-  );
   const clearedLayout = useMemo(
     () => tableLayout("cleared", CLEARED_COLS, 820, tableViewportWidths.summary),
     [tableLayout, tableViewportWidths.summary],
@@ -1330,7 +1328,7 @@ export function FundShell(props: Props) {
 
 
 
-  function switchFund(code: string) {
+  const switchFund = useCallback((code: string) => {
     if (!code) return;
 
     setFundCode(code);
@@ -1352,7 +1350,7 @@ export function FundShell(props: Props) {
 
     window.history.replaceState(null, "", `/?${q.toString()}`);
 
-  }
+  }, [baseQuery, isWealthAccount, showCleared, view]);
 
   function toggleAllWealthEntries() {
     if (!isWealthAccount) return;
@@ -1820,6 +1818,324 @@ export function FundShell(props: Props) {
 
   }, [baseQuery, view, showCleared, fundCode, fundChartOpen, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
 
+
+  const positionDisplayMetrics = useCallback((p: any) => {
+    const adj = adjustedNavByCode[p.fundCode];
+    const displayNav = adj ? adj.nav : p.nav;
+    const displayNavDate = adj ? adj.date : p.navDate;
+    const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
+    const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
+    const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
+    return { displayNav, displayNavDate, displayMV, displayPnL, displayPnLRate };
+  }, [adjustedNavByCode]);
+
+  const renderPositionActions = useCallback((p: any) => {
+    const positionKey = positionAssetKey(p);
+    const active = positionKey === fundCode;
+    const plan = regularPlanByFundCode.get(p.fundCode);
+    const menuOpen = plan ? regularPlanMenu?.id === plan.id : false;
+    return (
+      <div
+        data-row-double-click-ignore
+        className="flex items-center justify-end gap-0.5"
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {plan ? (
+          <div className="relative">
+            <button
+              type="button"
+              disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setRegularPlanMenu(menuOpen ? null : plan);
+              }}
+              className={`relative inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
+                plan.status === "paused"
+                  ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+                  : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
+              }`}
+              title={plan.status === "paused" ? "当前已暂停，点击选择继续或编辑" : "当前执行中，点击选择暂停或编辑"}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >
+              <CalendarSync className="h-3 w-3" />
+              {plan.status === "paused" ? (
+                <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
+                  <span className="h-1 w-[1px] rounded-full bg-white" />
+                  <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
+                </span>
+              ) : (
+                <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
+                  <span className="ml-px h-0 w-0 border-y-[1.5px] border-l-[2.5px] border-y-transparent border-l-white" />
+                </span>
+              )}
+            </button>
+            {menuOpen ? (
+              <div
+                className="absolute right-0 top-7 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                role="menu"
+                onClick={(event) => event.stopPropagation()}
+              >
+                {plan.status === "active" ? (
+                  <button
+                    type="button"
+                    disabled={regularPlanActionBusy}
+                    onClick={() => updateRegularPlanStatus(plan, "pause")}
+                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                    role="menuitem"
+                  >
+                    <Pause className="h-3.5 w-3.5" />暂停
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={regularPlanActionBusy}
+                    onClick={() => updateRegularPlanStatus(plan, "resume")}
+                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                    role="menuitem"
+                  >
+                    <Play className="h-3.5 w-3.5" />继续
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingRegularPlan(plan);
+                    setRegularPlanMenu(null);
+                  }}
+                  className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
+                  role="menuitem"
+                >
+                  <CalendarSync className="h-3.5 w-3.5" />编辑
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {!isMetalAccount && !isWealthAccount ? (
+          <>
+            <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                switchFund(positionKey || p.fundCode);
+                setFundChartOpen(true);
+              }}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                active && fundChartOpen
+                  ? "border-blue-300 bg-blue-50 text-blue-700"
+                  : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+              }`}
+              title="查看基金曲线图"
+              aria-label="查看基金曲线图"
+            >
+              <ChartLine className="h-3 w-3" />
+            </button>
+          </>
+        ) : null}
+      </div>
+    );
+  }, [
+    accountId,
+    fundChartOpen,
+    fundCode,
+    isMetalAccount,
+    isWealthAccount,
+    positionAssetKey,
+    regularPlanActionBusy,
+    regularPlanBusyId,
+    regularPlanByFundCode,
+    regularPlanMenu,
+    switchFund,
+    updateRegularPlanStatus,
+  ]);
+
+  const positionAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
+    const columns: AdvancedDataTableColumn<any>[] = [
+      {
+        key: "fund",
+        label: assetNameLabel,
+        width: colWidth("positions", "fund", 260),
+        minWidth: minFundColWidth("positions", "fund"),
+        headerClassName: "text-left",
+        className: "px-4",
+        sortValue: (p) => String(isWealthAccount ? p.name ?? "" : p.fundCode ?? p.name ?? ""),
+        render: (p) => {
+          const positionKey = positionAssetKey(p);
+          const active = positionKey === fundCode;
+          const { displayPnL } = positionDisplayMetrics(p);
+          return (
+            <span
+              className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
+              title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}
+            >
+              {p.name}
+              {!isWealthAccount && p.fundCode !== p.name ? <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span> : null}
+            </span>
+          );
+        },
+      },
+      ...(isWealthAccount ? [{
+        key: "holdingDate",
+        label: "持仓日期",
+        width: colWidth("positions", "holdingDate", 96),
+        minWidth: minFundColWidth("positions", "holdingDate"),
+        headerClassName: "text-left",
+        className: "text-left tabular-nums text-slate-600",
+        sortValue: (p: any) => String(p.holdingDate ?? ""),
+        render: (p: any) => p.holdingDate || "-",
+      } satisfies AdvancedDataTableColumn<any>] : []),
+      {
+        key: "units",
+        label: isMetalAccount ? "数量" : "份额",
+        width: colWidth("positions", "units", 92),
+        minWidth: minFundColWidth("positions", "units"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => isWealthAccount && !p.hasUnits ? null : toNumber(p.units),
+        render: (p) => isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : formatFundUnits(p.units),
+      },
+      {
+        key: "avgCost",
+        label: "均价",
+        width: colWidth("positions", "avgCost", 84),
+        minWidth: minFundColWidth("positions", "avgCost"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => isWealthAccount && !p.hasUnits ? null : toNumber(p.avgCost),
+        render: (p) => isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : toNumber(p.avgCost).toFixed(4),
+      },
+      {
+        key: "nav",
+        label: navColumnLabel,
+        width: colWidth("positions", "nav", 136),
+        minWidth: minFundColWidth("positions", "nav"),
+        align: "right",
+        className: "overflow-hidden tabular-nums",
+        sortValue: (p) => positionDisplayMetrics(p).displayNav,
+        render: (p) => {
+          const { displayNav, displayNavDate } = positionDisplayMetrics(p);
+          return (
+            <div className="flex min-w-0 items-center justify-end gap-0.5">
+              <span className="min-w-0 truncate">
+                {displayNav != null ? toNumber(displayNav).toFixed(4) : "-"}
+                {displayNavDate ? <span className="ml-0.5 text-slate-400">({displayNavDate})</span> : null}
+              </span>
+            </div>
+          );
+        },
+      },
+      {
+        key: "cost",
+        label: "持仓成本",
+        width: colWidth("positions", "cost", 112),
+        minWidth: minFundColWidth("positions", "cost"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => toNumber(p.cost),
+        render: (p) => formatMoney(p.cost),
+      },
+      {
+        key: "marketValue",
+        label: "市值",
+        width: colWidth("positions", "marketValue", 112),
+        minWidth: minFundColWidth("positions", "marketValue"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => positionDisplayMetrics(p).displayMV,
+        render: (p) => {
+          const { displayMV } = positionDisplayMetrics(p);
+          return <span className={pnl(displayMV)}>{formatMoney(displayMV)}</span>;
+        },
+      },
+      {
+        key: "pending",
+        label: "未确认金额",
+        width: colWidth("positions", "pending", 78),
+        minWidth: minFundColWidth("positions", "pending"),
+        align: "right",
+        className: "text-[11px] tabular-nums",
+        sortValue: (p) => toNumber(p.pendingCost),
+        render: (p) => toNumber(p.pendingCost) > 0 ? <span className="font-medium text-amber-600">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>,
+      },
+      {
+        key: "floatingPnL",
+        label: "浮盈",
+        width: colWidth("positions", "floatingPnL", 104),
+        minWidth: minFundColWidth("positions", "floatingPnL"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => positionDisplayMetrics(p).displayPnL,
+        render: (p) => {
+          const { displayPnL } = positionDisplayMetrics(p);
+          return <span className={pnl(displayPnL)}>{formatMoney(displayPnL)}</span>;
+        },
+      },
+      {
+        key: "floatingRate",
+        label: "浮盈率",
+        width: colWidth("positions", "floatingRate", 84),
+        minWidth: minFundColWidth("positions", "floatingRate"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => positionDisplayMetrics(p).displayPnLRate,
+        render: (p) => {
+          const { displayPnLRate } = positionDisplayMetrics(p);
+          return <span className={pnl(displayPnLRate)}>{displayPnLRate.toFixed(2)}%</span>;
+        },
+      },
+      {
+        key: "historical",
+        label: "历史收益",
+        width: colWidth("positions", "historical", 108),
+        minWidth: minFundColWidth("positions", "historical"),
+        align: "right",
+        className: "tabular-nums",
+        sortValue: (p) => toNumber(p.historicalProfit),
+        render: (p) => <span className={pnl(toNumber(p.historicalProfit))}>{formatMoney(p.historicalProfit)}</span>,
+      },
+      {
+        key: "actions",
+        label: "",
+        width: colWidth("positions", "actions", 112),
+        minWidth: minFundColWidth("positions", "actions"),
+        align: "right",
+        render: renderPositionActions,
+      },
+    ];
+    return columns;
+  }, [
+    assetNameLabel,
+    colWidth,
+    formatFundUnits,
+    fundCode,
+    isMetalAccount,
+    isWealthAccount,
+    navColumnLabel,
+    pnl,
+    positionAssetKey,
+    positionDisplayMetrics,
+    renderPositionActions,
+  ]);
+
+  const positionSummaryRow = useMemo(() => {
+    if (d.positions.length === 0) return undefined;
+    const floatingProfit = d.totalMarketValue - d.totalCost;
+    return {
+      cells: {
+        fund: "汇总",
+        cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
+        marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
+        floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
+        floatingRate: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{d.totalCost !== 0 ? `${((floatingProfit / d.totalCost) * 100).toFixed(2)}%` : "-"}</span>,
+        historical: <span className={`tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</span>,
+      },
+    };
+  }, [d.positions.length, d.totalCost, d.totalHistoricalProfit, d.totalMarketValue, pnl]);
 
 
   const cashAccountInfoOf = (e: any) => {
@@ -2526,289 +2842,35 @@ export function FundShell(props: Props) {
             )}
           </div>
 
-          <div className="hidden h-full overflow-x-auto overflow-y-auto md:block">
+          <div className="hidden h-full md:block">
 
           {!showCleared ? (
 
-            <table
-              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-              style={{ minWidth: minFundTableWidth("positions", positionCols), width: positionLayout.tableWidth }}
-            >
-              <colgroup>
-                {positionCols.map(([key, fallback]) => (
-                  <col key={key} style={{ width: positionLayout.colWidths[key] ?? colWidth("positions", key, fallback) }} />
-                ))}
-              </colgroup>
+            <AdvancedDataTable
+              storageKey={`mmh_fund_shell_positions_advanced_v1:${isWealthAccount ? "wealth" : isMetalAccount ? "metal" : "fund"}`}
+              columns={positionAdvancedColumns}
+              rows={d.positions}
+              rowKey={(p, index) => positionAssetKey(p) || p.fundCode || String(index)}
+              emptyText="暂无持仓数据"
+              minTableWidth={minFundTableWidth("positions", positionCols)}
+              rowClassName={(p) => {
+                const positionKey = positionAssetKey(p);
+                const active = positionKey === fundCode;
+                return `cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
+              }}
+              onRowClick={(p) => switchFund(positionAssetKey(p))}
+              onRowDoubleClick={(p) => {
+                if (!isWealthAccount) openPositionEntryModal(p);
+              }}
+              showFilters={false}
+              fillHeight
+              compactRows
+              toolbarMode="none"
+              draggableRows={false}
+              defaultSort={positionDefaultSort}
+              summaryRow={positionSummaryRow}
+            />
 
-              <thead className="sticky top-0 z-10 bg-white">
-
-                <tr>
-
-                  <SortHead sk="fundCode" label={assetNameLabel} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" table="positions" colKey="fund" width={colWidth("positions", "fund", 260)} minWidth={160} />
-
-                  {isWealthAccount ? (
-                    <SortHead sk="holdingDate" label="持仓日期" cls="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="holdingDate" width={colWidth("positions", "holdingDate", 96)} minWidth={78} />
-                  ) : null}
-
-                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    {isMetalAccount ? "数量" : "份额"}
-                    <ResizeGrip table="positions" colKey="units" width={colWidth("positions", "units", 92)} minWidth={64} />
-                  </th>
-
-                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    均价
-                    <ResizeGrip table="positions" colKey="avgCost" width={colWidth("positions", "avgCost", 84)} minWidth={76} />
-                  </th>
-
-                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    {navColumnLabel}
-                    <ResizeGrip table="positions" colKey="nav" width={colWidth("positions", "nav", 136)} minWidth={118} />
-                  </th>
-
-                  <SortHead sk="cost" label="持仓成本" cls="text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200" table="positions" colKey="cost" width={colWidth("positions", "cost", 112)} minWidth={78} />
-
-                  <SortHead sk="marketValue" label="市值" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="marketValue" width={colWidth("positions", "marketValue", 112)} minWidth={78} />
-
-                  <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    未确认金额
-                    <ResizeGrip table="positions" colKey="pending" width={colWidth("positions", "pending", 78)} minWidth={58} />
-                  </th>
-
-                  <SortHead sk="floatingPnL" label="浮盈" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="floatingPnL" width={colWidth("positions", "floatingPnL", 104)} minWidth={76} />
-
-                  <SortHead sk="floatingPnLRate" label="浮盈率" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="floatingRate" width={colWidth("positions", "floatingRate", 84)} minWidth={64} />
-
-                  <SortHead sk="historicalProfit" label="历史收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" table="positions" colKey="historical" width={colWidth("positions", "historical", 108)} minWidth={78} />
-
-                  <th className="relative select-none text-center text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                    <span className="sr-only">Action buttons</span>
-                    <ResizeGrip table="positions" colKey="actions" width={colWidth("positions", "actions", 112)} minWidth={88} />
-                  </th>
-
-                </tr>
-
-              </thead>
-
-              <tbody className="text-sm">
-
-                {sortedPositions.length === 0 ? (
-
-                  <tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={positionCols.length}>暂无持仓数据</td></tr>
-
-                ) : sortedPositions.map((p: any) => {
-
-                  const positionKey = positionAssetKey(p);
-
-                  const active = positionKey === fundCode;
-
-                  const adj = adjustedNavByCode[p.fundCode];
-
-                  const displayNav = adj ? adj.nav : p.nav;
-
-                  const displayNavDate = adj ? adj.date : p.navDate;
-
-                  const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
-
-                  const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
-
-                  const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
-
-                  return (
-
-                    <tr
-
-                      key={positionKey || p.fundCode}
-
-                      onClick={() => switchFund(positionKey)}
-                      onDoubleClick={() => {
-                        if (!isWealthAccount) openPositionEntryModal(p);
-                      }}
-
-                      className={`cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`}
-
-                    >
-
-                      <td className="px-4 py-1.5 border-b border-slate-100"><span className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`} title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}>{p.name}{!isWealthAccount && p.fundCode !== p.name && <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span>}</span></td>
-
-                      {isWealthAccount ? (
-                        <td className="px-3 py-1.5 border-b border-slate-100 text-left text-xs tabular-nums text-slate-600">{p.holdingDate || "-"}</td>
-                      ) : null}
-
-                      <td className="px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
-                        {isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : formatFundUnits(p.units)}
-                      </td>
-
-                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
-                        {isWealthAccount && !p.hasUnits ? <span className="text-slate-300">-</span> : p.avgCost.toFixed(4)}
-                      </td>
-
-                      <td className="overflow-hidden px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">
-
-                        <div className="flex min-w-0 items-center justify-end gap-0.5">
-
-                          <span className="min-w-0 truncate">{displayNav != null ? displayNav.toFixed(4) : "-"}{displayNavDate ? <span className="ml-0.5 text-slate-400">({displayNavDate})</span> : null}</span>
-
-                        </div>
-
-                      </td>
-
-                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums">{formatMoney(p.cost)}</td>
-
-                      <td className={`px-2 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</td>
-
-                      <td className="px-2 py-1.5 border-b border-slate-100 text-right text-[11px] tabular-nums">{p.pendingCost > 0 ? <span className="text-amber-600 font-medium">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>}</td>
-
-                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnL)}`}>{formatMoney(displayPnL)}</td>
-
-                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</td>
-
-                      <td className={`px-3 py-1.5 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(p.historicalProfit)}`}>{formatMoney(p.historicalProfit)}</td>
-
-                      <td className="px-2 py-1 border-b border-slate-100" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-0.5">
-                          {regularPlanByFundCode.get(p.fundCode) ? (
-                            (() => {
-                              const plan = regularPlanByFundCode.get(p.fundCode);
-                              const isPaused = plan.status === "paused";
-                              const menuOpen = regularPlanMenu?.id === plan.id;
-                              return (
-                                <div className="relative">
-                                  <button
-                                    type="button"
-                                    disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      setRegularPlanMenu(menuOpen ? null : plan);
-                                    }}
-                                    className={`relative inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
-                                      isPaused
-                                        ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-                                        : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
-                                    }`}
-                                    title={isPaused ? "当前已暂停，点击选择继续或编辑" : "当前执行中，点击选择暂停或编辑"}
-                                    aria-haspopup="menu"
-                                    aria-expanded={menuOpen}
-                                  >
-                                    <CalendarSync className="h-3 w-3" />
-                                    {isPaused ? (
-                                      <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
-                                        <span className="h-1 w-[1px] rounded-full bg-white" />
-                                        <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
-                                      </span>
-                                    ) : (
-                                      <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
-                                        <span className="ml-px h-0 w-0 border-y-[1.5px] border-l-[2.5px] border-y-transparent border-l-white" />
-                                      </span>
-                                    )}
-                                  </button>
-                                  {menuOpen ? (
-                                    <div
-                                      className="absolute right-0 top-7 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
-                                      role="menu"
-                                      onClick={(event) => event.stopPropagation()}
-                                    >
-                                      {plan.status === "active" ? (
-                                        <button
-                                          type="button"
-                                          disabled={regularPlanActionBusy}
-                                          onClick={() => updateRegularPlanStatus(plan, "pause")}
-                                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                                          role="menuitem"
-                                        >
-                                          <Pause className="h-3.5 w-3.5" />暂停
-                                        </button>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          disabled={regularPlanActionBusy}
-                                          onClick={() => updateRegularPlanStatus(plan, "resume")}
-                                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-                                          role="menuitem"
-                                        >
-                                          <Play className="h-3.5 w-3.5" />继续
-                                        </button>
-                                      )}
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setEditingRegularPlan(plan);
-                                          setRegularPlanMenu(null);
-                                        }}
-                                        className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
-                                        role="menuitem"
-                                      >
-                                        <CalendarSync className="h-3.5 w-3.5" />编辑
-                                      </button>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })()
-                          ) : null}
-                          {!isMetalAccount && !isWealthAccount ? (
-                            <>
-                              <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  switchFund(positionKey || p.fundCode);
-                                  setFundChartOpen(true);
-                                }}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
-                                  active && fundChartOpen
-                                    ? "border-blue-300 bg-blue-50 text-blue-700"
-                                    : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                                }`}
-                                title="查看基金曲线图"
-                                aria-label="查看基金曲线图"
-                              >
-                                <ChartLine className="h-3 w-3" />
-                              </button>
-                            </>
-                          ) : null}
-                        </div>
-                      </td>
-
-                    </tr>
-
-                  );
-
-                })}
-
-              </tbody>
-
-              {d.positions.length > 0 && (
-
-                <tfoot className="sticky bottom-0 bg-slate-50/95 font-semibold backdrop-blur">
-
-                  <tr>
-
-                    <td className="px-4 py-2 border-t border-slate-200 text-xs text-slate-700" colSpan={isWealthAccount ? 5 : 4}>汇总</td>
-
-                    <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-800">{formatMoney(d.totalCost)}</td>
-
-                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</td>
-
-                    <td className="px-3 py-2 border-t border-slate-200"></td>
-
-                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalMarketValue - d.totalCost)}`}>{formatMoney(d.totalMarketValue - d.totalCost)}</td>
-
-                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalMarketValue - d.totalCost)}`}>{d.totalCost !== 0 ? `${(((d.totalMarketValue - d.totalCost) / d.totalCost) * 100).toFixed(2)}%` : "-"}</td>
-
-                    <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</td>
-
-                    <td className="px-2 py-2 border-t border-slate-200"></td>
-
-                  </tr>
-
-                </tfoot>
-
-              )}
-
-            </table>
 
           ) : (
 

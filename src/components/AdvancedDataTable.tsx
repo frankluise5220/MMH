@@ -60,7 +60,7 @@ export type AdvancedDataTableSummaryRow = {
 };
 
 export type AdvancedDataTableDropPosition = "before" | "after";
-type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
+export type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
 
 type RowItem<T> = {
   row: T;
@@ -117,6 +117,7 @@ export type AdvancedDataTableProps<T> = {
   toolbarRightContent?: ReactNode;
   showColumnVisibilityButton?: boolean;
   sortable?: boolean;
+  defaultSort?: AdvancedDataTableSortState | null;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   resetKey?: string;
@@ -250,6 +251,7 @@ export function AdvancedDataTable<T>({
   toolbarRightContent,
   showColumnVisibilityButton = true,
   sortable = true,
+  defaultSort = null,
   columnVisibilityTriggerId,
   summaryRow,
   resetKey,
@@ -345,14 +347,15 @@ export function AdvancedDataTable<T>({
       setSortState(null);
       writeJson(sortStorageKey, null);
     } else {
+      const storedSort = readJson<AdvancedDataTableSortState | null | undefined>(sortStorageKey, undefined);
       setSortState(normalizeStoredSortState(
-        readJson<AdvancedDataTableSortState | null>(sortStorageKey, null),
+        storedSort === undefined ? defaultSort : storedSort,
         sortableColumnKeys,
       ));
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [filterableColumnKeys, filtersStorageKey, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [defaultSort, filterableColumnKeys, filtersStorageKey, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
