@@ -1,0 +1,19 @@
+[
+  {
+    "id": "mmh",
+    "_manual": {
+      "name": "MMH 家庭财务工作台",
+      "version": "2026.08.07.3",
+      "author": "frankluise5220",
+      "desc": "飞牛专用 SQLite 原生包，内置 Next standalone、Linux Node runtime 与 Prisma runtime。",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-final.square.png",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.08.07.3-fnos/mmh.fpk",
+      "screenshots": [],
+      "tags": [
+        "财务",
+        "记账",
+        "SQLite"
+      ]
+    }
+  }
+]
