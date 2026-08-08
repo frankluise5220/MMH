@@ -1144,6 +1144,7 @@ model TxRecord {
   @@index([regularInvestPlanId])
   @@index([creditCardInstallmentPlanId, installmentNo])
   @@index([toAccountId, fundProductType])
+  @@index([toAccountId, date, dayOrder])
   @@index([type])
   @@map("transactions")
 }

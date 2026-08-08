@@ -45,7 +45,7 @@ import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
-import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -158,15 +158,7 @@ async function resolveAccountDisplayBalance(
       : toNumber(account.balance);
   }
 
-  const balances = await computeAccountDisplayBalances([
-    {
-      id: account.id,
-      kind: account.kind,
-      investProductType: account.investProductType,
-      billingDay: account.billingDay,
-    },
-  ], hidFilter);
-  return balances.get(account.id) ?? toNumber(account.balance);
+  return toNumber(account.balance);
 }
 
 function insurancePremiumTotalCycles(paymentTermYears: unknown, premiumFrequencyMonths: number) {
@@ -1247,27 +1239,39 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
     }
 
-    const [account, totalCount, allEntries] = await Promise.all([
+    const listWhere = {
+      ...txRecordAccountScopeWhere(accountId),
+      deletedAt: null,
+      ...hidFilter,
+    };
+
+    const [account, totalCount, orderingEntries] = await Promise.all([
       prisma.account.findUnique({ where: { id: accountId } }),
-      prisma.txRecord.count({
-        where: {
-          ...txRecordAccountScopeWhere(accountId),
-          deletedAt: null,
-          ...hidFilter,
-        },
-      }),
+      prisma.txRecord.count({ where: listWhere }),
       prisma.txRecord.findMany({
-        where: {
-          ...txRecordAccountScopeWhere(accountId),
-          deletedAt: null,
-          ...hidFilter,
-        },
-        include: {
-          ...entryBusinessLinkSummaryInclude,
-          EntryTag: { include: { Tag: true } },
-          account: { include: { Institution: { select: { name: true } } } },
-          toAccount: { include: { Institution: { select: { name: true } } } },
-          CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
+        where: listWhere,
+        select: {
+          id: true,
+          date: true,
+          createdAt: true,
+          dayOrder: true,
+          type: true,
+          amount: true,
+          toAccountId: true,
+          toNote: true,
+          source: true,
+          debtPrincipalAmount: true,
+          fundSubtype: true,
+          fundArrivalDate: true,
+          fundArrivalAmount: true,
+          EntryBusinessLinkCash: {
+            where: { deletedAt: null },
+            select: { wealthTransactionId: true },
+          },
+          EntryBusinessLinkBusiness: {
+            where: { deletedAt: null },
+            select: { wealthTransactionId: true },
+          },
         },
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       }),
@@ -1277,27 +1281,28 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
     }
 
-    const allLinkedWealthIds = Array.from(new Set(allEntries
+    const orderingLinkedWealthIds = Array.from(new Set(orderingEntries
       .map((entry) => linkedWealthTransactionIdOf(entry))
       .filter((id): id is string => !!id)));
-    const allLinkedWealthRows = allLinkedWealthIds.length > 0
+    const orderingLinkedWealthRows = orderingLinkedWealthIds.length > 0
       ? await prisma.wealthTransaction.findMany({
-          where: { id: { in: allLinkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
-          include: {
-            WealthProduct: true,
-            Account: { include: { Institution: { select: { name: true } } } },
-            CashAccount: { include: { Institution: { select: { name: true } } } },
+          where: { id: { in: orderingLinkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
+          select: {
+            id: true,
+            action: true,
+            arrivalDate: true,
+            cashAccountId: true,
           },
         })
       : [];
-    const linkedWealthById = new Map(allLinkedWealthRows.map((row) => [row.id, row]));
-    const displayDateEntryOf = (entry: typeof allEntries[number]) => {
+    const orderingLinkedWealthById = new Map(orderingLinkedWealthRows.map((row) => [row.id, row]));
+    const displayDateEntryOf = (entry: typeof orderingEntries[number]) => {
       const linkedWealthId = linkedWealthTransactionIdOf(entry);
-      return entryWithLinkedWealthDisplayDateFields(entry, linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null);
+      return entryWithLinkedWealthDisplayDateFields(entry, linkedWealthId ? orderingLinkedWealthById.get(linkedWealthId) ?? null : null);
     };
 
-    const accountDisplayBalance = await resolveAccountDisplayBalance(account, hidFilter);
-    const orderedEntries = [...allEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
+    const accountDisplayBalancePromise = resolveAccountDisplayBalance(account, hidFilter);
+    const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
     const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
     const runningBalanceById = new Map<string, number>();
     let runningBalance = 0;
@@ -1306,7 +1311,43 @@ export async function GET(req: Request) {
       runningBalanceById.set(entry.id, runningBalance);
     }
 
-    const pagedEntries = orderedEntries.slice((page - 1) * pageSize, page * pageSize);
+    const pagedEntryIds = orderedEntries.slice((page - 1) * pageSize, page * pageSize).map((entry) => entry.id);
+    const pageRows = pagedEntryIds.length > 0
+      ? await prisma.txRecord.findMany({
+          where: {
+            id: { in: pagedEntryIds },
+            deletedAt: null,
+            ...hidFilter,
+          },
+          include: {
+            ...entryBusinessLinkSummaryInclude,
+            EntryTag: { include: { Tag: true } },
+            account: { include: { Institution: { select: { name: true } } } },
+            toAccount: { include: { Institution: { select: { name: true } } } },
+            CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
+          },
+        })
+      : [];
+    const pageRowById = new Map(pageRows.map((row) => [row.id, row]));
+    const pagedEntries = pagedEntryIds
+      .map((id) => pageRowById.get(id))
+      .filter((entry): entry is (typeof pageRows)[number] => !!entry);
+
+    const pageLinkedWealthIds = Array.from(new Set(pagedEntries
+      .map((entry) => linkedWealthTransactionIdOf(entry))
+      .filter((id): id is string => !!id)));
+    const pageLinkedWealthRows = pageLinkedWealthIds.length > 0
+      ? await prisma.wealthTransaction.findMany({
+          where: { id: { in: pageLinkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
+          include: {
+            WealthProduct: true,
+            Account: { include: { Institution: { select: { name: true } } } },
+            CashAccount: { include: { Institution: { select: { name: true } } } },
+          },
+        })
+      : [];
+    const linkedWealthById = new Map(pageLinkedWealthRows.map((row) => [row.id, row]));
+
     const entries = pagedEntries.map((e) => {
       const linkedWealthId = linkedWealthTransactionIdOf(e);
       const linkedWealth = linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null;
@@ -1382,6 +1423,7 @@ export async function GET(req: Request) {
       entryTags: mapEntryTags(e),
     });
     });
+    const accountDisplayBalance = await accountDisplayBalancePromise;
 
     return NextResponse.json({
       ok: true,

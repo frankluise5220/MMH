@@ -57,6 +57,10 @@ function writeStoredDetailPreference(accountId: string, pageSize: number, detail
   document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
 }
 
+function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
+  return `${accountId}:${pageSize}:${detailAll ? "all" : detailPage}`;
+}
+
 export function BasicDetailPanel({
   accountId,
   isInvestAccount,
@@ -85,6 +89,7 @@ export function BasicDetailPanel({
   const [localOriginalCount, setLocalOriginalCount] = useState(originalCount);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
+  const [isPageLoading, setIsPageLoading] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
@@ -92,6 +97,9 @@ export function BasicDetailPanel({
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
+  const paginationFetchSeqRef = useRef(0);
+  const lastClientPaginationKeyRef = useRef("");
+  const clientPaginationEnabled = !hasDetailFilters && !focusEntryId;
 
   useEffect(() => {
     setLocalEntries(entries);
@@ -156,9 +164,60 @@ export function BasicDetailPanel({
     const nextHref = `${url.pathname}${url.search}${url.hash}`;
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (nextHref !== currentHref) {
-      router.replace(nextHref, { scroll: false });
+      if (clientPaginationEnabled) {
+        window.history.replaceState(window.history.state, "", nextHref);
+      } else {
+        router.replace(nextHref, { scroll: false });
+      }
     }
-  }, [accountId, detailAll, pageSize, router, safePage]);
+  }, [accountId, clientPaginationEnabled, detailAll, pageSize, router, safePage]);
+
+  useEffect(() => {
+    if (!clientPaginationEnabled) return;
+    const key = detailPaginationFetchKey(accountId, pageSize, detailAll, safePage);
+    if (!lastClientPaginationKeyRef.current) {
+      lastClientPaginationKeyRef.current = key;
+      return;
+    }
+    if (lastClientPaginationKeyRef.current === key) return;
+    lastClientPaginationKeyRef.current = key;
+
+    const controller = new AbortController();
+    const seq = ++paginationFetchSeqRef.current;
+    const params = new URLSearchParams({
+      accountId,
+      page: detailAll ? "1" : String(safePage),
+      pageSize: detailAll ? "5000" : String(pageSize),
+    });
+    setIsPageLoading(true);
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error ?? "加载交易明细失败");
+        }
+        if (seq !== paginationFetchSeqRef.current) return;
+        const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
+        const nextTotalCount = Number(payload.data?.totalCount);
+        setLocalEntries(nextEntries);
+        if (Number.isFinite(nextTotalCount)) {
+          setLocalTotalCount(nextTotalCount);
+          setLocalOriginalCount(nextTotalCount);
+        }
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.error("Load transaction detail page failed:", error);
+      })
+      .finally(() => {
+        if (seq === paginationFetchSeqRef.current) setIsPageLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [accountId, clientPaginationEnabled, detailAll, pageSize, safePage]);
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
 
@@ -216,7 +275,7 @@ export function BasicDetailPanel({
           toolbarTitle="资金明细"
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">共 {localTotalCount} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}</span>
+              <span className="text-xs text-slate-600">共 {localTotalCount} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}{isPageLoading ? " · 加载中" : ""}</span>
               <span className="text-slate-400">|</span>
               <Link href="/batch-import" className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
                 <Upload className="w-3 h-3" />导入
