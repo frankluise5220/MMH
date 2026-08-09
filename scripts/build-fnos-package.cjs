@@ -491,33 +491,6 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
     ],
   },
 ], null, 2));
-write(path.join(stageDir, "wizard", "uninstall"), JSON.stringify([
-  {
-    stepTitle: "卸载 MMH",
-    items: [
-      {
-        type: "tips",
-        helpText: "卸载后 SQLite 数据会保留在应用数据目录中。若选择清除，所有用户和交易记录将不可恢复。",
-      },
-      {
-        type: "radio",
-        field: "wizard_delete_data",
-        label: "数据处理方式",
-        initValue: "false",
-        options: [
-          {
-            label: "保留账本数据",
-            value: "false",
-          },
-          {
-            label: "清除所有数据（不可恢复）",
-            value: "true",
-          },
-        ],
-      },
-    ],
-  },
-], null, 2));
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
     "mmh.Application": {

@@ -74,6 +74,8 @@ mmh.fpk
 
 - FN 软仓测试源只能验证“源里有新版本、下载地址可用、版本号能比较”这条测试链路。它不能替代飞牛官方应用中心的升级发布。
 - 手动安装的 `.fpk` 在飞牛应用中心里会标记为 `manualInstall`。这类包不一定能通过第三方软仓完成覆盖升级，不能把“软仓按钮安装完成”当作真正升级成功。
+- FN 软仓会通过 `appcenter-cli uninstall` 再 `install-fpk` 模拟更新；`appcenter-cli` 在卸载/安装失败时可能仍返回退出码 0，因此必须在升级后验证 `/var/apps/mmh/manifest`、`/vol1/@appcenter/mmh/server/package.json` 和关键 API。
+- 包内不得包含 `wizard/uninstall`。卸载向导会要求 Web UI 输入，导致 FN 软仓非交互更新无法真正卸载旧包。
 - 面向普通用户的正式升级必须走飞牛官方应用中心上架/审核后的版本发布链路。只有官方应用中心记录了同一个 `appname` 的新版本，后续用户才应在飞牛自身应用中心里看到并执行升级。
 
 ## 安全边界

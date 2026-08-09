@@ -34,6 +34,21 @@ function readTarEntry(archive, entry) {
   return result.stdout;
 }
 
+function tarHasEntry(archive, entry) {
+  if (!fs.existsSync(archive)) return false;
+  const result = spawnSync("tar", ["-tzf", archive], {
+    cwd: root,
+    encoding: "utf8",
+    shell: false,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    failures.push(`Could not list ${path.relative(root, archive)}.\n${result.stderr || result.stdout || result.error?.message}`);
+    return false;
+  }
+  return result.stdout.split(/\r?\n/).some((name) => name.replace(/^\.\//, "") === entry);
+}
+
 function pngSize(file) {
   if (!fs.existsSync(file)) return null;
   const buffer = fs.readFileSync(file);
@@ -70,6 +85,7 @@ expect(/FNOS_NODE_TARBALL/.test(buildScript), "fnOS package build must require a
 expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normalize Release tags into package versions.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
 expect(/changelog=\$\{changelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
+expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not include an uninstall wizard; FN soft-store updates cannot complete when uninstall requires UI input.");
 expect(/process\.platform === "linux"/.test(buildScript), "fnOS release builds must be guarded to Linux/fnOS.");
 expect(/resolve_data_dest/.test(buildScript), "fnOS start script must resolve a persistent fnOS data directory.");
 expect(/TRIM_PKGVAR\/data/.test(buildScript), "fnOS start script must prefer TRIM_PKGVAR/data when TRIM_DATADEST is unavailable.");
@@ -119,6 +135,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   const manifest = readTarEntry(builtFpk, "manifest");
   const mainScript = readTarEntry(builtFpk, "cmd/main");
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
+  expect(!tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; soft-store updates need non-interactive uninstall.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
