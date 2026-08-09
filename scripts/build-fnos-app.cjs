@@ -8,26 +8,34 @@ const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
 const pgSchema = path.join(root, "prisma", "schema.prisma");
 
 function run(command, args, env) {
+  const useShell = process.platform === "win32" && (command === "npm" || command === "npx");
   const result = spawnSync(command, args, {
     cwd: root,
     stdio: "inherit",
-    shell: false,
+    shell: useShell,
     env: {
       ...process.env,
       ...env,
     },
   });
-  if (result.status !== 0) process.exit(result.status || 1);
+  if (result.status !== 0) {
+    if (result.error) console.error(result.error.message);
+    process.exit(result.status || 1);
+  }
+}
+
+function commandName(name) {
+  return name;
 }
 
 run(process.execPath, [path.join(root, "scripts", "generate-native-sqlite-schema.cjs")], {});
-run("npx", ["prisma", "generate", "--schema", nativeSchema], {
+run(commandName("npx"), ["prisma", "generate", "--schema", nativeSchema], {
   DATABASE_URL: "file:./native-build.db",
   PRISMA_SCHEMA_PATH: nativeSchema,
 });
-run("npm", ["run", "build"], {
+run(commandName("npm"), ["run", "build"], {
   DATABASE_URL: "file:./native-build.db",
   PRISMA_SCHEMA_PATH: nativeSchema,
   MMH_DEPLOY_TARGET: "fnos",
 });
-run("npx", ["prisma", "generate", "--schema", pgSchema], {});
+run(commandName("npx"), ["prisma", "generate", "--schema", pgSchema], {});
