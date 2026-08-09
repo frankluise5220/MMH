@@ -4,8 +4,6 @@
 
 import { useState, useMemo, useRef, useEffect, useCallback, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 
-import { useRouter } from "next/navigation";
-
 import Link from "next/link";
 
 import { startTransition } from "react";
@@ -18,7 +16,7 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
-import { CalendarSync, ChartLine, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
+import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -39,9 +37,6 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
-import { DateStepper } from "@/components/DateStepper";
-
-import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 
 
@@ -62,21 +57,6 @@ function isGenericFundName(name: string, code: string) {
   const value = name.trim();
   if (!value || value === code) return true;
   return ["红利转投", "红利再投", "红利再投资", "现金红利", "分红", "买入", "申购", "赎回", "定投"].includes(value);
-}
-
-function LinkHeaderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="mx-auto h-3.5 w-3.5">
-      <path
-        d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
 }
 
 function LinkStatusIcon({ active, title }: { active: boolean; title?: string }) {
@@ -137,7 +117,6 @@ type FundColumnSpec = readonly [string, number];
 
 const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
 const FUND_DETAIL_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_detail_hidden_columns_v1";
-const FUND_HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 
 const POSITION_COLS: readonly FundColumnSpec[] = [
   ["fund", 260],
@@ -605,8 +584,6 @@ function FundTrendChart({
 
 export function FundShell(props: Props) {
 
-  const router = useRouter();
-
   const {
 
     view, initialFundCode, positions, clearedPositions, allEntries,
@@ -615,11 +592,11 @@ export function FundShell(props: Props) {
 
     confirmDaysMap, feeRateMap, initialShowCleared, baseQuery,
 
-    accountId, selectedAccount, selectedAccountLabel, accountOptions,
+    accountId, selectedAccount, accountOptions,
 
     cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, metalTypes, metalUnits, nestedFieldData, createAction, editAction,
 
-    fillNavAction, regularInvestFormAction, lastUsedCashAccount, isRedUp,
+    fillNavAction, isRedUp,
     fundUnitsDecimals: fundUnitsDecimalsProp,
 
   } = props;
@@ -699,10 +676,8 @@ export function FundShell(props: Props) {
     summary: 0,
     details: 0,
   });
-  const [needsDetailHorizontalScroll, setNeedsDetailHorizontalScroll] = useState(false);
   const [detailColumnMenuOpen, setDetailColumnMenuOpen] = useState(false);
   const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(new Set());
-  const [detailCollapsed, setDetailCollapsed] = useState(false);
   const [fundChartMode, setFundChartMode] = useState<FundChartMode>("profit");
   const [fundChartRange, setFundChartRange] = useState<FundChartRange>("month");
   const [fundNavHistoryState, setFundNavHistoryState] = useState<{
@@ -737,7 +712,7 @@ export function FundShell(props: Props) {
       fundSourceEntryId: entry.fundSourceEntryId ?? null,
       amount: toNumber(entry.amount),
     })));
-  }, [d.allEntries, entryAssetKey, isMetalAccount]);
+  }, [d.allEntries, entryAssetKey]);
   const refundAmountByBuyId = refundLinkAllocation.refundAmountByBuyId;
   const displayUnitsOfPlain = useCallback((entry: any) => {
     if (isMetalAccount) return entry.metalQuantity != null ? toNumber(entry.metalQuantity) : null;
@@ -783,22 +758,6 @@ export function FundShell(props: Props) {
 
 
 
-
-  type FundFilterColumn = "cashAccount" | "subtype" | "status";
-
-  const filterColumns: FundFilterColumn[] = ["cashAccount", "subtype", "status"];
-
-  const [activeFilterColumn, setActiveFilterColumn] = useState<FundFilterColumn | null>(null);
-
-  const [columnFilters, setColumnFilters] = useState<Partial<Record<FundFilterColumn, string[]>>>({});
-
-  const [dateFrom, setDateFrom] = useState("");
-
-  const [dateTo, setDateTo] = useState("");
-
-  const [dateFilterOpen, setDateFilterOpen] = useState(false);
-
-  const dateFilterRef = useRef<HTMLDivElement>(null);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [singleDeletingIds, setSingleDeletingIds] = useState<Set<string>>(new Set());
@@ -867,10 +826,14 @@ export function FundShell(props: Props) {
     ),
     [hiddenDetailColumns, isSingleNormalFundScope, isWealthAccount],
   );
+  const visibleDetailDataCols = useMemo(
+    () => visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)),
+    [visibleDetailCols],
+  );
   const visibleOptionalDetailColumnCount = visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)).length;
   const detailMinTableWidth = useMemo(
-    () => Math.min(1100, visibleDetailCols.reduce((sum, [, fallback]) => sum + fallback, 0)),
-    [visibleDetailCols],
+    () => Math.min(1100, visibleDetailDataCols.reduce((sum, [, fallback]) => sum + fallback, 0)),
+    [visibleDetailDataCols],
   );
   const isDetailColumnVisible = useCallback(
     (key: DetailColumnKey) =>
@@ -935,27 +898,6 @@ export function FundShell(props: Props) {
     () => tableLayout("cleared", CLEARED_COLS, 820, tableViewportWidths.summary),
     [tableLayout, tableViewportWidths.summary],
   );
-  const detailLayout = useMemo(
-    () => tableLayout("details", visibleDetailCols, detailMinTableWidth, tableViewportWidths.details),
-    [detailMinTableWidth, tableLayout, tableViewportWidths.details, visibleDetailCols],
-  );
-
-  useEffect(() => {
-    const node = detailTableViewportRef.current;
-    if (!node) return;
-    const update = () => setNeedsDetailHorizontalScroll(node.scrollWidth > node.clientWidth + FUND_HORIZONTAL_SCROLL_TOLERANCE_PX);
-    update();
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", update);
-      return () => window.removeEventListener("resize", update);
-    }
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    const table = node.querySelector("table");
-    if (table) observer.observe(table);
-    return () => observer.disconnect();
-  }, [detailLayout.tableWidth, visibleDetailCols]);
-
   const setColWidth = useCallback((table: FundTableKey, key: string, width: number) => {
     setColumnWidths((prev) => {
       const next = {
@@ -1448,7 +1390,7 @@ export function FundShell(props: Props) {
     } catch {}
   }, [accountId, entryAssetKey, isWealthAccount]);
 
-  function handleEntryNavFilled(entry: any, data: { nav: number; confirmDate: string; units: number; arrivalDate?: string }) {
+  const handleEntryNavFilled = useCallback((entry: any, data: { nav: number; confirmDate: string; units: number; arrivalDate?: string }) => {
     const code = entry.fundCode || fundCodeRef.current;
 
     if (code) {
@@ -1472,7 +1414,7 @@ export function FundShell(props: Props) {
     }));
 
     if (code) void loadFundShellData(code, showClearedRef.current);
-  }
+  }, [loadFundShellData]);
 
   function openPositionEntryModal(position: any) {
     const code = String(position?.fundCode ?? "").trim();
@@ -1674,21 +1616,6 @@ export function FundShell(props: Props) {
   useEffect(() => {
     window.addEventListener("mmh:fund:refresh", loadRegularPlans);
     return () => window.removeEventListener("mmh:fund:refresh", loadRegularPlans);
-  }, [loadRegularPlans]);
-
-  const createRegularPlanViaApi = useCallback(async (payload: any) => {
-    const res = await fetch("/api/v1/regular-invest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data?.ok) {
-      return { ok: false, error: data?.error || `保存失败(${res.status})` };
-    }
-    await loadRegularPlans();
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
-    return { ok: true };
   }, [loadRegularPlans]);
 
   const updateRegularPlanStatus = useCallback(async (plan: any, action: "pause" | "resume" | "stop") => {
@@ -2138,7 +2065,7 @@ export function FundShell(props: Props) {
   }, [d.positions.length, d.totalCost, d.totalHistoricalProfit, d.totalMarketValue, pnl]);
 
 
-  const cashAccountInfoOf = (e: any) => {
+  const cashAccountInfoOf = useCallback((e: any) => {
 
     const isR = e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash" || (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
 
@@ -2155,21 +2082,9 @@ export function FundShell(props: Props) {
       groupName: String(o?.groupName ?? "").trim(),
     };
 
-  };
+  }, [accountOptions]);
 
-  const cashAccountNameOf = (e: any) => {
-
-    const info = cashAccountInfoOf(e);
-
-    if (!info) return "(空)";
-
-    return info.label;
-
-  };
-
-
-
-  const statusOf = (e: any) => {
+  const statusOf = useCallback((e: any) => {
     if (e.fundSubtype === "buy_failed") return e.source === "regular_invest_refund" ? "买入退回" : "暂停申购";
     if (e.fundSubtype === "buy") {
       if ((refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) {
@@ -2179,145 +2094,9 @@ export function FundShell(props: Props) {
     }
     const units = displayUnitsOf(e);
     return units != null && units > 0 ? "确认" : "待确认";
-  };
+  }, [displayUnitsOf, refundAmountByBuyId]);
 
-
-
-  const subtypeOf = (e: any) => fl(e.fundSubtype, e.source).label || "(空)";
-
-
-
-  const normalizeYmd = (raw: string) => {
-
-    const s = String(raw ?? "").trim();
-
-    if (!s) return "";
-
-    const m8 = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-
-    if (m8) return `${m8[1]}-${m8[2]}-${m8[3]}`;
-
-    const replaced = s.replace(/[./]/g, "-");
-
-    const parts = replaced.split("-").map((p) => p.trim()).filter(Boolean);
-
-    if (parts.length !== 3) return "";
-
-    const [y, m, d] = parts;
-
-    const mm = String(m).padStart(2, "0");
-
-    const dd = String(d).padStart(2, "0");
-
-    if (!/^\d{4}$/.test(y) || !/^\d{2}$/.test(mm) || !/^\d{2}$/.test(dd)) return "";
-
-    return `${y}-${mm}-${dd}`;
-
-  };
-
-
-
-  const inDateRange = (value: string, from: string, to: string) => {
-
-    const v = normalizeYmd(value);
-
-    let f = normalizeYmd(from);
-
-    let t = normalizeYmd(to);
-
-    if (f && t && f > t) {
-
-      const tmp = f; f = t; t = tmp;
-
-    }
-
-    if (!f && !t) return true;
-
-    if (!v) return false;
-
-    if (f && v < f) return false;
-
-    if (t && v > t) return false;
-
-    return true;
-
-  };
-
-
-
-  const hasAnyFilters = useMemo(() => {
-
-    if (dateFrom || dateTo) return true;
-
-    return Object.values(columnFilters).some((v) => (v?.length ?? 0) > 0);
-
-  }, [dateFrom, dateTo, columnFilters]);
-
-
-
-  const clearAllFilters = () => {
-
-    setFundPage(1);
-
-    setDateFrom("");
-
-    setDateTo("");
-
-    setColumnFilters({});
-
-    setActiveFilterColumn(null);
-
-    setDateFilterOpen(false);
-
-  };
-
-
-
-  const getFilterColumnValue = (e: any, column: FundFilterColumn) => {
-
-    if (column === "cashAccount") return cashAccountNameOf(e);
-
-    if (column === "subtype") return subtypeOf(e);
-
-    return statusOf(e);
-
-  };
-
-
-
-  const columnFilterOptions = useMemo(() => {
-
-    if (!activeFilterColumn) return [];
-
-    const values: string[] = filtered.map((e: any) => getFilterColumnValue(e, activeFilterColumn));
-
-    return Array.from(new Set(values)).sort((a, b) => (a === "(空)" ? 1 : b === "(空)" ? -1 : a.localeCompare(b, "zh-CN")));
-
-  }, [filtered, activeFilterColumn, accountOptions]);
-
-
-
-  const filteredByColumns = useMemo(() => {
-
-    return filtered.filter((e: any) => {
-
-      const applyDate = fundApplyDateOf(e);
-
-      if (!inDateRange(applyDate, dateFrom, dateTo)) return false;
-
-      return filterColumns.every((column) => {
-
-        const allowedValues = columnFilters[column];
-
-        const v = getFilterColumnValue(e, column);
-
-        return !allowedValues?.length || allowedValues.includes(v);
-
-      });
-
-    });
-
-  }, [filtered, columnFilters, accountOptions, dateFrom, dateTo, fundApplyDateOf]);
+  const filteredByColumns = filtered;
 
 
 
@@ -2334,30 +2113,6 @@ export function FundShell(props: Props) {
   const safePage = Math.min(fundPage, totalPages);
 
   const allFundPageSize = Math.max(1, filteredByColumns.length);
-
-
-
-  useEffect(() => {
-
-    if (!dateFilterOpen) return;
-
-    const onDown = (e: MouseEvent) => {
-
-      const el = dateFilterRef.current;
-
-      if (!el) return;
-
-      if (e.target && el.contains(e.target as Node)) return;
-
-      setDateFilterOpen(false);
-
-    };
-
-    document.addEventListener("mousedown", onDown);
-
-    return () => document.removeEventListener("mousedown", onDown);
-
-  }, [dateFilterOpen]);
 
   const paged = filteredByColumns.slice((safePage - 1) * fundPageSize, safePage * fundPageSize);
 
@@ -2554,7 +2309,7 @@ export function FundShell(props: Props) {
 
   }
 
-  async function deleteDetailEntry(entry: any) {
+  const deleteDetailEntry = useCallback(async (entry: any) => {
     const id = String(entry?.id ?? "");
     if (!id || singleDeletingIds.has(id)) return;
     setSingleDeletingIds((prev) => new Set(prev).add(id));
@@ -2587,9 +2342,9 @@ export function FundShell(props: Props) {
         return next;
       });
     }
-  }
+  }, [isWealthAccount, singleDeletingIds]);
 
-  async function linkDetailCashFlow(entry: any) {
+  const linkDetailCashFlow = useCallback(async (entry: any) => {
     const id = String(entry?.id ?? "");
     const businessType =
       entry?.fundProductType === "wealth" || isWealthAccount
@@ -2635,51 +2390,426 @@ export function FundShell(props: Props) {
         return next;
       });
     }
-  }
+  }, [isWealthAccount, linkingIds]);
 
 
 
-  const renderColumnFilter = (column: FundFilterColumn, label: string) => {
+  const detailAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
+    return visibleDetailDataCols.map(([key, fallback]) => {
+      const baseWidth = colWidth("details", key, fallback);
+      const minWidth = minFundColWidth("details", key);
+      const common = { width: baseWidth, minWidth };
 
-    const selectedValues = columnFilters[column] ?? [];
+      if (key === "date") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => <span className="tabular-nums text-xs text-slate-600">{fundApplyDateOf(e)}</span>,
+        } satisfies AdvancedDataTableColumn<any>;
+      }
 
-    const isOpen = activeFilterColumn === column;
+      if (key === "arrivalDate") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => (
+            <span className="tabular-nums text-xs text-slate-500">
+              {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
+            </span>
+          ),
+        } satisfies AdvancedDataTableColumn<any>;
+      }
 
-    const options = isOpen ? columnFilterOptions : [];
+      if (key === "cashAccount") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => {
+            const info = cashAccountInfoOf(e);
+            if (!info || info.label === "(空)") return <span className="text-slate-300">-</span>;
+            return (
+              <div className="min-w-0">
+                <div className="truncate text-slate-600" title={info.label}>{info.label}</div>
+              </div>
+            );
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "fund") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => (
+            <div className="truncate text-xs text-slate-700" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
+              {displayFundName(e)}
+              {!isWealthAccount && e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
+            </div>
+          ),
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "nav") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          align: "right",
+          render: (e: any) => {
+            const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
+            return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{nav != null ? nav.toFixed(4) : <span className="text-slate-300">-</span>}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "units") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          align: "right",
+          render: (e: any) => {
+            const units = displayUnitsOf(e);
+            return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{units != null ? formatFundUnits(units) : <span className="text-slate-300">-</span>}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "remainingUnits") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          align: "right",
+          render: (e: any) => (
+            <span className="whitespace-nowrap tabular-nums text-xs text-slate-600">
+              {e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : <span className="text-slate-300">-</span>}
+            </span>
+          ),
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "subtype") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => {
+            const info = fl(e.fundSubtype, e.source);
+            const detailSubtypeLabel = isSingleNormalFundScope ? compactFundSubtypeLabel(e, info.label) : info.label;
+            return (
+              <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>
+                {detailSubtypeLabel}
+              </span>
+            );
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "amount") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          align: "right",
+          render: (e: any) => {
+            const amount = detailAmountOf(e);
+            const absAmt = formatMoney(Math.abs(amount));
+            if (e.source === "dividend" || e.fundSubtype === "dividend_cash") return <span className={`font-medium ${upCls}`}>+{absAmt}</span>;
+            return <span className="tabular-nums text-xs text-slate-700">{absAmt}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "profit") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          align: "right",
+          render: (e: any) => {
+            const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
+            return (
+              <span className={`tabular-nums text-xs ${pnl(profit ?? 0)}`}>
+                {profit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash") ? formatMoney(profit) : <span className="text-slate-300">-</span>}
+              </span>
+            );
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "status") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          render: (e: any) => {
+            const s = statusOf(e);
+            if (s === "待确认") return <span className="text-amber-600">{s}</span>;
+            if (s === "暂停申购") return <span className="text-rose-600">{s}</span>;
+            if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
+            if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
+            return <span className="text-emerald-700">{s}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      return {
+        key,
+        label: DETAIL_COLUMN_LABELS[key] ?? key,
+        ...common,
+        render: () => null,
+      } satisfies AdvancedDataTableColumn<any>;
+    });
+  }, [
+    colWidth,
+    cashAccountInfoOf,
+    detailAmountOf,
+    displayFundName,
+    displayUnitsOf,
+    formatFundUnits,
+    fundApplyDateOf,
+    isSingleNormalFundScope,
+    isWealthAccount,
+    pnl,
+    statusOf,
+    upCls,
+    visibleDetailDataCols,
+  ]);
+
+  const detailRowActions = useCallback((e: any) => {
+    const businessLinkInfo = entryBusinessLinkInfo(e);
+    const isLinked = businessLinkInfo.active;
+    const linkTitle = isLinked
+      ? `已关联${businessLinkInfo.labels.length ? `：${businessLinkInfo.labels.join("、")}` : ""}`
+      : linkingIds.has(String(e.id ?? ""))
+        ? "正在建立资金侧关联..."
+        : "未关联，点击建立资金侧关联";
+    const isRegularInvestRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
+    const linkedBuyForRefund = isRegularInvestRefund
+      ? (() => {
+          const target: RefundLinkableEntry = {
+            id: String(e.id ?? ""),
+            date: fmtDate(e.date),
+            createdAt: e.createdAt,
+            fundConfirmDate: fmtDate(e.fundConfirmDate),
+            fundArrivalDate: fmtDate(e.fundArrivalDate),
+            accountId: e.accountId ?? null,
+            toAccountId: e.toAccountId ?? null,
+            fundCode: entryAssetKey(e),
+            fundSubtype: e.fundSubtype ?? null,
+            fundUnits: displayUnitsOfPlain(e),
+            source: e.source ?? null,
+            fundSourceEntryId: e.fundSourceEntryId ?? null,
+            amount: toNumber(e.amount),
+          };
+          const linked = findLinkedEntries(target, linkedCandidateEntries);
+          const linkedBuyId = linked.linkedBuys[0]?.id;
+          return linkedBuyId ? d.allEntries.find((item: any) => String(item.id ?? "") === linkedBuyId) ?? null : null;
+        })()
+      : null;
+    const editableInvestmentEntry = linkedBuyForRefund ?? e;
 
     return (
-
-      <TableColumnFilter
-
-        label={label}
-
-        options={options}
-
-        selectedValues={selectedValues}
-
-        open={isOpen}
-
-        onToggleOpen={() => setActiveFilterColumn((current) => current === column ? null : column)}
-
-        onClose={() => setActiveFilterColumn(null)}
-
-        onChange={(values) => setColumnFilters((prev) => {
-          if (!values || values.length === 0) {
-            const next = { ...prev };
-            delete next[column];
-            return next;
-          }
-          return { ...prev, [column]: values };
-        })}
-
-      />
-
+      <div className="flex items-center justify-end gap-1">
+        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+        {e.fundProductType === "wealth" ? (
+          <WealthFormModal
+            mode="edit"
+            accountId={selectedAccount?.id ?? ""}
+            entry={{
+              id: e.id,
+              transactionId: e.id,
+              cashEntryId: e.cashEntryId ?? null,
+              businessTransactionId: e.businessTransactionId ?? null,
+              date: fmtDate(e.date),
+              amount: toNumber(e.amount),
+              note: e.note ?? null,
+              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
+              fundProductType: e.fundProductType ?? null,
+              fundSubtype: e.fundSubtype ?? null,
+              wealthProductId: e.wealthProductId ?? null,
+              fundUnits: displayUnitsOf(e) ?? (e.fundUnits != null ? toNumber(e.fundUnits) : null),
+              fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
+              fundArrivalDate: fmtDate(e.fundArrivalDate) || null,
+              fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
+              depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
+              accountId: e.accountId ?? null,
+              toAccountId: e.toAccountId ?? null,
+              toAccountName: e.toAccountName ?? null,
+            }}
+            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
+            cashAccounts={cashAccounts}
+            investmentAccounts={investmentAccounts}
+            cashAccountSSOptions={cashAccountSSOptions}
+            investmentAccountSSOptions={investmentAccountSSOptions}
+            wealthHoldingOptions={props.wealthHoldingOptions ?? []}
+            nestedFieldData={nestedFieldData}
+            createAction={createAction}
+            editAction={editAction}
+          />
+        ) : e.fundProductType === "deposit" ? (
+          <DepositFormModal
+            mode="edit"
+            accountId={selectedAccount?.id ?? ""}
+            entry={{
+              id: e.id,
+              transactionId: e.id,
+              date: fmtDate(e.date),
+              amount: toNumber(e.amount),
+              note: e.note ?? null,
+              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
+              fundProductType: e.fundProductType ?? null,
+              fundSubtype: e.fundSubtype ?? null,
+              accountId: e.accountId ?? null,
+              toAccountId: e.toAccountId ?? null,
+              toAccountName: e.toAccountName ?? null,
+            }}
+            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
+            cashAccounts={cashAccounts}
+            investmentAccounts={investmentAccounts}
+            cashAccountSSOptions={cashAccountSSOptions}
+            investmentAccountSSOptions={investmentAccountSSOptions}
+            createAction={createAction}
+            editAction={editAction}
+          />
+        ) : (
+          <InvestmentFormModal
+            mode="edit"
+            entry={{
+              id: editableInvestmentEntry.id,
+              transactionId: editableInvestmentEntry.id,
+              date: fmtDate(editableInvestmentEntry.date),
+              confirmDate: fmtDate(editableInvestmentEntry.fundConfirmDate) || undefined,
+              amount: toNumber(editableInvestmentEntry.amount),
+              note: editableInvestmentEntry.note ?? null,
+              memo: editableInvestmentEntry.note ?? null,
+              fundCode: editableInvestmentEntry.fundCode ?? null,
+              fundName: displayFundName(editableInvestmentEntry) === "-" ? (editableInvestmentEntry.fundCode ?? null) : displayFundName(editableInvestmentEntry),
+              fundUnits: editableInvestmentEntry.fundUnits != null ? toNumber(editableInvestmentEntry.fundUnits) : null,
+              displayFundUnits: displayUnitsOf(editableInvestmentEntry),
+              fundNav: editableInvestmentEntry.fundNav != null ? toNumber(editableInvestmentEntry.fundNav) : null,
+              fundFee: editableInvestmentEntry.fundFee != null ? toNumber(editableInvestmentEntry.fundFee) : null,
+              fundProductType: editableInvestmentEntry.fundProductType ?? null,
+              fundSubtype: editableInvestmentEntry.fundSubtype ?? null,
+              metalTypeId: editableInvestmentEntry.metalTypeId ?? null,
+              metalTypeName: editableInvestmentEntry.metalTypeName ?? null,
+              metalUnitId: editableInvestmentEntry.metalUnitId ?? null,
+              metalUnitName: editableInvestmentEntry.metalUnitName ?? null,
+              metalQuantity: editableInvestmentEntry.metalQuantity != null ? toNumber(editableInvestmentEntry.metalQuantity) : null,
+              metalUnitPrice: editableInvestmentEntry.metalUnitPrice != null ? toNumber(editableInvestmentEntry.metalUnitPrice) : null,
+              metalFee: editableInvestmentEntry.metalFee != null ? toNumber(editableInvestmentEntry.metalFee) : null,
+              source: editableInvestmentEntry.source ?? null,
+              accountId: editableInvestmentEntry.accountId ?? null,
+              toAccountId: editableInvestmentEntry.toAccountId ?? null,
+              toAccountName: editableInvestmentEntry.toAccountName ?? null,
+              fundArrivalDate: fmtDate(editableInvestmentEntry.fundArrivalDate) || null,
+              fundArrivalAmount: editableInvestmentEntry.fundArrivalAmount != null ? toNumber(editableInvestmentEntry.fundArrivalAmount) : null,
+              realizedProfit: editableInvestmentEntry.realizedProfit != null ? toNumber(editableInvestmentEntry.realizedProfit) : null,
+            }}
+            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
+            accountId={selectedAccount?.id ?? ""}
+            accountProductType={selectedAccount?.investProductType ?? null}
+            defaults={{
+              confirmDays: d.confirmDaysMap[editableInvestmentEntry.fundCode ?? ""] ?? selectedAccount?.defaultConfirmDays ?? undefined,
+              feeRate: d.feeRateMap[`${editableInvestmentEntry.fundCode ?? ""}:${editableInvestmentEntry.fundSubtype === "redeem" ? "redeem" : "buy"}`] ?? null,
+            }}
+            cashAccounts={cashAccounts}
+            investmentAccounts={investmentAccounts}
+            cashAccountSSOptions={cashAccountSSOptions}
+            investmentAccountSSOptions={investmentAccountSSOptions}
+            metalTypes={metalTypes}
+            metalUnits={metalUnits}
+            nestedFieldData={nestedFieldData}
+            holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
+            allEntries={linkedCandidateEntries}
+            createAction={createAction}
+            editAction={editAction}
+            fundUnitsDecimals={fundUnitsDecimals}
+            hideTrigger
+          />
+        )}
+        <button
+          type="button"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            if (!isLinked) void linkDetailCashFlow(e);
+          }}
+          disabled={isLinked || linkingIds.has(String(e.id ?? ""))}
+          className={[
+            "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+            isLinked
+              ? "border-slate-200 text-slate-500"
+              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
+          ].join(" ")}
+          title={linkTitle}
+          aria-label={isLinked ? "已关联资金流水" : "未关联，点击建立资金侧关联"}
+        >
+          <LinkStatusIcon active={isLinked} title={linkTitle} />
+        </button>
+        <button
+          type="button"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            openDetailEdit(e.id);
+          }}
+          className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+          title="编辑"
+          aria-label="编辑"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => { void deleteDetailEntry(e); }}
+          disabled={singleDeletingIds.has(String(e.id ?? ""))}
+          className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除"}
+          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除"}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
     );
-
-  };
-
-
-
+  }, [
+    cashAccountSSOptions,
+    cashAccounts,
+    createAction,
+    d.allEntries,
+    d.confirmDaysMap,
+    d.feeRateMap,
+    d.positions,
+    deleteDetailEntry,
+    detailEditSignal,
+    displayFundName,
+    displayUnitsOf,
+    displayUnitsOfPlain,
+    editAction,
+    entryAssetKey,
+    entryBusinessLinkInfo,
+    fillNavAction,
+    fundUnitsDecimals,
+    handleEntryNavFilled,
+    isWealthAccount,
+    investmentAccountSSOptions,
+    investmentAccounts,
+    linkedCandidateEntries,
+    linkingIds,
+    metalTypes,
+    metalUnits,
+    nestedFieldData,
+    openDetailEdit,
+    props.wealthHoldingOptions,
+    selectedAccount?.defaultConfirmDays,
+    selectedAccount?.id,
+    selectedAccount?.investProductType,
+    singleDeletingIds,
+    linkDetailCashFlow,
+  ]);
   return (
 
     <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
@@ -3096,17 +3226,11 @@ export function FundShell(props: Props) {
 
       {/* 交易明细 */}
 
-      <div className={`panel-surface flex min-h-0 flex-col overflow-hidden ${detailCollapsed ? "shrink-0" : "flex-1"}`}>
+      <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
 
         <div className="panel-header shrink-0">
 
-          <button
-            type="button"
-            onClick={() => setDetailCollapsed((value) => !value)}
-            className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800"
-            title={detailCollapsed ? "展开交易明细" : "收起交易明细"}
-          >
-            {detailCollapsed ? <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" /> : <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />}
+          <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
             <span className="shrink-0">交易明细</span>
 
             {fundCode && (
@@ -3117,9 +3241,42 @@ export function FundShell(props: Props) {
 
             <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
 
-          </button>
+          </div>
 
-          <div className={`${detailCollapsed ? "hidden" : "flex"} min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0`}>
+          <div className="flex min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
+
+            {selectedDetailCount > 0 ? (
+              <div className="flex items-center gap-1">
+                <span
+                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 font-medium leading-6 tabular-nums text-blue-700"
+                  title={`当前筛选结果已选 ${selectedDetailCount} 条`}
+                >
+                  已选 {selectedDetailCount} 条
+                </span>
+
+                <BatchReplacePopoverButton
+                  fields={batchFields}
+                  targetCount={batchTargetIds.length}
+                  targetLabel="已选"
+                  buttonTitle="编辑"
+                  buttonClassName="h-6 w-6 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center [&_svg]:h-3.5 [&_svg]:w-3.5"
+                  onApply={applyBatch}
+                />
+
+                <button
+                  type="button"
+                  onClick={applyBatchDelete}
+                  disabled={batchTargetIds.length === 0 || batchDeleting}
+                  className="h-6 w-6 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 flex items-center justify-center"
+                  title="删除"
+                  aria-label="删除"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+
+                <span className="h-4 w-px bg-slate-200" />
+              </div>
+            ) : null}
 
             {isWealthAccount ? (
               <button
@@ -3141,37 +3298,6 @@ export function FundShell(props: Props) {
               <Upload className="w-3 h-3" />导入
 
             </Link>
-
-            <span
-              className={`h-6 rounded border px-2 leading-6 tabular-nums ${
-                selectedDetailCount > 0
-                  ? "border-blue-200 bg-blue-50 font-medium text-blue-700"
-                  : "border-slate-200 bg-white text-slate-400"
-              }`}
-              title={`当前筛选结果已选 ${selectedDetailCount} 条`}
-            >
-              已选 {selectedDetailCount} 条
-            </span>
-
-            {hasAnyFilters && (
-
-              <button
-
-                type="button"
-
-                onClick={clearAllFilters}
-
-                className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-
-                title="清除筛选条件"
-
-              >
-
-                清除筛选
-
-              </button>
-
-            )}
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
 
@@ -3276,32 +3402,6 @@ export function FundShell(props: Props) {
 
             </div>
 
-            <button
-
-              type="button"
-
-              onClick={() => {
-
-                setActiveFilterColumn(null);
-
-                setColumnFilters({});
-
-                setDateFrom(""); setDateTo("");
-
-                setFundPage(1);
-
-              }}
-
-              className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-
-              title="清空表头筛选"
-
-            >
-
-              清空筛选
-
-            </button>
-
             <span className="text-slate-300">|</span>
 
             {[10, 20, 40].map((n) => (
@@ -3348,8 +3448,6 @@ export function FundShell(props: Props) {
 
         </div>
 
-        {detailCollapsed ? null : (
-        <>
         <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2 md:hidden">
           {paged.length > 0 ? (
             <div className="space-y-2.5">
@@ -3504,817 +3602,36 @@ export function FundShell(props: Props) {
         </div>
         <div
           ref={detailTableViewportRef}
-          className={`hidden flex-1 min-h-0 pb-10 md:block ${needsDetailHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-auto overscroll-contain`}
+          className="hidden flex-1 min-h-0 pb-10 md:block"
         >
 
-            <table
-              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
-              style={{ minWidth: detailMinTableWidth, width: detailLayout.tableWidth }}
-            >
-              <colgroup>
-                {visibleDetailCols.map(([key, fallback]) => (
-                  <col key={key} style={{ width: detailLayout.colWidths[key] ?? colWidth("details", key, fallback) }} />
-                ))}
-              </colgroup>
-
-            <thead className="sticky top-0 z-10 bg-white">
-
-              <tr>
-
-                <th className="relative select-none align-middle text-left text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
-
-                  <div className="flex h-7 items-center justify-center">
-
-                    <input
-
-                      type="checkbox"
-
-                      checked={filteredByColumns.length > 0 && filteredByColumns.every((e: any) => selectedIds.has(e.id))}
-
-                      ref={(input) => {
-
-                        if (!input) return;
-
-                        const checked = filteredByColumns.length > 0 && filteredByColumns.every((e: any) => selectedIds.has(e.id));
-
-                        const some = filteredByColumns.some((e: any) => selectedIds.has(e.id));
-
-                        input.indeterminate = !checked && some;
-
-                      }}
-
-                      onChange={() => {
-
-                        setSelectedIds((prev) => {
-
-                          const next = new Set(prev);
-
-                          const ids = filteredByColumns.map((e: any) => e.id);
-
-                          const allSelected = ids.length > 0 && ids.every((id: string) => next.has(id));
-
-                          ids.forEach((id: string) => {
-
-                            if (allSelected) next.delete(id);
-
-                            else next.add(id);
-
-                          });
-
-                          return next;
-
-                        });
-
-                      }}
-
-                      className="h-3.5 w-3.5 accent-blue-600"
-
-                      title="选择当前筛选结果"
-
-                      aria-label="选择当前筛选结果"
-
-                    />
-
-                  </div>
-
-                  <ResizeGrip table="details" colKey="select" width={colWidth("details", "select", 44)} minWidth={36} />
-
-                </th>
-
-                {isDetailColumnVisible("date") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">
-
-                  <div className="relative inline-flex items-center gap-1" ref={dateFilterRef}>
-
-                    <span>申请日期</span>
-
-                    <button
-
-                      type="button"
-
-                      onClick={(e) => { e.stopPropagation(); setDateFilterOpen((v) => !v); }}
-
-                      className={`h-5 w-4 text-[10px] leading-none ${(dateFrom || dateTo) ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-
-                      title="按日期范围筛选"
-
-                    >
-
-                      ▼
-
-                    </button>
-
-                    {dateFilterOpen && (
-
-                      <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
-
-                        <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-
-                          <span className="text-xs font-medium text-slate-700">日期筛选</span>
-
-                          <button type="button" onClick={() => setDateFilterOpen(false)} className="text-xs text-slate-400 hover:text-slate-700">关闭</button>
-
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-
-                          <div className="space-y-1">
-
-                            <div className="text-[10px] text-slate-500">从（≥）</div>
-
-                            <DateStepper
-                              value={dateFrom}
-
-                              onChange={(value) => { setFundPage(1); setDateFrom(value); }}
-
-                              onKeyDown={(ev) => {
-
-                                if (ev.key === "Enter") {
-
-                                  ev.preventDefault();
-
-                                  setDateFilterOpen(false);
-
-                                }
-
-                              }}
-
-                              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-
-                            />
-
-                          </div>
-
-                          <div className="space-y-1">
-
-                            <div className="text-[10px] text-slate-500">到（≤）</div>
-
-                            <DateStepper
-                              value={dateTo}
-
-                              onChange={(value) => { setFundPage(1); setDateTo(value); }}
-
-                              onKeyDown={(ev) => {
-
-                                if (ev.key === "Enter") {
-
-                                  ev.preventDefault();
-
-                                  setDateFilterOpen(false);
-
-                                }
-
-                              }}
-
-                              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-
-                            />
-
-                          </div>
-
-                        </div>
-
-                        <div className="mt-3 flex justify-end gap-2">
-
-                          <button
-
-                            type="button"
-
-                            onClick={() => setDateFilterOpen(false)}
-
-                            className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-
-                          >
-
-                            确认
-
-                          </button>
-
-                          <button
-
-                            type="button"
-
-                            onClick={() => { setFundPage(1); setDateFrom(""); setDateTo(""); setDateFilterOpen(false); }}
-
-                            className="h-8 px-3 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-
-                          >
-
-                            清空
-
-                          </button>
-
-                        </div>
-
-                      </div>
-
-                    )}
-
-                  </div>
-
-                  <ResizeGrip table="details" colKey="date" width={colWidth("details", "date", 92)} minWidth={76} />
-
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("arrivalDate") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  到账日期
-                  <ResizeGrip table="details" colKey="arrivalDate" width={colWidth("details", "arrivalDate", 92)} minWidth={76} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("cashAccount") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {renderColumnFilter("cashAccount", "资金账户")}
-                  <ResizeGrip table="details" colKey="cashAccount" width={colWidth("details", "cashAccount", 132)} minWidth={92} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("fund") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {detailNameLabel}
-                  <ResizeGrip table="details" colKey="fund" width={colWidth("details", "fund", 156)} minWidth={110} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("nav") ? (
-                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {navColumnLabel}
-                  <ResizeGrip table="details" colKey="nav" width={colWidth("details", "nav", 86)} minWidth={76} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("units") ? (
-                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {isMetalAccount ? "数量" : "份额"}
-                  <ResizeGrip table="details" colKey="units" width={colWidth("details", "units", 84)} minWidth={64} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("remainingUnits") ? (
-                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  剩余份额
-                  <ResizeGrip table="details" colKey="remainingUnits" width={colWidth("details", "remainingUnits", 92)} minWidth={72} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("subtype") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {renderColumnFilter("subtype", "交易类型")}
-                  <ResizeGrip table="details" colKey="subtype" width={colWidth("details", "subtype", 88)} minWidth={72} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("amount") ? (
-                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                  {isWealthAccount ? "入账/出账金额" : "金额"}
-                  <ResizeGrip table="details" colKey="amount" width={colWidth("details", "amount", 76)} minWidth={58} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("profit") ? (
-                <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-2 py-2 border-b border-slate-200">
-                  收益
-                  <ResizeGrip table="details" colKey="profit" width={colWidth("details", "profit", 76)} minWidth={58} />
-                </th>
-                ) : null}
-
-                {isDetailColumnVisible("status") ? (
-                <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                  {renderColumnFilter("status", "状态")}
-                  <ResizeGrip table="details" colKey="status" width={colWidth("details", "status", 72)} minWidth={58} />
-                </th>
-                ) : null}
-
-                <th className="relative select-none align-middle text-right text-xs font-semibold text-slate-600 px-2 py-1 border-b border-slate-200">
-
-                  <div className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1">
-
-                    <BatchReplacePopoverButton
-
-                      fields={batchFields}
-
-                      targetCount={batchTargetIds.length}
-
-                      targetLabel="已勾选"
-
-                      buttonTitle="编辑按钮"
-
-                      buttonClassName="h-7 w-7 rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
-
-                      onApply={applyBatch}
-
-                    />
-
-                    <button
-
-                      type="button"
-
-                      onClick={applyBatchDelete}
-
-                      disabled={batchTargetIds.length === 0 || batchDeleting}
-
-                      className="h-7 w-7 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
-
-                      title={batchTargetIds.length === 0 ? "请先勾选记录" : "删除按钮"}
-
-                      aria-label={batchTargetIds.length === 0 ? "请先勾选记录再批量删除" : "删除按钮"}
-
-                    >
-
-                      <Trash2 className="h-3.5 w-3.5" />
-
-                    </button>
-
-                  </div>
-
-                  <ResizeGrip table="details" colKey="actions" width={colWidth("details", "actions", 112)} minWidth={92} />
-
-                </th>
-
-              </tr>
-
-            </thead>
-
-            <tbody className="text-sm">
-
-              {paged.length > 0 ? paged.map((e: any) => {
-
-                const amount = detailAmountOf(e);
-
-                const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
-
-                const units = displayUnitsOf(e);
-
-                const info = fl(e.fundSubtype, e.source);
-                const detailSubtypeLabel = isSingleNormalFundScope ? compactFundSubtypeLabel(e, info.label) : info.label;
-
-                const selected = selectedIds.has(e.id);
-                const isRegularInvestRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
-                const linkedBuyForRefund = isRegularInvestRefund
-                  ? (() => {
-                      const target: RefundLinkableEntry = {
-                        id: String(e.id ?? ""),
-                        date: fmtDate(e.date),
-                        createdAt: e.createdAt,
-                        fundConfirmDate: fmtDate(e.fundConfirmDate),
-                        fundArrivalDate: fmtDate(e.fundArrivalDate),
-                        accountId: e.accountId ?? null,
-                        toAccountId: e.toAccountId ?? null,
-                        fundCode: entryAssetKey(e),
-                        fundSubtype: e.fundSubtype ?? null,
-                        fundUnits: displayUnitsOfPlain(e),
-                        source: e.source ?? null,
-                        fundSourceEntryId: e.fundSourceEntryId ?? null,
-                        amount: toNumber(e.amount),
-                      };
-                      const linked = findLinkedEntries(target, linkedCandidateEntries);
-                      const linkedBuyId = linked.linkedBuys[0]?.id;
-                      return linkedBuyId ? d.allEntries.find((item: any) => String(item.id ?? "") === linkedBuyId) ?? null : null;
-                    })()
-                  : null;
-                const editableInvestmentEntry = linkedBuyForRefund ?? e;
-                const businessLinkInfo = entryBusinessLinkInfo(e);
-                const businessLinkTitle = businessLinkInfo.active
-                  ? `已关联${businessLinkInfo.labels.length ? `：${businessLinkInfo.labels.join("、")}` : ""}`
-                  : "未关联";
-
-                return (
-
-                  <tr
-
-                    key={e.id}
-
-                    className={`cursor-pointer ${selected ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`}
-
-                    onClick={() => setSelectedIds((prev) => {
-
-                      const next = new Set(prev);
-
-                      if (next.has(e.id)) next.delete(e.id);
-
-                      else next.add(e.id);
-
-                      return next;
-
-                    })}
-
-                    onDoubleClick={() => openDetailEdit(e.id)}
-
-                  >
-
-                    <td className="w-10 align-middle px-2 py-1 border-b border-slate-100 text-xs">
-
-                      <div className="flex h-7 items-center justify-center">
-
-                        <input
-
-                          type="checkbox"
-
-                          checked={selectedIds.has(e.id)}
-
-                          onClick={(ev) => ev.stopPropagation()}
-
-                          onDoubleClick={(ev) => ev.stopPropagation()}
-
-                          onChange={() => setSelectedIds((prev) => {
-
-                            const next = new Set(prev);
-
-                            if (next.has(e.id)) next.delete(e.id);
-
-                            else next.add(e.id);
-
-                            return next;
-
-                          })}
-
-                          className="h-3.5 w-3.5 accent-blue-600"
-
-                          aria-label={`选择${isWealthAccount ? "理财" : "基金"}交易明细`}
-
-                        />
-
-                      </div>
-
-                    </td>
-
-                    {isDetailColumnVisible("date") ? (
-                    <td className="px-4 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-600">{fundApplyDateOf(e)}</td>
-                    ) : null}
-
-                    {isDetailColumnVisible("arrivalDate") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs tabular-nums text-slate-500">
-
-                      {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
-
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("cashAccount") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-500">
-
-                      {(() => {
-
-                        const info = cashAccountInfoOf(e);
-
-                        if (!info || info.label === "(空)") return <span className="text-slate-300">-</span>;
-
-                        return (
-
-                          <div className="min-w-0">
-
-                            <div className="truncate text-slate-600" title={info.label}>{info.label}</div>
-
-                          </div>
-
-                        );
-
-                      })()}
-
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("fund") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-700">
-                      <div className="truncate" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
-                        {displayFundName(e)}{!isWealthAccount && e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
-                      </div>
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("nav") ? (
-                    <td className="overflow-hidden whitespace-nowrap px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{nav != null ? nav.toFixed(4) : <span className="text-slate-400">-</span>}</td>
-                    ) : null}
-
-                    {isDetailColumnVisible("units") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums">{units != null ? formatFundUnits(units) : <span className="text-slate-400">-</span>}</td>
-                    ) : null}
-
-                    {isDetailColumnVisible("remainingUnits") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-right text-xs tabular-nums text-slate-600">
-                      {e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : <span className="text-slate-400">-</span>}
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("subtype") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs"><span className={`px-1 py-0.5 rounded text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>{detailSubtypeLabel}</span></td>
-                    ) : null}
-
-                    {isDetailColumnVisible("amount") ? (
-                    <td className="px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums text-slate-700">
-
-                      {(() => {
-
-                        const absAmt = formatMoney(Math.abs(amount));
-
-                        if (e.source === "dividend" || e.fundSubtype === "dividend_cash") return <span className={`font-medium ${upCls}`}>+{absAmt}</span>;
-
-                        return absAmt;
-
-                      })()}
-
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("profit") ? (
-                    <td className={`px-2 py-1 border-b border-slate-100 text-right text-xs tabular-nums ${pnl(toNumber(e.realizedProfit))}`}>
-
-                      {e.realizedProfit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash") ? formatMoney(toNumber(e.realizedProfit)) : <span className="text-slate-300">-</span>}
-
-                    </td>
-                    ) : null}
-
-                    {isDetailColumnVisible("status") ? (
-                    <td className="px-3 py-1 border-b border-slate-100 text-xs text-slate-600">
-
-                      {(() => {
-
-                        const s = statusOf(e);
-
-                        if (s === "待确认") return <span className="text-amber-600">{s}</span>;
-
-                        if (s === "暂停申购") return <span className="text-rose-600">{s}</span>;
-
-                        if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
-
-                        if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
-
-                        return <span className="text-emerald-700">{s}</span>;
-
-                      })()}
-
-                    </td>
-                    ) : null}
-
-                    <td className="w-[112px] align-middle px-2 py-1 border-b border-slate-100">
-
-                      <div
-                        className="flex h-7 min-w-[92px] flex-nowrap items-center justify-end gap-1"
-                        onClick={(ev) => ev.stopPropagation()}
-                        onDoubleClick={(ev) => ev.stopPropagation()}
-                      >
-
-                        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
-
-                        {e.fundProductType === "wealth" ? (
-
-                          <WealthFormModal
-
-                            mode="edit"
-
-                            accountId={selectedAccount?.id ?? ""}
-
-                            entry={{
-
-                              id: e.id,
-                              transactionId: e.id,
-                              cashEntryId: e.cashEntryId ?? null,
-                              businessTransactionId: e.businessTransactionId ?? null,
-
-                              date: fmtDate(e.date),
-
-                              amount: toNumber(e.amount), note: e.note ?? null,
-
-                              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
-
-                              fundProductType: e.fundProductType ?? null,
-
-                              fundSubtype: e.fundSubtype ?? null,
-
-                              wealthProductId: e.wealthProductId ?? null,
-
-                              fundUnits: displayUnitsOf(e) ?? (e.fundUnits != null ? toNumber(e.fundUnits) : null),
-
-                              fundNav: e.fundNav != null ? toNumber(e.fundNav) : null,
-
-                              fundArrivalDate: fmtDate(e.fundArrivalDate) || null,
-
-                              fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
-
-                              depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
-
-                              accountId: e.accountId ?? null,
-
-                              toAccountId: e.toAccountId ?? null,
-
-                              toAccountName: e.toAccountName ?? null,
-
-                            }}
-
-                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
-
-                            cashAccounts={cashAccounts}
-
-                            investmentAccounts={investmentAccounts}
-
-                            cashAccountSSOptions={cashAccountSSOptions}
-
-                            investmentAccountSSOptions={investmentAccountSSOptions}
-
-                            wealthHoldingOptions={props.wealthHoldingOptions ?? []}
-
-                            nestedFieldData={nestedFieldData}
-
-                            createAction={createAction}
-
-                            editAction={editAction}
-
-                          />
-
-                        ) : e.fundProductType === "deposit" ? (
-
-                          <DepositFormModal
-
-                            mode="edit"
-
-                            accountId={selectedAccount?.id ?? ""}
-
-                            entry={{
-
-                              id: e.id, transactionId: e.id,
-
-                              date: fmtDate(e.date),
-
-                              amount: toNumber(e.amount), note: e.note ?? null,
-
-                              fundName: displayFundName(e) === "-" ? null : displayFundName(e),
-
-                              fundProductType: e.fundProductType ?? null,
-
-                              fundSubtype: e.fundSubtype ?? null,
-
-                              accountId: e.accountId ?? null,
-
-                              toAccountId: e.toAccountId ?? null,
-
-                              toAccountName: e.toAccountName ?? null,
-
-                            }}
-
-                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
-
-                            cashAccounts={cashAccounts}
-
-                            investmentAccounts={investmentAccounts}
-
-                            cashAccountSSOptions={cashAccountSSOptions}
-
-                            investmentAccountSSOptions={investmentAccountSSOptions}
-
-                            createAction={createAction}
-
-                            editAction={editAction}
-
-                          />
-
-                        ) : (
-
-                          <InvestmentFormModal
-
-                            mode="edit"
-
-                            entry={{
-
-                              id: editableInvestmentEntry.id, transactionId: editableInvestmentEntry.id,
-
-                              date: fmtDate(editableInvestmentEntry.date),
-
-                              confirmDate: fmtDate(editableInvestmentEntry.fundConfirmDate) || undefined,
-
-                              amount: toNumber(editableInvestmentEntry.amount), note: editableInvestmentEntry.note ?? null, memo: editableInvestmentEntry.note ?? null,
-
-                              fundCode: editableInvestmentEntry.fundCode ?? null, fundName: displayFundName(editableInvestmentEntry) === "-" ? (editableInvestmentEntry.fundCode ?? null) : displayFundName(editableInvestmentEntry),
-
-                              fundUnits: editableInvestmentEntry.fundUnits != null ? toNumber(editableInvestmentEntry.fundUnits) : null,
-                              displayFundUnits: displayUnitsOf(editableInvestmentEntry),
-
-                              fundNav: editableInvestmentEntry.fundNav != null ? toNumber(editableInvestmentEntry.fundNav) : null,
-
-                              fundFee: editableInvestmentEntry.fundFee != null ? toNumber(editableInvestmentEntry.fundFee) : null,
-
-                              fundProductType: editableInvestmentEntry.fundProductType ?? null, fundSubtype: editableInvestmentEntry.fundSubtype ?? null,
-                              metalTypeId: editableInvestmentEntry.metalTypeId ?? null,
-                              metalTypeName: editableInvestmentEntry.metalTypeName ?? null,
-                              metalUnitId: editableInvestmentEntry.metalUnitId ?? null,
-                              metalUnitName: editableInvestmentEntry.metalUnitName ?? null,
-                              metalQuantity: editableInvestmentEntry.metalQuantity != null ? toNumber(editableInvestmentEntry.metalQuantity) : null,
-                              metalUnitPrice: editableInvestmentEntry.metalUnitPrice != null ? toNumber(editableInvestmentEntry.metalUnitPrice) : null,
-                              metalFee: editableInvestmentEntry.metalFee != null ? toNumber(editableInvestmentEntry.metalFee) : null,
-
-                              source: editableInvestmentEntry.source ?? null,
-
-                              accountId: editableInvestmentEntry.accountId ?? null, toAccountId: editableInvestmentEntry.toAccountId ?? null, toAccountName: editableInvestmentEntry.toAccountName ?? null,
-
-                              fundArrivalDate: fmtDate(editableInvestmentEntry.fundArrivalDate) || null,
-
-                              fundArrivalAmount: editableInvestmentEntry.fundArrivalAmount != null ? toNumber(editableInvestmentEntry.fundArrivalAmount) : null,
-
-                              realizedProfit: editableInvestmentEntry.realizedProfit != null ? toNumber(editableInvestmentEntry.realizedProfit) : null,
-
-                            }}
-
-                            openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
-
-                            accountId={selectedAccount?.id ?? ""}
-
-                            accountProductType={selectedAccount?.investProductType ?? null}
-
-                            defaults={{
-
-                              confirmDays: d.confirmDaysMap[editableInvestmentEntry.fundCode ?? ""] ?? selectedAccount?.defaultConfirmDays ?? undefined,
-
-                              feeRate: d.feeRateMap[`${editableInvestmentEntry.fundCode ?? ""}:${editableInvestmentEntry.fundSubtype === "redeem" ? "redeem" : "buy"}`] ?? null,
-
-                            }}
-
-                            cashAccounts={cashAccounts}
-
-                            investmentAccounts={investmentAccounts}
-
-                            cashAccountSSOptions={cashAccountSSOptions}
-
-                            investmentAccountSSOptions={investmentAccountSSOptions}
-                            metalTypes={metalTypes}
-                            metalUnits={metalUnits}
-
-                            nestedFieldData={nestedFieldData}
-
-                            holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
-
-                            allEntries={linkedCandidateEntries}
-
-                            createAction={createAction}
-
-                            editAction={editAction}
-                            fundUnitsDecimals={fundUnitsDecimals}
-                            hideTrigger
-
-                          />
-
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            if (!businessLinkInfo.active) void linkDetailCashFlow(e);
-                          }}
-                          disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
-                          className={[
-                            "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
-                            businessLinkInfo.active
-                              ? "border-slate-200 text-slate-500"
-                              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
-                          ].join(" ")}
-                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? "正在建立资金侧关联..." : "未关联，点击建立资金侧关联"}
-                          aria-label={businessLinkInfo.active ? businessLinkTitle : "未关联，点击建立资金侧关联"}
-                        >
-                          <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            openDetailEdit(e.id);
-                          }}
-                          className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-                          title="编辑按钮"
-                          aria-label="编辑按钮"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => { void deleteDetailEntry(e); }}
-                          disabled={singleDeletingIds.has(String(e.id ?? ""))}
-                          className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-                          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
-                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-
-                      </div>
-
-                    </td>
-
-                  </tr>
-
-                );
-
-              }) : (<tr><td className="px-4 py-6 text-xs text-slate-500" colSpan={visibleDetailCols.length}>{fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}</td></tr>)}
-
-            </tbody>
-
-          </table>
+          <AdvancedDataTable
+            storageKey="mmh_fund_shell_detail_advanced_table_v1"
+            resetKey={`${accountId}:${fundCode || "all"}:${showCleared ? "cleared" : "detail"}`}
+            columns={detailAdvancedColumns}
+            rows={paged}
+            rowKey={(entry) => String(entry.id)}
+            minTableWidth={detailMinTableWidth}
+            emptyText={fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+            selectable
+            selectOnRowClick
+            selectAllScope="renderedRows"
+            selectedKeys={selectedIds}
+            onSelectionChange={setSelectedIds}
+            onRowDoubleClick={(entry) => openDetailEdit(entry.id)}
+            rowActions={detailRowActions}
+            rowActionsWidth={112}
+            rowActionsMinWidth={92}
+            rowClassName={(entry) => (selectedIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
+            fillHeight
+            compactRows
+            toolbarMode="none"
+            showFilters={false}
+            showColumnVisibilityButton={false}
+            sortable={false}
+          />
 
         </div>
-        </>
-        )}
 
       </div>
 

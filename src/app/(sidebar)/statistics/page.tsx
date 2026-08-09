@@ -6,10 +6,8 @@ import { toNumber } from "@/lib/date-utils";
 import { Suspense } from "react";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
-import { InvestmentProfitReport } from "@/components/InvestmentProfitReport";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { readableTagWhere } from "@/lib/server/tag-scope";
-import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/server/investment-profit-report";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
@@ -57,13 +55,6 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const thisYear = now.getFullYear();
   const selectedYear = typeof params?.year === "string" ? parseInt(params.year, 10) : thisYear;
   const year = Number.isFinite(selectedYear) && selectedYear >= 2000 && selectedYear <= 2100 ? selectedYear : thisYear;
-  const reportType = params?.report === "investment-profit" ? "investment-profit" : "income-expense";
-  const profitPeriod: InvestmentProfitPeriod =
-    params?.profitPeriod === "month" || params?.profitPeriod === "year" ? params.profitPeriod : "day";
-  const selectedProfitMonth = typeof params?.month === "string" ? parseInt(params.month, 10) : now.getMonth() + 1;
-  const profitMonth = Number.isFinite(selectedProfitMonth) && selectedProfitMonth >= 1 && selectedProfitMonth <= 12
-    ? Math.floor(selectedProfitMonth)
-    : now.getMonth() + 1;
 
   const selectedAccountIds = typeof params?.accounts === "string" && params.accounts.trim()
     ? params.accounts.split(",").map(s => s.trim()).filter(Boolean)
@@ -336,15 +327,6 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   // ── P&L 列表按日期倒序 ──
   pnlItems.sort((a, b) => b.date.localeCompare(a.date));
-  const investmentProfitReport = reportType === "investment-profit"
-    ? await loadInvestmentProfitReport(ctx, {
-        period: profitPeriod,
-        year,
-        month: profitMonth,
-        accountIds: selectedAccountIds,
-        tagIds: selectedTagIds,
-      })
-    : null;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -360,27 +342,16 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
-        {investmentProfitReport ? (
-          <InvestmentProfitReport
-            period={profitPeriod}
-            year={year}
-            month={profitMonth}
-            rows={investmentProfitReport.rows}
-            totals={investmentProfitReport.totals}
-            isRedUp={isRedUp}
-          />
-        ) : (
-          <StatisticsCharts
-            monthData={monthData}
-            incomeCats={incomeCats}
-            expenseCats={expenseCats}
-            incomeTagGroups={incomeTagGroups}
-            expenseTagGroups={expenseTagGroups}
-            pnlList={pnlItems}
-            isRedUp={isRedUp}
-          />
-        )}
-        {reportType === "income-expense" && totalFloatingPnL !== 0 && (
+        <StatisticsCharts
+          monthData={monthData}
+          incomeCats={incomeCats}
+          expenseCats={expenseCats}
+          incomeTagGroups={incomeTagGroups}
+          expenseTagGroups={expenseTagGroups}
+          pnlList={pnlItems}
+          isRedUp={isRedUp}
+        />
+        {totalFloatingPnL !== 0 && (
           <div className="mt-3 text-xs text-slate-500 text-right">
             * 当前持仓未实现浮盈 {totalFloatingPnL >= 0 ? "+" : ""}{totalFloatingPnL.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}，未计入综合盈亏
           </div>

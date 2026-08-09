@@ -55,11 +55,12 @@ export async function createLedgerWithDefaults(
 
   const defaultAccounts: Array<{
     name: string;
-    kind: "cash" | "bank_debit" | "investment";
+    kind: "cash" | "bank_debit" | "bank_credit" | "investment";
     investProductType?: "fund";
   }> = [
-    { name: "现金钱包", kind: "cash" },
-    { name: "银行储蓄", kind: "bank_debit" },
+    { name: "现金账户", kind: "cash" },
+    { name: "借记卡", kind: "bank_debit" },
+    { name: "信用卡", kind: "bank_credit" },
     { name: "投资账户", kind: "investment", investProductType: "fund" },
   ];
 
@@ -68,6 +69,7 @@ export async function createLedgerWithDefaults(
       data: {
         name: account.name,
         kind: account.kind,
+        debtDirection: account.kind === "bank_credit" ? "payable" : null,
         groupId: defaultOwner.id,
         investProductType: account.investProductType,
         tradingCalendar: getDefaultTradingCalendarForAccount(account.kind, account.investProductType) as any,

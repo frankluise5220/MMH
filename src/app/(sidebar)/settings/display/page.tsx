@@ -28,19 +28,6 @@ import { PRODUCT_INTROS } from "@/lib/product-intro";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
-type FxRateViewRow = {
-  fromCurrency: string;
-  toCurrency: string;
-  rate: number | null;
-  rateDate: string | null;
-  source: string | null;
-  missing: boolean;
-};
-
-function todayDateOnly() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 const TIME_ZONE_OPTIONS = [
   { value: "Asia/Shanghai", label: "北京时间 (Asia/Shanghai)" },
   { value: "Asia/Hong_Kong", label: "香港 (Asia/Hong_Kong)" },
@@ -138,12 +125,7 @@ export default function DisplaySettingsPage() {
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [loadingFxRates, setLoadingFxRates] = useState(false);
   const [refreshingFxRates, setRefreshingFxRates] = useState(false);
-  const [fxRates, setFxRates] = useState<FxRateViewRow[]>([]);
   const [fxRateMessage, setFxRateMessage] = useState("");
-  const [manualFxCurrency, setManualFxCurrency] = useState("USD");
-  const [manualFxRate, setManualFxRate] = useState("");
-  const [manualFxRateDate, setManualFxRateDate] = useState(todayDateOnly);
-  const [savingManualFxRate, setSavingManualFxRate] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingDisplayLanguage, setSavingDisplayLanguage] = useState(false);
   const [savingCreditCardSidebarDisplayName, setSavingCreditCardSidebarDisplayName] = useState(false);
@@ -181,9 +163,8 @@ export default function DisplaySettingsPage() {
       const data = await res.json();
       if (!data?.ok) throw new Error(data?.error || "汇率查询失败");
       if (data.baseCurrency) setBaseCurrency(String(data.baseCurrency).toUpperCase());
-      setFxRates(Array.isArray(data.rates) ? data.rates : []);
       const missing = Array.isArray(data.rates)
-        ? data.rates.filter((rate: FxRateViewRow) => rate.missing).map((rate: FxRateViewRow) => rate.fromCurrency)
+        ? data.rates.filter((rate: { missing?: boolean }) => rate.missing).map((rate: { fromCurrency?: string }) => rate.fromCurrency).filter(Boolean)
         : [];
       setFxRateMessage(refresh
         ? missing.length > 0
@@ -270,42 +251,6 @@ export default function DisplaySettingsPage() {
       setBaseCurrency(prev);
     } finally {
       setSavingBaseCurrency(false);
-    }
-  }
-
-  async function saveManualFxRate() {
-    const rate = Number(String(manualFxRate ?? "").replace(/,/g, "").trim());
-    if (!manualFxCurrency || manualFxCurrency === baseCurrency) {
-      setFxRateMessage("请选择需要折算的外币");
-      return;
-    }
-    if (!Number.isFinite(rate) || rate <= 0) {
-      setFxRateMessage("请填写大于 0 的汇率");
-      return;
-    }
-    setSavingManualFxRate(true);
-    setFxRateMessage("正在保存手工汇率...");
-    try {
-      const res = await fetch("/api/v1/fx-rates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fromCurrency: manualFxCurrency,
-          toCurrency: baseCurrency,
-          rate,
-          rateDate: manualFxRateDate,
-          source: "manual",
-        }),
-      });
-      const data = await res.json();
-      if (!data?.ok) throw new Error(data?.error || "汇率保存失败");
-      setManualFxRate("");
-      setFxRateMessage("手工汇率已保存");
-      await loadFxRates({ toCurrency: baseCurrency });
-    } catch (error) {
-      setFxRateMessage(error instanceof Error ? error.message : "汇率保存失败");
-    } finally {
-      setSavingManualFxRate(false);
     }
   }
 
@@ -419,19 +364,6 @@ export default function DisplaySettingsPage() {
 
   const sidebarPreview = useMemo(() => previewCreditCardName(creditCardSidebarDisplayName), [creditCardSidebarDisplayName]);
   const tablePreview = useMemo(() => previewCreditCardName(creditCardDisplayName), [creditCardDisplayName]);
-  const visibleFxRates = useMemo(() => (
-    fxRates
-      .filter((rate) => rate.fromCurrency !== rate.toCurrency)
-      .sort((a, b) => a.fromCurrency.localeCompare(b.fromCurrency))
-  ), [fxRates]);
-  const manualFxCurrencyOptions = useMemo(() => {
-    const values = new Set([
-      ...BASE_CURRENCY_OPTIONS.map((option) => option.value),
-      ...fxRates.map((rate) => rate.fromCurrency),
-    ]);
-    values.delete(baseCurrency);
-    return Array.from(values).sort();
-  }, [baseCurrency, fxRates]);
 
   const colorOptions: { value: ColorScheme; label: string; desc: string; preview: { up: string; down: string } }[] = [
     {
@@ -561,85 +493,6 @@ export default function DisplaySettingsPage() {
                 {refreshingFxRates ? "获取中" : "获取汇率"}
               </button>
               {fxRateMessage ? <span className="text-xs text-slate-500">{fxRateMessage}</span> : null}
-            </div>
-          </SettingRow>
-          <SettingRow title="汇率表" desc="显示账户涉及币种折算到当前币种的缓存汇率；缺失时不会参与侧栏和统计合计。" wide>
-            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">原币种</th>
-                    <th className="px-3 py-2 font-medium">当前币种</th>
-                    <th className="px-3 py-2 text-right font-medium">汇率</th>
-                    <th className="px-3 py-2 font-medium">日期</th>
-                    <th className="px-3 py-2 font-medium">来源</th>
-                    <th className="px-3 py-2 font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {loadingFxRates ? (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-5 text-center text-slate-400">正在读取汇率...</td>
-                    </tr>
-                  ) : visibleFxRates.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-5 text-center text-slate-400">暂无需要折算的外币账户</td>
-                    </tr>
-                  ) : visibleFxRates.map((rate) => (
-                    <tr key={`${rate.fromCurrency}-${rate.toCurrency}`} className={rate.missing ? "bg-amber-50/70" : "bg-white"}>
-                      <td className="px-3 py-2 font-medium text-slate-700">{rate.fromCurrency}</td>
-                      <td className="px-3 py-2 text-slate-600">{rate.toCurrency}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">{rate.rate == null ? "-" : Number(rate.rate).toFixed(6)}</td>
-                      <td className="px-3 py-2 tabular-nums text-slate-500">{rate.rateDate ?? "-"}</td>
-                      <td className="px-3 py-2 text-slate-500">{rate.source ?? "-"}</td>
-                      <td className={`px-3 py-2 ${rate.missing ? "text-amber-700" : "text-emerald-700"}`}>
-                        {rate.missing ? "缺少汇率" : "可折算"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="min-w-[120px] space-y-1">
-                <div className="text-[11px] font-medium text-slate-500">原币种</div>
-                <select
-                  value={manualFxCurrency}
-                  onChange={(event) => setManualFxCurrency(event.target.value)}
-                  className="form-input h-9 text-sm"
-                >
-                  {manualFxCurrencyOptions.map((currency) => (
-                    <option key={`manual-fx-${currency}`} value={currency}>{currency}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="min-w-[160px] space-y-1">
-                <div className="text-[11px] font-medium text-slate-500">汇率</div>
-                <input
-                  value={manualFxRate}
-                  onChange={(event) => setManualFxRate(event.target.value)}
-                  className="form-input h-9 text-sm"
-                  placeholder={`1 ${manualFxCurrency} = ? ${baseCurrency}`}
-                  inputMode="decimal"
-                />
-              </div>
-              <div className="min-w-[150px] space-y-1">
-                <div className="text-[11px] font-medium text-slate-500">汇率日期</div>
-                <input
-                  type="date"
-                  value={manualFxRateDate}
-                  onChange={(event) => setManualFxRateDate(event.target.value)}
-                  className="form-input h-9 text-sm"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => void saveManualFxRate()}
-                disabled={savingManualFxRate}
-                className="primary-button h-9 px-3 text-xs disabled:opacity-50"
-              >
-                {savingManualFxRate ? "保存中" : "保存手工汇率"}
-              </button>
             </div>
           </SettingRow>
           <SettingRow title="界面语言" desc="选择中文、英文或日文显示；业务数据不受影响。">

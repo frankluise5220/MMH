@@ -1,12 +1,12 @@
 /**
  * 系统更新接口。
  *
- * GET: 返回当前 Git 版本、远端版本、是否需要更新。
+ * GET: 返回当前版本、部署方式和远端版本、是否需要更新。
  * POST ?mode=update: 执行 git fetch + fast-forward merge，然后安装依赖、生成 Prisma、同步数据库、构建。
  * POST ?mode=rebuild: 不拉取代码，只重新安装依赖、生成 Prisma、同步数据库、构建。
  *
  * 返回格式：
- * - GET: { ok, isDocker, updateMode, localVersion, localCommit, localCommitMsg, localCommitDate, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
+ * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localCommit, localCommitMsg, localCommitDate, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
  * - POST: text/event-stream，每条 data 为 { step, status, output? }，结束为 { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -103,6 +103,12 @@ function isDockerEnvironment(): boolean {
     // /proc is unavailable on non-Linux hosts.
   }
   return process.env.DOCKER_CONTAINER === "true";
+}
+
+function getDeploymentTarget(): "docker" | "fnos" | "standalone" {
+  if (isDockerEnvironment()) return "docker";
+  if (String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase() === "fnos") return "fnos";
+  return "standalone";
 }
 
 function safeGitName(value: string | undefined, fallback: string) {
@@ -388,7 +394,9 @@ export async function GET(req: NextRequest) {
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
     let imageSourceConfig: ImageSourceConfig | null = null;
-    const dockerEnvironment = isDockerEnvironment();
+    const deploymentTarget = getDeploymentTarget();
+    const dockerEnvironment = deploymentTarget === "docker";
+    const fnosEnvironment = deploymentTarget === "fnos";
     const updaterEnabled = getUpdaterConfig().enabled;
     if (checkRemote && dockerEnvironment && updaterEnabled) {
       try {
@@ -451,14 +459,16 @@ export async function GET(req: NextRequest) {
           fetchError: github.githubFetchError,
         };
       }
-    } else if (checkRemote) {
+    } else if (checkRemote && !fnosEnvironment) {
       versionInfo = await getGitVersionInfo(projectRoot);
     }
 
     return NextResponse.json({
       ok: true,
+      deploymentTarget,
       isDocker: dockerEnvironment,
-      updateMode: "git",
+      isFnos: fnosEnvironment,
+      updateMode: fnosEnvironment ? "fnos" : "git",
       updaterEnabled,
       imageSourceConfig,
       localVersion,
@@ -483,11 +493,18 @@ function runStep(projectRoot: string, cmd: string, timeout: number): Promise<{ o
 }
 
 export async function POST(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  if (getDeploymentTarget() === "fnos") {
+    return NextResponse.json(
+      { ok: false, error: "飞牛版请通过飞牛应用中心更新 MMH 应用包" },
+      { status: 409 },
+    );
+  }
+
   if (updateRunning) {
     return NextResponse.json({ ok: false, error: "系统更新正在执行，请稍后再试" }, { status: 409 });
   }
 
-  const { searchParams } = new URL(req.url);
   if (searchParams.get("status") === "1") {
     try {
       return NextResponse.json(await callUpdater("/status"));

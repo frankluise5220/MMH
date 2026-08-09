@@ -295,9 +295,8 @@ export function DateRangeColumnFilter({
               {t("table.close")}
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <div className="text-[10px] text-slate-500">{t("table.from")}</div>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <div>
               <input
                 type="date"
                 value={draftFrom}
@@ -305,8 +304,8 @@ export function DateRangeColumnFilter({
                 className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
               />
             </div>
-            <div className="space-y-1">
-              <div className="text-[10px] text-slate-500">{t("table.to")}</div>
+            <span className="text-[11px] font-medium text-slate-400">to</span>
+            <div>
               <input
                 type="date"
                 value={draftTo}
@@ -339,6 +338,236 @@ export function DateRangeColumnFilter({
               {t("table.confirm")}
             </button>
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function NumberRangeColumnFilter({
+  label,
+  from,
+  to,
+  open,
+  labelClassName = "",
+  onToggleOpen,
+  onClose,
+  onChange,
+}: DateRangeColumnFilterProps) {
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [draftFrom, setDraftFrom] = useState(from);
+  const [draftTo, setDraftTo] = useState(to);
+
+  useEffect(() => {
+    setDraftFrom(from);
+    setDraftTo(to);
+  }, [from, to, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!rootRef.current) return;
+      if (rootRef.current.contains(e.target as Node)) return;
+      onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onClose]);
+
+  const active = !!from || !!to;
+
+  return (
+    <div ref={rootRef} className="relative inline-flex items-center gap-1">
+      <span className={labelClassName}>{label}</span>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleOpen();
+        }}
+        className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+        title={filterTitle}
+      >
+        ▼
+      </button>
+      {open ? (
+        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+          <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+            <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
+            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
+              {t("table.close")}
+            </button>
+          </div>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <input
+              inputMode="decimal"
+              value={draftFrom}
+              onChange={(event) => setDraftFrom(event.target.value)}
+              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+            />
+            <span className="text-[11px] font-medium text-slate-400">to</span>
+            <input
+              inputMode="decimal"
+              value={draftTo}
+              onChange={(event) => setDraftTo(event.target.value)}
+              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setDraftFrom("");
+                setDraftTo("");
+                onChange({ from: "", to: "" });
+                onClose();
+              }}
+              className="text-xs text-blue-600 hover:text-blue-700"
+            >
+              {t("table.clear")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onChange({ from: draftFrom.trim(), to: draftTo.trim() });
+                onClose();
+              }}
+              className="h-8 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
+            >
+              {t("table.confirm")}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function TextColumnFilter({
+  label,
+  value,
+  open,
+  labelClassName = "",
+  onToggleOpen,
+  onClose,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  open: boolean;
+  labelClassName?: string;
+  onToggleOpen: () => void;
+  onClose: () => void;
+  onChange: (value: string) => void;
+}) {
+  const { t } = useI18n();
+  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      inputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!rootRef.current) return;
+      if (rootRef.current.contains(e.target as Node)) return;
+      onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onClose]);
+
+  const active = value.trim().length > 0;
+
+  function apply() {
+    onChange(draft.trim());
+    onClose();
+  }
+
+  return (
+    <div ref={rootRef} className="relative inline-flex items-center gap-1">
+      <span className={labelClassName}>{label}</span>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleOpen();
+        }}
+        className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+        title={filterTitle}
+      >
+        ▼
+      </button>
+      {open ? (
+        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+          <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+            <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
+            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
+              {t("table.close")}
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                apply();
+              }}
+              placeholder={t("table.filterSearchPlaceholder")}
+              className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+            />
+            <button
+              type="button"
+              onClick={apply}
+              className="h-8 shrink-0 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
+            >
+              {t("table.confirm")}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft("");
+              onChange("");
+              onClose();
+            }}
+            className="mt-2 text-xs text-blue-600 hover:text-blue-700"
+          >
+            {t("table.clear")}
+          </button>
         </div>
       ) : null}
     </div>

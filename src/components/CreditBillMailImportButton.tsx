@@ -7,11 +7,17 @@ import { MailSearch, RefreshCw, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { useI18n } from "@/lib/i18n";
-import { getColorSchemeFromCookie, importPreviewFlowAmountColor, importPreviewFlowAmountText } from "@/lib/client/colors";
+import {
+  getColorSchemeFromCookie,
+  importPreviewFlowAmountColor,
+  importPreviewFlowAmountColorFor,
+  importPreviewFlowAmountText,
+  importPreviewFlowAmountTextFor,
+} from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { createImportAccountResolver } from "@/lib/account-import-match";
-import { formatAccountSelectorLabel } from "@/lib/account-display";
+import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 
 type EmailAccount = {
   id: string;
@@ -180,6 +186,9 @@ function inferKnownMerchant(item: ParsedItem) {
     .filter(Boolean)
     .join(" ");
   const normalizedSource = stripPostingDateNote(source);
+  if (/江苏云快充|云快充|新能源.*充电|充电桩/.test(normalizedSource)) {
+    return { counterparty: "江苏云快充新能源科技有限公司", category: "充电" };
+  }
   if (/美团外卖/.test(normalizedSource)) return { institution: "美团", counterparty: "美团外卖", category: "餐饮" };
   if (/(?:特约)?美团(?:平台)?商户?|美团/.test(normalizedSource)) return { institution: "美团", counterparty: "美团", category: "餐饮" };
   if (/拼多多|付费通/.test(source)) return { institution: "拼多多", counterparty: "拼多多", category: "购物" };
@@ -242,7 +251,11 @@ function normalizeParsedItem(item: ParsedItem): ParsedItem {
     account: cleanOptionalText(item.account),
     fromAccount: treatAsTransfer ? cleanOptionalText(item.fromAccount) : cleanOptionalText(item.fromAccount),
     toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
-    category: treatAsTransfer ? undefined : cleanOptionalText(item.category) || merchant.category,
+    category: treatAsTransfer
+      ? undefined
+      : merchant.category === "充电"
+        ? item.type === "expense" ? merchant.category : undefined
+        : cleanOptionalText(item.category) || merchant.category,
     remark: cleanOptionalText(item.remark) || item.rawText,
     counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
     institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
@@ -348,21 +361,15 @@ function resolveStatementAccountName(item: ParsedItem, accounts: BookAccount[], 
 }
 
 function formatMatchedStatementAccountName(item: ParsedItem, accounts: BookAccount[], fallbackAccountName: string) {
+  return matchedStatementAccountDisplay(item, accounts, fallbackAccountName).label;
+}
+
+function matchedStatementAccountDisplay(item: ParsedItem, accounts: BookAccount[], fallbackAccountName: string) {
   const resolvedName = resolveStatementAccountName(item, accounts, fallbackAccountName);
   const matched = accounts.find((account) => account.name === resolvedName);
-  if (!matched) return resolvedName;
-  const provided = matched.fullLabel?.trim() || matched.selectorLabel?.trim() || matched.label?.trim();
-  if (provided) return provided;
-  return formatAccountSelectorLabel({
-    accountName: matched.name,
-    institution: matched.Institution
-      ? {
-          name: matched.Institution.name ?? null,
-          shortName: matched.Institution.shortName ?? null,
-        }
-      : null,
-    numberMasked: matched.numberMasked,
-  });
+  if (!matched) return { label: resolvedName, title: resolvedName };
+  const label = formatAccountTableLabel(matched, resolvedName);
+  return { label, title: formatAccountTableTitle(matched, label) };
 }
 
 export function CreditBillMailImportButton({
@@ -782,104 +789,97 @@ export function CreditBillMailImportButton({
   const previewTableColumns = useMemo<AdvancedDataTableColumn<(typeof previewRows)[number]>[]>(() => [
     {
       key: "date",
-      label: "交易日",
-      width: 110,
-      minWidth: 92,
-      filterText: (row) => row.item.date || "-",
+      label: "日期",
+      width: 126,
+      minWidth: 108,
+      filterText: (row) => `${row.item.date || "-"} ${normalizeDateOnlyText(row.item.postedDate) || ""}`,
       sortValue: (row) => row.item.date || "",
-      render: (row) => <span className="whitespace-nowrap tabular-nums">{row.item.date || "-"}</span>,
-    },
-    {
-      key: "postedDate",
-      label: "入账日期",
-      width: 150,
-      minWidth: 130,
-      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date) || "-",
-      sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date) || "",
       render: (row) => (
-        <DateStepper
-          value={normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date)}
-          onChange={(value) => updatePreviewItem(row.key, { postedDate: value || undefined })}
-          className="h-7 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400"
-        />
+        <div className="space-y-0.5 tabular-nums leading-4">
+          <div className="whitespace-nowrap text-slate-700">{row.item.date || "-"}</div>
+          <DateStepper
+            value={normalizeDateOnlyText(row.item.postedDate) || normalizeDateOnlyText(row.item.date)}
+            onChange={(value) => updatePreviewItem(row.key, { postedDate: value || undefined })}
+            className="h-6 w-full min-w-0 rounded border border-slate-200 bg-white px-1 text-[11px] text-slate-600 outline-none focus:border-blue-400"
+          />
+        </div>
       ),
     },
     {
-      key: "type",
-      label: "类型",
-      width: 86,
-      minWidth: 72,
+      key: "flow",
+      label: "收支 / 分类",
+      width: 118,
+      minWidth: 100,
       filterText: (row) => row.item.type === "income" ? t("creditBill.income") : row.item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense"),
       render: (row) => (
-        <span className="whitespace-nowrap">
-          {row.item.type === "income" ? t("creditBill.income") : row.item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}
-        </span>
+        <div className="min-w-0 leading-4">
+          <div className="whitespace-nowrap text-slate-700">
+            {row.item.type === "income" ? t("creditBill.income") : row.item.type === "transfer" ? t("creditBill.transfer") : t("creditBill.expense")}
+          </div>
+          <div className="truncate text-[11px] text-slate-500" title={row.item.category || "-"}>{row.item.category || "-"}</div>
+        </div>
       ),
     },
     {
       key: "account",
       label: "账户",
-      width: 180,
-      minWidth: 140,
-      filterText: (row) => formatMatchedStatementAccountName(row.item, bookAccounts, accountName) || "-",
+      width: 178,
+      minWidth: 136,
+      filterText: (row) => `${formatMatchedStatementAccountName(row.item, bookAccounts, accountName) || "-"} ${row.item.fromAccount || row.item.toAccount || ""}`,
       render: (row) => {
-        const displayName = formatMatchedStatementAccountName(row.item, bookAccounts, accountName);
-        return <span title={displayName}>{displayName}</span>;
+        const accountDisplay = matchedStatementAccountDisplay(row.item, bookAccounts, accountName);
+        const displayName = accountDisplay.label;
+        const counterAccount = row.item.fromAccount || row.item.toAccount;
+        return (
+          <div className="min-w-0 leading-4">
+            <div className="truncate text-slate-700" title={accountDisplay.title || displayName}>{displayName || "-"}</div>
+            {counterAccount ? <div className="truncate text-[11px] text-slate-500" title={counterAccount}>对手：{counterAccount}</div> : null}
+          </div>
+        );
       },
     },
     {
-      key: "counterAccount",
-      label: "对手账户",
-      width: 150,
-      minWidth: 118,
-      filterText: (row) => row.item.fromAccount || row.item.toAccount || "-",
-      render: (row) => <span title={row.item.fromAccount || row.item.toAccount || "-"}>{row.item.fromAccount || row.item.toAccount || "-"}</span>,
-    },
-    {
-      key: "category",
-      label: "分类",
-      width: 120,
-      minWidth: 92,
-      filterText: (row) => row.item.category || "-",
-      render: (row) => row.item.category || "-",
-    },
-    {
-      key: "institution",
-      label: "收支机构",
-      width: 140,
-      minWidth: 110,
-      filterText: (row) => row.item.institution || row.item.counterparty || "-",
-      render: (row) => <span title={row.item.institution || row.item.counterparty || "-"}>{row.item.institution || row.item.counterparty || "-"}</span>,
-    },
-    {
-      key: "amount",
-      label: "金额",
-      width: 110,
-      minWidth: 88,
-      align: "right",
-      filterText: (row) => importPreviewFlowAmountText(row.item),
-      sortValue: (row) => row.item.amount,
-      render: (row) => <span className={`tabular-nums ${previewAmountClass(row.item)}`}>{importPreviewFlowAmountText(row.item)}</span>,
-    },
-    {
-      key: "remark",
-      label: "备注",
-      width: 280,
-      minWidth: 180,
-      filterText: (row) => row.item.remark || row.item.rawText || "-",
+      key: "merchant",
+      label: "商户 / 备注",
+      width: 300,
+      minWidth: 220,
+      filterText: (row) => `${row.item.institution || row.item.counterparty || "-"} ${row.item.remark || row.item.rawText || ""}`,
       render: (row) => (
-        <div className="truncate" title={row.item.remark || row.item.rawText}>
-          {row.item.remark || row.item.rawText || "-"}
+        <div className="min-w-0 leading-4" title={row.item.remark || row.item.rawText || "-"}>
+          <div className="truncate text-slate-700">{row.item.institution || row.item.counterparty || "-"}</div>
+          <div className="truncate text-[11px] text-slate-500">{row.item.remark || row.item.rawText || "-"}</div>
         </div>
       ),
     },
     {
+      key: "inflow",
+      label: "流入",
+      width: 88,
+      minWidth: 76,
+      truncate: true,
+      align: "right",
+      filterText: (row) => importPreviewFlowAmountTextFor(row.item, "inflow"),
+      sortValue: (row) => row.item.inflow ?? (row.item.type === "income" ? row.item.amount : 0),
+      render: (row) => <span className={`tabular-nums ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`}>{importPreviewFlowAmountTextFor(row.item, "inflow")}</span>,
+    },
+    {
+      key: "outflow",
+      label: "流出",
+      width: 88,
+      minWidth: 76,
+      truncate: true,
+      align: "right",
+      filterText: (row) => importPreviewFlowAmountTextFor(row.item, "outflow"),
+      sortValue: (row) => row.item.outflow ?? (row.item.type === "expense" && !row.item.inflow ? row.item.amount : 0),
+      render: (row) => <span className={`tabular-nums ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`}>{importPreviewFlowAmountTextFor(row.item, "outflow")}</span>,
+    },
+    {
       key: "status",
       label: "状态",
-      width: 110,
-      minWidth: 92,
+      width: 78,
+      minWidth: 68,
       filterText: (row) => row.ready ? "-" : "缺少必要字段",
-      render: (row) => row.ready ? <span className="text-slate-400">-</span> : <span className="text-amber-700">缺少必要字段</span>,
+      render: (row) => row.ready ? <span className="text-slate-400">-</span> : <span className="text-amber-700" title="缺少必要字段">缺字段</span>,
     },
   ], [accountName, bookAccounts, t]);
 
@@ -1065,7 +1065,7 @@ export function CreditBillMailImportButton({
 
       {previewOpen && parsed && typeof document !== "undefined" ? createPortal(
         <div className="fixed inset-0 z-[100] flex items-start justify-center bg-slate-900/35 px-4 py-[6vh]">
-          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-[720px] max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-800">{t("creditBill.importPreviewTitle")}</div>
@@ -1088,12 +1088,12 @@ export function CreditBillMailImportButton({
 
             <div className="min-h-0 flex-1">
               <AdvancedDataTable
-                storageKey="mmh_credit_bill_mail_import_preview_table_v1"
+                storageKey="mmh_credit_bill_mail_import_preview_table_v2"
                 columns={previewTableColumns}
                 rows={previewRows}
                 rowKey={(row) => String(row.key)}
                 emptyText="没有可预览的账单记录"
-                minTableWidth={1520}
+                minTableWidth={1060}
                 selectable
                 selectedKeys={previewSelectedKeys}
                 onSelectionChange={(keys) => {
@@ -1118,7 +1118,7 @@ export function CreditBillMailImportButton({
                   <div className="mt-0.5 text-slate-500">
                     已锁定：{importCompleteLockedBills.map((item) => {
                       const account = bookAccounts.find((entry) => entry.id === item.accountId);
-                      const accountText = account?.fullLabel?.trim() || account?.selectorLabel?.trim() || account?.name || "账单账户";
+                      const accountText = account ? formatAccountTableLabel(account, "账单账户") : "账单账户";
                       const amountText = formatMoneyAmount(item.amount);
                       return `${item.statementMonth || "未知月份"} · ${accountText}${amountText ? ` · ${amountText}` : ""}`;
                     }).join("；")}

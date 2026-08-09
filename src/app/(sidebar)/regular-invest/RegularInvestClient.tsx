@@ -294,25 +294,38 @@ function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: strin
 
 function groupLabel(p: RegularInvestPlanView, mode: GroupByMode): string {
   if (mode === "fundGroup") return p.accountGroupName || "目标账户未设置所有人";
-  if (mode === "fundAccount") return p.accountFullLabel || planAccountLabel(p);
+  if (mode === "fundAccount") return planAccountLabel(p);
   if (mode === "cashGroup") return p.cashAccountGroupName || "资金账户未设置所有人";
-  if (mode === "cashAccount") return p.cashAccountFullLabel || planCashAccountLabel(p);
+  if (mode === "cashAccount") return planCashAccountLabel(p);
   return "";
 }
 
-function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
-  if (mode === "none") return [{ label: "", items: plans }];
+function groupTitle(p: RegularInvestPlanView, mode: GroupByMode): string {
+  if (mode === "fundAccount") return p.accountHoverTitle || p.accountFullLabel || planAccountLabel(p);
+  if (mode === "cashAccount") return p.cashAccountHoverTitle || p.cashAccountFullLabel || planCashAccountLabel(p);
+  return groupLabel(p, mode);
+}
 
-  const grouped = new Map<string, RegularInvestPlanView[]>();
+function groupKey(p: RegularInvestPlanView, mode: GroupByMode): string {
+  if (mode === "fundAccount") return `fundAccount:${p.accountId || p.accountFullLabel || planAccountLabel(p)}`;
+  if (mode === "cashAccount") return `cashAccount:${p.cashAccountId || p.cashAccountFullLabel || planCashAccountLabel(p)}`;
+  return `${mode}:${groupLabel(p, mode)}`;
+}
+
+function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
+  if (mode === "none") return [{ label: "", title: "", items: plans }];
+
+  const grouped = new Map<string, { label: string; title: string; items: RegularInvestPlanView[] }>();
   for (const plan of plans) {
+    const key = groupKey(plan, mode);
     const label = groupLabel(plan, mode);
-    if (!grouped.has(label)) grouped.set(label, []);
-    grouped.get(label)!.push(plan);
+    const title = groupTitle(plan, mode);
+    if (!grouped.has(key)) grouped.set(key, { label, title, items: [] });
+    grouped.get(key)!.items.push(plan);
   }
 
-  return [...grouped.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN"))
-    .map(([label, items]) => ({ label, items }));
+  return [...grouped.values()]
+    .sort((a, b) => (a.label + a.title).localeCompare(b.label + b.title, "zh-Hans-CN"));
 }
 
 function compareNullableDate(a?: string | null, b?: string | null): number {
@@ -1265,7 +1278,7 @@ export function RegularInvestClient({
                       group.label ? (
                         <Fragment key={`g-${index}`}>
                           <tr className="bg-slate-50">
-                            <td className="px-3 py-1.5 text-xs font-semibold text-slate-600" colSpan={mainTableColSpan}>
+                            <td className="px-3 py-1.5 text-xs font-semibold text-slate-600" colSpan={mainTableColSpan} title={group.title || group.label}>
                               {group.label} ({group.items.length})
                             </td>
                           </tr>

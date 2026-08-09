@@ -34,6 +34,25 @@ export type AccountDisplayOption = {
   hoverTitle: string;
 };
 
+export type AccountTableDisplaySource = {
+  name?: string | null;
+  label?: string | null;
+  selectorLabel?: string | null;
+  fullLabel?: string | null;
+  hoverTitle?: string | null;
+  title?: string | null;
+  numberMasked?: string | null;
+  Institution?: { name?: string | null; shortName?: string | null } | null;
+};
+
+function firstTrimmedText(parts: Array<string | null | undefined>) {
+  for (const part of parts) {
+    const text = part?.trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function joinAccountSubLabel(parts: Array<string | null | undefined>) {
   const result: string[] = [];
   const seen = new Set<string>();
@@ -112,6 +131,30 @@ export function formatAccountSelectorCoreLabel(input: {
   const parts = [accountName];
   if (last4 && !accountName.includes(last4)) parts.push(last4);
   return parts.filter(Boolean).join("·").trim() || accountName;
+}
+
+export function formatAccountTableLabel(account: AccountTableDisplaySource, fallback = "") {
+  const provided = firstTrimmedText([account.selectorLabel, account.label]);
+  if (provided) return provided;
+  const accountName = account.name?.trim();
+  if (accountName) {
+    return formatAccountSelectorLabel({
+      accountName,
+      institution: account.Institution
+        ? {
+            name: account.Institution.name ?? null,
+            shortName: account.Institution.shortName ?? null,
+          }
+        : null,
+      numberMasked: account.numberMasked,
+    });
+  }
+  return fallback.trim();
+}
+
+export function formatAccountTableTitle(account: AccountTableDisplaySource, fallback = "") {
+  const visibleLabel = formatAccountTableLabel(account, fallback);
+  return firstTrimmedText([account.hoverTitle, account.title, account.fullLabel, visibleLabel]);
 }
 
 export function formatOwnerQualifiedAccountLabel(input: {
@@ -221,13 +264,16 @@ export function buildAccountDisplayOption(
     accountName: account.name,
     numberMasked: account.numberMasked,
   });
-  const ownerQualifiedLabel = formatOwnerQualifiedAccountLabel({
-    accountName: account.name,
-    kind: account.kind,
-    institution: account.Institution,
-    numberMasked: account.numberMasked,
-    ownerName: groupName,
-  });
+  const ownerQualifiedLabel =
+    account.kind === "bank_credit"
+      ? label
+      : formatOwnerQualifiedAccountLabel({
+          accountName: account.name,
+          kind: account.kind,
+          institution: account.Institution,
+          numberMasked: account.numberMasked,
+          ownerName: groupName,
+        });
 
   const subLabel = kindLabel(account.kind);
   const hoverTitle = formatAccountHoverTitle({

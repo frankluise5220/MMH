@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { copyToClipboard } from "@/lib/client/clipboard";
+import { generateRandomKey } from "@/lib/client/randomKey";
 
 type AccessKey = {
   id: string;
@@ -9,13 +10,6 @@ type AccessKey = {
   key: string;
   createdAt?: string;
 };
-
-function generateRandomKey(length = 32) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let key = "";
-  for (let i = 0; i < length; i++) key += chars.charAt(Math.floor(Math.random() * chars.length));
-  return key;
-}
 
 export default function ApiKeysPage() {
   const [keys, setKeys] = useState<AccessKey[]>([]);
@@ -69,7 +63,8 @@ export default function ApiKeysPage() {
   function toggleShow(id: string) {
     setShowKeyIds(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }

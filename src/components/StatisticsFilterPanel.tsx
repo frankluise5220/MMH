@@ -39,35 +39,16 @@ export function StatisticsFilterPanel({
   const selectedTagIds = searchParams.get("tags")
     ? searchParams.get("tags")!.split(",").filter(Boolean)
     : [];
-  const reportType = searchParams.get("report") === "investment-profit" ? "investment-profit" : "income-expense";
-  const profitPeriod = ["day", "month", "year"].includes(searchParams.get("profitPeriod") ?? "")
-    ? searchParams.get("profitPeriod")!
-    : "day";
-  const parsedMonth = Number(searchParams.get("month"));
-  const profitMonth = Number.isFinite(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12
-    ? Math.floor(parsedMonth)
-    : new Date().getMonth() + 1;
 
   function buildHref(
     accountIds: string[],
     tagIds: string[],
     overrides: {
       year?: number;
-      report?: string;
-      profitPeriod?: string;
-      profitMonth?: number;
     } = {},
   ) {
     const params = new URLSearchParams();
-    const nextReport = overrides.report ?? reportType;
-    const nextPeriod = overrides.profitPeriod ?? profitPeriod;
-    const nextMonth = overrides.profitMonth ?? profitMonth;
     params.set("year", String(overrides.year ?? year));
-    if (nextReport === "investment-profit") {
-      params.set("report", nextReport);
-      params.set("profitPeriod", nextPeriod);
-      if (nextPeriod === "day") params.set("month", String(nextMonth));
-    }
     if (accountIds.length > 0) params.set("accounts", accountIds.join(","));
     if (tagIds.length > 0) params.set("tags", tagIds.join(","));
     return `/statistics?${params.toString()}`;
@@ -88,56 +69,14 @@ export function StatisticsFilterPanel({
   }
 
   const hrefYear = (y: number) => buildHref(selectedAccountIds, selectedTagIds, { year: y });
-  const showYearSwitcher = reportType !== "investment-profit" || profitPeriod !== "year";
 
   return (
     <div className="flex items-center gap-3">
-      <select
-        value={reportType}
-        onChange={(event) => router.push(buildHref(selectedAccountIds, selectedTagIds, { report: event.target.value }))}
-        className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 outline-none hover:bg-slate-50"
-        aria-label="报表类型"
-      >
-        <option value="income-expense">收支统计表</option>
-        <option value="investment-profit">投资基金、理财收益表</option>
-      </select>
-
-      {reportType === "investment-profit" ? (
-        <>
-          <select
-            value={profitPeriod}
-            onChange={(event) => router.push(buildHref(selectedAccountIds, selectedTagIds, { profitPeriod: event.target.value }))}
-            className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 outline-none hover:bg-slate-50"
-            aria-label="收益周期"
-          >
-            <option value="day">按日</option>
-            <option value="month">按月</option>
-            <option value="year">按年</option>
-          </select>
-          {profitPeriod === "day" ? (
-            <select
-              value={profitMonth}
-              onChange={(event) => router.push(buildHref(selectedAccountIds, selectedTagIds, { profitMonth: Number(event.target.value) }))}
-              className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 outline-none hover:bg-slate-50"
-              aria-label="收益月份"
-            >
-              {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
-                <option key={month} value={month}>{month}月</option>
-              ))}
-            </select>
-          ) : null}
-        </>
-      ) : null}
-
-      {showYearSwitcher ? (
-        <div className="flex items-center gap-1">
-          <Link href={hrefYear(year - 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">◀</Link>
-          <span className="text-sm font-semibold text-slate-700 w-16 text-center">{year}年</span>
-          <Link href={hrefYear(year + 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">▶</Link>
-        </div>
-      ) : (
-        <span className="text-xs font-medium text-slate-500">截至本年</span>
-      )}
+      <div className="flex items-center gap-1">
+        <Link href={hrefYear(year - 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">◀</Link>
+        <span className="text-sm font-semibold text-slate-700 w-16 text-center">{year}年</span>
+        <Link href={hrefYear(year + 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">▶</Link>
+      </div>
 
       {/* 账户筛选 */}
       <div className="relative group">

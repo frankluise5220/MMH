@@ -20,8 +20,9 @@ export function MmhLogo({
       className="shrink-0"
       width={size}
       height={size}
-      src="/branding/mmh-logo-final.square.png"
+      src="/branding/mmh-logo-pageflip.square.png"
       alt=""
+      unoptimized
       style={{ objectFit: "contain" }}
     />
   );

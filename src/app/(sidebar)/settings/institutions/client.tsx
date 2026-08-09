@@ -5,6 +5,16 @@ import { useMemo, useState, useCallback, useEffect } from "react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
+import {
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsSection,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 
 type Institution = {
@@ -43,9 +53,17 @@ export function SettingsInstitutionsClient({
   mode?: InstitutionSettingMode;
 }) {
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
+  const [showCreate, setShowCreate] = useState(false);
   const allowedTypes =
     mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
-  const pageTitle = mode === "institution" ? "机构列表" : mode === "family" ? "家庭成员列表" : "往来对象列表";
+  const pageTitle = mode === "institution" ? "机构" : mode === "family" ? "家庭成员" : "往来对象";
+  const pageDescription =
+    mode === "institution"
+      ? "维护银行、保险、券商、支付和钱包机构，供账户、账单和投资流程复用。"
+      : mode === "family"
+        ? "维护投保人、被保险人等家庭资料，保险和家庭资产视图共用。"
+        : "维护借入借出、代付、往来款使用的人或组织。";
+  const listTitle = mode === "institution" ? "机构列表" : mode === "family" ? "家庭成员列表" : "往来对象列表";
   const emptyText = mode === "institution" ? "暂无机构" : mode === "family" ? "暂无家庭成员" : "暂无往来对象";
   const deleteLabel = mode === "institution" ? "机构" : mode === "family" ? "家庭成员" : "往来对象";
   const createTitle = mode === "institution" ? "新增机构" : mode === "family" ? "新增家庭成员" : "新增往来对象";
@@ -76,15 +94,25 @@ export function SettingsInstitutionsClient({
   }, [mode]);
 
   function handleCreated() {
+    setShowCreate(false);
     void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:create`, prefetch: true });
     void refreshList({ force: true });
   }
 
   return (
     <div className="space-y-4">
+      <SettingsPageHeader
+        title={pageTitle}
+        description={pageDescription}
+        count={visibleInstitutions.length}
+        actions={<SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>}
+      />
+
       <EntityCreateForm
         mode="full"
-        layout="inline"
+        layout="modal"
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
         entityType={mode === "counterparty" ? "counterparty" : "institution"}
         defaultType={allowedTypes[0]}
         allowedInstitutionTypes={[...allowedTypes]}
@@ -95,29 +123,24 @@ export function SettingsInstitutionsClient({
         existingNames={createExistingNames}
       />
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div className="text-sm font-semibold text-slate-800">{pageTitle}</div>
-          <div className="tabular-nums text-xs text-slate-500">{visibleInstitutions.length} 项</div>
-        </div>
-        <div className="overflow-auto">
-          <table className="min-w-[780px] w-full border-separate border-spacing-0">
+      <SettingsSection title={listTitle} count={visibleInstitutions.length}>
+        <SettingsTable minWidth={780}>
             <thead className="sticky top-0 z-10">
-              <tr className="bg-slate-50">
-                <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">名称</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">简称</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">类型</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">操作</th>
+              <tr>
+                <SettingsTh>名称</SettingsTh>
+                <SettingsTh>简称</SettingsTh>
+                <SettingsTh>类型</SettingsTh>
+                <SettingsTh align="right">操作</SettingsTh>
               </tr>
             </thead>
             <tbody className="text-sm">
               {visibleInstitutions.length ? visibleInstitutions.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50">
-                  <td className="border-b border-slate-100 px-4 py-2 text-sm text-slate-800">{item.name}</td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-sm text-slate-600">{item.shortName?.trim() || "-"}</td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-xs text-slate-500">{typeLabelMap[item.type ?? "other"] ?? item.type}</td>
-                  <td className="border-b border-slate-100 px-3 py-2">
-                    <div className="flex items-center gap-1.5">
+                  <SettingsTd className="text-sm font-medium text-slate-800">{item.name}</SettingsTd>
+                  <SettingsTd>{item.shortName?.trim() || "-"}</SettingsTd>
+                  <SettingsTd>{typeLabelMap[item.type ?? "other"] ?? item.type}</SettingsTd>
+                  <SettingsTd align="right">
+                    <SettingsRowActions>
                       <InstitutionEditButton
                         institution={item}
                         action={updateAction}
@@ -129,19 +152,21 @@ export function SettingsInstitutionsClient({
                           void refreshList({ force: true });
                         }}
                       />
-                      <SettingsDeleteButton label={`${deleteLabel}：${item.name}`} entity={mode === "counterparty" ? "counterparty" : "institution"} id={item.id} />
-                    </div>
-                  </td>
+                      <SettingsDeleteButton
+                        label={`${deleteLabel}：${item.name}`}
+                        entity={mode === "counterparty" ? "counterparty" : "institution"}
+                        id={item.id}
+                        onDeleted={() => setInstitutions((prev) => prev.filter((row) => row.id !== item.id))}
+                      />
+                    </SettingsRowActions>
+                  </SettingsTd>
                 </tr>
               )) : (
-                <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={4}>{emptyText}</td>
-                </tr>
+                <SettingsEmptyRow colSpan={4}>{emptyText}</SettingsEmptyRow>
               )}
             </tbody>
-          </table>
-        </div>
-      </div>
+        </SettingsTable>
+      </SettingsSection>
     </div>
   );
 }

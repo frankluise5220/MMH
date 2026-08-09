@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/format";
 import {
   getInsuranceAction,
   getInsuranceProductName,
+  insuranceCashValueDelta,
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -334,7 +335,12 @@ function buildInsuranceHoldings(
       product.accountingType,
       product.cashValueEnabled,
     );
-    const balance = relatedEntries.reduce((sum, entry) => sum + entry.amount, 0);
+    const balance = relatedEntries.reduce((sum, entry) => sum + insuranceCashValueDelta({
+      amount: entry.amount,
+      insuranceAction: entry.edit?.insuranceAction,
+      fundSubtype: entry.edit?.insuranceAction === "refund" ? "redeem" : "buy",
+      source: "insurance",
+    }), 0);
     const totalPremium = relatedEntries
       .filter((entry) => entry.amount < 0)
       .reduce((sum, entry) => sum + Math.abs(entry.amount), 0);

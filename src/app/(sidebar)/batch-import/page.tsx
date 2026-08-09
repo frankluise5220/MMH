@@ -7,7 +7,7 @@ import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/Ad
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
-import { formatAccountSelectorLabel } from "@/lib/account-display";
+import { formatAccountSelectorLabel, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import {
   IMPORT_ACCOUNT_ID_PREFIX,
   createImportAccountMatcher,
@@ -16,7 +16,6 @@ import {
   normalizeImportAccountMatchKey,
   parseImportAccountId,
 } from "@/lib/account-import-match";
-import { kindLabel } from "@/lib/account-kinds";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
@@ -661,8 +660,16 @@ function normalizeFlowFields(
   return { amount, inflow, outflow };
 }
 
+function previewTransferDirectionFor(
+  item: Pick<ParsedItem, "importMode" | "businessType" | "transferDirection" | "inflow" | "outflow">,
+): "in" | "out" {
+  if (item.importMode === "credit_card" && isCreditCardRepaymentBusinessType(item.businessType)) return "in";
+  if (isCreditCardRepaymentBusinessType(item.businessType)) return "out";
+  return item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
+}
+
 function directionalAccountValues(item: ParsedItem) {
-  const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
+  const direction = previewTransferDirectionFor(item);
   if (item.type === "transfer") {
     return {
       account: (direction === "in" ? item.toAccount : item.fromAccount) || item.account || "",
@@ -685,7 +692,7 @@ function accountPatchForPreviewTypeChange(
   const { account, counterAccount, direction } = directionalAccountValues(item);
   if (nextType === "transfer") {
     const nextDirection = nextBusinessType
-      ? "out"
+      ? item.importMode === "credit_card" ? "in" : "out"
       : item.type === "income"
         ? "in"
         : item.type === "expense"
@@ -958,7 +965,7 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
     // When it resolves to a concrete type, prefer it over the looser 收支大类 column.
     const explicitMajorType = parseMajorType(explicitType);
     const resolvedMajorType = explicitMajorType ?? majorType;
-    const businessType = parseImportBusinessType({
+    let businessType = parseImportBusinessType({
       majorTypeText,
       explicitType,
       account,
@@ -983,6 +990,16 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       rawInflow > 0 && rawOutflow <= 0 ? "in"
       : rawOutflow > 0 && rawInflow <= 0 ? "out"
       : null;
+    const creditStatementRepaymentCandidate =
+      importMode === "credit_card" &&
+      !businessType &&
+      !!counterAccount.trim() &&
+      rawInferredType === "transfer" &&
+      (explicitFlowDirection === "in" || (!hasExplicitFlow && rawAmountSigned > 0)) &&
+      /信用卡还款|还款|自动还款|银联转账|云闪付|repayment|payment|autopay/i.test(source);
+    if (creditStatementRepaymentCandidate) {
+      businessType = CREDIT_CARD_REPAYMENT_BUSINESS_TYPE;
+    }
     const type: ParsedItem["type"] =
       isExpenseRefund && rawInferredType !== "transfer" && !businessType
         ? "expense"
@@ -999,14 +1016,16 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
         rawAmount,
         type === "income" || isExpenseRefund ? rawAmount : 0,
         type === "income" || isExpenseRefund ? 0 : rawAmount,
-        type === "transfer" ? "out" : undefined,
+        type === "transfer"
+          ? previewTransferDirectionFor({ importMode, businessType, transferDirection: "out", inflow: 0, outflow: 0 })
+          : undefined,
       )
       : null;
     const inflow = onlyAmountFlow?.inflow ?? rawInflow;
     const outflow = onlyAmountFlow?.outflow ?? rawOutflow;
     const transferDirection = type === "transfer"
       ? businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-        ? "out"
+        ? previewTransferDirectionFor({ importMode, businessType, transferDirection: "out", inflow, outflow })
         : explicitFlowDirection
           ? explicitFlowDirection
         : onlyAmountFlow
@@ -1058,10 +1077,7 @@ function normalRowsToItems(rows: string[][], importMode: BillImportMode): Parsed
       tags,
       remark,
       secondRemark: type === "transfer" ? (secondRemark || remark) : "",
-      transferDirection:
-        businessType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-          ? "out"
-          : transferDirection,
+      transferDirection,
     };
   }).filter((item) => item.date && item.amount > 0);
 }
@@ -1316,7 +1332,7 @@ export default function BatchImportPage() {
   }, []);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    const provided = account.fullLabel?.trim() || account.selectorLabel?.trim() || account.label?.trim();
+    const provided = formatAccountTableLabel(account);
     if (provided) return provided;
     return formatAccountSelectorLabel({
       accountName: account.name,
@@ -1330,17 +1346,8 @@ export default function BatchImportPage() {
     });
   }, []);
 
-  const accountOwnerLabel = useCallback((account: AccountOption) => {
-    return account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset");
-  }, [t]);
-
-  const accountOptionSubLabel = useCallback((account: AccountOption) => {
-    const owner = account.fullLabel?.trim() ? "" : accountOwnerLabel(account);
-    return [account.displaySubLabel?.trim() || kindLabel(account.kind), owner].filter(Boolean).join(" · ");
-  }, [accountOwnerLabel]);
-
   const accountHoverTitle = useCallback((account: AccountOption) => {
-    return account.hoverTitle?.trim() || account.fullLabel?.trim() || accountDisplayLabel(account);
+    return formatAccountTableTitle(account, accountDisplayLabel(account));
   }, [accountDisplayLabel]);
 
   const activeAccountOptions = useMemo(
@@ -1371,10 +1378,9 @@ export default function BatchImportPage() {
       activeAccountOptions.map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
-        subLabel: accountOptionSubLabel(account),
         title: accountHoverTitle(account),
       })),
-    [accountDisplayLabel, accountHoverTitle, accountOptionSubLabel, activeAccountOptions],
+    [accountDisplayLabel, accountHoverTitle, activeAccountOptions],
   );
   const accountById = useMemo(() => new Map(accountOptions.map((account) => [account.id, account])), [accountOptions]);
 
@@ -1391,10 +1397,9 @@ export default function BatchImportPage() {
       .map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
-        subLabel: accountOptionSubLabel(account),
         title: accountHoverTitle(account),
       } satisfies SmartSelectOption)),
-  [accountDisplayLabel, accountHoverTitle, accountMatchesPickerRole, accountOptionSubLabel, activeAccountOptions]);
+  [accountDisplayLabel, accountHoverTitle, accountMatchesPickerRole, activeAccountOptions]);
 
   const matchedAccountForText = useCallback((value: string) => {
     const matchedId = findMatchedAccountId(value);
@@ -1418,17 +1423,28 @@ export default function BatchImportPage() {
 
   const isCreditCardRepaymentItem = useCallback((item: ParsedItem) => {
     if (item.type !== "transfer") return false;
-    if (item.businessType !== undefined) {
-      return isCreditCardRepaymentBusinessType(item.businessType);
-    }
+    if (isCreditCardRepaymentBusinessType(item.businessType)) return true;
     const text = [item.rawText, item.category, item.remark, item.secondRemark].filter(Boolean).join(" ");
     if (/信用卡还款|信用卡.*还款|还款.*信用卡/.test(text)) return true;
+    if (item.importMode === "credit_card") {
+      const statementAccount = matchedAccountForText(item.statementAccount || item.toAccount || item.account || "");
+      const sourceAccount = matchedAccountForText(item.fromAccount ?? "");
+      const isCardInflow = (item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0;
+      if (
+        isCardInflow &&
+        isCreditCardRepaymentTargetAccountKind(statementAccount?.kind) &&
+        isCreditCardRepaymentImportSourceAccountKind(sourceAccount?.kind) &&
+        /还款|自动还款|银联转账|云闪付|repayment|payment|autopay/i.test(text)
+      ) {
+        return true;
+      }
+    }
     return /还款/.test(text) && (
       isCreditAccountText(item.account ?? "") ||
       isCreditAccountText(item.fromAccount ?? "") ||
       isCreditAccountText(item.toAccount ?? "")
     );
-  }, [isCreditAccountText]);
+  }, [isCreditAccountText, matchedAccountForText]);
 
   const accountPickerRoleForCell = useCallback((item: ParsedItem, cell: "account" | "counterAccount"): AccountPickerRole => {
     if (item.importMode === "credit_card") {
@@ -1447,7 +1463,7 @@ export default function BatchImportPage() {
         : "";
       return { account, counterAccount };
     }
-    const direction = item.transferDirection;
+    const direction = previewTransferDirectionFor(item);
     return {
       account: item.type === "transfer"
         ? (direction === "in" ? item.toAccount : item.fromAccount) || ""
@@ -1848,9 +1864,14 @@ export default function BatchImportPage() {
     const draft = drafts[idx] ?? {};
     const type = draft.type ?? item.type ?? "expense";
     const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-    const transferDirection = isCreditCardRepaymentBusinessType(businessType)
-      ? "out"
-      : draft.transferDirection ?? item.transferDirection;
+    const transferDirection = previewTransferDirectionFor({
+      ...item,
+      ...draft,
+      businessType,
+      transferDirection: draft.transferDirection ?? item.transferDirection,
+      inflow: Number(draft.inflow ?? item.inflow ?? 0),
+      outflow: Number(draft.outflow ?? item.outflow ?? 0),
+    });
     const flow = normalizeFlowFields(
       type,
       Number(draft.amount ?? item.amount ?? 0),
@@ -1916,7 +1937,7 @@ export default function BatchImportPage() {
           ...(prev[idx] ?? {}),
           account: value,
           statementAccount: value,
-          ...(repayment ? { toAccount: value, transferDirection: "out" as const } : {}),
+          ...(repayment ? { toAccount: value, transferDirection: "in" as const } : {}),
         };
       });
       return next;
@@ -2295,13 +2316,12 @@ export default function BatchImportPage() {
     const nextDrafts = { ...drafts };
     let changed = 0;
     let invalid = 0;
-    const changedIndexes: number[] = [];
 
     for (const idx of targetIndexes) {
       const item = { ...getItem(idx), ...(nextDrafts[idx] ?? {}) };
       const patch: Partial<ParsedItem> = {};
       const type = item.type ?? "expense";
-      const direction = item.transferDirection ?? ((item.inflow ?? 0) > 0 && (item.outflow ?? 0) <= 0 ? "in" : "out");
+      const direction = previewTransferDirectionFor(item);
       if (replaceField === "date") patch.date = value;
       else if (replaceField === "type") {
         const nextPreviewType = value as PreviewType;
@@ -2356,7 +2376,7 @@ export default function BatchImportPage() {
           patch.statementAccount = accountValue;
           if (isCreditCardRepaymentItem(item)) {
             patch.toAccount = accountValue;
-            patch.transferDirection = "out";
+            patch.transferDirection = "in";
           }
         } else if (type === "transfer") {
           if (direction === "in") patch.toAccount = accountValue;
@@ -2366,7 +2386,7 @@ export default function BatchImportPage() {
         if (item.importMode === "credit_card" && isCreditCardRepaymentItem(item)) {
           patch.fromAccount = accountValue;
           patch.toAccount = item.statementAccount || item.account || item.toAccount || "";
-          patch.transferDirection = "out";
+          patch.transferDirection = "in";
         } else if (type === "transfer") {
           patch.transferDirection = direction;
           if (direction === "in") patch.fromAccount = accountValue;
@@ -2381,15 +2401,9 @@ export default function BatchImportPage() {
       else if (replaceField === "remark") patch.remark = value;
       nextDrafts[idx] = { ...(nextDrafts[idx] ?? {}), ...patch };
       changed++;
-      changedIndexes.push(idx);
     }
 
     setDrafts(nextDrafts);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (const idx of changedIndexes) next.delete(idx);
-      return next;
-    });
     const invalidSuffix = invalid > 0 ? formatText("batchImport.batchReplaceInvalidCount", { count: invalid }) : "";
     const resultMessage = formatText("batchImport.batchReplaceResult", {
       count: changed,
@@ -2682,11 +2696,10 @@ export default function BatchImportPage() {
       return {
         value: account.id,
         label,
-        subLabel: accountOptionSubLabel(account),
         title: accountHoverTitle(account),
       };
     }),
-  ], [accountDisplayLabel, accountHoverTitle, accountOptionSubLabel, activeAccountOptions, t]);
+  ], [accountDisplayLabel, accountHoverTitle, activeAccountOptions, t]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
     { value: "date", label: replaceFieldLabels.date, kind: "date" },
@@ -2845,7 +2858,14 @@ export default function BatchImportPage() {
         const draft = drafts[row.idx] ?? {};
         const type = draft.type ?? item.type ?? "expense";
         const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const direction = previewTransferDirectionFor({
+          ...item,
+          ...draft,
+          businessType,
+          transferDirection: draft.transferDirection ?? item.transferDirection,
+          inflow: Number(draft.inflow ?? item.inflow ?? 0),
+          outflow: Number(draft.outflow ?? item.outflow ?? 0),
+        });
         return normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).outflow;
       },
       render: (row) => {
@@ -2854,7 +2874,14 @@ export default function BatchImportPage() {
         const draft = drafts[idx] ?? {};
         const type = draft.type ?? item.type ?? "expense";
         const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const direction = previewTransferDirectionFor({
+          ...item,
+          ...draft,
+          businessType,
+          transferDirection: draft.transferDirection ?? item.transferDirection,
+          inflow: Number(draft.inflow ?? item.inflow ?? 0),
+          outflow: Number(draft.outflow ?? item.outflow ?? 0),
+        });
         const outflow = normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).outflow;
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
         return (
@@ -2892,7 +2919,14 @@ export default function BatchImportPage() {
         const draft = drafts[row.idx] ?? {};
         const type = draft.type ?? item.type ?? "expense";
         const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const direction = previewTransferDirectionFor({
+          ...item,
+          ...draft,
+          businessType,
+          transferDirection: draft.transferDirection ?? item.transferDirection,
+          inflow: Number(draft.inflow ?? item.inflow ?? 0),
+          outflow: Number(draft.outflow ?? item.outflow ?? 0),
+        });
         return normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).inflow;
       },
       render: (row) => {
@@ -2901,7 +2935,14 @@ export default function BatchImportPage() {
         const draft = drafts[idx] ?? {};
         const type = draft.type ?? item.type ?? "expense";
         const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
+        const direction = previewTransferDirectionFor({
+          ...item,
+          ...draft,
+          businessType,
+          transferDirection: draft.transferDirection ?? item.transferDirection,
+          inflow: Number(draft.inflow ?? item.inflow ?? 0),
+          outflow: Number(draft.outflow ?? item.outflow ?? 0),
+        });
         const inflow = normalizeFlowFields(type, Number(draft.amount ?? item.amount ?? 0), Number(draft.inflow ?? item.inflow ?? 0), Number(draft.outflow ?? item.outflow ?? 0), direction).inflow;
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
         return (
@@ -2943,9 +2984,8 @@ export default function BatchImportPage() {
         const item = items[idx];
         const draft = drafts[idx] ?? {};
         const type = draft.type ?? item.type ?? "expense";
-        const businessType = draft.businessType !== undefined ? draft.businessType : item.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? item.transferDirection;
         const currentRowItem = getItem(idx);
+        const direction = previewTransferDirectionFor(currentRowItem);
         const { account } = previewAccountValuesForItem(currentRowItem);
         const accountPickerRole = accountPickerRoleForCell(currentRowItem, "account");
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
@@ -2993,9 +3033,7 @@ export default function BatchImportPage() {
       render: (row) => {
         const idx = row.idx;
         const currentRowItem = getItem(idx);
-        const draft = drafts[idx] ?? {};
-        const businessType = draft.businessType !== undefined ? draft.businessType : currentRowItem.businessType;
-        const direction = isCreditCardRepaymentBusinessType(businessType) ? "out" : draft.transferDirection ?? currentRowItem.transferDirection;
+        const direction = previewTransferDirectionFor(currentRowItem);
         const { counterAccount } = previewAccountValuesForItem(currentRowItem);
         const counterAccountPickerRole = accountPickerRoleForCell(currentRowItem, "counterAccount");
         const editingField = editingCell?.idx === idx ? editingCell.field : null;

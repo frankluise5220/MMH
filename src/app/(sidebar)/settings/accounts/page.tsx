@@ -1,12 +1,15 @@
 ﻿"use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Pencil, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
+import { Trash2, Pencil, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
+import { SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
+import { buildAccountDisplayOption } from "@/lib/account-display";
+import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isDepositAccount } from "@/lib/account-kind-utils";
@@ -82,12 +85,6 @@ export default function SettingsAccountsPage() {
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
 
-  // Group CRUD
-  const [newGroupName, setNewGroupName] = useState("");
-  const [showNewGroup, setShowNewGroup] = useState(false);
-  const [editGroupId, setEditGroupId] = useState<string | null>(null);
-  const [editGroupName, setEditGroupName] = useState("");
-
   useEffect(() => {
     const cached = getCachedSettingsAccountData();
     if (cached) {
@@ -115,44 +112,6 @@ export default function SettingsAccountsPage() {
     void notifySettingsDataChanged({ scope: "accounts", reason, prefetch: true });
     await loadAll({ force: true });
     notifySidebarChanged();
-  }
-
-  // ---- Group handlers ----
-  async function createGroup() {
-    if (!newGroupName.trim()) return;
-    await fetch("/api/v1/account-group", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newGroupName.trim() }),
-    });
-    setNewGroupName("");
-    setShowNewGroup(false);
-    void refreshSettingsAccounts("account-group:create");
-  }
-
-  async function updateGroup() {
-    if (!editGroupId || !editGroupName.trim()) return;
-    await fetch("/api/v1/account-group", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: editGroupId, name: editGroupName.trim() }),
-    });
-    setEditGroupId(null);
-    void refreshSettingsAccounts("account-group:update");
-  }
-
-  async function deleteGroup(id: string) {
-    const res = await fetch("/api/v1/settings/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity: "accountGroup", id }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      setSelectedGroup("");
-      void refreshSettingsAccounts("account-group:delete");
-    }
-    else window.alert(data.error);
   }
 
   // ---- Account handlers ----
@@ -255,8 +214,19 @@ export default function SettingsAccountsPage() {
   }
 
   const accountDisplayName = (account: Account) => {
-    const institutionLabel = account.Institution?.shortName?.trim() || account.Institution?.name || "";
-    return institutionLabel ? `${institutionLabel}·${account.name}` : account.name;
+    return buildAccountDisplayOption(
+      {
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        numberMasked: account.numberMasked,
+        groupId: account.groupId,
+        investProductType: account.investProductType,
+        Institution: account.Institution,
+        AccountGroup: account.AccountGroup,
+      },
+      getCreditCardLabelTemplatePreference(),
+    ).label;
   };
 
   const normalizeSearchText = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";
@@ -312,22 +282,14 @@ export default function SettingsAccountsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="sticky top-0 z-20 space-y-3 border-b border-slate-200 bg-white/95 pb-3 pt-1 backdrop-blur supports-[backdrop-filter]:bg-white/85">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.title")}</h2>
-            <p className="mt-0.5 text-xs text-slate-500">{tf("settings.accounts.count", { count: filteredAccounts.length })}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowCreateAccount(true)}
-            className="primary-button h-9 shrink-0 gap-1.5"
-          >
-            <Plus className="h-3.5 w-3.5" />{t("settings.accounts.add")}
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
+      <SettingsPageHeader
+        sticky
+        title={t("settings.accounts.title")}
+        description="维护资金、信用卡、投资、贷款等账户及其默认机构、所有人和业务参数。"
+        count={filteredAccounts.length}
+        actions={<SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>}
+        toolbar={
+          <>
           <div className="w-64 max-w-full">
             <input
               value={accountNameQuery}
@@ -364,8 +326,9 @@ export default function SettingsAccountsPage() {
               placeholder={t("settings.accounts.filterKind")}
             />
           </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* ===== 账户列表（按类型分组，可折叠） ===== */}
       {kindOrder.map(kind => {

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
-import { toNumber } from "@/lib/date-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
+import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 
 function localDateKey(date: Date) {
   const y = date.getFullYear();
@@ -63,9 +63,7 @@ export async function computeInsuranceAccountDisplayBalances(
     const productId = entry.insuranceProductId ?? "";
     const accountId = productAccountIdById.get(productId);
     if (!accountId) continue;
-    const amount = Math.abs(toNumber(entry.amount));
-    const delta = entry.action === "refund" ? -amount : amount;
-    result.set(accountId, (result.get(accountId) ?? 0) + delta);
+    result.set(accountId, (result.get(accountId) ?? 0) + insuranceCashValueDelta(entry));
   }
 
   return result;

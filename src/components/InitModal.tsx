@@ -8,6 +8,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 /* Types */
 
@@ -348,7 +349,7 @@ export function InitModal({
       const res = await fetch("/api/v1/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountBalances, fundHoldings }) });
       const data = await res.json();
       if (!data.ok) setMessage({ ok: false, text: data.error ?? "初始化失败" });
-      else { setMessage({ ok: true, text: data.message, details: data.details }); window.dispatchEvent(new Event("mmh:fund:refresh")); }
+      else { setMessage({ ok: true, text: data.message, details: data.details }); dispatchFinanceDataChanged({ reason: "initial-data" }); }
     } catch (e) { setMessage({ ok: false, text: e instanceof Error ? e.message : "初始化失败" }); }
     finally { setBusy(false); }
   }

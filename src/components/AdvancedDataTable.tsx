@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { GripVertical, Pencil, SlidersHorizontal, Trash2 } from "lucide-react";
-import { DateRangeColumnFilter, TableColumnFilter } from "./TableColumnFilter";
+import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
 
@@ -29,6 +29,8 @@ export type AdvancedDataTableColumn<T> = {
   label: ReactNode;
   width: number;
   minWidth?: number;
+  /** Lowest width a user may choose by dragging. Defaults to 52px. */
+  resizeMinWidth?: number;
   align?: "left" | "center" | "right";
   hideable?: boolean;
   defaultHidden?: boolean;
@@ -36,9 +38,14 @@ export type AdvancedDataTableColumn<T> = {
   headerClassName?: string;
   filterText?: (row: T) => string;
   sortValue?: (row: T) => string | number | null | undefined;
-  filterKind?: "multi" | "dateRange";
+  filterKind?: "multi" | "dateRange" | "numberRange" | "text";
+  filterNumber?: (row: T) => number | null | undefined;
   filterTitle?: (row: T) => string;
   filterSearchText?: (row: T) => string;
+  /** Render simple cell content as a single truncated line. */
+  truncate?: boolean;
+  /** Full text shown when the pointer rests over a clipped cell. */
+  cellTitle?: (row: T) => string | null | undefined;
   render: (row: T, index: number) => ReactNode;
 };
 
@@ -202,6 +209,27 @@ function rowMatchesColumnFilter<T>(row: T, column: AdvancedDataTableColumn<T>, v
     if (to && value > to) return false;
     return true;
   }
+  if (column.filterKind === "numberRange") {
+    const [from = "", to = ""] = values ?? [];
+    const fromNumber = from.trim() === "" ? null : Number(from);
+    const toNumber = to.trim() === "" ? null : Number(to);
+    if ((fromNumber != null && !Number.isFinite(fromNumber)) || (toNumber != null && !Number.isFinite(toNumber))) return true;
+    const rawNumber = column.filterNumber?.(row);
+    if (rawNumber == null || !Number.isFinite(rawNumber)) return false;
+    if (fromNumber != null && rawNumber < fromNumber) return false;
+    if (toNumber != null && rawNumber > toNumber) return false;
+    return true;
+  }
+  if (column.filterKind === "text") {
+    const query = values?.[0]?.trim().toLowerCase() ?? "";
+    if (!query) return true;
+    const haystack = [
+      value,
+      column.filterSearchText?.(row) ?? "",
+      column.filterTitle?.(row) ?? "",
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  }
   return values?.includes(value) ?? true;
 }
 
@@ -326,7 +354,7 @@ export function AdvancedDataTable<T>({
     () => new Set(tableColumns.filter((column) => column.sortValue || column.filterText).map((column) => column.key)),
     [tableColumns],
   );
-  const filtersStorageKey = `${storageKey}:filters:v1`;
+  const filtersStorageKey = `${storageKey}:filters:v2`;
   const sortStorageKey = `${storageKey}:sort:v1`;
 
   useEffect(() => {
@@ -446,6 +474,7 @@ export function AdvancedDataTable<T>({
     const options: Record<string, string[]> = {};
     for (const column of tableColumns) {
       if (!column.filterText) continue;
+      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
       const baseRows = showFilters
         ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
         : rows;
@@ -459,6 +488,7 @@ export function AdvancedDataTable<T>({
     const counts: Record<string, Record<string, number>> = {};
     for (const column of tableColumns) {
       if (!column.filterText) continue;
+      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
       const columnCounts: Record<string, number> = {};
       const baseRows = showFilters
         ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
@@ -521,6 +551,8 @@ export function AdvancedDataTable<T>({
   }, [dragTarget, draggedRowKey, rowItems]);
 
   const shouldVirtualizeRows = displayRowItems.length > ROW_VIRTUALIZATION_THRESHOLD;
+  // TanStack Virtual intentionally returns imperative helpers; keep it isolated here.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: shouldVirtualizeRows ? displayRowItems.length : 0,
     getScrollElement: () => viewportRef.current,
@@ -550,9 +582,16 @@ export function AdvancedDataTable<T>({
     const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
     const baseWidths = visibleColumns.map((column) => {
       const saved = columnWidths[column.key];
-      const minWidth = column.minWidth ?? 52;
-      const preferredWidth = Math.max(minWidth, Number.isFinite(saved) ? saved : column.width);
-      return { key: column.key, minWidth, preferredWidth } as const;
+      const defaultMinWidth = column.minWidth ?? 52;
+      const resizeMinWidth = column.resizeMinWidth ?? 52;
+      const hasSavedWidth = Number.isFinite(saved);
+      const preferredWidth = hasSavedWidth
+        ? Math.max(resizeMinWidth, saved)
+        : Math.max(defaultMinWidth, column.width);
+      const minWidth = hasSavedWidth && saved < defaultMinWidth
+        ? Math.max(resizeMinWidth, saved)
+        : defaultMinWidth;
+      return { key: column.key, minWidth, resizeMinWidth, preferredWidth } as const;
     });
     const minColumnsTotal = baseWidths.reduce((sum, column) => sum + column.minWidth, 0);
     const basePreferredColumnsTotal = baseWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
@@ -635,7 +674,7 @@ export function AdvancedDataTable<T>({
   const beginResize = useCallback((event: ReactMouseEvent, column: AdvancedDataTableColumn<T>) => {
     event.preventDefault();
     event.stopPropagation();
-    const minWidth = column.minWidth ?? 52;
+    const minWidth = column.resizeMinWidth ?? 52;
     const startX = event.clientX;
     const startWidth = layout.colWidths[column.key] ?? columnWidths[column.key] ?? column.width;
     const onMove = (moveEvent: MouseEvent) => {
@@ -928,21 +967,7 @@ export function AdvancedDataTable<T>({
               toolbarLeftContent
             ) : (
               <>
-                {toolbarTitle ? <span className="font-semibold text-slate-700">{toolbarTitle}</span> : null}
-                {selectable ? <span>{tf("table.selectedCount", { count: selectedCount })}</span> : null}
-                {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
-                {hasAnyFilters ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilters({});
-                      setActiveFilterColumn(null);
-                    }}
-                    className="text-xs text-blue-600 hover:text-blue-700"
-                  >
-                    {t("table.clearFilters")}
-                  </button>
-                ) : null}
+                {selectable && selectedCount > 0 ? <span className="font-medium text-slate-600">{tf("table.selectedCount", { count: selectedCount })}</span> : null}
                 {selectedCount > 0 ? batchActions.map((action) => {
                   const icon = inferBatchActionIcon(action);
                   const title = action.title ?? action.label;
@@ -965,6 +990,20 @@ export function AdvancedDataTable<T>({
                   );
                 }) : null}
                 {selectedCount > 0 ? batchActionSlot : null}
+                {toolbarTitle ? <span className="font-semibold text-slate-700">{toolbarTitle}</span> : null}
+                {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
+                {hasAnyFilters ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilters({});
+                      setActiveFilterColumn(null);
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-700"
+                  >
+                    {t("table.clearFilters")}
+                  </button>
+                ) : null}
               </>
             )}
           </div>
@@ -1027,17 +1066,17 @@ export function AdvancedDataTable<T>({
               ) : null}
               {visibleColumns.map((column) => (
                 <th key={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
-                  <div className="flex items-center justify-center gap-1">
+                  <div className="flex min-w-0 items-center justify-center gap-1">
                     {(column.sortValue || column.filterText) && sortable ? (
                       <span
-                        className={`cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
                         onClick={() => toggleSort(column.key)}
                         title={sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序" : "降序排列，点击取消") : "点击排序"}
                       >
                         {labelText(column.label, column.key)}
                       </span>
                     ) : (
-                      <span className="text-xs font-semibold text-slate-600">{labelText(column.label, column.key)}</span>
+                      <span className="block min-w-0 truncate text-xs font-semibold text-slate-600" title={labelText(column.label, column.key)}>{labelText(column.label, column.key)}</span>
                     )}
                     {showFilters && column.filterText ? (
                       column.filterKind === "dateRange" ? (
@@ -1057,6 +1096,45 @@ export function AdvancedDataTable<T>({
                                 return next;
                               }
                               return { ...prev, [column.key]: [from, to] };
+                            })
+                          }
+                        />
+                      ) : column.filterKind === "numberRange" ? (
+                        <NumberRangeColumnFilter
+                          label={labelText(column.label, column.key)}
+                          from={filters[column.key]?.[0] ?? ""}
+                          to={filters[column.key]?.[1] ?? ""}
+                          open={activeFilterColumn === column.key}
+                          labelClassName="hidden"
+                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                          onClose={() => setActiveFilterColumn(null)}
+                          onChange={({ from, to }) =>
+                            setFilters((prev) => {
+                              if (!from && !to) {
+                                const next = { ...prev };
+                                delete next[column.key];
+                                return next;
+                              }
+                              return { ...prev, [column.key]: [from, to] };
+                            })
+                          }
+                        />
+                      ) : column.filterKind === "text" ? (
+                        <TextColumnFilter
+                          label={labelText(column.label, column.key)}
+                          value={filters[column.key]?.[0] ?? ""}
+                          open={activeFilterColumn === column.key}
+                          labelClassName="hidden"
+                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                          onClose={() => setActiveFilterColumn(null)}
+                          onChange={(value) =>
+                            setFilters((prev) => {
+                              if (!value) {
+                                const next = { ...prev };
+                                delete next[column.key];
+                                return next;
+                              }
+                              return { ...prev, [column.key]: [value] };
                             })
                           }
                         />
@@ -1165,11 +1243,20 @@ export function AdvancedDataTable<T>({
                       </div>
                     </td>
                   ) : null}
-                  {visibleColumns.map((column) => (
-                    <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
-                      {column.render(row, displayIndex)}
-                    </td>
-                  ))}
+                  {visibleColumns.map((column) => {
+                    const cellContent = column.render(row, displayIndex);
+                    const titleText = column.cellTitle?.(row) ?? column.filterText?.(row) ?? null;
+                    const wrappedContent = column.truncate ? (
+                      <div className="min-w-0 truncate" title={titleText ?? undefined}>
+                        {cellContent}
+                      </div>
+                    ) : cellContent;
+                    return (
+                      <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
+                        {wrappedContent}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             }) : (

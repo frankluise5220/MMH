@@ -52,9 +52,18 @@ export type FundPositionCalcResult = {
   realizedProfitByEntryId: Map<string, number>;
 };
 
-function buyCostBasis(amount: number): number {
+function buyCostBasis(amount: number, fee: number | null | undefined = 0): number {
   const a = Math.abs(toNum(amount));
-  return a > 0 ? a : 0;
+  const f = Math.min(a, Math.max(0, toNum(fee ?? 0)));
+  return a > 0 ? Math.max(0, a - f) : 0;
+}
+
+function buyEntryCostBasis(e: FundPositionEntryLike, amount: number): number {
+  return e.netBuyAmount != null ? Math.max(0, toNum(e.netBuyAmount)) : buyCostBasis(amount, e.fee);
+}
+
+function redeemProceeds(e: FundPositionEntryLike, amount: number): number {
+  return Math.max(0, Math.abs(toNum(e.arrivalAmount ?? amount)));
 }
 
 function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: number): FundPositionCalcResult {
@@ -78,8 +87,8 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     const rec = map.get(code) ?? emptyHolding();
 
     if (subtype === "buy") {
-      const costBasis = e.netBuyAmount != null ? e.netBuyAmount : buyCostBasis(amount);
-      const a = e.netBuyAmount != null ? e.netBuyAmount : Math.abs(toNum(amount));
+      const costBasis = buyEntryCostBasis(e, amount);
+      const a = costBasis;
       const u = e.units ?? 0;
       if (u === 0) rec.pendingCost += a;
       else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
@@ -89,7 +98,7 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
       if (e.units != null && e.units > 0) {
         const avgCost = rec.units > 0 ? rec.cost / rec.units : 0;
         const costReduced = avgCost * e.units;
-        const proceeds = e.arrivalAmount ?? Math.max(0, amount - (e.fee ?? 0));
+        const proceeds = redeemProceeds(e, amount);
         const realizedProfit = proceeds - costReduced;
         rec.cost -= costReduced;
         rec.units = roundFundUnits(rec.units - e.units, fundUnitsDecimals);
@@ -133,8 +142,8 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     const rec = result.get(code) ?? emptyHolding();
 
     if (subtype === "buy") {
-      const costBasis = e.netBuyAmount != null ? e.netBuyAmount : buyCostBasis(amount);
-      const a = e.netBuyAmount != null ? e.netBuyAmount : Math.abs(toNum(amount));
+      const costBasis = buyEntryCostBasis(e, amount);
+      const a = costBasis;
       const u = e.units ?? 0;
       if (u === 0) { rec.pendingCost += a; }
       else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
@@ -153,7 +162,7 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
        if (u <= 0) continue;
        const availableDate = buyAvailableDate(se);
        if (!availableDate || availableDate > cutoff) continue;
-       const sCost = se.netBuyAmount != null ? se.netBuyAmount : buyCostBasis(se.amount);
+       const sCost = buyEntryCostBasis(se, se.amount);
        eligibleLots.push({ units: u, costPerUnit: u > 0 ? sCost / u : 0 });
       }
 
@@ -178,7 +187,7 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
       lots.set(code, codeLots.filter(l => l.units > 0));
       rec.units = Math.max(0, roundFundUnits(rec.units - (e.units ?? 0), fundUnitsDecimals));
       rec.cost = Math.max(0, rec.cost - costReduced);
-      const proceeds = e.arrivalAmount ?? Math.max(0, amount - (e.fee ?? 0));
+      const proceeds = redeemProceeds(e, amount);
       const realizedProfit = proceeds - costReduced;
       rec.historicalProfit += realizedProfit;
       realizedProfitByEntryId.set(e.id, realizedProfit);
@@ -290,7 +299,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
       const amount = toNum(e.amount);
       const storedUnits = e.fundUnits != null ? roundFundUnits(toNum(e.fundUnits), fundUnitsDecimals) : null;
       const netBuyAmount = e.fundSubtype === "buy"
-        ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(e.id) ?? 0))
+        ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(e.id) ?? 0) - toNum(e.fundFee ?? 0))
         : null;
       const effectiveUnits = e.fundSubtype === "buy" && storedUnits != null
         ? roundFundUnits(getEffectiveBuyUnits(storedUnits, amount, netBuyAmount), fundUnitsDecimals)

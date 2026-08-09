@@ -1,7 +1,17 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import { Search, Shield, Trash2, X } from "lucide-react";
+import { Search, Trash2, X } from "lucide-react";
+import {
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsSection,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 
 type Option = {
   id: string;
@@ -25,7 +35,7 @@ type InsuranceProductMasterRow = {
 };
 
 type EditState = {
-  id: string;
+  id?: string;
   name: string;
   shortName: string;
   productType: string;
@@ -79,6 +89,18 @@ function toEditState(item: InsuranceProductMasterRow): EditState {
     currency: item.currency,
     institutionId: item.institutionId,
     note: item.note ?? "",
+  };
+}
+
+function createBlankEditState(institutionId: string): EditState {
+  return {
+    name: "",
+    shortName: "",
+    productType: "savings",
+    accountingType: "asset",
+    currency: "CNY",
+    institutionId,
+    note: "",
   };
 }
 
@@ -155,7 +177,7 @@ export function SettingsInsuranceProductsClient({
     setSaving(true);
     try {
       const response = await fetch("/api/v1/insurance-products", {
-        method: "PUT",
+        method: editing.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...editing,
@@ -171,13 +193,10 @@ export function SettingsInsuranceProductsClient({
         throw new Error(data?.error || "保存保险产品失败");
       }
       const productMaster = data.productMaster;
-      setProducts((prev) =>
-        prev.map((item) =>
-          item.id === editing.id && productMaster
-            ? mapApiProductMaster(productMaster, item)
-            : item,
-        ),
-      );
+      setProducts((prev) => {
+        if (!editing.id) return [...prev, mapApiProductMaster(productMaster)];
+        return prev.map((item) => (item.id === editing.id ? mapApiProductMaster(productMaster, item) : item));
+      });
       setEditing(null);
       window.dispatchEvent(new Event("mmh:fund:refresh"));
     } catch (error) {
@@ -226,23 +245,22 @@ export function SettingsInsuranceProductsClient({
 
   return (
     <div className="space-y-4">
-      <div className="panel-surface overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Shield className="h-4 w-4 text-cyan-600" />
-              保险产品库
-            </div>
-            <div className="mt-1 text-xs text-slate-500">
-              这里只维护产品主数据，不保存投保人、被保人、受益人等保单信息。
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2 text-right text-xs">
-            <Summary label="全部" value={products.length} />
-            <Summary label="已关联" value={linkedCount} />
-            <Summary label="未关联" value={products.length - linkedCount} />
-          </div>
-        </div>
+      <SettingsPageHeader
+        title="保险产品"
+        description="维护保险产品主数据；保单的投保人、被保人、受益人等信息仍在具体保单里维护。"
+        count={products.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => setEditing(createBlankEditState(institutions[0]?.id ?? ""))}>
+            新增保险产品
+          </SettingsPrimaryAddButton>
+        }
+      />
+
+      <SettingsSection
+        title="保险产品库"
+        description={`已关联 ${linkedCount} 个，未关联 ${products.length - linkedCount} 个`}
+        count={filteredProducts.length}
+      >
 
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">
           <div className="relative min-w-[240px] flex-1">
@@ -270,25 +288,24 @@ export function SettingsInsuranceProductsClient({
           </select>
         </div>
 
-        <div className="overflow-auto">
-          <table className="w-full min-w-[920px] border-separate border-spacing-0">
+        <SettingsTable minWidth={920}>
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr>
-                <Th>保险产品</Th>
-                <Th>产品类型</Th>
-                <Th>显示口径</Th>
-                <Th>承保机构</Th>
-                <Th>币种</Th>
-                <Th align="right">关联保单</Th>
-                <Th>备注</Th>
-                <Th align="right">操作</Th>
+                <SettingsTh>保险产品</SettingsTh>
+                <SettingsTh>产品类型</SettingsTh>
+                <SettingsTh>显示口径</SettingsTh>
+                <SettingsTh>承保机构</SettingsTh>
+                <SettingsTh>币种</SettingsTh>
+                <SettingsTh align="right">关联保单</SettingsTh>
+                <SettingsTh>备注</SettingsTh>
+                <SettingsTh align="right">操作</SettingsTh>
               </tr>
             </thead>
             <tbody className="text-sm">
               {filteredProducts.length > 0 ? (
                 filteredProducts.map((item) => (
                   <tr key={item.id} className="hover:bg-slate-50">
-                    <Td>
+                    <SettingsTd>
                       <div className="min-w-0">
                         <div className="truncate font-medium text-slate-800" title={item.name}>
                           {item.name}
@@ -297,19 +314,19 @@ export function SettingsInsuranceProductsClient({
                           <div className="mt-0.5 text-[11px] text-slate-400">{item.shortName}</div>
                         ) : null}
                       </div>
-                    </Td>
-                    <Td>{productTypeLabel(item.productType)}</Td>
-                    <Td>{accountingTypeLabel(item.accountingType)}</Td>
-                    <Td>{item.institutionShortName || item.institutionName || "-"}</Td>
-                    <Td>{item.currency}</Td>
-                    <Td align="right">{item.policyCount}</Td>
-                    <Td>
+                    </SettingsTd>
+                    <SettingsTd>{productTypeLabel(item.productType)}</SettingsTd>
+                    <SettingsTd>{accountingTypeLabel(item.accountingType)}</SettingsTd>
+                    <SettingsTd>{item.institutionShortName || item.institutionName || "-"}</SettingsTd>
+                    <SettingsTd>{item.currency}</SettingsTd>
+                    <SettingsTd align="right">{item.policyCount}</SettingsTd>
+                    <SettingsTd>
                       <div className="line-clamp-2 max-w-[20rem] text-xs text-slate-500">
                         {item.note || "-"}
                       </div>
-                    </Td>
-                    <Td align="right">
-                      <div className="flex justify-end gap-1.5">
+                    </SettingsTd>
+                    <SettingsTd align="right">
+                      <SettingsRowActions>
                         <button
                           type="button"
                           onClick={() => setEditing(toEditState(item))}
@@ -334,27 +351,22 @@ export function SettingsInsuranceProductsClient({
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
-                      </div>
-                    </Td>
+                      </SettingsRowActions>
+                    </SettingsTd>
                   </tr>
                 ))
               ) : (
-                <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-400">
-                    暂无保险产品
-                  </td>
-                </tr>
+                <SettingsEmptyRow colSpan={8}>暂无保险产品</SettingsEmptyRow>
               )}
             </tbody>
-          </table>
-        </div>
-      </div>
+        </SettingsTable>
+      </SettingsSection>
 
       {editing ? (
         <div className="app-modal-backdrop z-[1000]">
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">编辑保险产品</div>
+              <div className="text-sm font-semibold text-slate-800">{editing.id ? "编辑保险产品" : "新增保险产品"}</div>
               <button
                 type="button"
                 onClick={() => setEditing(null)}
@@ -537,39 +549,6 @@ export function SettingsInsuranceProductsClient({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function Summary({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <div className="text-[11px] text-slate-400">{label}</div>
-      <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-800">{value}</div>
-    </div>
-  );
-}
-
-function Th({ children, align }: { children: React.ReactNode; align?: "right" }) {
-  return (
-    <th
-      className={`border-b border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 ${
-        align === "right" ? "text-right" : "text-left"
-      }`}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Td({ children, align }: { children: React.ReactNode; align?: "right" }) {
-  return (
-    <td
-      className={`border-b border-slate-100 px-3 py-2 text-xs text-slate-600 ${
-        align === "right" ? "text-right tabular-nums" : "text-left"
-      }`}
-    >
-      {children}
-    </td>
   );
 }
 

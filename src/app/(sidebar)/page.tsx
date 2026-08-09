@@ -64,6 +64,7 @@ import {
 } from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
+import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -3967,7 +3968,11 @@ export default async function Home({
           );
           const sortedEntries = [...relatedEntries].sort((a, b) => a.date.localeCompare(b.date));
           const metricMode = getInsuranceMetricMode(product.productType, product.accountingType, product.cashValueEnabled);
-          const balance = relatedEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          const balance = relatedEntries.reduce((sum, entry) => sum + insuranceCashValueDelta({
+            amount: entry.amount,
+            fundSubtype: entry.edit?.fundSubtype,
+            source: "insurance",
+          }), 0);
           const totalPremium = relatedEntries
             .filter((entry) => entry.amount < 0)
             .reduce((sum, entry) => sum + Math.abs(entry.amount), 0);

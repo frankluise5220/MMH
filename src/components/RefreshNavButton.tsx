@@ -48,7 +48,7 @@ export function RefreshNavButton({
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50"
       >
         <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-        {loading ? "获取中…" : "获取净值"}
+        {loading ? "获取中…" : "获取最新净值"}
       </button>
     </div>
   );

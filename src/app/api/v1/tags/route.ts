@@ -15,6 +15,9 @@ export const runtime = "nodejs";
  * POST /api/v1/tags
  * Body: { name: string, color?: string }. Creates a current-household tag.
  *
+ * PUT /api/v1/tags
+ * Body: { id: string, name: string, color?: string }. Updates a readable tag's display fields.
+ *
  * DELETE /api/v1/tags?id=...
  * Deletes a current-household tag or a global/system tag when it exists.
  */
@@ -26,7 +29,7 @@ export async function GET() {
       orderBy: { name: "asc" },
     });
     return NextResponse.json({ ok: true, tags });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ ok: false, error: "查询失败" }, { status: 500 });
   }
 }
@@ -34,6 +37,10 @@ export async function GET() {
 const CreateSchema = z.object({
   name: z.string().min(1).max(40),
   color: z.string().optional(),
+});
+
+const UpdateSchema = CreateSchema.extend({
+  id: z.string().min(1),
 });
 
 export async function POST(req: NextRequest) {
@@ -48,6 +55,31 @@ export async function POST(req: NextRequest) {
   const tag = await prisma.tag.create({ data: { name, color: color || null, ...hidFilter } });
   revalidateAfterSettingsChange();
   // Client-side handles page refresh
+  return NextResponse.json({ ok: true, tag });
+}
+
+export async function PUT(req: NextRequest) {
+  const body = await req.json().catch(() => null);
+  const parsed = UpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ ok: false, error: "名称必填（1-40字）" }, { status: 400 });
+  }
+
+  const { householdId } = await getHouseholdScope();
+  const existing = await prisma.tag.findUnique({ where: { id: parsed.data.id } });
+  if (!existing) return NextResponse.json({ ok: false, error: "标签不存在" }, { status: 404 });
+  if (householdId && existing.householdId && existing.householdId !== householdId) {
+    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+  }
+
+  const tag = await prisma.tag.update({
+    where: { id: parsed.data.id },
+    data: {
+      name: parsed.data.name.trim(),
+      color: parsed.data.color || null,
+    },
+  });
+  revalidateAfterSettingsChange();
   return NextResponse.json({ ok: true, tag });
 }
 

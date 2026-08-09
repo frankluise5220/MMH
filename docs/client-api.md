@@ -121,6 +121,53 @@
 
 - `/api/v1/overview/summary`
 
+### Onboarding
+
+范围：
+
+- 首次使用向导。
+- 新账簿初始化进度判断。
+- 引导客户端提示账户、期初数据、日常流水、计划任务等下一步动作。
+
+相关路径：
+
+- `/api/v1/onboarding/status`
+
+`GET /api/v1/onboarding/status` 返回当前账簿的首次使用进度：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "householdId": "ledger_123",
+    "householdName": "张三家",
+    "defaultOwnerName": "张三",
+    "familyMemberCount": 1,
+    "accountCount": 4,
+    "cashLikeAccountCount": 2,
+    "cashAccountCount": 1,
+    "debitAccountCount": 1,
+    "creditAccountCount": 1,
+    "investmentAccountCount": 1,
+    "insuranceAccountCount": 0,
+    "settlementAccountCount": 0,
+    "initializationEntryCount": 0,
+    "transactionCount": 0,
+    "fundHoldingCount": 0,
+    "regularInvestPlanCount": 0,
+    "shouldShowGuide": true
+  }
+}
+```
+
+说明：
+
+- `transactionCount` 不包含 `source="initialization"` 的期初初始化流水。
+- `householdId` 用于客户端按账簿保存“今天不再提示”等本地引导状态。
+- `defaultOwnerName` 是首个账户所有人/家庭成员名称；新建账簿默认使用账簿名，用户可改为真实姓名。
+- `cashAccountCount`、`debitAccountCount`、`creditAccountCount`、`investmentAccountCount`、`insuranceAccountCount`、`settlementAccountCount` 用于首次使用横轴节点进度。
+- `shouldShowGuide` 表示当前账簿还没有用户数据，客户端可以自动显示首次使用向导。
+
 ### Statistics
 
 - `GET /api/v1/statistics` 返回年度收支、月度收支和分类/标签汇总。
@@ -262,6 +309,7 @@
 - `/api/v1/fund/name`
 - `/api/v1/fund/nav`
 - `/api/v1/fund/nav/history`
+- `/api/v1/fund/nav/missing`
 - `/api/v1/fund/entries`
 - `/api/v1/fund/entry`
 - `/api/v1/fund/position`
@@ -273,6 +321,21 @@
 - `/api/v1/invest/monthly-floating-pnl`
 - `/api/v1/precious-metals/dictionaries`
 - `/api/v1/wealth-products`
+
+#### 缺失基金净值补齐
+
+- Method: `POST`
+- Path: `/api/v1/fund/nav/missing`
+- Auth: required
+- Body: `{ items: [{ fundCode, date }] }` 或 `{ ranges: [{ fundCode, startDate, endDate }] }`
+- Success: `{ ok: true, requested, rangeCount, fundCount, fetched, written, failed, ranges, resolvedItems, unresolvedItems, resolved, unresolved, skipped }`
+
+说明：
+
+- 接口只补齐当前账簿已有投资交易或持仓中的基金代码，不能作为任意基金外部查询入口。
+- 调用方可传逐日缺失项，服务端会按基金代码合并成日期范围，再批量写入 `FundNavCache`。
+- 投资收益表用它补齐持仓基金工作日净值缺口；周末/非交易日仍允许沿用上一可用交易日净值。
+- `resolvedItems/unresolvedItems` 用于前端判断本次补齐结果；投资收益表请求成功后应局部消隐当前提示，调用方不需要整页刷新来确认补齐结果。
 
 #### 银行理财产品主数据
 

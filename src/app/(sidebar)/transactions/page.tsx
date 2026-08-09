@@ -3,7 +3,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { formatDateLocal } from "@/lib/date-utils";
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,7 @@ export default async function TransactionsPage() {
   const accountDisplayById = new Map(
     accounts.map((account) => {
       const option = buildAccountDisplayOption({ ...account, kind: String(account.kind) });
-      return [account.id, option.fullLabel || option.selectorLabel || option.label] as const;
+      return [account.id, formatAccountTableLabel(option)] as const;
     }),
   );
   const rows: MobileTransactionRow[] = entries.map((entry) => ({

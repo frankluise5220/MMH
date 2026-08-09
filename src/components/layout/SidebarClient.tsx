@@ -15,17 +15,16 @@ import {
   Landmark,
   BarChart3,
   CreditCard,
+  Compass,
   Shield,
   PanelLeftClose,
   PanelLeftOpen,
   UserRound,
-  Plus,
   Table2,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
-import { InitModal } from "../InitModal";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
@@ -36,7 +35,6 @@ import {
   getAppPreferences,
   getSidebarCollapsedPreference,
   getSidebarGroupPreference,
-  getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
   getSidebarOwnerFilterPreference,
   setSidebarCollapsedPreference,
@@ -49,6 +47,7 @@ import { useI18n } from "@/lib/i18n";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { dispatchFirstUseGuideOpen } from "@/lib/client/onboardingGuide";
 
 type AccountItem = {
   id?: string | null;
@@ -275,7 +274,6 @@ export function SidebarClient({
 
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
-  const [hideInitialData, setHideInitialData] = useState(() => initialPreferences?.sidebarHideInitialData ?? getSidebarHideInitialDataPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
@@ -283,7 +281,6 @@ export function SidebarClient({
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pendingSettings, setPendingSettings] = useState(false);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
-  const [initOpen, setInitOpen] = useState(false);
   const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const initializedSectionsRef = useRef(false);
@@ -435,7 +432,6 @@ export function SidebarClient({
       const prefs = getAppPreferences();
       setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
-      setHideInitialData(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
     };
@@ -851,15 +847,14 @@ export function SidebarClient({
           <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
             <Table2 size={18} />
           </Link>
-          {!hideInitialData ? (
-            <button
-              onClick={() => setInitOpen(true)}
-              className={collapsedNavCls(false)}
-              title={t("nav.initialData")}
-            >
-              <Plus size={18} />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={dispatchFirstUseGuideOpen}
+            className={collapsedNavCls(false)}
+            title={t("nav.firstUseGuide")}
+          >
+            <Compass size={18} />
+          </button>
           <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && !isRootInvestmentView))} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
@@ -881,7 +876,6 @@ export function SidebarClient({
         <UndoLastOperationButton compact />
 
         <NewLedgerSetupCheck />
-        <InitModal open={initOpen} onOpenChange={setInitOpen} />
         <DailyTaskCheck />
       </aside>
     );
@@ -964,15 +958,14 @@ export function SidebarClient({
               <Table2 size={18} />
               <span className="font-medium">{t("nav.reports")}</span>
             </Link>
-            {!hideInitialData ? (
-              <button
-                onClick={() => setInitOpen(true)}
-                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
-              >
-                <Plus size={18} />
-                <span className="font-medium">{t("nav.initialData")}</span>
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={dispatchFirstUseGuideOpen}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
+            >
+              <Compass size={18} />
+              <span className="font-medium">{t("nav.firstUseGuide")}</span>
+            </button>
           </nav>
         </div>
 
@@ -1144,7 +1137,6 @@ export function SidebarClient({
       </div>
 
       <NewLedgerSetupCheck />
-      <InitModal open={initOpen} onOpenChange={setInitOpen} />
       <DailyTaskCheck />
     </aside>
   );

@@ -8,7 +8,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
-import { getInsuranceAction, isInsuranceRefund } from "@/lib/insurance/transaction";
+import { getInsuranceAction, insuranceCashValueDelta, isInsuranceRefund } from "@/lib/insurance/transaction";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 
 export const dynamic = "force-dynamic";
@@ -133,10 +133,7 @@ export default async function InsurancePage() {
     }, creditCardLabelTemplate);
 
     const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
-    const balance = relatedEntries.reduce((sum, entry) => {
-      const amount = Math.abs(toNumber(entry.amount));
-      return sum + (isInsuranceRefund(entry) ? -amount : amount);
-    }, 0);
+    const balance = relatedEntries.reduce((sum, entry) => sum + insuranceCashValueDelta(entry), 0);
     const metricMode = getInsuranceMetricMode(
       product.productType ?? null,
       product.accountingType ?? null,

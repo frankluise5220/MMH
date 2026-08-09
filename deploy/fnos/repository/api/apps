@@ -4,11 +4,11 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "2026.08.07.3",
+      "version": "0.1.2",
       "author": "frankluise5220",
-      "desc": "MMH 飞牛 SQLite 原生包，内置 Next standalone、Linux Node runtime 与 Prisma runtime。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.08.07.3-fnos/mmh.fpk",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-final.square.png",
+      "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.2-fnos/mmh.fpk",
+      "icon": "https://cdn.jsdelivr.net/gh/frankluise5220/MMH@7f55f852dc63d93035b677b20987e0c06825af23/public/branding/mmh-logo-pageflip-192.png",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账,SQLite"

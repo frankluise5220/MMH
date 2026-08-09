@@ -31,6 +31,11 @@ type DeleteForm = {
   dbPassword: string;
 };
 
+type ApiResult = {
+  ok?: boolean;
+  error?: string;
+};
+
 const emptyCreateForm: CreateForm = {
   name: "",
   adminName: "",
@@ -238,7 +243,7 @@ export default function LedgerSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: deleteForm.dbPassword, verifySystem: true }),
       });
-      const verifyData = await verifyRes.json();
+      const verifyData = await readApiResult(verifyRes);
       if (!verifyRes.ok || !verifyData.ok) {
         throw new Error(verifyData.error ?? "系统密码验证失败");
       }
@@ -248,7 +253,7 @@ export default function LedgerSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: deleteForm.householdId }),
       });
-      const data = await res.json();
+      const data = await readApiResult(res);
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "删除账簿失败");
       }
@@ -282,7 +287,7 @@ export default function LedgerSettingsPage() {
             type="button"
             onClick={() => {
               setError("");
-              setCreateForm({ ...emptyCreateForm, adminName: "admin" });
+              setCreateForm(emptyCreateForm);
               setShowCreate(true);
             }}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700"
@@ -448,12 +453,14 @@ export default function LedgerSettingsPage() {
                 />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">管理员用户名</span>
+                <span className="form-label">家庭成员/管理员名</span>
                 <input
                   value={createForm.adminName}
                   onChange={(event) => setCreateForm((prev) => ({ ...prev, adminName: event.target.value }))}
                   className="form-input"
+                  placeholder={createForm.name || "默认使用账簿名，可改为真实姓名"}
                 />
+                <span className="text-xs text-slate-400">默认使用账簿名；建议改成实际使用者姓名，后续账户会归到这个家庭成员下。</span>
               </label>
               <label className="grid gap-1.5 sm:col-span-2">
                 <span className="form-label">邮箱</span>
@@ -580,6 +587,19 @@ export default function LedgerSettingsPage() {
       ) : null}
     </div>
   );
+}
+
+async function readApiResult(response: Response): Promise<ApiResult> {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(`服务器未返回结果（HTTP ${response.status}），请查看服务日志后重试`);
+  }
+
+  try {
+    return JSON.parse(body) as ApiResult;
+  } catch {
+    throw new Error(`服务器返回了无效结果（HTTP ${response.status}），请查看服务日志后重试`);
+  }
 }
 
 function Modal({

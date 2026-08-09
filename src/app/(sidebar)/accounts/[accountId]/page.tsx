@@ -6,7 +6,7 @@ import { MobileTransactions, type MobileTransactionRow } from "@/components/mobi
 import { prisma } from "@/lib/db/prisma";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
@@ -87,7 +87,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
   const accountDisplayById = new Map(
     accounts.map((item) => {
       const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) });
-      return [item.id, option.fullLabel || option.selectorLabel || option.label] as const;
+      return [item.id, formatAccountTableLabel(option)] as const;
     }),
   );
   const rows: MobileTransactionRow[] = entries.map((entry) => {

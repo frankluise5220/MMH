@@ -47,6 +47,7 @@ type HistoricalCategorySample = {
 };
 
 const ALIAS_PATTERNS: Array<{ pattern: RegExp; counterparty: string; category?: string; institution?: string }> = [
+  { pattern: /江苏云快充|云快充|新能源.*充电|充电桩/, counterparty: "江苏云快充新能源科技有限公司", category: "充电" },
   { pattern: /支付宝[^-]*-?(.*)/, counterparty: "支付宝", institution: "支付宝", category: "购物" },
   { pattern: /财付通[^-]*-?(.*)/, counterparty: "微信支付", institution: "微信", category: "购物" },
   { pattern: /微信支付/, counterparty: "微信支付", institution: "微信", category: "购物" },
@@ -121,8 +122,9 @@ function inferCategoryFromRemark(text: string) {
   if (/嘟嘟抓饭|抓饭|外卖|餐饮|饭店|餐厅|食堂|小吃|火锅|烧烤|咖啡|茶饮|奶茶|美食/.test(remark)) return "餐饮";
   if (/快递|顺丰|圆通|中通|韵达|申通|邮政|取件|寄件/.test(remark)) return "快递";
   if (/停车场|停车费|停车/.test(remark)) return "停车费";
+  if (/江苏云快充|云快充|新能源.*充电|充电桩|充电站/.test(remark)) return "充电";
   if (/食品|生鲜|粮油|零食|食材|水果|蔬菜|肉类|熟食/.test(remark)) return "食品";
-  if (/车品|汽车用品|汽配|轮胎|机油|洗车|加油|充电桩|ETC/.test(remark)) return "车品";
+  if (/车品|汽车用品|汽配|轮胎|机油|洗车|加油|ETC/.test(remark)) return "车品";
   if (/数码|电子|电脑|手机|通讯器材|电器|配件|电工/.test(remark)) return "数码";
   return "";
 }
@@ -201,6 +203,9 @@ function categoryKeywords(value: string) {
   }
   if (/停车场|停车费|停车/.test(text)) {
     ["停车费", "停车场", "停车"].forEach((item) => keywords.add(item));
+  }
+  if (/江苏云快充|云快充|新能源.*充电|充电桩|充电站|充电/.test(text)) {
+    ["充电", "云快充", "充电桩", "充电站"].forEach((item) => keywords.add(item));
   }
   if (/车品|汽车|汽配|洗车|停车|加油|轮胎|机油/.test(text)) {
     ["车品", "汽车", "汽配", "洗车", "停车", "加油", "轮胎", "机油"].forEach((item) => keywords.add(item));
@@ -317,6 +322,69 @@ function matchExistingCategoryName(item: ParsedItem, categories: CategoryOption[
   return undefined;
 }
 
+function positiveAmount(value: unknown) {
+  const amount = Math.abs(Number(value ?? 0));
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function refundPairMatchKey(item: ParsedItem) {
+  const source = [
+    cleanOptionalText(item.remark),
+    cleanOptionalText(item.counterparty),
+    cleanOptionalText(item.institution),
+    cleanOptionalText(item.rawText),
+  ].filter(Boolean).join(" ");
+  const normalized = normalizeRecognitionText(source)
+    .replace(/收入|支出|存入|转入|转出/g, "")
+    .trim();
+  return normalized.length >= 4 ? normalized : "";
+}
+
+function shouldKeepAsIncome(item: ParsedItem) {
+  const source = [item.remark, item.counterparty, item.institution, item.rawText]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+  return /工资|奖金|红包|利息|分红|报销|还款|转账|转入/i.test(source);
+}
+
+function alignStatementIncomeRefunds(items: ParsedItem[]) {
+  const expenseCandidates = items
+    .filter((item) => item.type === "expense" && positiveAmount(item.outflow ?? item.amount) > 0)
+    .map((item) => ({
+      item,
+      key: refundPairMatchKey(item),
+      amount: positiveAmount(item.outflow ?? item.amount),
+    }))
+    .filter((candidate) => candidate.key);
+
+  if (expenseCandidates.length === 0) return items;
+
+  return items.map((item) => {
+    if (item.type !== "income") return item;
+    const inflow = positiveAmount(item.inflow ?? item.amount);
+    if (inflow <= 0 || positiveAmount(item.outflow) > 0 || shouldKeepAsIncome(item)) return item;
+    const key = refundPairMatchKey(item);
+    if (!key) return item;
+    const matchedExpense = expenseCandidates.find((candidate) => {
+      if (candidate.key !== key) return false;
+      if (candidate.item.date && item.date && candidate.item.date !== item.date) return false;
+      if (candidate.item.account && item.account && candidate.item.account !== item.account) return false;
+      return inflow <= candidate.amount;
+    })?.item;
+    if (!matchedExpense) return item;
+    return {
+      ...item,
+      type: "expense" as const,
+      amount: inflow,
+      inflow,
+      outflow: undefined,
+      category: matchedExpense.category || item.category,
+      counterparty: item.counterparty || matchedExpense.counterparty,
+      institution: item.institution || matchedExpense.institution,
+    };
+  });
+}
+
 function alignCategoriesToLedger(items: ParsedItem[], categories: CategoryOption[], historicalSamples: HistoricalCategorySample[] = []) {
   if (categories.length === 0) return items;
   return items.map((item) => {
@@ -413,7 +481,7 @@ function paymentTailAccountName(text: string) {
 }
 
 function isCreditCardRepaymentLike(text: string) {
-  return /银联入账|付款尾号|扣款尾号|还款尾号|自动还款|自动扣款|信用卡还款|还款入账/i.test(text);
+  return /银联入账|银联转账|付款尾号|扣款尾号|还款尾号|自动还款|自动扣款|信用卡还款|还款入账/i.test(text);
 }
 
 function isExpenseRefundLike(text: string) {
@@ -740,7 +808,7 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: absAmount,
-      inflow: type === "income" || isExpenseRefund ? absAmount : undefined,
+      inflow: type === "income" || isExpenseRefund || isRepaymentTransfer ? absAmount : undefined,
       outflow: type === "expense" && !isExpenseRefund ? absAmount : undefined,
       account: cardAccount,
       fromAccount: paymentFromAccount || undefined,
@@ -777,9 +845,10 @@ function parseStructuredStatement(text: string): ParsedItem[] {
     if (amount === 0) continue;
 
     const { counterparty, category, institution } = aliasMatch(line);
+    const isRepaymentTransfer = isCreditCardRepaymentLike(line);
     const isExpenseRefund = isExpenseRefundLike(line);
     const isIncome = !isExpenseRefund && /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
-    const isTransfer = isLikelyTransfer(line);
+    const isTransfer = isRepaymentTransfer || isLikelyTransfer(line);
     const paymentFromAccount = isTransfer ? paymentTailAccountName(line) : "";
 
     const type = isTransfer ? "transfer" : isIncome ? "income" : "expense";
@@ -789,7 +858,7 @@ function parseStructuredStatement(text: string): ParsedItem[] {
       type,
       date,
       amount: amount || 0,
-      inflow: type === "income" || isExpenseRefund ? amount || 0 : undefined,
+      inflow: type === "income" || isExpenseRefund || isRepaymentTransfer ? amount || 0 : undefined,
       outflow: type === "expense" && !isExpenseRefund ? amount || 0 : undefined,
       counterparty: counterparty || undefined,
       institution: institution || undefined,
@@ -860,7 +929,7 @@ export async function POST(req: Request) {
       items = [{ rawText: text, type: "expense", amount: 0 }];
       parseMethod = "unparsed";
     } else {
-      items = items.map(enrichKnownMerchant);
+      items = alignStatementIncomeRefunds(items.map(enrichKnownMerchant));
       const categories = await prisma.category.findMany({
         where: {
           OR: [{ householdId }, { householdId: null }],

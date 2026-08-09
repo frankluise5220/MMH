@@ -124,6 +124,103 @@ export async function preloadNavListToCache(
   return written;
 }
 
+export type FundNavCacheRangeRequest = {
+  fundCode: string;
+  startDate: string;
+  endDate: string;
+};
+
+export type FundNavCacheRangeRefreshResult = {
+  requested: number;
+  rangeCount: number;
+  fundCount: number;
+  fetched: number;
+  written: number;
+  failed: number;
+  ranges: Array<FundNavCacheRangeRequest & {
+    fetched: number;
+    written: number;
+    ok: boolean;
+    error?: string;
+  }>;
+};
+
+function isYmd(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/**
+ * 批量补齐指定基金/日期范围的历史净值缓存。
+ *
+ * 调用方可以传入多个缺失日期；这里按基金合并成最小日期范围，
+ * 通过历史净值接口一次拉取整段数据，再写入 FundNavCache。
+ */
+export async function refreshFundNavCacheRanges(
+  requests: FundNavCacheRangeRequest[],
+): Promise<FundNavCacheRangeRefreshResult> {
+  const grouped = new Map<string, { fundCode: string; startDate: string; endDate: string; requested: number }>();
+
+  for (const request of requests) {
+    const fundCode = request.fundCode.trim();
+    const startDate = request.startDate.trim();
+    const endDate = request.endDate.trim();
+    if (!fundCode || !isYmd(startDate) || !isYmd(endDate)) continue;
+    const from = startDate <= endDate ? startDate : endDate;
+    const to = startDate <= endDate ? endDate : startDate;
+    const current = grouped.get(fundCode);
+    if (!current) {
+      grouped.set(fundCode, { fundCode, startDate: from, endDate: to, requested: 1 });
+    } else {
+      current.startDate = current.startDate < from ? current.startDate : from;
+      current.endDate = current.endDate > to ? current.endDate : to;
+      current.requested += 1;
+    }
+  }
+
+  let fetched = 0;
+  let written = 0;
+  let failed = 0;
+  const ranges: FundNavCacheRangeRefreshResult["ranges"] = [];
+
+  for (const range of grouped.values()) {
+    try {
+      const navList = await fetchHistoricalNavList(range.fundCode, range.startDate, range.endDate);
+      const rangeWritten = navList.length > 0 ? await preloadNavListToCache(range.fundCode, navList) : 0;
+      fetched += navList.length;
+      written += rangeWritten;
+      ranges.push({
+        fundCode: range.fundCode,
+        startDate: range.startDate,
+        endDate: range.endDate,
+        fetched: navList.length,
+        written: rangeWritten,
+        ok: true,
+      });
+    } catch (error) {
+      failed++;
+      ranges.push({
+        fundCode: range.fundCode,
+        startDate: range.startDate,
+        endDate: range.endDate,
+        fetched: 0,
+        written: 0,
+        ok: false,
+        error: error instanceof Error ? error.message : "获取失败",
+      });
+    }
+  }
+
+  return {
+    requested: requests.length,
+    rangeCount: grouped.size,
+    fundCount: grouped.size,
+    fetched,
+    written,
+    failed,
+    ranges,
+  };
+}
+
 /**
  * UTC日期转换（避免时区问题）
  */

@@ -1,7 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Pencil, Trash2, X } from "lucide-react";
+import {
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsSection,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsTags, getCachedSettingsTags, notifySettingsDataChanged, setSettingsTags } from "@/lib/client/settingsCache";
 
 type Tag = {
@@ -24,10 +34,7 @@ export default function SettingsTagsClient({
   initialLoaded?: boolean;
 }) {
   const [tags, setTags] = useState<Tag[]>(initialTags);
-  const [newName, setNewName] = useState("");
-  const [newColor, setNewColor] = useState(COLORS[6]);
-  const [adding, setAdding] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState<Tag | null>(null);
 
   useEffect(() => {
     if (initialLoaded) {
@@ -47,30 +54,6 @@ export default function SettingsTagsClient({
     if (next) setTags(next);
   }
 
-  async function handleAdd() {
-    if (!newName.trim()) return;
-    setAdding(true);
-    const res = await fetch("/api/v1/tags", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newName.trim(), color: newColor }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      setTags(prev => {
-        const next = [...prev, data.tag];
-        setSettingsTags(next);
-        return next;
-      });
-      void notifySettingsDataChanged({ scope: "tags", reason: "tag:create", prefetch: true });
-      setNewName("");
-      inputRef.current?.focus();
-    } else {
-      window.alert(data.error || "添加失败");
-    }
-    setAdding(false);
-  }
-
   async function handleDelete(id: string) {
     const res = await fetch(`/api/v1/tags?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     const data = await res.json();
@@ -85,90 +68,167 @@ export default function SettingsTagsClient({
     else window.alert(data.error || "删除失败");
   }
 
+  async function handleSaveTag(input: { id?: string; name: string; color: string }) {
+    const res = await fetch("/api/v1/tags", {
+      method: input.id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; tag?: Tag } | null;
+    if (!res.ok || !data?.ok || !data.tag) {
+      throw new Error(data?.error || "保存失败");
+    }
+    setTags((prev) => {
+      const next = input.id
+        ? prev.map((tag) => (tag.id === input.id ? data.tag! : tag))
+        : [...prev, data.tag!];
+      setSettingsTags(next);
+      return next;
+    });
+    void notifySettingsDataChanged({ scope: "tags", reason: input.id ? "tag:update" : "tag:create", prefetch: true });
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">标签管理</h2>
-          <p className="mt-1 text-xs text-slate-500">创建标签，记账时可关联，便于按标签分类统计。</p>
-        </div>
-      </div>
+      <SettingsPageHeader
+        title="标签管理"
+        description="维护流水和业务记录可复用的标签，系统自动添加的标签也会在这里显示和编辑。"
+        count={tags.length}
+        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>新增标签</SettingsPrimaryAddButton>}
+      />
 
-      <div className="rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 px-4 py-3">
-          <div className="text-sm font-medium text-slate-700">新建标签</div>
-        </div>
-        <div className="p-4">
-          <div className="flex items-end gap-3">
-            <div className="flex-1">
-              <label className="mb-1.5 block text-xs text-slate-500">名称</label>
-              <input
-                ref={inputRef}
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") handleAdd(); }}
-                className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
-                placeholder="输入标签名称"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs text-slate-500">颜色</label>
-              <div className="flex gap-1.5">
-                {COLORS.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setNewColor(c)}
-                    className={`h-7 w-7 rounded-full border-2 transition-transform ${newColor === c ? "scale-110 border-slate-800" : "border-transparent hover:scale-105"}`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
-            </div>
-            <button
-              onClick={handleAdd}
-              disabled={adding || !newName.trim()}
-              className="flex h-9 shrink-0 items-center gap-1 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Plus className="h-3.5 w-3.5" />添加
-            </button>
-          </div>
-        </div>
-      </div>
+      <SettingsSection title="标签列表" count={tags.length}>
+        <SettingsTable minWidth={640}>
+          <thead className="sticky top-0 z-10">
+            <tr>
+              <SettingsTh>标签</SettingsTh>
+              <SettingsTh>颜色</SettingsTh>
+              <SettingsTh align="right">操作</SettingsTh>
+            </tr>
+          </thead>
+          <tbody className="text-sm">
+            {tags.length ? tags.map((tag) => (
+              <tr key={tag.id} className="hover:bg-slate-50">
+                <SettingsTd className="text-sm font-medium text-slate-800">{tag.name}</SettingsTd>
+                <SettingsTd>
+                  <div className="flex items-center gap-2">
+                    <span className="h-3 w-3 rounded-full" style={{ backgroundColor: tag.color || "#64748B" }} />
+                    <span className="font-mono text-[11px] text-slate-500">{tag.color || "#64748B"}</span>
+                  </div>
+                </SettingsTd>
+                <SettingsTd align="right">
+                  <SettingsRowActions>
+                    <button
+                      type="button"
+                      onClick={() => setEditing(tag)}
+                      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:text-blue-600"
+                      title="编辑标签"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(tag.id)}
+                      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"
+                      title="删除标签"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </SettingsRowActions>
+                </SettingsTd>
+              </tr>
+            )) : (
+              <SettingsEmptyRow colSpan={3}>暂无标签</SettingsEmptyRow>
+            )}
+          </tbody>
+        </SettingsTable>
+      </SettingsSection>
 
-      <div className="rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 px-4 py-3">
-          <div className="text-sm font-medium text-slate-700">
-            已有标签
-            <span className="ml-1 text-xs text-slate-400">（{tags.length} 个）</span>
-          </div>
+      {editing ? (
+        <TagEditModal
+          tag={editing.id ? editing : undefined}
+          onCancel={() => setEditing(null)}
+          onSave={async (input) => {
+            await handleSaveTag(input);
+            setEditing(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function TagEditModal({
+  tag,
+  onCancel,
+  onSave,
+}: {
+  tag?: Tag;
+  onCancel: () => void;
+  onSave: (input: { id?: string; name: string; color: string }) => Promise<void>;
+}) {
+  const [name, setName] = useState(tag?.name ?? "");
+  const [color, setColor] = useState(tag?.color || COLORS[6]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onSave({ id: tag?.id, name: name.trim(), color });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="app-modal-backdrop z-[1100]">
+      <div className="app-modal-panel max-w-md">
+        <div className="modal-header shrink-0">
+          <div className="text-sm font-semibold text-slate-800">{tag ? "编辑标签" : "新增标签"}</div>
+          <button type="button" onClick={onCancel} className="secondary-button h-8 px-2">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <div className="p-4">
-          {tags.length === 0 ? (
-            <div className="py-6 text-center text-xs text-slate-400">暂无标签，请在上方创建</div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {tags.map(tag => (
-                <div
-                  key={tag.id}
-                  className="group flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300"
-                >
-                  <div
-                    className="h-3 w-3 shrink-0 rounded-full"
-                    style={{ backgroundColor: tag.color || "#64748B" }}
-                  />
-                  <span className="text-sm text-slate-700">{tag.name}</span>
-                  <button
-                    onClick={() => handleDelete(tag.id)}
-                    className="flex h-5 w-5 items-center justify-center rounded-full text-slate-400 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </div>
+        <form className="space-y-4 p-4" onSubmit={submit}>
+          {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div> : null}
+          <label className="block space-y-1">
+            <span className="form-label">名称</span>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              autoFocus
+              className="form-input"
+              placeholder="输入标签名称"
+            />
+          </label>
+          <div className="space-y-2">
+            <div className="form-label">颜色</div>
+            <div className="grid grid-cols-6 gap-2">
+              {COLORS.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setColor(item)}
+                  className={`h-8 rounded-md border-2 transition ${color === item ? "border-slate-900" : "border-transparent hover:border-slate-300"}`}
+                  style={{ backgroundColor: item }}
+                  title={item}
+                />
               ))}
             </div>
-          )}
-        </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+            <button type="button" onClick={onCancel} className="secondary-button h-9 px-4">取消</button>
+            <button type="submit" disabled={saving || !name.trim()} className="primary-button h-9 px-4 disabled:opacity-50">
+              {saving ? "保存中..." : "保存"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

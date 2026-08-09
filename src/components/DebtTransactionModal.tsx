@@ -283,6 +283,7 @@ export function DebtTransactionModal({
   defaultCashAccountId,
   action,
   showTriggerButton = true,
+  triggerLabel,
 }: {
   debtAccounts: AccountOption[];
   cashAccounts: AccountOption[];
@@ -297,6 +298,7 @@ export function DebtTransactionModal({
     | { ok: false; error: string }
   >;
   showTriggerButton?: boolean;
+  triggerLabel?: string;
 }) {
   const today = useMemo(() => formatDateInput(new Date()), []);
   const debtItemListId = useId();
@@ -1145,7 +1147,7 @@ export function DebtTransactionModal({
           className="primary-button h-8 gap-1 px-3 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="w-4 h-4" />
-          {editingEntryId ? "编辑还款" : "借还款"}
+          {editingEntryId ? "编辑还款" : triggerLabel ?? "借还款"}
           <ChevronDown className="w-4 h-4 opacity-90" />
         </button>
       ) : null}

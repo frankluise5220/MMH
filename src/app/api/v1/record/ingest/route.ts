@@ -40,6 +40,8 @@ import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 /**
  * POST /api/v1/record/ingest
  * Body: { items?: ParsedItem[], text?: string, import?: boolean, defaultAccountName?: string, traceId?: string }
+ * Import items may carry `inflow`/`outflow` for account-side direction; an
+ * expense refund should use `{ type: "expense", inflow: amount }`.
  * `businessType="credit_card_repayment"` stores a transfer categorized as
  * "信用卡还款" while requiring a debit-card/e-wallet source and credit-card target.
  * Response: { ok: true, items, imported, createdCount?, ids? } or { ok: false, error }.
@@ -165,6 +167,8 @@ const ParsedItemSchema = z.object({
   date: z.string().optional(),
   postedAt: z.string().optional(),
   amount: z.number(),
+  outflow: z.number().finite().min(0).optional(),
+  inflow: z.number().finite().min(0).optional(),
   account: z.string().optional(),
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
@@ -183,6 +187,15 @@ const ParsedItemSchema = z.object({
 });
 
 type ParsedItem = z.infer<typeof ParsedItemSchema>;
+
+function accountSideAmountForImportItem(item: ParsedItem) {
+  const amountAbs = Math.abs(Number(item.amount ?? 0));
+  const inflowAbs = Math.abs(Number(item.inflow ?? 0));
+  const outflowAbs = Math.abs(Number(item.outflow ?? 0));
+  if (inflowAbs > 0 && outflowAbs <= 0) return inflowAbs;
+  if (outflowAbs > 0 && inflowAbs <= 0) return -outflowAbs;
+  return item.type === "income" ? amountAbs : -amountAbs;
+}
 
 function parseDate(date?: string) {
   if (!date) return new Date();
@@ -538,8 +551,7 @@ async function buildTransactionRow(ctx: ImportContext, item: ParsedItem, default
   const accountId = await resolveAccountId(ctx, prisma, accountName) ?? await ensureAccountId(ctx, prisma, accountName);
   const meta = accountId ? ctx.accountMetaById.get(accountId ?? "") ?? null : null;
   const storedAccountName = accountName && parseImportAccountId(accountName) ? meta?.name ?? accountName : accountName;
-  const sign = item.type === "income" ? 1 : -1;
-  const amount = sign * Math.abs(item.amount);
+  const amount = accountSideAmountForImportItem(item);
   const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
   const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
   const stmtMonth2 = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
@@ -1041,12 +1053,11 @@ export async function POST(req: Request) {
           const accountId = lookupAccount(ctx, accountName, defaultAccountName);
           const meta = ctx.accountMetaById.get(accountId ?? "") ?? null;
           const storedName = accountId && meta ? meta.name : accountName;
-          const sign = item.type === "income" ? 1 : -1;
           const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
           const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
           const stmtMonth = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
           batchData.push({
-            type: item.type, amount: sign * Math.abs(item.amount), date, postedAt,
+            type: item.type, amount: accountSideAmountForImportItem(item), date, postedAt,
             accountId: accountId || "", accountName: storedName || "未识别账户",
             toAccountId: null, toAccountName: null, categoryId: cat?.id ?? null, categoryName: cat?.name ?? null,
             note, toNote: null,

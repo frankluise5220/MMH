@@ -3,17 +3,19 @@ import { ArrowLeftRight, Building2, CreditCard, HandCoins, Landmark } from "luci
 import { cookies } from "next/headers";
 import Link from "next/link";
 
+import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const dynamic = "force-dynamic";
 
-const DEBT_KINDS = [AccountKind.bank_credit, AccountKind.loan];
+const DEBT_KINDS: AccountKind[] = [AccountKind.bank_credit, AccountKind.loan];
 
 function yuan(value: number) {
   return `¥${formatMoney(value)}`;
@@ -41,7 +43,39 @@ function dayLabel(day: number | null) {
   return day ? `${day}日` : "未设置";
 }
 
-export default async function LiabilitiesPage() {
+type SmartSelectOptionLike = {
+  id: string;
+  label: string;
+  subLabel?: string;
+  title?: string;
+  isHeader?: boolean;
+  parentId?: string;
+  kind?: string | null;
+  debtDirection?: string | null;
+  institutionId?: string | null;
+  billingDay?: number | null;
+  currency?: string | null;
+};
+
+function joinSubLabel(parts: Array<string | null | undefined>) {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const text = part?.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result.join(" · ");
+}
+
+export default async function LiabilitiesPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = searchParams ? await searchParams : {};
+  const guideMode = params.guide === "settlements";
   const cookieStore = await cookies();
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -49,11 +83,92 @@ export default async function LiabilitiesPage() {
     creditCardLabelMode,
   );
   const { hidFilter } = await getHouseholdScope();
-  const accounts = await prisma.account.findMany({
-    where: { isActive: true, isPlaceholder: { not: true }, kind: { in: DEBT_KINDS }, ...hidFilter },
-    include: { AccountGroup: true, Institution: true },
-    orderBy: [{ kind: "asc" }, { name: "asc" }],
+  const [allAccounts, counterparties, institutions, groups] = await Promise.all([
+    prisma.account.findMany({
+      where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
+      include: { AccountGroup: true, Institution: true, Counterparty: true },
+      orderBy: [{ kind: "asc" }, { name: "asc" }],
+    }),
+    prisma.counterparty.findMany({
+      where: hidFilter,
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    }),
+    prisma.institution.findMany({
+      where: hidFilter,
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    }),
+    prisma.accountGroup.findMany({
+      where: hidFilter,
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    }),
+  ]);
+  const accounts = allAccounts.filter((account) => DEBT_KINDS.includes(account.kind));
+  const accountOptions = allAccounts.map((account) => {
+    const display = buildAccountDisplayOption({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      investProductType: account.investProductType,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup,
+    }, creditCardLabelTemplate);
+    return {
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      label: display.selectorLabel,
+      title: display.hoverTitle,
+      hoverTitle: display.hoverTitle,
+      groupId: display.groupId,
+      groupName: display.groupName,
+      institutionId: account.institutionId ?? "",
+      institutionType: account.Institution?.type ?? "",
+      counterpartyId: account.counterpartyId ?? "",
+      debtDirection: account.debtDirection ?? null,
+      billingDay: account.billingDay ?? null,
+      subLabel: kindLabel(account.kind),
+      currency: account.currency ?? "CNY",
+    };
   });
+
+  function buildAccountSSOptions(filter?: (account: typeof accountOptions[number]) => boolean): SmartSelectOptionLike[] {
+    const filtered = filter ? accountOptions.filter(filter) : accountOptions;
+    const grouped = filtered.filter((account) => account.groupId);
+    const ungrouped = filtered.filter((account) => !account.groupId);
+    const excludedGroupIds = new Set(groups.filter((group) => group.name === "未指定").map((group) => group.id));
+    const groupHeaders: SmartSelectOptionLike[] = groups
+      .filter((group) => group.name !== "未指定")
+      .filter((group) => grouped.some((account) => account.groupId === group.id))
+      .map((group) => ({ id: `group:${group.id}`, label: group.name, isHeader: true }));
+    const groupedItems: SmartSelectOptionLike[] = grouped
+      .filter((account) => !excludedGroupIds.has(account.groupId))
+      .map((account) => ({
+        id: account.id,
+        label: account.label,
+        subLabel: joinSubLabel([account.groupName, account.subLabel]),
+        title: account.hoverTitle,
+        parentId: `group:${account.groupId}`,
+        kind: account.kind,
+        debtDirection: account.debtDirection,
+        institutionId: account.institutionId || null,
+        billingDay: account.billingDay,
+        currency: account.currency,
+      }));
+    const ungroupedItems: SmartSelectOptionLike[] = ungrouped.map((account) => ({
+      id: account.id,
+      label: account.label,
+      subLabel: joinSubLabel([account.subLabel]),
+      title: account.hoverTitle,
+      kind: account.kind,
+      debtDirection: account.debtDirection,
+      institutionId: account.institutionId || null,
+      billingDay: account.billingDay,
+      currency: account.currency,
+    }));
+    return [...groupHeaders, ...groupedItems, ...ungroupedItems];
+  }
 
   const loanDisplayBalanceByAccountId = await computeAccountDisplayBalances(
     accounts
@@ -79,6 +194,114 @@ export default async function LiabilitiesPage() {
       creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
+  const debtObjectOptions: SmartSelectOptionLike[] = [
+    ...(counterparties.length > 0
+      ? [
+          { id: "debt-counterparty-header", label: "往来对象", isHeader: true },
+          ...counterparties.map((counterparty) => ({
+            id: `counterparty:${counterparty.id}`,
+            label: counterparty.shortName?.trim() || counterparty.name,
+            subLabel: counterparty.type === "person" ? "往来人员" : "往来组织",
+          })),
+        ]
+      : []),
+    ...(institutions.some((institution) => institution.type === "bank")
+      ? [
+          { id: "debt-institution-source-header", label: "从机构选择", isHeader: true },
+          ...institutions.filter((institution) => institution.type === "bank").map((institution) => ({
+            id: `institution:${institution.id}`,
+            label: institution.shortName?.trim() || institution.name,
+            subLabel: "银行",
+          })),
+        ]
+      : []),
+  ];
+  const debtTransferAccountSSOptions = buildAccountSSOptions((account) => (
+    account.kind === AccountKind.bank_debit ||
+    account.kind === AccountKind.cash ||
+    account.kind === AccountKind.ewallet ||
+    account.kind === AccountKind.bank_credit
+  ));
+  const debtTransferAccountList = accountOptions
+    .filter((account) => (
+      account.kind === AccountKind.bank_debit ||
+      account.kind === AccountKind.cash ||
+      account.kind === AccountKind.ewallet ||
+      account.kind === AccountKind.bank_credit
+    ))
+    .map((account) => ({
+      id: account.id,
+      label: account.label,
+      subLabel: joinSubLabel([account.groupName, account.subLabel]),
+      kind: account.kind,
+      institutionId: account.institutionId || null,
+      institutionType: account.institutionType || null,
+    }));
+  const debtAccountOptions = allAccounts
+    .filter((account) => account.kind === AccountKind.loan && account.isActive)
+    .map((account) => {
+      const display = buildAccountDisplayOption({
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        numberMasked: account.numberMasked,
+        groupId: account.groupId,
+        Institution: account.Institution,
+        AccountGroup: account.AccountGroup,
+      }, creditCardLabelTemplate);
+      return {
+        id: account.id,
+        label: display.label,
+        subLabel: account.Counterparty?.name ? "往来对象" : account.Institution?.name ? "机构往来" : "借入/借出",
+        institutionId: account.institutionId ?? null,
+        counterpartyId: account.counterpartyId ?? null,
+        institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
+        isInstitutionLoan: !!account.institutionId && account.Institution?.type === "bank",
+        debtDirection: account.debtDirection ?? null,
+      };
+    });
+  const counterpartyGuideRows = counterparties.map((counterparty) => {
+    const relatedAccounts = allAccounts.filter((account) => account.kind === AccountKind.loan && account.counterpartyId === counterparty.id);
+    const totals = relatedAccounts.reduce((acc, account) => {
+      const balance = loanDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+      if (balance >= 0) acc.receivable += Math.abs(balance);
+      else acc.payable += Math.abs(balance);
+      return acc;
+    }, { payable: 0, receivable: 0 });
+    return {
+      id: counterparty.id,
+      name: counterparty.name,
+      shortName: counterparty.shortName,
+      type: counterparty.type,
+      accountCount: relatedAccounts.length,
+      payable: totals.payable,
+      receivable: totals.receivable,
+    };
+  });
+  const nestedFieldData = {
+    groupId: groups.filter((group) => group.name !== "未指定").map((group) => ({ id: group.id, name: group.name })),
+    institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? "" })),
+    counterpartyId: counterparties.map((counterparty) => ({
+      id: counterparty.id,
+      name: counterparty.shortName?.trim() || counterparty.name,
+      type: counterparty.type ?? "organization",
+    })),
+  };
+
+  if (guideMode) {
+    return (
+      <LiabilitiesGuideClient
+        counterparties={counterpartyGuideRows}
+        debtAccounts={debtAccountOptions}
+        debtObjectOptions={debtObjectOptions}
+        cashAccounts={debtTransferAccountList}
+        cashAccountSSOptions={debtTransferAccountSSOptions}
+        nestedFieldData={nestedFieldData}
+        defaultCashAccountId={debtTransferAccountList[0]?.id ?? ""}
+        action={createDebtTransaction}
+      />
+    );
+  }
 
   const rows = accounts.map((account) => {
     const balance = account.kind === AccountKind.bank_credit

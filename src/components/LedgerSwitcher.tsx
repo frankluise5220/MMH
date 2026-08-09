@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Plus, Check, Pencil, X, Trash2, Shield } from "lucide-react";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 
 type Household = { id: string; name: string; createdAt?: string };
+type ApiResult = { ok?: boolean; error?: string };
 
 export function LedgerSwitcher({
   current,
@@ -74,9 +76,8 @@ export function LedgerSwitcher({
 
   // 切换账簿：弹出验证对话框
   function startSwitch(id: string) {
-    const h = households.find(x => x.id === id);
     setSwitchTargetId(id);
-    setSwitchUsername(h?.name ?? "");
+    setSwitchUsername("");
     setSwitchPassword("");
     setSwitchError("");
   }
@@ -124,7 +125,7 @@ export function LedgerSwitcher({
   function openCreateDialog() {
     const name = newName.trim();
     if (!name || adding) return;
-    setCreateAdminName(name); // 默认用账簿名称作为管理员用户名
+    setCreateAdminName("");
     setCreateAdminPassword("");
     setCreateAdminEmail("");
     setCreateDialogError("");
@@ -237,8 +238,8 @@ export function LedgerSwitcher({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: deleteDbPassword, verifySystem: true }),
       });
-      const vd = await verifyRes.json();
-      if (!vd.ok) {
+      const vd = await readApiResult(verifyRes);
+      if (!verifyRes.ok || !vd.ok) {
         setDeleteError(vd.error ?? "数据库密码错误");
         setDeleting(false);
         return;
@@ -249,8 +250,8 @@ export function LedgerSwitcher({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: deletingId }),
       });
-      const d = await res.json();
-      if (d.ok) {
+      const d = await readApiResult(res);
+      if (res.ok && d.ok) {
         setDeletingId(null);
         setDeleteConfirmName("");
         setDeleteDbPassword("");
@@ -266,8 +267,8 @@ export function LedgerSwitcher({
       } else {
         setDeleteError(d.error ?? "删除失败");
       }
-    } catch {
-      setDeleteError("网络错误，请重试");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "网络错误，请重试");
     } finally {
       setDeleting(false);
     }
@@ -304,7 +305,7 @@ export function LedgerSwitcher({
   if (!open) return null;
   if (!showSwitchList && hasData && households.length <= 1) return null;
 
-  return (
+  const content = (
     <>
       <div className="fixed inset-0 z-40" onClick={() => { onOpenChange(false); setEditingId(null); }} />
       <div
@@ -423,7 +424,7 @@ export function LedgerSwitcher({
                       onChange={(e) => setSwitchUsername(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                      placeholder="输入管理员用户名"
+                      placeholder="输入目标账簿中的用户名"
                       autoFocus
                     />
                   </div>
@@ -491,14 +492,15 @@ export function LedgerSwitcher({
 
               <div className="p-6 space-y-4">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">管理员用户名</div>
+                  <div className="text-xs font-medium text-slate-600">家庭成员/管理员名</div>
                   <input
                     value={createAdminName}
                     onChange={(e) => setCreateAdminName(e.target.value)}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder="输入管理员用户名"
+                    placeholder="输入管理员或家庭成员姓名"
                     autoFocus
                   />
+                  <div className="text-[10px] text-slate-400">这个名称也会作为默认家庭成员/账户所有人。</div>
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">邮箱</div>
@@ -645,4 +647,19 @@ export function LedgerSwitcher({
         })()}
     </>
   );
+
+  return typeof document === "undefined" ? null : createPortal(content, document.body);
+}
+
+async function readApiResult(response: Response): Promise<ApiResult> {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(`服务器未返回结果（HTTP ${response.status}），请查看服务日志后重试`);
+  }
+
+  try {
+    return JSON.parse(body) as ApiResult;
+  } catch {
+    throw new Error(`服务器返回了无效结果（HTTP ${response.status}），请查看服务日志后重试`);
+  }
 }

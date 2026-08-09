@@ -7,7 +7,10 @@ const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const version = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
+const rawVersion = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
+const version = normalizeFnosVersion(rawVersion);
+const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
+const changelog = process.env.FNOS_PACKAGE_CHANGELOG || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
 const appName = "mmh";
 const outDir = path.join(root, "release-artifacts", "fnos");
 const stageDir = path.join(outDir, `${appName}-fpk`);
@@ -25,6 +28,15 @@ function write(file, content, mode) {
   mkdirp(path.dirname(file));
   fs.writeFileSync(file, content.replace(/\r\n/g, "\n"), "utf8");
   if (mode) fs.chmodSync(file, mode);
+}
+
+function normalizeFnosVersion(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "0.1.0";
+  return raw
+    .replace(/^refs\/tags\//, "")
+    .replace(/^v(?=\d)/, "")
+    .replace(/-fnos(?:$|[.-].*)?$/, "");
 }
 
 function copyFile(src, dest) {
@@ -404,6 +416,7 @@ display_name=MMH
 arch=x86_64
 platform=x86
 source=thirdparty
+os_min_version=${osMinVersion}
 maintainer=frankluise5220
 maintainer_url=https://github.com/frankluise5220/MMH
 distributor=frankluise5220
@@ -413,6 +426,7 @@ desktop_uidir=ui
 desktop_applaunchname=mmh.Application
 service_port=7777
 checkport=true
+changelog=${changelog}
 `);
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
@@ -516,7 +530,7 @@ write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   },
 }, null, 2));
 
-const markIcon = path.join(root, "public", "branding", "mmh-logo-final.square.png");
+const markIcon = path.join(root, "public", "branding", "mmh-logo-pageflip-512.png");
 copyIcon(markIcon, path.join(stageDir, "ICON.PNG"), 64);
 copyIcon(markIcon, path.join(stageDir, "ICON_256.PNG"), 256);
 copyIcon(markIcon, path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
@@ -728,7 +742,29 @@ if [ -z "$APP_DEST" ]; then
   APP_DEST="$(cd "$(dirname "$0")/.." && pwd)"
 fi
 
-DATA_DEST="\${TRIM_DATADEST:-$APP_DEST/data}"
+resolve_data_dest () {
+  if [ -n "\${TRIM_DATADEST:-}" ]; then
+    echo "\${TRIM_DATADEST}"
+    return 0
+  fi
+  if [ -n "\${TRIM_PKGVAR:-}" ]; then
+    echo "$TRIM_PKGVAR/data"
+    return 0
+  fi
+
+  local appname="\${TRIM_APPNAME:-mmh}"
+  local d
+  for d in /vol*/@appdata/"$appname" /usr/local/apps/@appdata/"$appname"; do
+    if [ -d "$d" ]; then
+      echo "$d/data"
+      return 0
+    fi
+  done
+
+  echo "/vol1/@appdata/$appname/data"
+}
+
+DATA_DEST="$(resolve_data_dest)"
 SERVER_DIR="$APP_DEST/server"
 NODE_BIN="$APP_DEST/bin/node"
 PID_FILE="$DATA_DEST/mmh.pid"

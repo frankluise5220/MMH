@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 
 const VERIFIED_KEY = "mmh_access_password_verified";
-const CACHE_TTL = 60_000;
+const CACHE_TTL = 5_000;
 const LOOKUP_TIMEOUT_MS = 1_200;
 
 const PUBLIC_PATHS = [
@@ -44,8 +44,25 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
   }
 }
 
+function normalizeAllowedHostname(value: string) {
+  const raw = value.trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    return new URL(raw.includes("://") ? raw : `http://${raw}`).hostname.toLowerCase();
+  } catch {
+    return raw.split(":")[0]?.trim().toLowerCase() ?? "";
+  }
+}
+
 function isAllowedHostname(hostname: string, allowedList: string[]): boolean {
-  return allowedList.includes(hostname);
+  const normalized = normalizeAllowedHostname(hostname);
+  if (!normalized) return false;
+  return allowedList.some((item) => {
+    const allowed = normalizeAllowedHostname(item);
+    if (!allowed) return false;
+    if (allowed.startsWith("*.")) return normalized.endsWith(allowed.slice(1));
+    return normalized === allowed;
+  });
 }
 
 async function isOriginCheckEnabled(): Promise<boolean> {
@@ -74,7 +91,7 @@ async function getAllowedOrigins(): Promise<string[]> {
 
   try {
     const extra: string[] = row?.value ? JSON.parse(row.value) : [];
-    const normalized = extra.map((origin) => (origin.includes(":") ? origin.split(":")[0] : origin));
+    const normalized = extra.map(normalizeAllowedHostname).filter(Boolean);
     allowedOriginsCache = [...DEFAULT_ORIGINS, ...normalized];
   } catch (error) {
     console.error("[proxy] getAllowedOrigins failed or timed out:", error);
@@ -103,10 +120,20 @@ function extractHostname(req: NextRequest): string | null {
   return req.nextUrl.hostname || null;
 }
 
-const ORIGIN_BYPASS_PATHS = ["/login", "/api/v1/auth", "/api/v1/settings/catalog", "/api/v1/settings/system"];
-
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  const enabled = await isOriginCheckEnabled();
+  if (enabled) {
+    const hostname = extractHostname(req);
+    if (hostname) {
+      const allowed = await getAllowedOrigins();
+      if (!isAllowedHostname(hostname, allowed)) {
+        console.error("[proxy] Access denied - hostname:", hostname, "allowed:", allowed);
+        return new NextResponse("Access Denied - 请联系管理员将您的域名或 IP 添加到访问白名单中", { status: 403 });
+      }
+    }
+  }
 
   if (PUBLIC_PATHS.some((path) => pathname.startsWith(path))) {
     return NextResponse.next();
@@ -117,20 +144,6 @@ export async function proxy(req: NextRequest) {
     (req.headers.get("authorization") ?? "").toLowerCase().startsWith("bearer ");
   if (pathname.startsWith("/api/") && hasApiCredential) {
     return NextResponse.next();
-  }
-
-  if (!ORIGIN_BYPASS_PATHS.some((path) => pathname.startsWith(path))) {
-    const enabled = await isOriginCheckEnabled();
-    if (enabled) {
-      const hostname = extractHostname(req);
-      if (hostname) {
-        const allowed = await getAllowedOrigins();
-        if (!isAllowedHostname(hostname, allowed)) {
-          console.error("[proxy] Access denied - hostname:", hostname, "allowed:", allowed);
-          return new NextResponse("Access Denied - 请联系管理员将您的域名或 IP 添加到访问白名单中", { status: 403 });
-        }
-      }
-    }
   }
 
   const verified = req.cookies.get(VERIFIED_KEY)?.value;

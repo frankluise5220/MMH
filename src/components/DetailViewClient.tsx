@@ -23,7 +23,6 @@ import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
-import { getInvestmentCategoryName } from "@/lib/investment-category";
 import {
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
@@ -31,6 +30,7 @@ import {
   normalizeDetailPageSize,
 } from "@/lib/detail-pagination-preference";
 import { parseImportAccountId } from "@/lib/account-import-match";
+import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 
 /* Types */
 
@@ -204,50 +204,6 @@ function shouldShowBusinessLinkStatus(entry: DetailEntry) {
   const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
   const hasInvestmentSide = entry.accountKind === "investment" || entry.toAccountKind === "investment";
   return hasBusinessLink || entry.type === "investment" || (entry.type === "transfer" && hasInvestmentSide);
-}
-
-function subtypeLabelInfo(
-  subtype: string | null | undefined,
-  source: string | null | undefined,
-  t: (key: string) => string,
-): { label: string; cls: string; textCls?: string } | { label: string } | null {
-  if (!subtype) return null;
-  if (source === "deposit" || source === "deposit_manual") {
-    const depositLabels: Record<string, { label: string; cls: string }> = {
-      buy: { label: t("deposit.subtype.buy"), cls: "bg-blue-50 text-blue-600" },
-      redeem: { label: t("deposit.subtype.redeem"), cls: "bg-amber-50 text-amber-600" },
-    };
-    const deposit = depositLabels[subtype];
-    if (deposit) return deposit;
-  }
-  if (source === "insurance") {
-    const insuranceLabels: Record<string, { label: string; cls: string }> = {
-      buy: { label: "保险续期", cls: "bg-blue-50 text-blue-600" },
-      redeem: { label: "保险回款", cls: "bg-emerald-50 text-emerald-600" },
-      switch_out: { label: "保险回款", cls: "bg-emerald-50 text-emerald-600" },
-    };
-    const insurance = insuranceLabels[subtype];
-    if (insurance) return insurance;
-  }
-  const baseLabels: Record<string, { label: string; cls: string }> = {
-    buy: { label: t("fund.subtype.buy"), cls: "bg-blue-50 text-blue-600" },
-    redeem: { label: t("fund.subtype.redeem"), cls: "bg-amber-50 text-amber-600" },
-    switch_out: { label: t("fund.subtype.switch_out"), cls: "bg-purple-50 text-purple-600" },
-    dividend_cash: { label: t("fund.subtype.dividend_cash"), cls: "bg-emerald-50 text-emerald-600" },
-    dividend_reinvest: { label: t("fund.subtype.dividend_reinvest"), cls: "bg-emerald-50 text-emerald-600" },
-    buy_failed: { label: t("fund.subtype.buy_failed"), cls: "bg-red-50 text-red-600" },
-  };
-  const base = baseLabels[subtype];
-  if (!base) return base;
-  if (subtype === "buy" && source) {
-    const srcLabels: Record<string, { label: string; cls: string; textCls?: string }> = {
-      regular_invest: { label: t("fund.subtype.regular_invest"), cls: "bg-blue-50 text-blue-600" },
-      dividend: { label: t("fund.subtype.dividend"), cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-      switch: { label: t("fund.subtype.switch"), cls: "bg-blue-50 text-blue-600" },
-    };
-    return srcLabels[source] ?? base;
-  }
-  return base;
 }
 
 function formatType(type: string, t: (key: string) => string) {
@@ -491,50 +447,6 @@ function investmentCategoryLabel(
   return "";
 }
 
-function investmentActionLabel(
-  entry: DetailEntry,
-  entryFundProductType: string | null | undefined,
-  t: (key: string) => string,
-): string {
-  if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
-  const productType = entryFundProductType ?? null;
-  const subtype = String(entry.fundSubtype ?? "");
-  const source = String(entry.source ?? "");
-
-  if (!subtype) return entry.categoryName ?? "";
-
-  if (productType === "deposit") {
-    if (subtype === "redeem") return "存款取出";
-    if (subtype === "buy") return "存款存入";
-  }
-
-  if (productType === "wealth") {
-    if (subtype === "redeem") return "理财赎回";
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
-    if (subtype === "buy_failed") return "买入失败";
-    if (subtype === "buy") return "理财买入";
-  }
-
-  if (productType === "metal") {
-    if (subtype === "redeem") return "贵金属卖出";
-    if (subtype === "buy") return "贵金属买入";
-  }
-
-  if (productType === "fund" || productType === "money" || !productType) {
-    if (subtype === "buy" && source === "regular_invest") return "基金定投";
-    if (subtype === "buy" && source === "dividend") return "红利转投";
-    if (subtype === "redeem") return "基金赎回";
-    if (subtype === "dividend_cash") return "现金分红";
-    if (subtype === "dividend_reinvest") return "分红再投资";
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
-    if (subtype === "buy_failed") return "买入失败";
-    if (subtype === "buy") return "基金买入";
-  }
-
-  const info = subtypeLabelInfo(subtype, entry.source, t);
-  return info?.label ?? entry.categoryName ?? "";
-}
-
 /* Component */
 
 export function DetailViewClient({
@@ -601,15 +513,18 @@ export function DetailViewClient({
   const accountDisplayFallback = useCallback((accountId?: string | null, fallback?: string | null) => {
     const byId = accountId ? accountOptionById.get(accountId) : undefined;
     if (byId) {
-      const fullLabel = byId.fullLabel?.trim() || byId.label;
-      return { label: fullLabel, title: byId.title ?? fullLabel };
+      const label = formatAccountTableLabel(byId);
+      return { label, title: formatAccountTableTitle(byId, label) };
     }
     const raw = String(fallback ?? "").trim();
     if (!raw) return { label: "", title: "" };
     const encodedId = parseImportAccountId(raw);
     const directId = encodedId || (/^cm[a-z0-9]{8,}$/i.test(raw) ? raw : "");
     const byFallbackId = directId ? accountOptionById.get(directId) : undefined;
-    if (byFallbackId) return { label: byFallbackId.label, title: byFallbackId.title ?? byFallbackId.label };
+    if (byFallbackId) {
+      const label = formatAccountTableLabel(byFallbackId);
+      return { label, title: formatAccountTableTitle(byFallbackId, label) };
+    }
     return { label: raw, title: raw };
   }, [accountOptionById]);
   const accountColumnScopeIds = useMemo(
@@ -1094,9 +1009,14 @@ export function DetailViewClient({
       width: 96,
       minWidth: 76,
       align: "right",
+      filterKind: "numberRange",
       filterText: (e) => {
         const amount = effectiveAmountForAccount(e, accountId);
-        return amount > 0 ? t("detail.column.inflow") : "";
+        return amount > 0 ? String(amount) : "";
+      },
+      filterNumber: (e) => {
+        const amount = effectiveAmountForAccount(e, accountId);
+        return amount > 0 ? amount : null;
       },
       sortValue: (e) => {
         const amount = effectiveAmountForAccount(e, accountId);
@@ -1114,9 +1034,14 @@ export function DetailViewClient({
       width: 96,
       minWidth: 76,
       align: "right",
+      filterKind: "numberRange",
       filterText: (e) => {
         const amount = effectiveAmountForAccount(e, accountId);
-        return amount < 0 ? t("detail.column.outflow") : "";
+        return amount < 0 ? String(-amount) : "";
+      },
+      filterNumber: (e) => {
+        const amount = effectiveAmountForAccount(e, accountId);
+        return amount < 0 ? -amount : null;
       },
       sortValue: (e) => {
         const amount = effectiveAmountForAccount(e, accountId);
@@ -1203,6 +1128,7 @@ export function DetailViewClient({
       minWidth: 96,
       hideable: true,
       defaultHidden: true,
+      filterKind: "text",
       filterText: (e) => e.counterpartyInstitutionName ?? "",
       render: (e) => <span className="block truncate text-slate-500" title={e.counterpartyInstitutionName ?? ""}>{e.counterpartyInstitutionName || <span className="text-slate-300">-</span>}</span>,
     },
@@ -1252,6 +1178,7 @@ export function DetailViewClient({
       width: 150,
       minWidth: 90,
       hideable: true,
+      filterKind: "text",
       filterText: (e) => e.entryTags?.map((et) => et.Tag?.name ?? "").join(" ") ?? "",
       render: (e) => e.entryTags && e.entryTags.length > 0 ? (
         <span className="inline-flex flex-wrap gap-0.5">
@@ -1276,6 +1203,7 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
+      filterKind: "text",
       filterText: (e) => displayDetailRemark(e, accountId),
       render: (e) => {
         const text = displayDetailRemark(e, accountId);
@@ -1287,10 +1215,11 @@ export function DetailViewClient({
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
-      {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
-      {selectedCount > 0 ? <span className="text-xs text-slate-500">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
+      {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
       {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
+      {selectedCount > 0 && toolbarTitle ? <span className="h-4 w-px bg-slate-200" /> : null}
+      {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
     </div>
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;

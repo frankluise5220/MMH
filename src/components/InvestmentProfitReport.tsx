@@ -1,5 +1,8 @@
 import { formatMoney } from "@/lib/format";
-import type { InvestmentProfitPeriod, InvestmentProfitReportRow } from "@/lib/server/investment-profit-report";
+import type {
+  InvestmentProfitPeriod,
+  InvestmentProfitReportRow,
+} from "@/lib/server/investment-profit-report";
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -29,9 +32,27 @@ function signedMoney(value: number) {
 }
 
 function periodTitle(period: InvestmentProfitPeriod, year: number, month: number) {
-  if (period === "day") return `${year}年${month}月日历收益`;
-  if (period === "month") return `${year}年月度收益`;
-  return "年度收益";
+  if (period === "day") return `${year}年${month}月日历市值收益`;
+  if (period === "month") return `${year}年月度市值收益`;
+  return "年度市值收益";
+}
+
+function totalLabel(period: InvestmentProfitPeriod) {
+  if (period === "day") return "本月总市值收益";
+  if (period === "month") return "本年总市值收益";
+  return "累计总市值收益";
+}
+
+function totalRowLabel(period: InvestmentProfitPeriod) {
+  if (period === "day") return "本月合计";
+  if (period === "month") return "本年合计";
+  return "累计合计";
+}
+
+function activePeriodLabel(period: InvestmentProfitPeriod) {
+  if (period === "day") return "有收益日";
+  if (period === "month") return "有收益月";
+  return "有收益年";
 }
 
 function dailyCells(rows: InvestmentProfitReportRow[]) {
@@ -62,11 +83,11 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {[
-          { label: "合计收益", value: totals.totalProfit },
-          { label: "基金收益", value: totals.fundProfit },
+          { label: totalLabel(period), value: totals.totalProfit },
+          { label: "基金市值收益", value: totals.fundProfit },
           { label: "理财收益", value: totals.wealthProfit },
           { label: "存款收益", value: totals.depositProfit },
-          { label: "收益记录", value: totals.count, count: true },
+          { label: activePeriodLabel(period), value: activeRows.length, count: true },
         ].map((item) => (
           <div key={item.label} className="rounded-lg border border-slate-200 bg-white p-3">
             <div className="text-[11px] text-slate-500">{item.label}</div>
@@ -136,11 +157,11 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
               <thead className="sticky top-0 bg-white">
                 <tr>
                   <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">期间</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">基金收益</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">基金市值收益</th>
                   <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">理财收益</th>
                   <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">存款收益</th>
                   <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">合计</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">记录数</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">来源数</th>
                 </tr>
               </thead>
               <tbody>
@@ -157,7 +178,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
               </tbody>
               <tfoot className="sticky bottom-0 bg-slate-50">
                 <tr>
-                  <td className="border-t border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700">合计</td>
+                  <td className="border-t border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700">{totalRowLabel(period)}</td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.fundProfit} isRedUp={isRedUp} /></td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.wealthProfit} isRedUp={isRedUp} /></td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.depositProfit} isRedUp={isRedUp} /></td>

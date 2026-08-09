@@ -1,8 +1,14 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { Download } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { TransactionType } from "@prisma/client";
 
+import { InvestmentProfitReport } from "@/components/InvestmentProfitReport";
+import {
+  InvestmentProfitScopeSelect,
+  type InvestmentProfitScopeOption,
+} from "@/components/InvestmentProfitScopeSelect";
+import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
@@ -17,6 +23,7 @@ import {
   type IncomeExpenseReportDetailType,
   type IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
+import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/server/investment-profit-report";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { readableTagWhere } from "@/lib/server/tag-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
@@ -51,6 +58,22 @@ function parseYear(value: string | undefined) {
   return Number.isInteger(year) && year >= 1900 && year <= 2200 ? year : null;
 }
 
+const PROFIT_SCOPE_ALL = "all";
+const NO_INSTITUTION_SCOPE_ID = "__none__";
+
+function normalizeProfitScope(value: string | undefined) {
+  const raw = String(value ?? "").trim();
+  return raw || PROFIT_SCOPE_ALL;
+}
+
+function investmentAccountScope(accountId: string) {
+  return `account:${accountId}`;
+}
+
+function investmentInstitutionScope(institutionId: string | null | undefined) {
+  return `institution:${institutionId || NO_INSTITUTION_SCOPE_ID}`;
+}
+
 function rowCsv(section: "收入" | "支出", row: IncomeExpenseReportRow) {
   return [
     section,
@@ -58,6 +81,57 @@ function rowCsv(section: "收入" | "支出", row: IncomeExpenseReportRow) {
     ...row.values.map((value) => value.toFixed(2)),
     row.total.toFixed(2),
   ];
+}
+
+function reportTabs(currentType: "income-expense" | "investment-profit", investmentHref: string) {
+  const itemClass = (active: boolean) =>
+    `inline-flex h-7 items-center rounded-full px-3 text-xs font-medium transition ${
+      active ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"
+    }`;
+
+  return (
+    <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5">
+      <Link href="/reports" scroll={false} className={itemClass(currentType === "income-expense")}>
+        收支统计表
+      </Link>
+      <Link href={investmentHref} scroll={false} className={itemClass(currentType === "investment-profit")}>
+        投资收益表
+      </Link>
+    </div>
+  );
+}
+
+function buildReportHref(
+  reportType: "income-expense" | "investment-profit",
+  profitPeriod?: InvestmentProfitPeriod,
+  profitYear?: number,
+  profitMonth?: number,
+  profitScope?: string,
+) {
+  const query = new URLSearchParams();
+  if (reportType === "investment-profit") {
+    query.set("report", reportType);
+    query.set("profitPeriod", profitPeriod ?? "day");
+    if (profitYear) query.set("profitYear", String(profitYear));
+    if (profitMonth) query.set("profitMonth", String(profitMonth));
+    const normalizedScope = normalizeProfitScope(profitScope);
+    if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
+  }
+  return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
+}
+
+function parseMonthNumber(value: string | undefined, fallback: number) {
+  const month = Number(String(value ?? "").trim());
+  return Number.isInteger(month) && month >= 1 && month <= 12 ? month : fallback;
+}
+
+function shiftProfitWindow(period: InvestmentProfitPeriod, year: number, month: number, delta: number) {
+  if (period === "day") {
+    const shifted = new Date(Date.UTC(year, month - 1 + delta, 1));
+    return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1 };
+  }
+  if (period === "month") return { year: year + delta, month };
+  return { year, month };
 }
 
 function presetQuery(params: {
@@ -86,6 +160,9 @@ export default async function ReportsPage({
 }) {
   const params = await searchParams;
   const now = new Date();
+  const reportType = params.report === "investment-profit" ? "investment-profit" : "income-expense";
+  const profitPeriod: InvestmentProfitPeriod =
+    params.profitPeriod === "month" || params.profitPeriod === "year" ? params.profitPeriod : "day";
   const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
   const groupBy = params.groupBy === "year" ? "year" : "month";
   const rawStartMonth = typeof params.startMonth === "string"
@@ -132,6 +209,14 @@ export default async function ReportsPage({
     creditCardLabelMode,
   );
   const ctx = await getHouseholdScope();
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth() + 1;
+  const profitYear = parseYear(typeof params.profitYear === "string" ? params.profitYear : undefined) ?? currentYear;
+  const profitMonth = parseMonthNumber(
+    typeof params.profitMonth === "string" ? params.profitMonth : undefined,
+    currentMonth,
+  );
+  const rawProfitScope = normalizeProfitScope(typeof params.profitScope === "string" ? params.profitScope : undefined);
 
   const allAccountRecords = await prisma.account.findMany({
     where: {
@@ -149,15 +234,15 @@ export default async function ReportsPage({
   const accountRecords = allAccountRecords.filter((account) => !isPureInvestmentAccount(account));
   const allAccountDisplayOptions = allAccountRecords.map((account) =>
     buildAccountDisplayOption({
-        id: account.id,
-        name: account.name,
-        kind: account.kind,
-        numberMasked: account.numberMasked,
-        groupId: account.groupId,
-        investProductType: account.investProductType,
-        Institution: account.Institution,
-        AccountGroup: account.AccountGroup,
-      }, creditCardLabelTemplate),
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      investProductType: account.investProductType,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup,
+    }, creditCardLabelTemplate),
   );
   const allAccountDisplayById = new Map(allAccountDisplayOptions.map((account) => [account.id, account]));
   const accountDisplayOptions = accountRecords.map((account) => allAccountDisplayById.get(account.id)!).filter(Boolean);
@@ -195,6 +280,188 @@ export default async function ReportsPage({
   const investmentAccountSSOptions = buildGroupedAccountOptions(
     allAccountDisplayOptions.filter((account) => investmentAccountIds.has(account.id)),
   );
+  const institutionScopeByValue = new Map<string, {
+    value: string;
+    label: string;
+    ids: string[];
+    sortLabel: string;
+    title: string;
+  }>();
+
+  for (const account of investmentAccountRecords) {
+    const value = investmentInstitutionScope(account.institutionId);
+    const institutionName =
+      account.Institution?.shortName?.trim()
+      || account.Institution?.name?.trim()
+      || "未设机构";
+    const existing = institutionScopeByValue.get(value) ?? {
+      value,
+      label: `按机构：${institutionName}`,
+      ids: [],
+      sortLabel: institutionName,
+      title: "",
+    };
+    existing.ids.push(account.id);
+    institutionScopeByValue.set(value, existing);
+  }
+
+  const institutionScopeRows = Array.from(institutionScopeByValue.values())
+    .map((option) => ({
+      ...option,
+      title: `${option.label} · ${option.ids.length}个账户`,
+    }))
+    .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
+  const validProfitScopes = new Set<string>([
+    PROFIT_SCOPE_ALL,
+    ...institutionScopeRows.map((option) => option.value),
+    ...investmentAccountRecords.map((account) => investmentAccountScope(account.id)),
+  ]);
+  const selectedProfitScope = validProfitScopes.has(rawProfitScope) ? rawProfitScope : PROFIT_SCOPE_ALL;
+  const investmentAccountIdsForReport = (() => {
+    if (selectedProfitScope.startsWith("account:")) {
+      const accountId = selectedProfitScope.slice("account:".length);
+      return investmentAccountIds.has(accountId) ? [accountId] : undefined;
+    }
+    if (selectedProfitScope.startsWith("institution:")) {
+      return institutionScopeByValue.get(selectedProfitScope)?.ids;
+    }
+    return undefined;
+  })();
+  const currentInvestmentHref = buildReportHref(
+    "investment-profit",
+    profitPeriod,
+    profitYear,
+    profitMonth,
+    selectedProfitScope,
+  );
+  const allInvestmentScopeOption: InvestmentProfitScopeOption = {
+    value: PROFIT_SCOPE_ALL,
+    label: "全部投资账户",
+    href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, PROFIT_SCOPE_ALL),
+  };
+  const investmentInstitutionScopeOptions: InvestmentProfitScopeOption[] = institutionScopeRows.map((option) => ({
+    value: option.value,
+    label: option.label,
+    href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, option.value),
+    title: option.title,
+  }));
+  const investmentAccountScopeOptions: InvestmentProfitScopeOption[] = investmentAccountRecords
+    .map((account) => {
+      const display = allAccountDisplayById.get(account.id);
+      const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
+      return {
+        value: investmentAccountScope(account.id),
+        label: `按账户：${label}`,
+        href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, investmentAccountScope(account.id)),
+        title: display?.hoverTitle,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+
+  if (reportType === "investment-profit") {
+    const investmentReport = await loadInvestmentProfitReport(ctx, {
+      period: profitPeriod,
+      year: profitYear,
+      month: profitMonth,
+      accountIds: investmentAccountIdsForReport,
+    });
+    const periodHref = (period: InvestmentProfitPeriod) =>
+      buildReportHref("investment-profit", period, profitYear, profitMonth, selectedProfitScope);
+    const previousWindow = shiftProfitWindow(profitPeriod, profitYear, profitMonth, -1);
+    const nextWindow = shiftProfitWindow(profitPeriod, profitYear, profitMonth, 1);
+    const previousHref = buildReportHref(
+      "investment-profit",
+      profitPeriod,
+      previousWindow.year,
+      previousWindow.month,
+      selectedProfitScope,
+    );
+    const nextHref = buildReportHref(
+      "investment-profit",
+      profitPeriod,
+      nextWindow.year,
+      nextWindow.month,
+      selectedProfitScope,
+    );
+    const rangeLabel = profitPeriod === "day"
+      ? `${profitYear}年${profitMonth}月`
+      : profitPeriod === "month"
+        ? `${profitYear}年`
+        : `截至 ${currentYear} 年`;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="page-header">
+          <div className="flex h-12 items-center justify-between px-4">
+            <div className="text-sm page-title">报表</div>
+            <div className="flex items-center gap-2">
+              {reportTabs("investment-profit", currentInvestmentHref)}
+            </div>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
+              <div className="flex shrink-0 items-center gap-1">
+                <div className="flex items-center gap-1">
+                  {(["day", "month", "year"] as InvestmentProfitPeriod[]).map((period) => (
+                    <Link
+                      key={period}
+                      href={periodHref(period)}
+                      scroll={false}
+                      className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-medium transition ${
+                        profitPeriod === period
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {period === "day" ? "按日" : period === "month" ? "按月" : "按年"}
+                    </Link>
+                  ))}
+                </div>
+                {profitPeriod !== "year" ? (
+                  <Link
+                    href={previousHref}
+                    scroll={false}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                    title={profitPeriod === "day" ? "上月" : "上一年"}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </Link>
+                ) : null}
+                <span className="min-w-24 text-center text-xs font-medium text-slate-500">{rangeLabel}</span>
+                {profitPeriod !== "year" ? (
+                  <Link
+                    href={nextHref}
+                    scroll={false}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                    title={profitPeriod === "day" ? "下月" : "下一年"}
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Link>
+                ) : null}
+              </div>
+              <InvestmentProfitScopeSelect
+                selectedScope={selectedProfitScope}
+                allOption={allInvestmentScopeOption}
+                institutionOptions={investmentInstitutionScopeOptions}
+                accountOptions={investmentAccountScopeOptions}
+              />
+              <MissingFundNavPrompt items={investmentReport.missingNavs} className="ml-auto" />
+            </div>
+            <InvestmentProfitReport
+              period={profitPeriod}
+              year={profitYear}
+              month={profitMonth}
+              rows={investmentReport.rows}
+              totals={investmentReport.totals}
+              isRedUp={colorScheme === "red_up_green_down"}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const [editCategories, editTags, editGroups, editInstitutions, editCounterparties] = await Promise.all([
     prisma.category.findMany({
@@ -311,16 +578,10 @@ export default async function ReportsPage({
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="page-header">
         <div className="flex h-12 items-center justify-between px-4">
-          <div className="text-sm page-title">收支统计表</div>
-          <a
-            href={exportHref}
-            download={exportFilename}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-            title="导出当前收支统计 CSV"
-          >
-            <Download className="h-3.5 w-3.5" />
-            导出
-          </a>
+          <div className="text-sm page-title">报表</div>
+          <div className="flex items-center gap-2">
+            {reportTabs("income-expense", buildReportHref("investment-profit", "day", currentYear, currentMonth))}
+          </div>
         </div>
       </header>
 
@@ -411,6 +672,15 @@ export default async function ReportsPage({
               >
                 刷新统计
               </button>
+              <a
+                href={exportHref}
+                download={exportFilename}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+                title="导出当前收支统计 CSV"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </a>
           </form>
 
           <IncomeExpenseReportClient

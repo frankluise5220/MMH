@@ -1,10 +1,14 @@
-const SW_VERSION = "mmh-pwa-v5";
+const SW_VERSION = "mmh-pwa-v9";
 const SHELL_CACHE = `${SW_VERSION}-shell`;
 const SHELL_ASSETS = [
   "/",
   "/overview",
-  "/branding/mmh-logo-final.png",
-  "/branding/mmh-logo-final.square.png",
+  "/favicon.ico",
+  "/apple-touch-icon.png",
+  "/branding/mmh-logo-pageflip.png",
+  "/branding/mmh-logo-pageflip.square.png",
+  "/branding/mmh-logo-pageflip-192.png",
+  "/branding/mmh-logo-pageflip-512.png",
 ];
 
 const isApiRequest = (url) => url.pathname.startsWith("/api/");

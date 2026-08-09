@@ -156,6 +156,7 @@ export function InsuranceEntryEditModal({
       : draft.insuranceAction === "refund"
         ? "回款金额"
         : "保费金额";
+  const isRefund = draft.insuranceAction === "refund";
 
   return createPortal(
     <div className="app-modal-backdrop z-[1200]">
@@ -182,16 +183,16 @@ export function InsuranceEntryEditModal({
               </div>
             </div>
 
-            {/* 日期 + 金额 */}
-            <div className={`grid gap-3 ${draft.insuranceAction === "refund" ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
-              <div className="space-y-1">
-                <div className="form-label">日期</div>
-                <DateStepper
-                  value={draft.date}
-                  onChange={(next) => setDraft({ ...draft, date: next })}
-                />
-              </div>
-              {draft.insuranceAction === "refund" ? (
+            {/* 日期 */}
+            {isRefund ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <div className="form-label">日期</div>
+                  <DateStepper
+                    value={draft.date}
+                    onChange={(next) => setDraft({ ...draft, date: next })}
+                  />
+                </div>
                 <div className="space-y-1">
                   <div className="form-label">到账日期</div>
                   <DateStepper
@@ -199,22 +200,30 @@ export function InsuranceEntryEditModal({
                     onChange={(next) => setDraft({ ...draft, arrivalDate: next })}
                   />
                 </div>
-              ) : null}
+                <div className="space-y-1">
+                  <div className="form-label">{amountLabel}</div>
+                  <CalcInput
+                    value={draft.amount}
+                    onChange={(val) => setDraft({ ...draft, amount: val })}
+                    placeholder="0.00"
+                    label={amountLabel}
+                    precision={2}
+                  />
+                </div>
+              </div>
+            ) : (
               <div className="space-y-1">
-                <div className="form-label">{amountLabel}</div>
-                <CalcInput
-                  value={draft.amount}
-                  onChange={(val) => setDraft({ ...draft, amount: val })}
-                  placeholder="0.00"
-                  label={amountLabel}
-                  precision={2}
+                <div className="form-label">日期</div>
+                <DateStepper
+                  value={draft.date}
+                  onChange={(next) => setDraft({ ...draft, date: next })}
                 />
               </div>
-            </div>
+            )}
 
             {/* 资金来源 */}
             <div className="space-y-1">
-              <div className="form-label">{draft.insuranceAction === "refund" ? "到账账户" : "资金来源"}</div>
+              <div className="form-label">{isRefund ? "到账账户" : "资金来源"}</div>
               <SmartSelect
                 mode="single"
                 value={draft.cashAccountId}
@@ -233,6 +242,19 @@ export function InsuranceEntryEditModal({
                 }}
               />
             </div>
+
+            {!isRefund ? (
+              <div className="space-y-1">
+                <div className="form-label">{amountLabel}</div>
+                <CalcInput
+                  value={draft.amount}
+                  onChange={(val) => setDraft({ ...draft, amount: val })}
+                  placeholder="0.00"
+                  label={amountLabel}
+                  precision={2}
+                />
+              </div>
+            ) : null}
 
             <div className="space-y-1">
               <div className="form-label">备注</div>

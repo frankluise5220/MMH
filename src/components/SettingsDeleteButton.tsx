@@ -13,11 +13,13 @@ export function SettingsDeleteButton({
   entity,
   id,
   refresh,
+  onDeleted,
 }: {
   label: string;
   entity: "accountGroup" | "account" | "institution" | "counterparty" | "category";
   id: string;
   refresh?: boolean;
+  onDeleted?: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
 
@@ -39,6 +41,7 @@ export function SettingsDeleteButton({
         return;
       }
       void notifySettingsDataChanged({ scope: scopeForEntity(entity), reason: `${entity}:delete`, prefetch: true });
+      onDeleted?.();
       if (refresh !== false) {
         window.dispatchEvent(new Event("mmh:fund:refresh"));
       }

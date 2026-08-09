@@ -77,6 +77,27 @@ export function importPreviewFlowAmountText(item: ImportPreviewFlowItem): string
   return `${isExpenseRefund ? "+" : ""}${amount.toFixed(2)}`;
 }
 
+export function importPreviewFlowAmountTextFor(item: ImportPreviewFlowItem, direction: "inflow" | "outflow"): string {
+  const directAmount = positiveAmount(direction === "inflow" ? item.inflow : item.outflow);
+  if (directAmount > 0) return directAmount.toFixed(2);
+
+  const kind = importPreviewFlowAmountKind(item);
+  if ((direction === "inflow" && kind === "income") || (direction === "outflow" && kind === "expense")) {
+    return positiveAmount(item.amount).toFixed(2);
+  }
+  return "-";
+}
+
+export function importPreviewFlowAmountColorFor(
+  item: ImportPreviewFlowItem,
+  direction: "inflow" | "outflow",
+  scheme: ColorScheme,
+): string {
+  return importPreviewFlowAmountTextFor(item, direction) === "-"
+    ? "text-slate-400"
+    : importPreviewAmountColor(direction === "inflow" ? "income" : "expense", scheme);
+}
+
 /** 从 cookie 中读取色系偏好 */
 export function getColorSchemeFromCookie(cookieHeader: string | null): ColorScheme {
   if (!cookieHeader) return "red_up_green_down";

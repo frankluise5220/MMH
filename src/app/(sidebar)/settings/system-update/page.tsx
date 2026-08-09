@@ -11,9 +11,11 @@ import {
 
 type VersionInfo = {
   ok: boolean;
+  deploymentTarget?: "docker" | "fnos" | "standalone";
   isDocker?: boolean;
+  isFnos?: boolean;
   updaterEnabled?: boolean;
-  updateMode?: "git";
+  updateMode?: "git" | "fnos";
   versionSource?: "git" | "env";
   localVersion: string;
   localCommit: string;
@@ -387,6 +389,7 @@ export default function SystemUpdatePage() {
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
+  const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
   const currentVersionText = [versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate, timeZoneMode, timeZone)]
     .filter(Boolean)
     .join(" · ");
@@ -402,7 +405,7 @@ export default function SystemUpdatePage() {
     : isLatest
       ? "已是最新版本"
       : "未确认";
-  const canStartUpdate = needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
+  const canStartUpdate = !fnosManaged && needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
   const updateActionPanel = !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
     <div className="border-t border-slate-100 pt-3">
       {isLatest ? (
@@ -435,10 +438,12 @@ export default function SystemUpdatePage() {
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <div className="text-sm font-medium text-slate-800">软件更新（镜像）</div>
+          <div className="text-sm font-medium text-slate-800">
+            {fnosManaged ? "软件更新（飞牛应用包）" : dockerManaged ? "软件更新（镜像）" : "软件更新"}
+          </div>
           <button
             onClick={() => loadVersionInfo({ checkRemote: true })}
-            disabled={loadingVersion || updating}
+            disabled={loadingVersion || updating || fnosManaged}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingVersion ? "animate-spin" : ""}`} />
@@ -468,7 +473,9 @@ export default function SystemUpdatePage() {
 
               <div className="text-slate-500">远端版本</div>
               <div className="min-w-0">
-                {canCheckUpdate ? (
+                {fnosManaged ? (
+                  <span className="text-slate-600">由飞牛应用中心管理</span>
+                ) : canCheckUpdate ? (
                   <>
                     <span className="font-semibold text-slate-900">{availableVersionText || versionInfo.remoteCommit}</span>
                     {versionInfo.remoteCommitMsg ? (
@@ -490,6 +497,13 @@ export default function SystemUpdatePage() {
               ) : null}
             </div>
 
+            {fnosManaged ? (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                当前为飞牛版，系统更新由飞牛应用中心管理。请下载并安装新的 <span className="font-mono">mmh.fpk</span> 包进行更新，应用数据会继续保存在飞牛应用数据目录中。
+              </div>
+            ) : null}
+
+            {!fnosManaged ? (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span
@@ -522,22 +536,23 @@ export default function SystemUpdatePage() {
                 </button>
               ) : null}
             </div>
+            ) : null}
 
-            {!canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
+            {!fnosManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 获取远端版本失败：{versionInfo.fetchError || versionInfo.githubFetchError}
               </div>
             ) : null}
 
-            {canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
+            {!fnosManaged && canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
                 GitHub 查询失败，已改用镜像源版本判断。
               </div>
             ) : null}
 
-            {updateActionPanel}
+            {!fnosManaged ? updateActionPanel : null}
 
-            {dockerManaged && versionInfo.imageSourceConfig ? (
+            {!fnosManaged && dockerManaged && versionInfo.imageSourceConfig ? (
               <div className="border-t border-slate-100 pt-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="text-slate-500">镜像源</div>

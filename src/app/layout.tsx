@@ -10,9 +10,13 @@ export const metadata: Metadata = {
   description: "Local-first family finance system",
   manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/branding/mmh-logo-final.square.png",
-    shortcut: "/branding/mmh-logo-final.square.png",
-    apple: "/branding/mmh-logo-final.square.png",
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/branding/mmh-logo-pageflip-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/branding/mmh-logo-pageflip-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
   },
   appleWebApp: {
     capable: true,

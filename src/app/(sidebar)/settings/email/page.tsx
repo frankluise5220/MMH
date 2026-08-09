@@ -8,9 +8,13 @@ import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/B
 import { DateStepper } from "@/components/DateStepper";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
-import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { createImportAccountResolver } from "@/lib/account-import-match";
-import { getColorSchemeFromCookie, importPreviewFlowAmountColor, importPreviewFlowAmountText } from "@/lib/client/colors";
+import {
+  getColorSchemeFromCookie,
+  importPreviewFlowAmountColorFor,
+  importPreviewFlowAmountTextFor,
+} from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
@@ -220,6 +224,9 @@ function inferKnownMerchant(item: ParsedItem) {
     .filter(Boolean)
     .join(" ");
   const normalizedSource = stripPostingDateNote(source);
+  if (/江苏云快充|云快充|新能源.*充电|充电桩/.test(normalizedSource)) {
+    return { counterparty: "江苏云快充新能源科技有限公司", category: "充电" };
+  }
   if (/美团外卖/.test(normalizedSource)) return { institution: "美团", counterparty: "美团外卖", category: "餐饮" };
   if (/(?:特约)?美团(?:平台)?商户?|美团/.test(normalizedSource)) return { institution: "美团", counterparty: "美团", category: "餐饮" };
   if (/拼多多|付费通/.test(source)) return { institution: "拼多多", counterparty: "拼多多", category: "购物" };
@@ -783,6 +790,36 @@ export default function EmailSettingsPage() {
     return (row ? selectedPreviewAccountName(row) : null) ?? cleanOptionalText(item.account) ?? cleanOptionalText(item.fromAccount);
   }
 
+  function previewTransferDirection(item: ParsedItem): "in" | "out" {
+    const inflow = Math.abs(Number(item.inflow ?? 0)) || 0;
+    const outflow = Math.abs(Number(item.outflow ?? 0)) || 0;
+    const text = [item.rawText, item.remark, item.fromAccount, item.toAccount].filter(Boolean).join(" ");
+    if (
+      item.type === "transfer" &&
+      outflow <= 0 &&
+      /银联入账|银联转账|还款|自动扣款|自动还款|repayment|payment|autopay/i.test(text)
+    ) {
+      return "in";
+    }
+    if (item.transferDirection === "in" || item.transferDirection === "out") return item.transferDirection;
+    return inflow > 0 && outflow <= 0 ? "in" : "out";
+  }
+
+  function normalizeTransferFlow(item: ParsedItem): ParsedItem {
+    if (item.type !== "transfer") return item;
+    const inflow = Math.abs(Number(item.inflow ?? 0)) || 0;
+    const outflow = Math.abs(Number(item.outflow ?? 0)) || 0;
+    const amount = Math.abs(Number(item.amount ?? 0)) || inflow || outflow;
+    const direction = previewTransferDirection(item);
+    return {
+      ...item,
+      amount,
+      transferDirection: direction,
+      inflow: direction === "in" ? inflow || amount || undefined : undefined,
+      outflow: direction === "out" ? outflow || amount || undefined : undefined,
+    };
+  }
+
   function normalizeItemForImport(item: ParsedItem): ParsedItem {
     const merchant = inferKnownMerchant(item);
     const remark = cleanOptionalText(item.remark);
@@ -792,7 +829,7 @@ export default function EmailSettingsPage() {
     const amount = Math.abs(Number(item.amount ?? 0)) || 0;
     const inflow = Math.abs(Number(item.inflow ?? 0)) || 0;
     const outflow = Math.abs(Number(item.outflow ?? 0)) || 0;
-    return {
+    return normalizeTransferFlow({
       rawText: item.rawText,
       type: treatAsTransfer ? "transfer" : item.type,
       date,
@@ -803,7 +840,11 @@ export default function EmailSettingsPage() {
       account: cleanOptionalText(item.account),
       fromAccount: treatAsTransfer ? (cleanOptionalText(item.fromAccount) || guessDebitTransferAccountName(item)) : cleanOptionalText(item.fromAccount),
       toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
-      category: treatAsTransfer ? undefined : cleanOptionalText(item.category) || merchant.category,
+      category: treatAsTransfer
+        ? undefined
+        : merchant.category === "充电"
+          ? item.type === "expense" ? merchant.category : undefined
+          : cleanOptionalText(item.category) || merchant.category,
       remark,
       counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
       institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
@@ -817,7 +858,7 @@ export default function EmailSettingsPage() {
         repaymentDay: item._meta.repaymentDay,
         statementAmount: item._meta.statementAmount,
       } : undefined,
-    };
+    });
   }
 
   function openImportPreview(items: ParsedItem[]) {
@@ -946,12 +987,12 @@ export default function EmailSettingsPage() {
   const previewAccountDisplayLabelById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account?.fullLabel ?? account?.selectorLabel ?? account?.label ?? null;
+    return account ? formatAccountTableLabel(account) || null : null;
   }, [previewAccountDisplayById]);
   const previewAccountDisplayTitleById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account?.hoverTitle ?? account?.fullLabel ?? account?.selectorLabel ?? account?.label ?? null;
+    return account ? formatAccountTableTitle(account) || null : null;
   }, [previewAccountDisplayById]);
   const selectedPreviewAccountDisplayLabel = useCallback((row: ImportPreviewItem) => {
     const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
@@ -968,7 +1009,7 @@ export default function EmailSettingsPage() {
     return [
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
-        .map((account) => ({ value: account.id, label: account.fullLabel ?? account.selectorLabel, title: account.hoverTitle ?? account.fullLabel })),
+        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account), title: formatAccountTableTitle(account) })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
@@ -977,7 +1018,7 @@ export default function EmailSettingsPage() {
       { value: "", label: "未选择" },
       ...previewAccountDisplayOptions
         .filter((account) => account.kind === "bank_debit" || account.kind === "ewallet")
-        .map((account) => ({ value: account.id, label: account.fullLabel ?? account.selectorLabel, title: account.hoverTitle ?? account.fullLabel })),
+        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account), title: formatAccountTableTitle(account) })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions]);
   const previewDebitAccountDisplayOptions = useMemo(
@@ -994,11 +1035,10 @@ export default function EmailSettingsPage() {
       return buildGroupedAccountOptions(previewDebitAccountDisplayOptions).map((option) => {
         if (option.isHeader) return option;
         const account = displayById.get(option.id);
-        const groupName = account?.groupName?.trim();
-        if (!groupName) return option;
         return {
           ...option,
-          subLabel: option.subLabel ? `${groupName} · ${option.subLabel}` : groupName,
+          subLabel: undefined,
+          title: account ? formatAccountTableTitle(account) : option.title,
         };
       });
     },
@@ -1197,6 +1237,7 @@ export default function EmailSettingsPage() {
         toAccount: undefined,
       };
     }
+    item = normalizeTransferFlow(item);
     const resolved = accountId === undefined
       ? (row.selectedAccountId || row.matchedAccountId ? { selectedAccountId: row.selectedAccountId, matchedAccountId: row.matchedAccountId } : resolvePreviewAccount(item))
       : { selectedAccountId: accountId || undefined, matchedAccountId: accountId || undefined };
@@ -1225,7 +1266,10 @@ export default function EmailSettingsPage() {
       }
       if (field === "counterAccount") {
         const nextName = accountNameFromId(value) ?? undefined;
-        return recomputePreviewRow(row, { fromAccount: nextName, toAccount: undefined });
+        const direction = previewTransferDirection(row.item);
+        return recomputePreviewRow(row, direction === "in"
+          ? { fromAccount: nextName, transferDirection: "in", inflow: row.item.inflow || row.item.amount, outflow: undefined }
+          : { toAccount: nextName, transferDirection: "out", outflow: row.item.outflow || row.item.amount, inflow: undefined });
       }
       if (field === "category") {
         const nextName = value ? previewCategoryById.get(value)?.name ?? value : undefined;
@@ -1374,14 +1418,6 @@ export default function EmailSettingsPage() {
     return "支出";
   }
 
-  function previewAmountText(item: ParsedItem) {
-    return importPreviewFlowAmountText(item);
-  }
-
-  function amountTextClass(item: ParsedItem) {
-    return importPreviewFlowAmountColor(item, getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie));
-  }
-
   function accountLabel(item: ParsedItem) {
     if (item.account) return item.account;
     const bank = item._meta?.institutionName;
@@ -1394,8 +1430,8 @@ export default function EmailSettingsPage() {
     {
       key: "date",
       label: "交易日",
-      width: 112,
-      minWidth: 92,
+      width: 100,
+      minWidth: 84,
       filterText: (row) => row.item.date?.trim() || "(空)",
       sortValue: (row) => row.item.date || "",
       render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.item.date || "-"}</span>,
@@ -1403,8 +1439,8 @@ export default function EmailSettingsPage() {
     {
       key: "postedDate",
       label: "入账日期",
-      width: 132,
-      minWidth: 112,
+      width: 110,
+      minWidth: 96,
       filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || "(空)",
       sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || "",
       render: (row) => {
@@ -1432,8 +1468,8 @@ export default function EmailSettingsPage() {
     {
       key: "type",
       label: "类型",
-      width: 86,
-      minWidth: 72,
+      width: 72,
+      minWidth: 60,
       filterText: (row) => typeLabel(row.item.type),
       render: (row) => {
         const item = row.item;
@@ -1464,14 +1500,14 @@ export default function EmailSettingsPage() {
     {
       key: "account",
       label: "账户",
-      width: 240,
-      minWidth: 160,
+      width: 190,
+      minWidth: 140,
       filterText: (row) => selectedPreviewAccountDisplayLabel(row) || accountLabel(row.item) || "(空)",
       render: (row) => {
         const item = row.item;
         return row.ready || item.type === "transfer" ? (
           <div className="space-y-1 text-slate-700">
-            <span className="whitespace-nowrap" title={selectedPreviewAccountDisplayTitle(row) ?? accountLabel(item)}>
+            <span className="block truncate" title={selectedPreviewAccountDisplayTitle(row) ?? accountLabel(item)}>
               {selectedPreviewAccountDisplayLabel(row) ?? accountLabel(item)}
             </span>
           </div>
@@ -1485,8 +1521,8 @@ export default function EmailSettingsPage() {
             >
               <option value="">{isCreditStatement(item) ? "选择信用卡账户" : "选择账户"}</option>
               {previewAccountOptions(item).map((account) => (
-                <option key={account.id} value={account.id} title={account.fullLabel ?? account.hoverTitle}>
-                  {account.fullLabel ?? account.selectorLabel}
+                <option key={account.id} value={account.id} title={formatAccountTableTitle(account)}>
+                  {formatAccountTableLabel(account)}
                 </option>
               ))}
             </select>
@@ -1503,8 +1539,8 @@ export default function EmailSettingsPage() {
     {
       key: "counterAccount",
       label: "对手账户",
-      width: 260,
-      minWidth: 170,
+      width: 160,
+      minWidth: 120,
       filterText: (row) => cleanOptionalText(row.item.fromAccount) || cleanOptionalText(row.item.toAccount) || "(空)",
       render: (row) => {
         const item = row.item;
@@ -1517,8 +1553,13 @@ export default function EmailSettingsPage() {
                 value={previewDebitAccountIdFromName(item.fromAccount ?? item.toAccount ?? "") ?? ""}
                 onChange={(accountId) => {
                   const nextName = accountNameFromId(accountId);
+                  const direction = previewTransferDirection(item);
                   const nextItems = importPreview!.items.map((previewRow) =>
-                    previewRow.key === row.key ? recomputePreviewRow(previewRow, { fromAccount: nextName, toAccount: undefined }) : previewRow
+                    previewRow.key === row.key
+                      ? recomputePreviewRow(previewRow, direction === "in"
+                        ? { fromAccount: nextName, transferDirection: "in", inflow: item.inflow || item.amount, outflow: undefined }
+                        : { toAccount: nextName, transferDirection: "out", outflow: item.outflow || item.amount, inflow: undefined })
+                      : previewRow
                   );
                   setImportPreview(recomputePreviewState(nextItems));
                   setParsedItems(nextItems.map((previewRow) => previewRow.item));
@@ -1543,7 +1584,7 @@ export default function EmailSettingsPage() {
                 }}
               />
             ) : (
-              <span className="cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title="双击修改对手账户">
+              <span className="block truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title="双击修改对手账户">
                 {previewDebitAccountDisplayLabelByName(cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "") || cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "-"}
               </span>
             )}
@@ -1554,8 +1595,8 @@ export default function EmailSettingsPage() {
     {
       key: "category",
       label: "分类",
-      width: 128,
-      minWidth: 92,
+      width: 98,
+      minWidth: 80,
       filterText: (row) => row.item.category?.trim() || "(空)",
       render: (row) => {
         const item = row.item;
@@ -1599,34 +1640,46 @@ export default function EmailSettingsPage() {
     {
       key: "institution",
       label: "收支机构",
-      width: 140,
-      minWidth: 110,
+      width: 108,
+      minWidth: 90,
       filterText: (row) => row.item.institution?.trim() || "(空)",
-      render: (row) => <span className="whitespace-nowrap text-slate-700" title={row.item.institution || "-"}>{row.item.institution || "-"}</span>,
+      render: (row) => <span className="block truncate text-slate-700" title={row.item.institution || "-"}>{row.item.institution || "-"}</span>,
     },
     {
-      key: "amount",
-      label: "金额",
-      width: 112,
-      minWidth: 88,
+      key: "inflow",
+      label: "流入",
+      width: 82,
+      minWidth: 70,
+      truncate: true,
       align: "right",
-      filterText: (row) => previewAmountText(row.item) || "(空)",
-      sortValue: (row) => row.item.amount,
-      render: (row) => <span className={`whitespace-nowrap tabular-nums ${amountTextClass(row.item)}`}>{previewAmountText(row.item)}</span>,
+      filterText: (row) => importPreviewFlowAmountTextFor(row.item, "inflow"),
+      sortValue: (row) => row.item.inflow ?? (row.item.type === "income" ? row.item.amount : 0),
+      render: (row) => <span className={`whitespace-nowrap tabular-nums ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`}>{importPreviewFlowAmountTextFor(row.item, "inflow")}</span>,
+    },
+    {
+      key: "outflow",
+      label: "流出",
+      width: 82,
+      minWidth: 70,
+      truncate: true,
+      align: "right",
+      filterText: (row) => importPreviewFlowAmountTextFor(row.item, "outflow"),
+      sortValue: (row) => row.item.outflow ?? (row.item.type === "expense" && !row.item.inflow ? row.item.amount : 0),
+      render: (row) => <span className={`whitespace-nowrap tabular-nums ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`}>{importPreviewFlowAmountTextFor(row.item, "outflow")}</span>,
     },
     {
       key: "remark",
       label: "备注",
-      width: 300,
-      minWidth: 180,
+      width: 230,
+      minWidth: 160,
       filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || "(空)",
-      render: (row) => <span className="text-slate-600" title={row.item.remark || row.item.rawText}>{row.item.remark || row.item.rawText}</span>,
+      render: (row) => <span className="block truncate text-slate-600" title={row.item.remark || row.item.rawText}>{row.item.remark || row.item.rawText}</span>,
     },
     {
       key: "status",
       label: "状态",
-      width: 130,
-      minWidth: 100,
+      width: 88,
+      minWidth: 72,
       filterText: (row) => row.ready ? "可导入" : row.missingFields.includes("账户") ? "缺账户" : `缺${row.missingFields.join("、") || "字段"}`,
       render: (row) => row.ready ? (
         <span className="text-[11px] text-slate-400">-</span>
@@ -1766,7 +1819,7 @@ export default function EmailSettingsPage() {
 
       {importPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
-          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-[720px] max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+          <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-slate-800">账单导入预览</div>
@@ -1779,12 +1832,12 @@ export default function EmailSettingsPage() {
 
             <div className="min-h-0 flex-1">
               <AdvancedDataTable
-                storageKey="mmh_settings_email_statement_import_preview_table_v1"
+                storageKey="mmh_settings_email_statement_import_preview_table_v2"
                 columns={importPreviewColumns}
                 rows={importPreview.items}
                 rowKey={(row) => row.key}
                 emptyText="没有符合筛选条件的记录。"
-                minTableWidth={1700}
+                minTableWidth={1120}
                 selectable
                 selectedKeys={importPreview.selectedKeys}
                 onSelectionChange={(keys) => {
