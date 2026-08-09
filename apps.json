@@ -11,13 +11,13 @@
       "appname": "mmh",
       "file_prefix": "mmh",
       "display_name": "MMH 家庭财务工作台",
-      "description": "飞牛专用 SQLite 原生包，内置 Next standalone、Linux Node runtime 与 Prisma runtime。",
-      "version": "2026.08.07.3",
-      "fpk_version": "2026.08.07.3",
-      "release_tag": "v2026.08.07.3-fnos",
+      "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
+      "version": "0.1.0",
+      "fpk_version": "0.1.0",
+      "release_tag": "v0.1.0-fnos",
       "service_port": 7777,
       "homepage_url": "https://github.com/frankluise5220/MMH",
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-final.square.png",
+      "icon_url": "https://cdn.jsdelivr.net/gh/frankluise5220/MMH@main/public/branding/mmh-logo-pageflip-192.png",
       "platforms": [
         "x86"
       ],
@@ -25,7 +25,7 @@
       "download_count": 0,
       "app_type": "native",
       "category": "finance",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.08.07.3-fnos/mmh_2026.08.07.3_x86.fpk"
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.0-fnos/mmh_0.1.0_x86.fpk"
     }
   ]
 }

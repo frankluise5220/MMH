@@ -4,11 +4,11 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "2026.08.07.3",
+      "version": "0.1.0",
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.08.07.3-fnos/mmh.fpk",
-      "icon": "https://cdn.jsdelivr.net/gh/frankluise5220/MMH@main/public/branding/mmh-logo-final.square.png",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.0-fnos/mmh.fpk",
+      "icon": "https://cdn.jsdelivr.net/gh/frankluise5220/MMH@main/public/branding/mmh-logo-pageflip-192.png",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账,SQLite"
