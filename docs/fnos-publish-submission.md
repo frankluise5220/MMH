@@ -69,7 +69,7 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 版本：0.1.4
 平台：x86_64 / x86
 端口：7777
-包 SHA256：待生成
+包 SHA256：0DE1C837D1E8866A7E91DCE3295865C4B75FEF499D6B9FB9012F037FFE297A22
 下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.4-fnos/mmh.fpk
 项目主页：https://github.com/frankluise5220/MMH
 说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，升级不删除用户账本数据。
