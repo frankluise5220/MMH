@@ -10,7 +10,21 @@ mmh.fpk
 
 发布 GitHub Release 时，`.github/workflows/fnos-release.yml` 会构建并上传 `release-artifacts/fnos/*.fpk`。如果打包环境缺少 `fnpack`，workflow 必须失败，避免发布不可安装的替代归档。
 
-发布时建议同时维护应用源索引，例如 `apps.json`：
+发布时建议同时维护应用源索引。FN 软仓这类源会访问：
+
+```text
+源地址/api/apps
+```
+
+本目录下的 `api/apps` 是可直接通过 GitHub raw 访问的静态源文件。FN 软仓源地址可以填写：
+
+```text
+https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository
+```
+
+这个源返回的 `download_url` 再指向 GitHub Release 中的 `mmh.fpk`。
+
+源文件字段包括：
 
 - `id`：稳定应用 ID，使用 `mmh`。
 - `version`：飞牛包版本，与 Release tag 对齐。

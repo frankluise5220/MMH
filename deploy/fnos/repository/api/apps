@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "data": [
+    {
+      "id": "mmh",
+      "name": "MMH",
+      "version": "2026.08.07.3",
+      "author": "frankluise5220",
+      "desc": "MMH 飞牛 SQLite 原生包，内置 Next standalone、Linux Node runtime 与 Prisma runtime。",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v2026.08.07.3-fnos/mmh.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-final.square.png",
+      "repo": "https://github.com/frankluise5220/MMH",
+      "screenshots": [],
+      "tags": "财务,记账,SQLite"
+    }
+  ]
+}
