@@ -4,19 +4,19 @@
 
 ## 提交包
 
-- 应用包：`release-artifacts/fnos/mmh-0.1.1-fnpack.fpk`
-- GitHub Release 下载：`https://github.com/frankluise5220/MMH/releases/download/v0.1.1-fnos/mmh.fpk`
-- 版本：`0.1.1`
+- 应用包：`release-artifacts/fnos/mmh-0.1.2-fnpack.fpk`
+- GitHub Release 下载：`https://github.com/frankluise5220/MMH/releases/download/v0.1.2-fnos/mmh.fpk`
+- 版本：`0.1.2`
 - 平台：`x86_64` / `x86`
-- SHA256：`DF72E99BBC131C8D1845B91C1359C91E4B41807C21F0999905E22D548EB1976D`
-- 大小：`139,664,918` bytes
+- SHA256：`21130206794C3D09074FEC323A333F2EBC394423C08CA3F7801750644E9B55E1`
+- 大小：`139,661,052` bytes
 - 生成方式：在 fnOS 测试机使用 `/usr/local/bin/fnpack build` 生成。
 
 ## Manifest 摘要
 
 ```text
 appname               = mmh
-version               = 0.1.1
+version               = 0.1.2
 display_name          = MMH
 arch                  = x86_64
 platform              = x86
@@ -24,7 +24,7 @@ source                = thirdparty
 service_port          = 7777
 checkport             = true
 os_min_version        = 0.9.0
-changelog             = 按每周小版本节奏递增到 0.1.1，并保持飞牛包、应用源和下载资产版本一致。
+changelog             = 优化新手向导：压缩顶部说明占用，并为往来款提供对象列表优先的引导流程。
 ```
 
 ## 应用信息
@@ -47,11 +47,11 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 
 ```text
 应用名：MMH
-版本：0.1.1
+版本：0.1.2
 平台：x86_64 / x86
 端口：7777
-包 SHA256：DF72E99BBC131C8D1845B91C1359C91E4B41807C21F0999905E22D548EB1976D
-下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.1-fnos/mmh.fpk
+包 SHA256：21130206794C3D09074FEC323A333F2EBC394423C08CA3F7801750644E9B55E1
+下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.2-fnos/mmh.fpk
 项目主页：https://github.com/frankluise5220/MMH
 说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，升级不删除用户账本数据。
 ```
@@ -59,10 +59,10 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 ## 已验证
 
 - `npm run check:fnos` 通过。
-- Release 包 manifest 版本为 `0.1.1`。
+- Release 包 manifest 版本为 `0.1.2`。
 - 正式提交包由 fnOS 测试机上的 `fnpack build` 生成。
-- GitHub Release 的 `mmh.fpk` 与 `mmh_0.1.1_x86.fpk` 应覆盖为同一份 fnpack 包。
-- FN 软仓源应识别已安装 `0.1.0` 到源版本 `0.1.1` 的更新；升级完成后不应继续提示更新。
+- GitHub Release 的 `mmh.fpk` 与 `mmh_0.1.2_x86.fpk` 应覆盖为同一份 fnpack 包。
+- FN 软仓源应识别已安装 `0.1.0` 到源版本 `0.1.2` 的更新；升级完成后不应继续提示更新。
 
 ## 待人工补充
 
