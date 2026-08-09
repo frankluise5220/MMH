@@ -2,15 +2,32 @@
 
 本文记录 MMH 提交飞牛官方应用中心前的包信息、测试结论和提交文案。
 
-## 提交包
+## 当前状态
 
-- 应用包：`release-artifacts/fnos/mmh-0.1.2-fnpack.fpk`
+`v0.1.2-fnos` Release 中的既有 `mmh.fpk` 不再作为官方上架提交包使用。现场验证发现该包不是从当前 fnOS 打包脚本重新生成，存在两个发布级问题：
+
+- `cmd/main` 仍把 SQLite 数据放到应用安装目录，未使用飞牛应用数据目录。
+- `better-sqlite3.node` 来自不兼容目标系统的构建环境，可能要求高于 fnOS 1.2 / Debian 12 的 GLIBC 版本。
+
+下一次官方提交必须重新生成新版本 `.fpk`，并通过 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
+
+## 历史作废包
+
+- 作废应用包：`release-artifacts/fnos/mmh-0.1.2-fnpack.fpk`
 - GitHub Release 下载：`https://github.com/frankluise5220/MMH/releases/download/v0.1.2-fnos/mmh.fpk`
 - 版本：`0.1.2`
 - 平台：`x86_64` / `x86`
 - SHA256：`21130206794C3D09074FEC323A333F2EBC394423C08CA3F7801750644E9B55E1`
 - 大小：`139,661,052` bytes
 - 生成方式：在 fnOS 测试机使用 `/usr/local/bin/fnpack build` 生成。
+
+## 下一次提交包要求
+
+- 版本必须高于 `0.1.2`。
+- Release 中的 `mmh.fpk` 与版本化资产必须由 `.github/workflows/fnos-release.yml` 重新构建并覆盖上传。
+- 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag 和文件名必须一致。
+- 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
+- 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
 
 ## Manifest 摘要
 

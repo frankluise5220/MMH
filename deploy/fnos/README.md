@@ -65,8 +65,16 @@ mmh.fpk
 ## 发布
 
 - GitHub Release 通过 `.github/workflows/fnos-release.yml` 构建并上传 `release-artifacts/fnos/*.fpk`。
+- Release workflow 每次发布都必须重新构建并覆盖既有 `.fpk` 资产，不能因为 Release 已存在 `mmh.fpk` 就跳过构建。
+- 上传前必须运行 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos`，确认包内 `cmd/main`、manifest 和数据目录逻辑来自当前源码。
 - 如果 Release runner 没有安装 `fnpack`，workflow 必须失败，不能上传 `*-fpk-source.tgz` 作为替代。
 - `repository/apps.example.json` 的 `download_url` 必须指向 Release 中的 `mmh.fpk`。
+
+## 升级边界
+
+- FN 软仓测试源只能验证“源里有新版本、下载地址可用、版本号能比较”这条测试链路。它不能替代飞牛官方应用中心的升级发布。
+- 手动安装的 `.fpk` 在飞牛应用中心里会标记为 `manualInstall`。这类包不一定能通过第三方软仓完成覆盖升级，不能把“软仓按钮安装完成”当作真正升级成功。
+- 面向普通用户的正式升级必须走飞牛官方应用中心上架/审核后的版本发布链路。只有官方应用中心记录了同一个 `appname` 的新版本，后续用户才应在飞牛自身应用中心里看到并执行升级。
 
 ## 安全边界
 

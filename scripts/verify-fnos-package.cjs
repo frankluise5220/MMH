@@ -19,6 +19,21 @@ function read(file) {
   return fs.readFileSync(file, "utf8");
 }
 
+function readTarEntry(archive, entry) {
+  if (!fs.existsSync(archive)) return "";
+  const result = spawnSync("tar", ["-xOf", archive, entry], {
+    cwd: root,
+    encoding: "utf8",
+    shell: false,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    failures.push(`Could not read ${entry} from ${path.relative(root, archive)}.\n${result.stderr || result.stdout || result.error?.message}`);
+    return "";
+  }
+  return result.stdout;
+}
+
 function pngSize(file) {
   if (!fs.existsSync(file)) return null;
   const buffer = fs.readFileSync(file);
@@ -78,10 +93,12 @@ expect(/npm ci/.test(fnosReleaseWorkflow), "fnOS workflow should install Linux n
 expect(/FNOS_NODE_TARBALL/.test(fnosReleaseWorkflow), "fnOS workflow should provide a Linux Node runtime tarball.");
 expect(/npm run build:fnos:app/.test(fnosReleaseWorkflow), "fnOS workflow should build the Linux SQLite standalone app.");
 expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should build the formal .fpk package.");
+expect(!/existing-fpk/.test(fnosReleaseWorkflow), "fnOS workflow must rebuild release packages instead of skipping when an old .fpk asset already exists.");
+expect(/overwrite_files:\s*true/.test(fnosReleaseWorkflow), "fnOS workflow must overwrite existing Release .fpk assets with the newly built package.");
+expect(/Verify built fnOS FPK/.test(fnosReleaseWorkflow) && /npm run check:fnos/.test(fnosReleaseWorkflow), "fnOS workflow must verify the built .fpk before upload.");
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
 expect(!/path:\s*release-artifacts\/fnos\/\*-fpk-source\.tgz/.test(fnosReleaseWorkflow), "fnOS release workflow must not upload stage-only .tgz files.");
 expect(/fnpack was not found/.test(fnosReleaseWorkflow), "fnOS workflow should fail clearly when fnpack is unavailable.");
-expect(/mmh\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should detect existing mmh.fpk assets.");
 expect(!/mmh-native\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow must not publish a second mmh-native.fpk package.");
 
 if (fs.existsSync(stageDir)) {
@@ -94,6 +111,18 @@ if (fs.existsSync(stageDir)) {
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
   }
+}
+
+const builtFpk = path.join(root, "release-artifacts", "fnos", "mmh.fpk");
+if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
+  expect(fs.existsSync(builtFpk), "Built fnOS .fpk must exist before upload.");
+  const manifest = readTarEntry(builtFpk, "manifest");
+  const mainScript = readTarEntry(builtFpk, "cmd/main");
+  expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
+  expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
+  expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
+  expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
+  expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(mainScript), "Built fnOS .fpk cmd/main must store SQLite data under DATA_DEST.");
 }
 
 if (fs.existsSync(nativeSchema)) {

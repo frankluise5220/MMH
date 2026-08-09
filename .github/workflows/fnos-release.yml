@@ -33,26 +33,7 @@ jobs:
       - name: Verify fnOS package sources
         run: npm run check:fnos
 
-      - name: Check existing Release FPK
-        id: existing-fpk
-        if: github.event_name == 'release'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSETS_URL: ${{ github.event.release.assets_url }}
-        run: |
-          set -euo pipefail
-          FOUND="$(
-            curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "${ASSETS_URL}" |
-            node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const a=JSON.parse(s);console.log(a.some(x=>x.name==='mmh.fpk'||/^mmh-.+\\.fpk$/.test(String(x.name||'')))?'true':'false')})"
-          )"
-          echo "found=${FOUND}" >> "$GITHUB_OUTPUT"
-
       - name: Verify fnpack
-        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -63,7 +44,6 @@ jobs:
           fi
 
       - name: Download Linux Node runtime
-        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,21 +55,23 @@ jobs:
           echo "FNOS_NODE_TARBALL=${PWD}/release-artifacts/fnos/runtime/${NODE_TARBALL}" >> "$GITHUB_ENV"
 
       - name: Build fnOS SQLite app
-        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         env:
           DATABASE_URL: file:./native-build.db
           MMH_DEPLOY_TARGET: fnos
         run: npm run build:fnos:app
 
       - name: Build fnOS FPK
-        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         env:
           FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           FNOS_NODE_TARBALL: ${{ env.FNOS_NODE_TARBALL }}
         run: npm run build:fnos
 
+      - name: Verify built fnOS FPK
+        env:
+          FNOS_VERIFY_BUILT_FPK: "1"
+        run: npm run check:fnos
+
       - name: Upload fnOS FPK artifact
-        if: github.event_name != 'release' || steps.existing-fpk.outputs.found != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mmh-fnos-fpk
@@ -97,7 +79,8 @@ jobs:
           if-no-files-found: error
 
       - name: Upload fnOS FPK to GitHub Release
-        if: github.event_name == 'release' && steps.existing-fpk.outputs.found != 'true'
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: release-artifacts/fnos/*.fpk
+          overwrite_files: true
