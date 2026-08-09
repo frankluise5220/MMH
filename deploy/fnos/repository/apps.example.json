@@ -12,9 +12,7 @@
       "changelog": "优化新手向导：压缩顶部说明占用，并为往来款提供对象列表优先的引导流程。",
       "tags": [
         "finance",
-        "bookkeeping",
-        "sqlite",
-        "local-first"
+        "bookkeeping"
       ]
     }
   ]
