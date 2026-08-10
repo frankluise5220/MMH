@@ -4,15 +4,15 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.4-fnos/mmh.fpk",
-      "icon": "https://cdn.jsdelivr.net/gh/frankluise5220/MMH@7f55f852dc63d93035b677b20987e0c06825af23/public/branding/mmh-logo-pageflip-192.png",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.5-fnos/mmh.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.5",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "修复 FN 软仓更新链路：移除阻塞非交互升级的卸载向导，并继续包含首次使用向导、当前图标和 SQLite 数据目录修复。"
+      "changelog": "统一飞牛应用图标：将旧金属 Logo 兼容别名覆盖为当前淡色图标，并刷新软仓图标地址。"
     }
   ]
 }

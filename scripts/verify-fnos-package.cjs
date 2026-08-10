@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
@@ -64,6 +65,19 @@ function expectPngSize(file, size) {
   );
 }
 
+function sha256(file) {
+  if (!fs.existsSync(file)) return "";
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function expectSameFileHash(source, target, message) {
+  expect(fs.existsSync(source), `Missing ${path.relative(root, source)}.`);
+  expect(fs.existsSync(target), `Missing ${path.relative(root, target)}.`);
+  if (fs.existsSync(source) && fs.existsSync(target)) {
+    expect(sha256(source) === sha256(target), message);
+  }
+}
+
 const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
@@ -104,6 +118,7 @@ expect(/软件更新（飞牛应用包）/.test(systemUpdatePage), "System updat
 expect(/mmh\.fpk/.test(systemUpdatePage) && /飞牛应用中心/.test(systemUpdatePage), "System update page must guide fnOS users to update with mmh.fpk.");
 expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");
 expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");
+expect(/normalizeBrandingIconAliases/.test(buildScript), "fnOS package build must normalize legacy metallic logo aliases to the current light icon.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm ci/.test(fnosReleaseWorkflow), "fnOS workflow should install Linux native dependencies.");
 expect(/FNOS_NODE_TARBALL/.test(fnosReleaseWorkflow), "fnOS workflow should provide a Linux Node runtime tarball.");
@@ -126,6 +141,29 @@ if (fs.existsSync(stageDir)) {
   if (fs.existsSync(path.join(stageDir, "app"))) {
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
+  }
+  const brandingDir = path.join(stageDir, "app", "server", "public", "branding");
+  if (fs.existsSync(brandingDir)) {
+    expectSameFileHash(
+      path.join(brandingDir, "mmh-logo-pageflip.png"),
+      path.join(brandingDir, "mmh-logo-final.png"),
+      "fnOS stage legacy mmh-logo-final.png must resolve to the current light pageflip icon.",
+    );
+    expectSameFileHash(
+      path.join(brandingDir, "mmh-logo-pageflip.png"),
+      path.join(brandingDir, "mmh-logo-mark.png"),
+      "fnOS stage legacy mmh-logo-mark.png must resolve to the current light pageflip icon.",
+    );
+    expectSameFileHash(
+      path.join(brandingDir, "mmh-logo-pageflip.square.png"),
+      path.join(brandingDir, "mmh-logo-final.square.png"),
+      "fnOS stage legacy mmh-logo-final.square.png must resolve to the current light pageflip icon.",
+    );
+    expectSameFileHash(
+      path.join(brandingDir, "mmh-logo-pageflip.square.png"),
+      path.join(brandingDir, "mmh-logo-mark.square.png"),
+      "fnOS stage legacy mmh-logo-mark.square.png must resolve to the current light pageflip icon.",
+    );
   }
 }
 
