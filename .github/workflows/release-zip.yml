@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build-zip:
+    if: github.event_name != 'release' || !endsWith(github.event.release.tag_name, '-fnos')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
