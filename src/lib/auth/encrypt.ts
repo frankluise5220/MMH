@@ -59,3 +59,7 @@ export async function getOrCreateMasterKey(): Promise<Buffer> {
   console.log("[encrypt] Generated new master encryption key");
   return _masterKey;
 }
+
+export function clearMasterKeyCache() {
+  _masterKey = null;
+}

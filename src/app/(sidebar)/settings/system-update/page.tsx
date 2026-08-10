@@ -415,7 +415,7 @@ export default function SystemUpdatePage() {
   const dockerManaged = Boolean(versionInfo?.isDocker);
   const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
   const currentVersionText = fnosManaged
-    ? versionInfo?.localVersion
+    ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} FNOS`
     : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
   const availableVersionText = formatVersionLine(

@@ -1,8 +1,13 @@
+import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
+import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import type { CurrentUser } from "@/lib/server/auth";
 
-export const BACKUP_FORMAT_VERSION = 2;
+export const BACKUP_FORMAT_VERSION = 3;
+const ENCRYPTED_BACKUP_PACKAGE_VERSION = 2;
+const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";
+const BACKUP_PACKAGE_KEY_SETTING = "backup_package_encryption_key";
 
 type ExportedBy = Pick<CurrentUser, "id" | "name" | "role"> | null;
 
@@ -63,13 +68,46 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "categories", value: payload.counts.categories },
     { field: "tags", value: payload.counts.tags },
     { field: "institutions", value: payload.counts.institutions },
+    { field: "counterparties", value: payload.counts.counterparties },
     { field: "emailAccounts", value: payload.counts.emailAccounts },
     { field: "regularInvestPlans", value: payload.counts.regularInvestPlans },
+    { field: "businessTransactions", value: payload.counts.businessTransactions },
+    { field: "systemSettings", value: payload.counts.systemSettings },
+    { field: "accessKeys", value: payload.counts.accessKeys },
+    { field: "aiChannels", value: payload.counts.aiChannels },
+    { field: "aiModels", value: payload.counts.aiModels },
   ];
 }
 
 function sheetRows<T extends Record<string, unknown>>(records: T[]) {
   return records.map((record) => toPlainRecord(record));
+}
+
+function omitRecordFields<T extends Record<string, unknown>>(records: T[], fields: Set<string>) {
+  return records.map((record) =>
+    Object.fromEntries(Object.entries(record).filter(([key]) => !fields.has(key))) as Record<string, unknown>,
+  );
+}
+
+function buildAccountNameById(payload: HouseholdBackupPayload) {
+  return new Map(payload.data.accounts.map((account) => [String(account.id), String(account.name ?? "")]));
+}
+
+function withGeneratedAccountNames(
+  records: Record<string, unknown>[],
+  accountNameById: Map<string, string>,
+  fields: Array<{ idKey: string; nameKey: string }>,
+) {
+  return records.map((record) => {
+    const next = { ...record };
+    for (const field of fields) {
+      const id = record[field.idKey] == null ? "" : String(record[field.idKey]);
+      if (id && accountNameById.has(id)) {
+        next[field.nameKey] = accountNameById.get(id) ?? "";
+      }
+    }
+    return next;
+  });
 }
 
 const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
@@ -137,12 +175,215 @@ function ensureObject(value: unknown, label: string) {
   return value as Record<string, unknown>;
 }
 
-export function buildBackupFileName(householdName: string, exportedAt: Date, format: "json" | "xlsx") {
-  const suffix = format === "json" ? "json" : "xlsx";
+function isLegacyFundProductType(value: unknown) {
+  const productType = String(value ?? "");
+  return !productType || productType === "fund" || productType === "money" || productType === "money_fund";
+}
+
+function normalizeLegacyFundProductType(value: unknown) {
+  const productType = String(value ?? "");
+  return productType === "money" || productType === "money_fund" ? "money" : "fund";
+}
+
+function normalizeLegacyFundSubtype(value: unknown) {
+  const subtype = String(value ?? "buy");
+  return subtype || "buy";
+}
+
+function isLegacyFundCashReceipt(item: Record<string, unknown>) {
+  const subtype = normalizeLegacyFundSubtype(item.fundSubtype);
+  return subtype === "redeem" || subtype === "switch_out" || subtype === "dividend_cash";
+}
+
+function isLegacyFundRefundRow(item: Record<string, unknown>) {
+  return normalizeLegacyFundSubtype(item.fundSubtype) === "buy_failed" && String(item.source ?? "") === "regular_invest_refund";
+}
+
+function legacyFundAccountIdOf(item: Record<string, unknown>) {
+  if (isLegacyFundCashReceipt(item) || isLegacyFundRefundRow(item)) return String(item.accountId ?? "");
+  return String(item.toAccountId ?? item.accountId ?? "");
+}
+
+function legacyFundCashAccountIdOf(item: Record<string, unknown>, importedAccounts: Set<string>) {
+  const raw = isLegacyFundCashReceipt(item) || isLegacyFundRefundRow(item) ? item.toAccountId : item.accountId;
+  const id = raw == null ? "" : String(raw);
+  return id && importedAccounts.has(id) ? id : null;
+}
+
+function legacyFundCashFlowKindOf(item: Record<string, unknown>) {
+  const subtype = normalizeLegacyFundSubtype(item.fundSubtype);
+  if (isLegacyFundRefundRow(item)) return "refund_in";
+  if (subtype === "buy" || subtype === "buy_failed") return "buy_out";
+  if (subtype === "redeem" || subtype === "switch_out") return "redeem_in";
+  if (subtype === "dividend_cash") return "dividend_in";
+  if (subtype === "dividend_reinvest") return "dividend_reinvest_internal";
+  if (subtype === "switch_in") return "switch_in";
+  return "other";
+}
+
+function absDecimalString(value: unknown) {
+  const amount = Math.abs(Number(String(value ?? "0")));
+  return Number.isFinite(amount) ? String(amount) : "0";
+}
+
+function legacyDate(value: unknown) {
+  return value == null || value === "" ? null : new Date(String(value));
+}
+
+function normalizeRecordDates(record: Record<string, unknown>, nullDateKeys = new Set<string>()) {
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const lowerKey = key.toLowerCase();
+    const isDateField = key === "date" || lowerKey.endsWith("date") || lowerKey.endsWith("at");
+    if (isDateField) {
+      if (value == null || value === "") {
+        normalized[key] = nullDateKeys.has(key) ? null : value;
+      } else {
+        normalized[key] = new Date(String(value));
+      }
+    } else {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+async function createManyRecords(
+  delegate: unknown,
+  records: Record<string, unknown>[],
+  nullDateKeys = new Set<string>(),
+) {
+  if (records.length === 0) return;
+  const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
+  await target.createMany({ data: records.map((record) => normalizeRecordDates(record, nullDateKeys)) });
+}
+
+function decodeBackupPackageKey(value: string) {
+  const key = Buffer.from(value, "base64");
+  if (key.length !== 32) {
+    restoreError("当前系统备份加密密钥格式错误，无法处理加密备份");
+  }
+  return key;
+}
+
+async function getOrCreateBackupPackageKey() {
+  const existing = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
+  if (existing?.value) {
+    return decodeBackupPackageKey(existing.value);
+  }
+
+  const generatedValue = crypto.randomBytes(32).toString("base64");
+  try {
+    const created = await prisma.systemSetting.create({
+      data: { key: BACKUP_PACKAGE_KEY_SETTING, value: generatedValue },
+    });
+    return decodeBackupPackageKey(created.value);
+  } catch {
+    const retry = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
+    if (retry?.value) {
+      return decodeBackupPackageKey(retry.value);
+    }
+    restoreError("当前系统无法创建备份加密密钥");
+  }
+}
+
+async function getBackupPackageKey() {
+  const existing = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
+  if (!existing?.value) {
+    restoreError("当前系统缺少备份解密密钥，无法恢复该加密备份");
+  }
+  return decodeBackupPackageKey(existing.value);
+}
+
+export async function encryptBackupPayload(payload: HouseholdBackupPayload) {
+  const iv = crypto.randomBytes(12);
+  const key = await getOrCreateBackupPackageKey();
+  const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final(),
+  ]);
+
+  return {
+    app: "MMH" as const,
+    packageType: "encrypted-backup" as const,
+    packageVersion: ENCRYPTED_BACKUP_PACKAGE_VERSION,
+    encrypted: true,
+    exportedAt: payload.exportedAt,
+    scope: payload.scope,
+    encryption: {
+      algorithm: ENCRYPTED_BACKUP_ALGORITHM,
+      keySource: BACKUP_PACKAGE_KEY_SETTING,
+      iv: iv.toString("base64"),
+      authTag: cipher.getAuthTag().toString("base64"),
+    },
+    ciphertext: ciphertext.toString("base64"),
+  };
+}
+
+export async function decryptBackupPackage(raw: unknown) {
+  const packageObject = ensureObject(raw, "payload");
+  if (packageObject.encrypted !== true) return raw;
+  if (packageObject.app !== "MMH" || packageObject.packageType !== "encrypted-backup") {
+    restoreError("这不是 MMH 加密备份文件");
+  }
+
+  const encryption = ensureObject(packageObject.encryption, "encryption");
+  if (encryption.algorithm !== ENCRYPTED_BACKUP_ALGORITHM) {
+    restoreError("不支持的备份加密格式");
+  }
+
+  const keySource = String(encryption.keySource ?? "");
+  if (keySource !== BACKUP_PACKAGE_KEY_SETTING) {
+    restoreError("不支持的备份加密密钥来源");
+  }
+
+  const key = await getBackupPackageKey();
+  try {
+    const iv = Buffer.from(String(encryption.iv ?? ""), "base64");
+    const authTag = Buffer.from(String(encryption.authTag ?? ""), "base64");
+    const ciphertext = Buffer.from(String(packageObject.ciphertext ?? ""), "base64");
+    const decipher = crypto.createDecipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
+    decipher.setAuthTag(authTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+    return JSON.parse(plaintext) as unknown;
+  } catch {
+    restoreError("备份文件无法解密或已损坏");
+  }
+}
+
+const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = [
+  "category_hierarchy_normalized:",
+  "category_deleted_default_templates:",
+];
+
+function householdSystemSettingKeys(householdId: string) {
+  return RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.map((prefix) => `${prefix}${householdId}`);
+}
+
+function remapHouseholdSystemSettingKey(key: string, sourceHouseholdId: string, targetHouseholdId: string) {
+  for (const prefix of RESTORABLE_HOUSEHOLD_SETTING_PREFIXES) {
+    if (key === `${prefix}${sourceHouseholdId}` || key === `${prefix}${targetHouseholdId}`) {
+      return `${prefix}${targetHouseholdId}`;
+    }
+  }
+  return null;
+}
+
+export function buildBackupFileName(householdName: string, exportedAt: Date, format: "json" | "xlsx" | "mmh-backup") {
+  const suffix = format;
   return `${safeFilePart(householdName)}-backup-${exportedAt.toISOString().replace(/[:.]/g, "-")}.${suffix}`;
 }
 
-export async function buildHouseholdBackupPayload(householdId: string, exportedBy: ExportedBy) {
+export function buildTableExportFileName(householdName: string, exportedAt: Date) {
+  return `${safeFilePart(householdName)}-table-export-${exportedAt.toISOString().replace(/[:.]/g, "-")}.xlsx`;
+}
+
+export async function buildHouseholdBackupPayload(
+  householdId: string,
+  exportedBy: ExportedBy,
+  options: { ensureBackupPackageKey?: boolean } = {},
+) {
   const household = await prisma.household.findUnique({
     where: { id: householdId },
   });
@@ -150,39 +391,83 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     restoreError("当前账簿不存在");
   }
 
+  if (options.ensureBackupPackageKey !== false) {
+    await getOrCreateBackupPackageKey();
+  }
+
   const [
     users,
     accountGroups,
     institutions,
+    counterparties,
     categories,
     tags,
+    insuranceProductMasters,
+    wealthProducts,
     accounts,
     regularInvestPlans,
+    creditCardInstallmentPlans,
+    loanRateAdjustments,
     fundQueryApis,
     importBatches,
     transactions,
     emailAccounts,
     preciousMetalTypes,
     preciousMetalUnits,
+    fxRates,
+    fxConversions,
+    insuranceProducts,
+    fundTransactions,
+    fundTransactionCashFlows,
+    insuranceTransactions,
+    wealthTransactions,
+    depositTransactions,
+    preciousMetalTransactions,
+    entryBusinessLinks,
+    systemSettings,
+    accessKeys,
+    aiChannels,
+    aiModels,
   ] = await Promise.all([
     prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.accountGroup.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
     prisma.institution.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
+    prisma.counterparty.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.category.findMany({ where: { householdId }, orderBy: [{ type: "asc" }, { name: "asc" }] }),
     prisma.tag.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
+    prisma.insuranceProductMaster.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.wealthProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
     prisma.fundQueryApi.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.emailAccount.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalType.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.preciousMetalUnit.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.fxRate.findMany({ where: { householdId }, orderBy: [{ rateDate: "asc" }] }),
+    prisma.fxConversion.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.insuranceProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.fundTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.fundTransactionCashFlow.findMany({
+      where: { FundTransaction: { householdId } },
+      orderBy: [{ createdAt: "asc" }],
+    }),
+    prisma.insuranceTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.wealthTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.depositTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.preciousMetalTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
+    prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
+    prisma.aiChannel.findMany({ orderBy: [{ createdAt: "asc" }] }),
+    prisma.aiModel.findMany({ orderBy: [{ createdAt: "asc" }] }),
   ]);
 
   const userIds = users.map((item) => item.id);
   const accountIds = accounts.map((item) => item.id);
-  const entryIds = transactions.map((item) => item.id);
 
   const [
     userSettings,
@@ -224,12 +509,11 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
     accountIds.length > 0
       ? prisma.fundSnapshot.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ createdAt: "asc" }] })
       : Promise.resolve([]),
-    entryIds.length > 0
-      ? prisma.attachment.findMany({ where: { entryId: { in: entryIds } }, orderBy: [{ createdAt: "asc" }] })
-      : Promise.resolve([]),
-    entryIds.length > 0
-      ? prisma.entryTag.findMany({ where: { entryId: { in: entryIds } }, orderBy: [{ entryId: "asc" }, { tagId: "asc" }] })
-      : Promise.resolve([]),
+    prisma.attachment.findMany({ where: { transactions: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.entryTag.findMany({
+      where: { transactions: { householdId } },
+      orderBy: [{ entryId: "asc" }, { tagId: "asc" }],
+    }),
   ]);
 
   const exportedAt = new Date();
@@ -250,32 +534,62 @@ export async function buildHouseholdBackupPayload(householdId: string, exportedB
       categories: categories.length,
       tags: tags.length,
       institutions: institutions.length,
+      counterparties: counterparties.length,
       emailAccounts: emailAccounts.length,
       regularInvestPlans: regularInvestPlans.length,
+      businessTransactions:
+        fundTransactions.length +
+        insuranceTransactions.length +
+        wealthTransactions.length +
+        depositTransactions.length +
+        preciousMetalTransactions.length,
+      systemSettings: systemSettings.length,
+      accessKeys: accessKeys.length,
+      aiChannels: aiChannels.length,
+      aiModels: aiModels.length,
     },
     data: {
       household,
+      systemSettings,
+      accessKeys,
+      aiChannels,
+      aiModels,
       users,
       userSettings,
       accountGroups,
       institutions,
+      counterparties,
       categories,
       tags,
+      insuranceProductMasters,
+      wealthProducts,
       accounts,
       accountAliases,
       billOverrides,
       creditCardCycles,
+      creditCardInstallmentPlans,
       fundConfirmDays,
       fundFeeRates,
       fundHoldings,
       preciousMetalTypes,
       preciousMetalUnits,
       preciousMetalHoldings,
+      loanRateAdjustments,
       fundQueryApis,
       fundSnapshots,
       regularInvestPlans,
       importBatches,
       transactions,
+      fxRates,
+      fxConversions,
+      insuranceProducts,
+      fundTransactions,
+      fundTransactionCashFlows,
+      insuranceTransactions,
+      wealthTransactions,
+      depositTransactions,
+      preciousMetalTransactions,
+      entryBusinessLinks,
       attachments,
       entryTags,
       emailAccounts,
@@ -289,30 +603,116 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
 
   const sheets: Array<[string, Record<string, unknown>[]]> = [
     ["Summary", summaryRows(payload)],
+    ["SystemSettings", sheetRows(payload.data.systemSettings)],
     ["Users", sheetRows(payload.data.users)],
     ["UserSettings", sheetRows(payload.data.userSettings)],
     ["AccountGroups", sheetRows(payload.data.accountGroups)],
     ["Institutions", sheetRows(payload.data.institutions)],
+    ["Counterparties", sheetRows(payload.data.counterparties)],
     ["Categories", sheetRows(payload.data.categories)],
     ["Tags", sheetRows(payload.data.tags)],
+    ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
+    ["WealthProducts", sheetRows(payload.data.wealthProducts)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
     ["CreditCardCycles", sheetRows(payload.data.creditCardCycles)],
+    ["CreditCardInstallmentPlans", sheetRows(payload.data.creditCardInstallmentPlans)],
     ["FundConfirmDays", sheetRows(payload.data.fundConfirmDays)],
     ["FundFeeRates", sheetRows(payload.data.fundFeeRates)],
     ["FundHoldings", sheetRows(payload.data.fundHoldings)],
     ["PreciousMetalTypes", sheetRows(payload.data.preciousMetalTypes)],
     ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
+    ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
     ["Transactions", labelTransactionRows(payload.data.transactions as Record<string, unknown>[])],
+    ["FxRates", sheetRows(payload.data.fxRates)],
+    ["FxConversions", sheetRows(payload.data.fxConversions)],
+    ["InsuranceProducts", sheetRows(payload.data.insuranceProducts)],
+    ["FundTransactions", sheetRows(payload.data.fundTransactions)],
+    ["FundTransactionCashFlows", sheetRows(payload.data.fundTransactionCashFlows)],
+    ["InsuranceTransactions", sheetRows(payload.data.insuranceTransactions)],
+    ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
+    ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
+    ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
+    ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
     ["EmailAccounts", sheetRows(payload.data.emailAccounts)],
+  ];
+
+  for (const [sheetName, rows] of sheets) {
+    const worksheet = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ empty: "" }]);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+  }
+
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
+
+export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackupPayload) {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.utils.book_new();
+  const accountNameById = buildAccountNameById(payload);
+  const tableTransactions = withGeneratedAccountNames(
+    payload.data.transactions as Record<string, unknown>[],
+    accountNameById,
+    [
+      { idKey: "accountId", nameKey: "accountName" },
+      { idKey: "toAccountId", nameKey: "toAccountName" },
+    ],
+  );
+  const tableRegularInvestPlans = withGeneratedAccountNames(
+    payload.data.regularInvestPlans as Record<string, unknown>[],
+    accountNameById,
+    [
+      { idKey: "accountId", nameKey: "accountName" },
+      { idKey: "cashAccountId", nameKey: "cashAccountName" },
+    ],
+  );
+
+  const sheets: Array<[string, Record<string, unknown>[]]> = [
+    ["Summary", summaryRows(payload)],
+    ["Users", sheetRows(omitRecordFields(payload.data.users, new Set(["passwordHash"])))],
+    ["AccountGroups", sheetRows(payload.data.accountGroups)],
+    ["Institutions", sheetRows(payload.data.institutions)],
+    ["Counterparties", sheetRows(payload.data.counterparties)],
+    ["Categories", sheetRows(payload.data.categories)],
+    ["Tags", sheetRows(payload.data.tags)],
+    ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
+    ["WealthProducts", sheetRows(payload.data.wealthProducts)],
+    ["Accounts", sheetRows(payload.data.accounts)],
+    ["AccountAliases", sheetRows(payload.data.accountAliases)],
+    ["BillOverrides", sheetRows(payload.data.billOverrides)],
+    ["CreditCardCycles", sheetRows(payload.data.creditCardCycles)],
+    ["CreditCardInstallmentPlans", sheetRows(payload.data.creditCardInstallmentPlans)],
+    ["FundConfirmDays", sheetRows(payload.data.fundConfirmDays)],
+    ["FundFeeRates", sheetRows(payload.data.fundFeeRates)],
+    ["FundHoldings", sheetRows(payload.data.fundHoldings)],
+    ["PreciousMetalTypes", sheetRows(payload.data.preciousMetalTypes)],
+    ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
+    ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
+    ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
+    ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
+    ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
+    ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
+    ["ImportBatches", sheetRows(payload.data.importBatches)],
+    ["Transactions", labelTransactionRows(tableTransactions)],
+    ["FxRates", sheetRows(payload.data.fxRates)],
+    ["FxConversions", sheetRows(payload.data.fxConversions)],
+    ["InsuranceProducts", sheetRows(payload.data.insuranceProducts)],
+    ["FundTransactions", sheetRows(payload.data.fundTransactions)],
+    ["FundTransactionCashFlows", sheetRows(payload.data.fundTransactionCashFlows)],
+    ["InsuranceTransactions", sheetRows(payload.data.insuranceTransactions)],
+    ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
+    ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
+    ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
+    ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
+    ["Attachments", sheetRows(payload.data.attachments)],
+    ["EntryTags", sheetRows(payload.data.entryTags)],
   ];
 
   for (const [sheetName, rows] of sheets) {
@@ -343,27 +743,46 @@ export function parseBackupPayload(raw: unknown) {
     counts: ensureObject(payload.counts ?? {}, "counts"),
     data: {
       household: ensureObject(data.household ?? {}, "data.household"),
+      systemSettings: ensureArray(data.systemSettings ?? [], "data.systemSettings"),
+      accessKeys: ensureArray(data.accessKeys ?? [], "data.accessKeys"),
+      aiChannels: ensureArray(data.aiChannels ?? [], "data.aiChannels"),
+      aiModels: ensureArray(data.aiModels ?? [], "data.aiModels"),
       users: ensureArray(data.users ?? [], "data.users"),
       userSettings: ensureArray(data.userSettings ?? [], "data.userSettings"),
       accountGroups: ensureArray(data.accountGroups ?? [], "data.accountGroups"),
       institutions: ensureArray(data.institutions ?? [], "data.institutions"),
+      counterparties: ensureArray(data.counterparties ?? [], "data.counterparties"),
       categories: ensureArray(data.categories ?? [], "data.categories"),
       tags: ensureArray(data.tags ?? [], "data.tags"),
+      insuranceProductMasters: ensureArray(data.insuranceProductMasters ?? [], "data.insuranceProductMasters"),
+      wealthProducts: ensureArray(data.wealthProducts ?? [], "data.wealthProducts"),
       accounts: ensureArray(data.accounts ?? [], "data.accounts"),
       accountAliases: ensureArray(data.accountAliases ?? [], "data.accountAliases"),
       billOverrides: ensureArray(data.billOverrides ?? [], "data.billOverrides"),
       creditCardCycles: ensureArray(data.creditCardCycles ?? [], "data.creditCardCycles"),
+      creditCardInstallmentPlans: ensureArray(data.creditCardInstallmentPlans ?? [], "data.creditCardInstallmentPlans"),
       fundConfirmDays: ensureArray(data.fundConfirmDays ?? [], "data.fundConfirmDays"),
       fundFeeRates: ensureArray(data.fundFeeRates ?? [], "data.fundFeeRates"),
       fundHoldings: ensureArray(data.fundHoldings ?? [], "data.fundHoldings"),
       preciousMetalTypes: ensureArray(data.preciousMetalTypes ?? [], "data.preciousMetalTypes"),
       preciousMetalUnits: ensureArray(data.preciousMetalUnits ?? [], "data.preciousMetalUnits"),
       preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
+      loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       fundSnapshots: ensureArray(data.fundSnapshots ?? [], "data.fundSnapshots"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
       importBatches: ensureArray(data.importBatches ?? [], "data.importBatches"),
       transactions: ensureArray(data.transactions ?? [], "data.transactions"),
+      fxRates: ensureArray(data.fxRates ?? [], "data.fxRates"),
+      fxConversions: ensureArray(data.fxConversions ?? [], "data.fxConversions"),
+      insuranceProducts: ensureArray(data.insuranceProducts ?? [], "data.insuranceProducts"),
+      fundTransactions: ensureArray(data.fundTransactions ?? [], "data.fundTransactions"),
+      fundTransactionCashFlows: ensureArray(data.fundTransactionCashFlows ?? [], "data.fundTransactionCashFlows"),
+      insuranceTransactions: ensureArray(data.insuranceTransactions ?? [], "data.insuranceTransactions"),
+      wealthTransactions: ensureArray(data.wealthTransactions ?? [], "data.wealthTransactions"),
+      depositTransactions: ensureArray(data.depositTransactions ?? [], "data.depositTransactions"),
+      preciousMetalTransactions: ensureArray(data.preciousMetalTransactions ?? [], "data.preciousMetalTransactions"),
+      entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
       emailAccounts: ensureArray(data.emailAccounts ?? [], "data.emailAccounts"),
@@ -392,12 +811,53 @@ export async function restoreHouseholdBackup(
   const importedUserSet = new Set(importedUsers);
   const importedAccountGroups = new Set(data.accountGroups.map((item) => String(item.id)));
   const importedInstitutions = new Set(data.institutions.map((item) => String(item.id)));
+  const importedCounterparties = new Set(data.counterparties.map((item) => String(item.id)));
   const importedFundQueryApis = new Set(data.fundQueryApis.map((item) => String(item.id)));
   const importedAccounts = new Set(data.accounts.map((item) => String(item.id)));
   const importedCategories = new Set(data.categories.map((item) => String(item.id)));
   const importedImportBatches = new Set(data.importBatches.map((item) => String(item.id)));
   const importedTransactions = new Set(data.transactions.map((item) => String(item.id)));
   const importedTags = new Set(data.tags.map((item) => String(item.id)));
+  const importedInsuranceProductMasters = new Set(data.insuranceProductMasters.map((item) => String(item.id)));
+  const importedInsuranceProducts = new Set(data.insuranceProducts.map((item) => String(item.id)));
+  const importedWealthProducts = new Set(data.wealthProducts.map((item) => String(item.id)));
+  const importedCreditCardInstallmentPlans = new Set(data.creditCardInstallmentPlans.map((item) => String(item.id)));
+  const importedPreciousMetalTypes = new Set(data.preciousMetalTypes.map((item) => String(item.id)));
+  const importedPreciousMetalUnits = new Set(data.preciousMetalUnits.map((item) => String(item.id)));
+  const importedFundTransactions = new Set(data.fundTransactions.map((item) => String(item.id)));
+  const importedInsuranceTransactions = new Set(data.insuranceTransactions.map((item) => String(item.id)));
+  const importedWealthTransactions = new Set(data.wealthTransactions.map((item) => String(item.id)));
+  const importedDepositTransactions = new Set(data.depositTransactions.map((item) => String(item.id)));
+  const importedPreciousMetalTransactions = new Set(data.preciousMetalTransactions.map((item) => String(item.id)));
+  const importedAiChannels = new Set(data.aiChannels.map((item) => String(item.id)));
+  const hasIndependentFundTransactions = data.fundTransactions.length > 0;
+  const isSplitFundProjection = (item: Record<string, unknown>) => {
+    const productType = String(item.fundProductType ?? "");
+    return (
+      item.fundCode != null && isLegacyFundProductType(item.fundProductType)
+    ) || (
+      hasIndependentFundTransactions &&
+      (
+      productType === "fund" ||
+      productType === "money" ||
+      productType === "money_fund"
+      )
+    );
+  };
+  const legacyFundRows = hasIndependentFundTransactions
+    ? []
+    : data.transactions.filter((item) => (
+        item.fundCode != null &&
+        isLegacyFundProductType(item.fundProductType) &&
+        importedAccounts.has(String(item.accountId))
+      ));
+  const legacyMainFundRows = legacyFundRows.filter((item) => !isLegacyFundRefundRow(item));
+  const legacyMainFundIds = new Set(legacyMainFundRows.map((item) => String(item.id)));
+  const legacyRefundRows = legacyFundRows.filter((item) => (
+    isLegacyFundRefundRow(item) &&
+    item.fundSourceEntryId != null &&
+    legacyMainFundIds.has(String(item.fundSourceEntryId))
+  ));
 
   await prisma.$transaction(async (tx) => {
     const currentUsers = await tx.user.findMany({
@@ -408,19 +868,23 @@ export async function restoreHouseholdBackup(
       where: { householdId },
       select: { id: true },
     });
-    const currentTransactions = await tx.txRecord.findMany({
-      where: { householdId },
-      select: { id: true },
-    });
 
     const currentUserIds = currentUsers.map((item) => item.id);
     const currentAccountIds = currentAccounts.map((item) => item.id);
-    const currentTransactionIds = currentTransactions.map((item) => item.id);
 
-    if (currentTransactionIds.length > 0) {
-      await tx.attachment.deleteMany({ where: { entryId: { in: currentTransactionIds } } });
-      await tx.entryTag.deleteMany({ where: { entryId: { in: currentTransactionIds } } });
-    }
+    await tx.systemSetting.deleteMany({ where: { key: { in: householdSystemSettingKeys(householdId) } } });
+    await tx.attachment.deleteMany({ where: { transactions: { householdId } } });
+    await tx.entryTag.deleteMany({ where: { transactions: { householdId } } });
+    await tx.entryBusinessLink.deleteMany({ where: { householdId } });
+    await tx.fundTransactionCashFlow.deleteMany({ where: { FundTransaction: { householdId } } });
+    await tx.fxConversion.deleteMany({ where: { householdId } });
+    await tx.fundTransaction.deleteMany({ where: { householdId } });
+    await tx.insuranceTransaction.deleteMany({ where: { householdId } });
+    await tx.wealthTransaction.deleteMany({ where: { householdId } });
+    await tx.depositTransaction.deleteMany({ where: { householdId } });
+    await tx.preciousMetalTransaction.deleteMany({ where: { householdId } });
+    await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
+    await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
 
     if (currentAccountIds.length > 0) {
       await tx.regularInvestPlan.deleteMany({
@@ -441,13 +905,18 @@ export async function restoreHouseholdBackup(
     await tx.undoOperation.deleteMany({ where: { householdId } });
     await tx.txRecord.deleteMany({ where: { householdId } });
     await tx.account.deleteMany({ where: { householdId } });
+    await tx.insuranceProduct.deleteMany({ where: { householdId } });
+    await tx.insuranceProductMaster.deleteMany({ where: { householdId } });
+    await tx.wealthProduct.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     await tx.fundQueryApi.deleteMany({ where: { householdId } });
     await tx.preciousMetalType.deleteMany({ where: { householdId } });
     await tx.preciousMetalUnit.deleteMany({ where: { householdId } });
+    await tx.fxRate.deleteMany({ where: { householdId } });
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });
     await tx.category.deleteMany({ where: { householdId } });
+    await tx.counterparty.deleteMany({ where: { householdId } });
     await tx.institution.deleteMany({ where: { householdId } });
     await tx.accountGroup.deleteMany({ where: { householdId } });
 
@@ -461,6 +930,94 @@ export async function restoreHouseholdBackup(
       where: { id: householdId },
       data: { name: String(data.household.name ?? payload.scope.householdName ?? "恢复账簿") },
     });
+
+    for (const item of data.systemSettings) {
+      const rawKey = String(item.key ?? "");
+      const key = remapHouseholdSystemSettingKey(rawKey, payload.scope.householdId, householdId) ?? rawKey;
+      if (!key) continue;
+      const value = String(item.value ?? "");
+      await tx.systemSetting.upsert({
+        where: { key },
+        create: { key, value, updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date() },
+        update: { value, updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date() },
+      });
+    }
+
+    for (const item of data.accessKeys) {
+      const id = String(item.id ?? "");
+      if (!id) continue;
+      const record = {
+        id,
+        name: String(item.name ?? ""),
+        key: String(item.key ?? ""),
+        createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+        updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+      };
+      await tx.accessKey.upsert({
+        where: { id },
+        create: record,
+        update: {
+          name: record.name,
+          key: record.key,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      });
+    }
+
+    for (const item of data.aiChannels) {
+      const id = String(item.id ?? "");
+      if (!id) continue;
+      const record = {
+        id,
+        name: String(item.name ?? ""),
+        channelType: String(item.channelType ?? "custom"),
+        baseUrl: String(item.baseUrl ?? ""),
+        apiKey: item.apiKey == null ? null : String(item.apiKey),
+        createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+        updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+      };
+      await tx.aiChannel.upsert({
+        where: { id },
+        create: record,
+        update: {
+          name: record.name,
+          channelType: record.channelType,
+          baseUrl: record.baseUrl,
+          apiKey: record.apiKey,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      });
+    }
+
+    for (const item of data.aiModels.filter((model) => importedAiChannels.has(String(model.channelId)))) {
+      const id = String(item.id ?? "");
+      if (!id) continue;
+      const record = {
+        id,
+        model: String(item.model ?? ""),
+        name: item.name == null ? null : String(item.name),
+        channelId: String(item.channelId),
+        vision: Boolean(item.vision),
+        active: Boolean(item.active),
+        createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+        updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+      };
+      await tx.aiModel.upsert({
+        where: { id },
+        create: record,
+        update: {
+          model: record.model,
+          name: record.name,
+          channelId: record.channelId,
+          vision: record.vision,
+          active: record.active,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      });
+    }
 
     if (data.users.length > 0) {
       await tx.user.createMany({
@@ -524,10 +1081,25 @@ export async function restoreHouseholdBackup(
         data: data.institutions.map((item) => ({
           id: String(item.id),
           name: String(item.name ?? ""),
+          shortName: item.shortName == null ? null : String(item.shortName),
           type: item.type == null ? null : String(item.type),
           householdId,
         })),
       });
+    }
+
+    if (data.counterparties.length > 0) {
+      await createManyRecords(
+        tx.counterparty,
+        data.counterparties.map((item) => ({
+          ...item,
+          householdId,
+          sourceInstitutionId:
+            item.sourceInstitutionId && importedInstitutions.has(String(item.sourceInstitutionId))
+              ? String(item.sourceInstitutionId)
+              : null,
+        })),
+      );
     }
 
     if (data.categories.length > 0) {
@@ -553,6 +1125,29 @@ export async function restoreHouseholdBackup(
           householdId,
         })),
       });
+    }
+
+    if (data.insuranceProductMasters.length > 0) {
+      await createManyRecords(
+        tx.insuranceProductMaster,
+        data.insuranceProductMasters
+          .filter((item) => importedInstitutions.has(String(item.institutionId)))
+          .map((item) => ({ ...item, householdId })),
+      );
+    }
+
+    if (data.wealthProducts.length > 0) {
+      await createManyRecords(
+        tx.wealthProduct,
+        data.wealthProducts.map((item) => ({
+          ...item,
+          householdId,
+          institutionId:
+            item.institutionId && importedInstitutions.has(String(item.institutionId))
+              ? String(item.institutionId)
+              : null,
+        })),
+      );
     }
 
     if (data.fundQueryApis.length > 0) {
@@ -624,10 +1219,14 @@ export async function restoreHouseholdBackup(
           creditLimit: item.creditLimit == null ? null : String(item.creditLimit),
           billingDay: item.billingDay == null ? null : Number(item.billingDay),
           repaymentDay: item.repaymentDay == null ? null : Number(item.repaymentDay),
+          creditBillMode: item.creditBillMode == null ? "separate" : (String(item.creditBillMode) as never),
           numberMasked: item.numberMasked == null ? null : String(item.numberMasked),
+          routeKey: item.routeKey == null ? null : String(item.routeKey),
           householdId,
           institutionId:
             item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null,
+          counterpartyId:
+            item.counterpartyId && importedCounterparties.has(String(item.counterpartyId)) ? String(item.counterpartyId) : null,
           userId: item.userId && importedUserSet.has(String(item.userId)) ? String(item.userId) : null,
           groupId:
             item.groupId && importedAccountGroups.has(String(item.groupId))
@@ -643,6 +1242,7 @@ export async function restoreHouseholdBackup(
             item.defaultFundQueryApiId && importedFundQueryApis.has(String(item.defaultFundQueryApiId))
               ? String(item.defaultFundQueryApiId)
               : null,
+          fundUnitsDecimals: item.fundUnitsDecimals == null ? 3 : Number(item.fundUnitsDecimals),
         })),
       });
     }
@@ -804,6 +1404,56 @@ export async function restoreHouseholdBackup(
       });
     }
 
+    await createManyRecords(
+      tx.fxRate,
+      data.fxRates.map((item) => ({ ...item, householdId })),
+    );
+
+    await createManyRecords(
+      tx.insuranceProduct,
+      data.insuranceProducts
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          productMasterId:
+            item.productMasterId && importedInsuranceProductMasters.has(String(item.productMasterId))
+              ? String(item.productMasterId)
+              : null,
+          institutionId:
+            item.institutionId && importedInstitutions.has(String(item.institutionId))
+              ? String(item.institutionId)
+              : null,
+          ownerGroupId:
+            item.ownerGroupId && importedAccountGroups.has(String(item.ownerGroupId))
+              ? String(item.ownerGroupId)
+              : null,
+          policyholderPersonId:
+            item.policyholderPersonId && importedInstitutions.has(String(item.policyholderPersonId))
+              ? String(item.policyholderPersonId)
+              : null,
+          insuredUserId:
+            item.insuredUserId && importedUserSet.has(String(item.insuredUserId))
+              ? String(item.insuredUserId)
+              : null,
+          insuredPersonId:
+            item.insuredPersonId && importedInstitutions.has(String(item.insuredPersonId))
+              ? String(item.insuredPersonId)
+              : null,
+        })),
+      new Set(["startDate", "effectiveDate", "maturityDate"]),
+    );
+
+    const installmentSourceEntries = new Map(
+      data.creditCardInstallmentPlans.map((item) => [String(item.id), item.sourceEntryId]),
+    );
+    await createManyRecords(
+      tx.creditCardInstallmentPlan,
+      data.creditCardInstallmentPlans
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({ ...item, householdId, sourceEntryId: null })),
+    );
+
     if (data.importBatches.length > 0) {
       await tx.importBatch.createMany({
         data: data.importBatches.map((item) => ({
@@ -833,11 +1483,25 @@ export async function restoreHouseholdBackup(
             toAccountName: item.toAccountName == null ? null : String(item.toAccountName),
             categoryId: item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null,
             categoryName: item.categoryName == null ? null : String(item.categoryName),
-            fundCode: item.fundCode == null ? null : String(item.fundCode),
-            fundProductType: item.fundProductType == null ? null : (String(item.fundProductType) as never),
+            fundCode: null,
+            fundProductType: isSplitFundProjection(item) || item.fundProductType == null ? null : (String(item.fundProductType) as never),
+            metalTypeId:
+              item.metalTypeId && importedPreciousMetalTypes.has(String(item.metalTypeId))
+                ? String(item.metalTypeId)
+                : null,
+            metalTypeName: item.metalTypeName == null ? null : String(item.metalTypeName),
+            metalUnitId:
+              item.metalUnitId && importedPreciousMetalUnits.has(String(item.metalUnitId))
+                ? String(item.metalUnitId)
+                : null,
+            metalUnitName: item.metalUnitName == null ? null : String(item.metalUnitName),
+            metalQuantity: item.metalQuantity == null ? null : String(item.metalQuantity),
+            metalUnitPrice: item.metalUnitPrice == null ? null : String(item.metalUnitPrice),
+            metalFee: item.metalFee == null ? null : String(item.metalFee),
             confirmDate: item.confirmDate == null ? null : new Date(String(item.confirmDate)),
             statementMonth: item.statementMonth == null ? null : String(item.statementMonth),
             note: item.note == null ? null : String(item.note),
+            toNote: item.toNote == null ? null : String(item.toNote),
             deletedAt: item.deletedAt == null ? null : new Date(String(item.deletedAt)),
             importBatchId:
               item.importBatchId && importedImportBatches.has(String(item.importBatchId)) ? String(item.importBatchId) : null,
@@ -848,21 +1512,357 @@ export async function restoreHouseholdBackup(
             currency: item.currency == null ? "CNY" : String(item.currency),
             paymentChannelId: item.paymentChannelId == null ? null : String(item.paymentChannelId),
             paymentChannelName: item.paymentChannelName == null ? null : String(item.paymentChannelName),
+            counterpartyInstitutionId:
+              item.counterpartyInstitutionId && importedInstitutions.has(String(item.counterpartyInstitutionId))
+                ? String(item.counterpartyInstitutionId)
+                : null,
+            counterpartyInstitutionName:
+              item.counterpartyInstitutionName == null ? null : String(item.counterpartyInstitutionName),
             status: String(item.status ?? "posted") as never,
-            fundArrivalAmount: item.fundArrivalAmount == null ? null : String(item.fundArrivalAmount),
-            fundArrivalDate: item.fundArrivalDate == null ? null : new Date(String(item.fundArrivalDate)),
-            fundConfirmDate: item.fundConfirmDate == null ? null : new Date(String(item.fundConfirmDate)),
-            fundFee: item.fundFee == null ? null : String(item.fundFee),
-            fundNav: item.fundNav == null ? null : String(item.fundNav),
-            fundSubtype: item.fundSubtype == null ? null : (String(item.fundSubtype) as never),
-            fundUnits: item.fundUnits == null ? null : String(item.fundUnits),
+            fundArrivalAmount: isSplitFundProjection(item) || item.fundArrivalAmount == null ? null : String(item.fundArrivalAmount),
+            fundArrivalDate: isSplitFundProjection(item) || item.fundArrivalDate == null ? null : new Date(String(item.fundArrivalDate)),
+            depositAnnualRate: item.depositAnnualRate == null ? null : String(item.depositAnnualRate),
+            depositInterest: item.depositInterest == null ? null : String(item.depositInterest),
+            depositSourceEntryId:
+              item.depositSourceEntryId && importedTransactions.has(String(item.depositSourceEntryId))
+                ? String(item.depositSourceEntryId)
+                : null,
+            fundSourceEntryId:
+              item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
+                ? String(item.fundSourceEntryId)
+                : null,
+            debtPrincipalAmount: item.debtPrincipalAmount == null ? null : String(item.debtPrincipalAmount),
+            debtInterestAmount: item.debtInterestAmount == null ? null : String(item.debtInterestAmount),
+            debtFeeAmount: item.debtFeeAmount == null ? null : String(item.debtFeeAmount),
+            fundConfirmDate: isSplitFundProjection(item) || item.fundConfirmDate == null ? null : new Date(String(item.fundConfirmDate)),
+            fundFee: isSplitFundProjection(item) || item.fundFee == null ? null : String(item.fundFee),
+            fundNav: isSplitFundProjection(item) || item.fundNav == null ? null : String(item.fundNav),
+            fundSubtype: isSplitFundProjection(item) || item.fundSubtype == null ? null : (String(item.fundSubtype) as never),
+            fundUnits: isSplitFundProjection(item) || item.fundUnits == null ? null : String(item.fundUnits),
             realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
             regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
-            fundName: item.fundName == null ? null : String(item.fundName),
+            creditCardInstallmentPlanId:
+              item.creditCardInstallmentPlanId && importedCreditCardInstallmentPlans.has(String(item.creditCardInstallmentPlanId))
+                ? String(item.creditCardInstallmentPlanId)
+                : null,
+            installmentNo: item.installmentNo == null ? null : Number(item.installmentNo),
+            installmentTotal: item.installmentTotal == null ? null : Number(item.installmentTotal),
+            installmentPrincipal: item.installmentPrincipal == null ? null : String(item.installmentPrincipal),
+            installmentInterest: item.installmentInterest == null ? null : String(item.installmentInterest),
+            installmentRole: item.installmentRole == null ? null : String(item.installmentRole),
+            fundName: isSplitFundProjection(item) || item.fundName == null ? null : String(item.fundName),
+            wealthProductId:
+              item.wealthProductId && importedWealthProducts.has(String(item.wealthProductId))
+                ? String(item.wealthProductId)
+                : null,
+            insuranceProductId:
+              item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
+                ? String(item.insuranceProductId)
+                : null,
+            insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
+            insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
             source: item.source == null ? null : String(item.source),
           })),
       });
     }
+
+    if (legacyMainFundRows.length > 0) {
+      const legacyFundTransactions: Record<string, unknown>[] = legacyMainFundRows
+        .flatMap((item) => {
+          const fundAccountId = legacyFundAccountIdOf(item);
+          if (!fundAccountId || !importedAccounts.has(fundAccountId)) return [];
+          const cashAccountId = legacyFundCashAccountIdOf(item, importedAccounts);
+          const subtype = normalizeLegacyFundSubtype(item.fundSubtype);
+          const cashReceipt = isLegacyFundCashReceipt(item);
+          return [{
+            id: String(item.id),
+            householdId,
+            fundAccountId,
+            cashAccountId,
+            cashEntryId: importedTransactions.has(String(item.id)) ? String(item.id) : null,
+            fundCode: String(item.fundCode),
+            fundName: item.fundName == null ? null : String(item.fundName),
+            fundProductType: normalizeLegacyFundProductType(item.fundProductType),
+            fundSubtype: subtype,
+            source: item.source == null ? null : String(item.source),
+            applyDate: new Date(String(item.date)),
+            confirmDate: legacyDate(item.fundConfirmDate),
+            arrivalDate: legacyDate(item.fundArrivalDate),
+            grossAmount: absDecimalString(item.amount),
+            refundAmount: "0",
+            arrivalAmount: item.fundArrivalAmount == null && !cashReceipt ? null : absDecimalString(item.fundArrivalAmount ?? item.amount),
+            fee: item.fundFee == null ? null : String(item.fundFee),
+            nav: item.fundNav == null ? null : String(item.fundNav),
+            units: item.fundUnits == null ? null : String(item.fundUnits),
+            realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
+            regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
+            note: item.note == null ? null : String(item.note),
+            deletedAt: legacyDate(item.deletedAt),
+            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          }];
+        });
+
+      await createManyRecords(
+        tx.fundTransaction,
+        legacyFundTransactions,
+        new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+      );
+      for (const item of legacyFundTransactions) importedFundTransactions.add(String(item.id));
+
+      const legacyCashFlows = [
+        ...legacyMainFundRows
+          .filter((item) => legacyMainFundIds.has(String(item.id)))
+          .map((item) => ({
+            id: `cff_${String(item.id)}`,
+            fundTransactionId: String(item.id),
+            txRecordId: String(item.id),
+            kind: legacyFundCashFlowKindOf(item),
+            amount: absDecimalString(item.fundArrivalAmount ?? item.amount),
+            flowDate: isLegacyFundCashReceipt(item)
+              ? legacyDate(item.fundArrivalDate) ?? new Date(String(item.date))
+              : new Date(String(item.date)),
+            accountId: legacyFundCashAccountIdOf(item, importedAccounts),
+          })),
+        ...legacyRefundRows.map((item) => ({
+          id: `cfr_${String(item.id)}`,
+          fundTransactionId: String(item.fundSourceEntryId),
+          txRecordId: String(item.id),
+          kind: "refund_in",
+          amount: absDecimalString(item.fundArrivalAmount ?? item.amount),
+          flowDate: legacyDate(item.fundArrivalDate) ?? new Date(String(item.date)),
+          accountId: legacyFundCashAccountIdOf(item, importedAccounts),
+        })),
+      ].filter((item) => importedFundTransactions.has(String(item.fundTransactionId)));
+
+      await createManyRecords(tx.fundTransactionCashFlow, legacyCashFlows);
+
+      const refundSummary = new Map<string, { amount: number; arrivalDate: Date | null }>();
+      for (const refund of legacyRefundRows) {
+        const sourceId = String(refund.fundSourceEntryId);
+        if (!importedFundTransactions.has(sourceId)) continue;
+        const current = refundSummary.get(sourceId) ?? { amount: 0, arrivalDate: null };
+        current.amount += Number(absDecimalString(refund.fundArrivalAmount ?? refund.amount));
+        const arrivalDate = legacyDate(refund.fundArrivalDate) ?? legacyDate(refund.date);
+        if (arrivalDate && (!current.arrivalDate || arrivalDate > current.arrivalDate)) current.arrivalDate = arrivalDate;
+        refundSummary.set(sourceId, current);
+      }
+      for (const [fundTransactionId, summary] of refundSummary.entries()) {
+        await tx.fundTransaction.updateMany({
+          where: { id: fundTransactionId, householdId },
+          data: {
+            refundAmount: String(summary.amount),
+            arrivalDate: summary.arrivalDate,
+          },
+        });
+      }
+
+      for (const flow of legacyCashFlows) {
+        await upsertEntryBusinessCashFlowLink(tx, {
+          householdId,
+          cashEntryId: String(flow.txRecordId),
+          fundTransactionId: String(flow.fundTransactionId),
+          businessType: "fund",
+          cashFlowDirection: String(flow.kind) === "buy_out" ? "outflow" : String(flow.kind) === "dividend_reinvest_internal" ? "internal" : "inflow",
+          source: "backup_restore_legacy",
+          note: "Restored legacy fund cash flow link",
+          metadata: {
+            splitRecord: true,
+            independentBusinessTransaction: true,
+            restoredFromLegacyTxRecord: true,
+          },
+        });
+      }
+    }
+
+    for (const [planId, sourceEntryId] of installmentSourceEntries.entries()) {
+      if (sourceEntryId && importedTransactions.has(String(sourceEntryId))) {
+        await tx.creditCardInstallmentPlan.updateMany({
+          where: { id: planId, householdId },
+          data: { sourceEntryId: String(sourceEntryId) },
+        });
+      }
+    }
+
+    await createManyRecords(
+      tx.fxConversion,
+      data.fxConversions
+        .filter(
+          (item) =>
+            importedTransactions.has(String(item.fromEntryId)) &&
+            importedTransactions.has(String(item.toEntryId)) &&
+            importedAccounts.has(String(item.fromAccountId)) &&
+            importedAccounts.has(String(item.toAccountId)),
+        )
+        .map((item) => ({ ...item, householdId })),
+    );
+
+    await createManyRecords(
+      tx.fundTransaction,
+      data.fundTransactions
+        .filter((item) => importedAccounts.has(String(item.fundAccountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+          regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
+        })),
+      new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
+      tx.insuranceTransaction,
+      data.insuranceTransactions
+        .filter(
+          (item) =>
+            importedAccounts.has(String(item.accountId)) &&
+            importedInsuranceProducts.has(String(item.insuranceProductId)),
+        )
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+        })),
+      new Set(["postedAt", "arrivalDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
+      tx.wealthTransaction,
+      data.wealthTransactions
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+          wealthProductId:
+            item.wealthProductId && importedWealthProducts.has(String(item.wealthProductId))
+              ? String(item.wealthProductId)
+              : null,
+        })),
+      new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
+      tx.depositTransaction,
+      data.depositTransactions
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+          sourceDepositTransactionId:
+            item.sourceDepositTransactionId && importedDepositTransactions.has(String(item.sourceDepositTransactionId))
+              ? String(item.sourceDepositTransactionId)
+              : null,
+        })),
+      new Set(["maturityDate", "arrivalDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
+      tx.preciousMetalTransaction,
+      data.preciousMetalTransactions
+        .filter(
+          (item) =>
+            importedAccounts.has(String(item.accountId)) &&
+            importedPreciousMetalTypes.has(String(item.metalTypeId)) &&
+            importedPreciousMetalUnits.has(String(item.metalUnitId)),
+        )
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+        })),
+      new Set(["deletedAt"]),
+    );
+
+    await createManyRecords(
+      tx.fundTransactionCashFlow,
+      data.fundTransactionCashFlows
+        .filter(
+          (item) =>
+            importedFundTransactions.has(String(item.fundTransactionId)) &&
+            importedTransactions.has(String(item.txRecordId)),
+        )
+        .map((item) => ({
+          ...item,
+          accountId:
+            item.accountId && importedAccounts.has(String(item.accountId))
+              ? String(item.accountId)
+              : null,
+        })),
+    );
+
+    await createManyRecords(
+      tx.entryBusinessLink,
+      data.entryBusinessLinks.map((item) => ({
+        ...item,
+        householdId,
+        cashEntryId:
+          item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+            ? String(item.cashEntryId)
+            : null,
+        businessEntryId:
+          item.businessEntryId && importedTransactions.has(String(item.businessEntryId))
+            ? String(item.businessEntryId)
+            : null,
+        fundTransactionId:
+          item.fundTransactionId && importedFundTransactions.has(String(item.fundTransactionId))
+            ? String(item.fundTransactionId)
+            : null,
+        insuranceTransactionId:
+          item.insuranceTransactionId && importedInsuranceTransactions.has(String(item.insuranceTransactionId))
+            ? String(item.insuranceTransactionId)
+            : null,
+        wealthTransactionId:
+          item.wealthTransactionId && importedWealthTransactions.has(String(item.wealthTransactionId))
+            ? String(item.wealthTransactionId)
+            : null,
+        depositTransactionId:
+          item.depositTransactionId && importedDepositTransactions.has(String(item.depositTransactionId))
+            ? String(item.depositTransactionId)
+            : null,
+        preciousMetalTransactionId:
+          item.preciousMetalTransactionId && importedPreciousMetalTransactions.has(String(item.preciousMetalTransactionId))
+            ? String(item.preciousMetalTransactionId)
+            : null,
+      })),
+      new Set(["deletedAt"]),
+    );
 
     if (data.attachments.length > 0) {
       await tx.attachment.createMany({
@@ -917,6 +1917,9 @@ export async function restoreHouseholdBackup(
             endDate: item.endDate == null ? null : new Date(String(item.endDate)),
             executedRuns: Number(item.executedRuns ?? 0),
             fundProductType: item.fundProductType == null ? null : (String(item.fundProductType) as never),
+            taskType: item.taskType == null ? null : String(item.taskType),
+            targetName: item.targetName == null ? null : String(item.targetName),
+            insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
             memo: item.memo == null ? null : String(item.memo),
             startDate: new Date(String(item.startDate)),
             status: String(item.status ?? "active") as never,
@@ -927,6 +1930,20 @@ export async function restoreHouseholdBackup(
           })),
       });
     }
+
+    await createManyRecords(
+      tx.loanRateAdjustment,
+      data.loanRateAdjustments
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          regularInvestPlanId:
+            item.regularInvestPlanId && data.regularInvestPlans.some((plan) => String(plan.id) === String(item.regularInvestPlanId))
+              ? String(item.regularInvestPlanId)
+              : null,
+        })),
+    );
 
     if (data.emailAccounts.length > 0) {
       await tx.emailAccount.createMany({
@@ -967,6 +1984,9 @@ export async function restoreHouseholdBackup(
       });
     }
   });
+
+  const { clearMasterKeyCache } = await import("@/lib/auth/encrypt");
+  clearMasterKeyCache();
 
   return {
     householdName: payload.scope.householdName,

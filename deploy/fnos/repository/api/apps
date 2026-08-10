@@ -4,15 +4,15 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.12",
+      "version": "0.1.13",
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.12/mmh.fpk",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.12",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.13/mmh.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.13",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "系统更新页的当前版本和可更新版本都显示应用版本号、提交号和时间；Docker 镜像版本检查同步读取镜像版本号。"
+      "changelog": "备份和恢复都改为再次验证当前用户名和密码；发布加密 .mmh-backup 恢复包、表格导出和更明确的恢复失败提示；飞牛版版本信息显示 FNOS 标识。"
     }
   ]
 }

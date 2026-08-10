@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import type { ButtonHTMLAttributes, TdHTMLAttributes } from "react";
+import { Copy, Eye, EyeOff, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucide-react";
 
 export function SettingsPageHeader({
   title,
@@ -53,6 +54,57 @@ export function SettingsPrimaryAddButton({
   );
 }
 
+export function SettingsActionButton({
+  label,
+  variant = "default",
+  size = "default",
+  icon,
+  children,
+  className,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string;
+  variant?: "default" | "edit" | "delete" | "view" | "hide" | "copy" | "add" | "defaultMark";
+  size?: "default" | "sm";
+  icon?: React.ReactNode;
+}) {
+  const toneClass =
+    variant === "delete"
+      ? "text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+      : variant === "edit"
+        ? "text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
+        : variant === "add" || variant === "defaultMark"
+          ? "text-slate-500 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+          : "text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700";
+  const resolvedIcon = icon ?? (
+    variant === "delete" ? <Trash2 className="h-3.5 w-3.5" />
+      : variant === "edit" ? <Pencil className="h-3.5 w-3.5" />
+        : variant === "view" ? <Eye className="h-3.5 w-3.5" />
+          : variant === "hide" ? <EyeOff className="h-3.5 w-3.5" />
+            : variant === "copy" ? <Copy className="h-3.5 w-3.5" />
+              : variant === "add" ? <PlusCircle className="h-3.5 w-3.5" />
+                : variant === "defaultMark" ? <Star className="h-3.5 w-3.5" />
+                  : null
+  );
+  return (
+    <button
+      type="button"
+      title={props.title ?? label}
+      aria-label={props["aria-label"] ?? label}
+      {...props}
+      className={[
+        "inline-flex shrink-0 items-center justify-center rounded-md border text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        size === "sm" ? "h-6 w-6 border-transparent bg-transparent" : "h-7 w-7 border-slate-200 bg-white",
+        toneClass,
+        className ?? "",
+      ].join(" ")}
+    >
+      {resolvedIcon}
+      {children ? <span className="sr-only">{children}</span> : null}
+    </button>
+  );
+}
+
 export function SettingsSection({
   title,
   description,
@@ -92,7 +144,7 @@ export function SettingsTable({
 }) {
   return (
     <div className="overflow-auto">
-      <table className="w-full border-separate border-spacing-0" style={{ minWidth }}>
+      <table className="w-full table-fixed border-separate border-spacing-0" style={{ minWidth: `min(100%, ${minWidth}px)` }}>
         {children}
       </table>
     </div>
@@ -122,13 +174,15 @@ export function SettingsTd({
   children,
   align,
   className,
+  ...tdProps
 }: {
   children: React.ReactNode;
   align?: "right" | "center";
   className?: string;
-}) {
+} & TdHTMLAttributes<HTMLTableCellElement>) {
   return (
     <td
+      {...tdProps}
       className={[
         "border-b border-slate-100 px-3 py-2 text-xs text-slate-600",
         align === "right" ? "text-right tabular-nums" : align === "center" ? "text-center" : "text-left",
