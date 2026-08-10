@@ -492,6 +492,7 @@ write(path.join(stageDir, "wizard", "install"), JSON.stringify([
     items: [
       {
         type: "tips",
+        label: "数据目录",
         helpText: "SQLite 数据会保存在应用数据目录中，默认即可。",
       },
     ],
