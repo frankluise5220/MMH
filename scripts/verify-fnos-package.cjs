@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const failures = [];
+const fnosPublicFiles = new Set([
+  "apple-touch-icon.png",
+  "favicon.ico",
+  "sw.js",
+  "branding/mmh-logo-pageflip.png",
+  "branding/mmh-logo-pageflip.square.png",
+  "branding/mmh-logo-pageflip-192.png",
+  "branding/mmh-logo-pageflip-512.png",
+]);
 
 function expect(condition, message) {
   if (!condition) failures.push(message);
@@ -35,19 +44,74 @@ function readTarEntry(archive, entry) {
   return result.stdout;
 }
 
-function tarHasEntry(archive, entry) {
-  if (!fs.existsSync(archive)) return false;
+function normalizeTarName(name) {
+  return name.replace(/^\.\//, "");
+}
+
+function listTarEntries(archive) {
+  if (!fs.existsSync(archive)) return [];
   const result = spawnSync("tar", ["-tzf", archive], {
     cwd: root,
     encoding: "utf8",
     shell: false,
-    maxBuffer: 1024 * 1024,
+    maxBuffer: 32 * 1024 * 1024,
   });
   if (result.status !== 0) {
     failures.push(`Could not list ${path.relative(root, archive)}.\n${result.stderr || result.stdout || result.error?.message}`);
-    return false;
+    return [];
   }
-  return result.stdout.split(/\r?\n/).some((name) => name.replace(/^\.\//, "") === entry);
+  return result.stdout.split(/\r?\n/).filter(Boolean).map(normalizeTarName);
+}
+
+function tarHasEntry(archive, entry) {
+  return listTarEntries(archive).some((name) => name === entry);
+}
+
+function listFilesRelative(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const files = [];
+  const walk = (current, base) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const relative = base ? `${base}/${entry.name}` : entry.name;
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute, relative);
+      } else if (entry.isFile()) {
+        files.push(relative);
+      }
+    }
+  };
+  walk(dir, "");
+  return files.sort();
+}
+
+function expectFnosPublicFiles(files, label) {
+  for (const requiredFile of fnosPublicFiles) {
+    expect(files.includes(requiredFile), `${label} must include ${requiredFile}.`);
+  }
+  for (const file of files) {
+    expect(fnosPublicFiles.has(file), `${label} must not include unused public asset ${file}.`);
+  }
+}
+
+function listFpkAppEntries(archive) {
+  if (!fs.existsSync(archive)) return [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mmh-fnos-fpk-"));
+  try {
+    const extract = spawnSync("tar", ["-xzf", archive, "-C", tmpDir, "app.tgz"], {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      maxBuffer: 1024 * 1024,
+    });
+    if (extract.status !== 0) {
+      failures.push(`Could not extract app.tgz from ${path.relative(root, archive)}.\n${extract.stderr || extract.stdout || extract.error?.message}`);
+      return [];
+    }
+    return listTarEntries(path.join(tmpDir, "app.tgz"));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 function pngSize(file) {
@@ -63,19 +127,6 @@ function expectPngSize(file, size) {
     dimensions?.width === size && dimensions?.height === size,
     `${path.relative(root, file)} must be a ${size}x${size} PNG.`,
   );
-}
-
-function sha256(file) {
-  if (!fs.existsSync(file)) return "";
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-}
-
-function expectSameFileHash(source, target, message) {
-  expect(fs.existsSync(source), `Missing ${path.relative(root, source)}.`);
-  expect(fs.existsSync(target), `Missing ${path.relative(root, target)}.`);
-  if (fs.existsSync(source) && fs.existsSync(target)) {
-    expect(sha256(source) === sha256(target), message);
-  }
 }
 
 const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
@@ -118,7 +169,8 @@ expect(/软件更新（飞牛应用包）/.test(systemUpdatePage), "System updat
 expect(/mmh\.fpk/.test(systemUpdatePage) && /飞牛应用中心/.test(systemUpdatePage), "System update page must guide fnOS users to update with mmh.fpk.");
 expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");
 expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");
-expect(/normalizeBrandingIconAliases/.test(buildScript), "fnOS package build must normalize legacy metallic logo aliases to the current light icon.");
+expect(/copyFnosPublicAssets/.test(buildScript), "fnOS package build must copy only whitelisted runtime public assets.");
+expect(!/copyDir\(publicDir/.test(buildScript), "fnOS package build must not copy the whole public directory.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm ci/.test(fnosReleaseWorkflow), "fnOS workflow should install Linux native dependencies.");
 expect(/FNOS_NODE_TARBALL/.test(fnosReleaseWorkflow), "fnOS workflow should provide a Linux Node runtime tarball.");
@@ -142,29 +194,8 @@ if (fs.existsSync(stageDir)) {
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_64.png"), 64);
     expectPngSize(path.join(stageDir, "app", "ui", "images", "icon_256.png"), 256);
   }
-  const brandingDir = path.join(stageDir, "app", "server", "public", "branding");
-  if (fs.existsSync(brandingDir)) {
-    expectSameFileHash(
-      path.join(brandingDir, "mmh-logo-pageflip.png"),
-      path.join(brandingDir, "mmh-logo-final.png"),
-      "fnOS stage legacy mmh-logo-final.png must resolve to the current light pageflip icon.",
-    );
-    expectSameFileHash(
-      path.join(brandingDir, "mmh-logo-pageflip.png"),
-      path.join(brandingDir, "mmh-logo-mark.png"),
-      "fnOS stage legacy mmh-logo-mark.png must resolve to the current light pageflip icon.",
-    );
-    expectSameFileHash(
-      path.join(brandingDir, "mmh-logo-pageflip.square.png"),
-      path.join(brandingDir, "mmh-logo-final.square.png"),
-      "fnOS stage legacy mmh-logo-final.square.png must resolve to the current light pageflip icon.",
-    );
-    expectSameFileHash(
-      path.join(brandingDir, "mmh-logo-pageflip.square.png"),
-      path.join(brandingDir, "mmh-logo-mark.square.png"),
-      "fnOS stage legacy mmh-logo-mark.square.png must resolve to the current light pageflip icon.",
-    );
-  }
+  const publicDir = path.join(stageDir, "app", "server", "public");
+  if (fs.existsSync(publicDir)) expectFnosPublicFiles(listFilesRelative(publicDir), "fnOS stage public");
 }
 
 const builtFpk = path.join(root, "release-artifacts", "fnos", "mmh.fpk");
@@ -178,6 +209,12 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
   expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(mainScript), "Built fnOS .fpk cmd/main must store SQLite data under DATA_DEST.");
+  const appEntries = listFpkAppEntries(builtFpk);
+  const publicFiles = appEntries
+    .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))
+    .map((entry) => entry.slice("server/public/".length))
+    .sort();
+  expectFnosPublicFiles(publicFiles, "Built fnOS .fpk public");
 }
 
 if (fs.existsSync(nativeSchema)) {

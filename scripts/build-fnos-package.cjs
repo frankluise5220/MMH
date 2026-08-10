@@ -240,28 +240,30 @@ function copyIcon(src, dest, size) {
   writeSolidPng(dest, size);
 }
 
-function normalizeBrandingIconAliases(publicTargetDir) {
-  const brandingDir = path.join(publicTargetDir, "branding");
-  if (!fs.existsSync(brandingDir)) return;
-
-  for (const [sourceName, aliasNames] of [
-    ["mmh-logo-pageflip.png", ["mmh-logo-final.png", "mmh-logo-mark.png"]],
-    ["mmh-logo-pageflip.square.png", ["mmh-logo-final.square.png", "mmh-logo-mark.square.png"]],
-    ["mmh-logo-pageflip-192.png", ["mmh-logo-final-192.png", "mmh-logo-mark-192.png"]],
-    ["mmh-logo-pageflip-512.png", ["mmh-logo-final-512.png", "mmh-logo-mark-512.png"]],
-  ]) {
-    const source = path.join(brandingDir, sourceName);
-    if (!fs.existsSync(source)) continue;
-    for (const aliasName of aliasNames) {
-      copyFile(source, path.join(brandingDir, aliasName));
-    }
-  }
-}
-
 function copyDir(src, dest) {
   if (!fs.existsSync(src)) return false;
   fs.cpSync(src, dest, { recursive: true });
   return true;
+}
+
+function copyFnosPublicAssets(src, dest) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  for (const file of [
+    "apple-touch-icon.png",
+    "favicon.ico",
+    "sw.js",
+  ]) {
+    copyFile(path.join(src, file), path.join(dest, file));
+  }
+
+  for (const file of [
+    "mmh-logo-pageflip.png",
+    "mmh-logo-pageflip.square.png",
+    "mmh-logo-pageflip-192.png",
+    "mmh-logo-pageflip-512.png",
+  ]) {
+    copyFile(path.join(src, "branding", file), path.join(dest, "branding", file));
+  }
 }
 
 function run(command, args, options = {}) {
@@ -854,8 +856,7 @@ if (fs.existsSync(standaloneDir)) {
   standaloneAppDir = findStandaloneAppDir(standaloneDir);
   copyDir(standaloneAppDir, path.join(stageDir, "app", "server"));
   copyDir(staticDir, path.join(stageDir, "app", "server", ".next", "static"));
-  copyDir(publicDir, path.join(stageDir, "app", "server", "public"));
-  normalizeBrandingIconAliases(path.join(stageDir, "app", "server", "public"));
+  copyFnosPublicAssets(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {

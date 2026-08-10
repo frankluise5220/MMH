@@ -4,12 +4,12 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "platform": "x86",
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.5-fnos/mmh.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.6-fnos/mmh.fpk",
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "统一飞牛应用图标：将旧金属 Logo 兼容别名覆盖为当前淡色图标，并刷新软仓图标地址。",
+      "changelog": "精简飞牛应用包：只打包运行时实际使用的 public 图标与 service worker，移除旧 Logo 候选、金属图和调试文件。",
       "tags": [
         "finance",
         "bookkeeping"
