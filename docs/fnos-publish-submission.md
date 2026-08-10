@@ -10,7 +10,7 @@
 - `better-sqlite3.node` 来自不兼容目标系统的构建环境，可能要求高于 fnOS 1.2 / Debian 12 的 GLIBC 版本。
 - `wizard/uninstall` 会让 FN 软仓的非交互式“先卸载再安装”更新链路失败；飞牛 CLI 输出错误但退出码仍为 0，软仓会误报安装成功。
 
-下一次官方提交必须重新生成新版本 `.fpk`，并通过 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
+下一次官方提交必须重新生成统一版本 `.fpk`，并通过 `npm run check:release-version` 与 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
 
 ## 历史作废包
 
@@ -24,9 +24,9 @@
 
 ## 下一次提交包要求
 
-- 版本必须高于 `0.1.3`。
+- 版本必须使用 `package.json` 的统一 `0.1.x`，当前下一版为 `0.1.10`。
 - Release 中的 `mmh.fpk` 与版本化资产必须由 `.github/workflows/fnos-release.yml` 重新构建并覆盖上传。
-- 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag 和文件名必须一致。
+- 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag `v0.1.x`、GHCR 镜像 tag 和文件名必须一致；不再使用 `v0.1.x-fnos`。
 - 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
 - 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
 - 包内不能包含 `wizard/uninstall`；卸载默认保留应用数据目录，避免阻塞第三方软仓更新链路。
@@ -35,7 +35,7 @@
 
 ```text
 appname               = mmh
-version               = 0.1.4
+version               = 0.1.10
 display_name          = MMH
 arch                  = x86_64
 platform              = x86
@@ -66,11 +66,11 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 
 ```text
 应用名：MMH
-版本：0.1.4
+版本：0.1.10
 平台：x86_64 / x86
 端口：7777
-包 SHA256：0DE1C837D1E8866A7E91DCE3295865C4B75FEF499D6B9FB9012F037FFE297A22
-下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.4-fnos/mmh.fpk
+包 SHA256：发布后填写
+下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh.fpk
 项目主页：https://github.com/frankluise5220/MMH
 说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，升级不删除用户账本数据。
 ```
@@ -78,10 +78,10 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 ## 已验证
 
 - `npm run check:fnos` 通过。
-- Release 包 manifest 版本为 `0.1.4`。
+- Release 包 manifest 版本为 `0.1.10`。
 - 正式提交包由 fnOS 测试机上的 `fnpack build` 生成。
-- GitHub Release 的 `mmh.fpk` 与 `mmh_0.1.4_x86.fpk` 应覆盖为同一份 fnpack 包。
-- FN 软仓源应识别已安装旧版本到源版本 `0.1.4` 的更新；升级完成后不应继续提示更新。
+- GitHub Release 的 `mmh.fpk` 与 `mmh_0.1.10_x86.fpk` 应覆盖为同一份 fnpack 包。
+- FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级完成后不应继续提示更新。
 
 ## 待人工补充
 

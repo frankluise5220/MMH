@@ -36,6 +36,7 @@ type VersionInfo = {
   needsUpdate: boolean;
   canCheckUpdate?: boolean;
   imageSourceConfig?: ImageSourceConfig | null;
+  localReleaseNotes?: string;
   fetchError?: string;
   error?: string;
 };
@@ -390,9 +391,12 @@ export default function SystemUpdatePage() {
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
   const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
-  const currentVersionText = [versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate, timeZoneMode, timeZone)]
-    .filter(Boolean)
-    .join(" · ");
+  const currentVersionText = fnosManaged
+    ? versionInfo?.localVersion
+    : ([versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate, timeZoneMode, timeZone)]
+      .filter(Boolean)
+      .join(" · "));
+  const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
   const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate, timeZoneMode, timeZone)]
     .filter(Boolean)
     .join(" · ");
@@ -466,10 +470,19 @@ export default function SystemUpdatePage() {
               <div className="text-slate-500">当前版本</div>
               <div className="min-w-0">
                 <span className="font-semibold text-slate-900">{currentVersionText || "unknown"}</span>
-                {versionInfo.localCommitMsg ? (
+                {fnosManaged ? (
+                  <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">飞牛应用包</span>
+                ) : versionInfo.localCommitMsg ? (
                   <span className="ml-2 text-xs text-slate-500">{versionInfo.localCommitMsg}</span>
                 ) : null}
               </div>
+
+              {fnosManaged && localReleaseNotes ? (
+                <>
+                  <div className="text-slate-500">本版说明</div>
+                  <div className="min-w-0 text-slate-700">{localReleaseNotes}</div>
+                </>
+              ) : null}
 
               <div className="text-slate-500">远端版本</div>
               <div className="min-w-0">
@@ -499,7 +512,7 @@ export default function SystemUpdatePage() {
 
             {fnosManaged ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                当前为飞牛版，系统更新由飞牛应用中心管理。请下载并安装新的 <span className="font-mono">mmh.fpk</span> 包进行更新，应用数据会继续保存在飞牛应用数据目录中。
+                当前为飞牛版，系统更新由飞牛应用中心管理；应用中心会安装新的 mmh.fpk，本页只展示当前应用包版本和本版说明，应用数据会继续保存在飞牛应用数据目录中。
               </div>
             ) : null}
 

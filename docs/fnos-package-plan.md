@@ -49,7 +49,7 @@ mmh.fpk
 3. workflow 执行 `npm run build:fnos:app`，确保 standalone 和原生依赖都是 Linux 产物。
 4. workflow 执行 `npm run build:fnos`，生成 `release-artifacts/fnos/mmh.fpk` 和版本化 `.fpk`。
 5. workflow 上传 `release-artifacts/fnos/*.fpk` 到 Release。
-6. 飞牛第三方源元数据更新 `version` 和 `download_url`，其中 `download_url` 必须指向该 Release 中的 `mmh.fpk`。
+6. 飞牛第三方源元数据更新 `version` 和 `download_url`，其中 `version` 必须等于 `package.json` 的 `0.1.x`，`download_url` 必须指向 `v0.1.x` Release 中的 `mmh.fpk`。
 
 ## 限制
 
@@ -57,6 +57,7 @@ mmh.fpk
 - 构建正式包必须提供 Linux x64 Node runtime；workflow 会自动下载，手动构建时使用 `FNOS_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz`。
 - Windows 本地只能生成调试 stage 包，不能产出可安装的正式包。
 - 当前包包含 Linux Node runtime、Next standalone、Prisma runtime 和必要依赖，体积会明显大于 miniBill；除非后续把服务端重写为更轻的单二进制运行时，否则不承诺几 MB 级。
+- 飞牛包不使用独立 `-fnos` 版本号；正式发布前用 `npm run release:version` 递增一次 `package.json` 的 `0.1.x`，并保持 GitHub Release、GHCR 镜像和 `mmh.fpk` 同号。
 
 ## 待确认
 

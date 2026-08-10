@@ -10,7 +10,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
 const rawVersion = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
 const version = normalizeFnosVersion(rawVersion);
 const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
-const changelog = process.env.FNOS_PACKAGE_CHANGELOG || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
+const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
+const changelog = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
 const appName = "mmh";
 const outDir = path.join(root, "release-artifacts", "fnos");
 const stageDir = path.join(outDir, `${appName}-fpk`);
@@ -33,10 +34,14 @@ function write(file, content, mode) {
 function normalizeFnosVersion(value) {
   const raw = String(value || "").trim();
   if (!raw) return "0.1.0";
-  return raw
+  const normalized = raw
     .replace(/^refs\/tags\//, "")
     .replace(/^v(?=\d)/, "")
     .replace(/-fnos(?:$|[.-].*)?$/, "");
+  if (!/^0\.1\.\d+$/.test(normalized)) {
+    throw new Error(`FNOS_PACKAGE_VERSION must use 0.1.x format, got ${normalized}.`);
+  }
+  return normalized;
 }
 
 function copyFile(src, dest) {
@@ -856,6 +861,13 @@ const publicDir = path.join(root, "public");
 if (fs.existsSync(standaloneDir)) {
   standaloneAppDir = findStandaloneAppDir(standaloneDir);
   copyDir(standaloneAppDir, path.join(stageDir, "app", "server"));
+  const runtimePackageJson = path.join(stageDir, "app", "server", "package.json");
+  if (fs.existsSync(runtimePackageJson)) {
+    const runtimePkg = JSON.parse(fs.readFileSync(runtimePackageJson, "utf8"));
+    runtimePkg.version = version;
+    runtimePkg.mmhReleaseNotes = changelog;
+    write(runtimePackageJson, JSON.stringify(runtimePkg, null, 2));
+  }
   copyDir(staticDir, path.join(stageDir, "app", "server", ".next", "static"));
   copyFnosPublicAssets(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));

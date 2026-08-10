@@ -6,7 +6,7 @@
  * POST ?mode=rebuild: 不拉取代码，只重新安装依赖、生成 Prisma、同步数据库、构建。
  *
  * 返回格式：
- * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localCommit, localCommitMsg, localCommitDate, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
+ * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
  * - POST: text/event-stream，每条 data 为 { step, status, output? }，结束为 { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -109,6 +109,11 @@ function getDeploymentTarget(): "docker" | "fnos" | "standalone" {
   if (isDockerEnvironment()) return "docker";
   if (String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase() === "fnos") return "fnos";
   return "standalone";
+}
+
+function getPackageReleaseNotes(pkg: { mmhReleaseNotes?: unknown; releaseNotes?: unknown }) {
+  const value = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes : pkg.releaseNotes;
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function safeGitName(value: string | undefined, fallback: string) {
@@ -393,6 +398,7 @@ export async function GET(req: NextRequest) {
     const projectRoot = process.cwd();
     const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
     const localVersion = pkg.version || "unknown";
+    const localReleaseNotes = getPackageReleaseNotes(pkg);
     let imageSourceConfig: ImageSourceConfig | null = null;
     const deploymentTarget = getDeploymentTarget();
     const dockerEnvironment = deploymentTarget === "docker";
@@ -472,6 +478,7 @@ export async function GET(req: NextRequest) {
       updaterEnabled,
       imageSourceConfig,
       localVersion,
+      localReleaseNotes,
       ...versionInfo,
     });
   } catch (e) {

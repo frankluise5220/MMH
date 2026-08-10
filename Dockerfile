@@ -2,11 +2,13 @@ ARG NODE_BUILD_IMAGE=node:20-bookworm
 ARG NODE_RUNTIME_IMAGE=node:20-bookworm
 ARG PRISMA_CLI_VERSION=7.8.0
 ARG DOTENV_VERSION=17.4.2
+ARG APP_VERSION=0.1.0
 FROM ${NODE_BUILD_IMAGE} AS build
 
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
+ARG APP_VERSION=0.1.0
 
 WORKDIR /app
 ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
@@ -14,6 +16,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
+ENV APP_VERSION=${APP_VERSION}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ openssl ca-certificates \
@@ -66,18 +69,21 @@ FROM ${NODE_RUNTIME_IMAGE} AS runtime
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
+ARG APP_VERSION=0.1.0
 
 LABEL org.opencontainers.image.title="MMH"
 LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"
 LABEL org.opencontainers.image.revision=${APP_COMMIT}
 LABEL org.opencontainers.image.created=${APP_COMMIT_DATE}
 LABEL org.opencontainers.image.description=${APP_COMMIT_MESSAGE}
+LABEL org.opencontainers.image.version=${APP_VERSION}
 
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
+ENV APP_VERSION=${APP_VERSION}
 ENV NODE_ENV=production
 ENV PORT=7777
 ENV HOSTNAME=0.0.0.0

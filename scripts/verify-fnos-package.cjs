@@ -133,6 +133,7 @@ const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
 const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
+const fnosStageWorkflow = read(path.join(root, ".github", "workflows", "fnos-stage.yml"));
 const prismaConfig = read(path.join(root, "prisma.config.ts"));
 const dbClient = read(path.join(root, "src", "lib", "db", "prisma.ts"));
 const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"));
@@ -148,8 +149,10 @@ expect(/PrismaBetterSqlite3/.test(dbClient), "Database client must support the S
 expect(/connectionString\.startsWith\("file:"\)/.test(dbClient), "Database client must route file: URLs to SQLite.");
 expect(/FNOS_NODE_TARBALL/.test(buildScript), "fnOS package build must require an explicit Linux Node runtime input.");
 expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normalize Release tags into package versions.");
+expect(buildScript.includes("^0\\.1\\.\\d+$"), "fnOS package build must enforce the unified 0.1.x version format.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
 expect(/changelog=\$\{changelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
+expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not include an uninstall wizard; FN soft-store updates cannot complete when uninstall requires UI input.");
 expect(/process\.platform === "linux"/.test(buildScript), "fnOS release builds must be guarded to Linux/fnOS.");
 expect(/resolve_data_dest/.test(buildScript), "fnOS start script must resolve a persistent fnOS data directory.");
@@ -183,6 +186,10 @@ expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workf
 expect(!/path:\s*release-artifacts\/fnos\/\*-fpk-source\.tgz/.test(fnosReleaseWorkflow), "fnOS release workflow must not upload stage-only .tgz files.");
 expect(/fnpack was not found/.test(fnosReleaseWorkflow), "fnOS workflow should fail clearly when fnpack is unavailable.");
 expect(!/mmh-native\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow must not publish a second mmh-native.fpk package.");
+expect(!/0\.1\.0-fnos/.test(fnosReleaseWorkflow), "fnOS release workflow must not default to the old 0.1.0-fnos package version.");
+expect(!/0\.1\.0-fnos/.test(fnosStageWorkflow), "fnOS stage workflow must not default to the old 0.1.0-fnos package version.");
+expect(/default:\s*""/.test(fnosReleaseWorkflow), "fnOS release workflow should let package.json own the default package version.");
+expect(/default:\s*""/.test(fnosStageWorkflow), "fnOS stage workflow should let package.json own the default package version.");
 
 if (fs.existsSync(stageDir)) {
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {

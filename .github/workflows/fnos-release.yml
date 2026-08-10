@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       package_version:
-        description: "fnOS FPK package version"
+        description: "Optional package version. Leave blank to use package.json version."
         required: false
-        default: "0.1.0-fnos"
+        default: ""
 
 permissions:
   contents: write
