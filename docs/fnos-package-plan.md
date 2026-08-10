@@ -72,8 +72,8 @@ mmh.fpk
 - [x] 建立 `npm run build:fnos` 正式飞牛包脚本，产物为 `release-artifacts/fnos/mmh.fpk`。
 - [x] 建立 `npm run stage:fnos` 调试归档脚本。
 - [x] 建立 `npm run check:fnos` 飞牛包素材校验。
-- [x] 增加 GitHub Release workflow，发布时自动下载 Linux x64 Node runtime 并构建正式 `mmh.fpk`。
-- [ ] 在安装了 `fnpack` 的 Linux/fnOS runner 上执行 `.github/workflows/fnos-release.yml`，确认正式 `mmh.fpk` 产出。
+- [x] 增加 GitHub Release workflow，发布时自动下载 Linux x64 Node runtime、安装官方 Linux x64 `fnpack` 并构建正式 `mmh.fpk`。
+- [ ] 执行 `.github/workflows/fnos-release.yml`，确认正式 `mmh.fpk` 产出并通过内置校验。
 - [ ] 在飞牛测试机安装 `mmh.fpk`，验证启动、SQLite 数据保留、升级覆盖和日志查看。
 - [x] 给系统更新页增加飞牛环境提示。
 - [ ] 将大列表接口改成分页或游标，优先处理账单、明细、导入预览。

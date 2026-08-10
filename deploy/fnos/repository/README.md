@@ -8,7 +8,7 @@ mmh.fpk
 
 不要发布 `mmh-native.fpk`，也不要把 `*-fpk-source.tgz` 当成用户安装包。
 
-发布 GitHub Release 时，`.github/workflows/fnos-release.yml` 会构建并上传 `release-artifacts/fnos/*.fpk`。如果打包环境缺少 `fnpack`，workflow 必须失败，避免发布不可安装的替代归档。
+发布 GitHub Release 时，`.github/workflows/fnos-release.yml` 会安装官方 Linux x64 `fnpack`，构建并上传 `release-artifacts/fnos/*.fpk`。如果安装、打包或校验失败，workflow 必须失败，避免发布不可安装的替代归档。
 
 发布时建议同时维护应用源索引。FN 软仓这类源会访问：
 
