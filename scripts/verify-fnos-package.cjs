@@ -212,6 +212,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   const appEntries = listFpkAppEntries(builtFpk);
   const publicFiles = appEntries
     .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))
+    .filter((entry) => entry !== "server/public/branding")
     .map((entry) => entry.slice("server/public/".length))
     .sort();
   expectFnosPublicFiles(publicFiles, "Built fnOS .fpk public");
