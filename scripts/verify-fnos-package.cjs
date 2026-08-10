@@ -167,9 +167,11 @@ expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an e
 expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
 expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");
 expect(/isFnos/.test(systemUpdateRoute), "System update API must return an explicit isFnos flag.");
+expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
 expect(/fnosManaged \? "版本信息"/.test(systemUpdatePage), "System update page must label fnOS package details as version information.");
 expect(/GitHub 项目主页/.test(systemUpdatePage) && /githubProjectUrl/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
+expect(/可更新版本/.test(systemUpdatePage) && /availableVersionText/.test(systemUpdatePage), "System update page must show the available app version beside the update commit.");
 expect(/mmh\.fpk/.test(systemUpdatePage) && /飞牛应用中心/.test(systemUpdatePage), "System update page must guide fnOS users to update with mmh.fpk.");
 expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");
 expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");

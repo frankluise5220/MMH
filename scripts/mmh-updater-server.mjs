@@ -274,9 +274,10 @@ async function getLocalAppImageVersion() {
       commit: revision.slice(0, 7),
       created: String(labels?.["org.opencontainers.image.created"] || ""),
       message: String(labels?.["org.opencontainers.image.description"] || "").split("\n")[0] || "",
+      version: String(labels?.["org.opencontainers.image.version"] || ""),
     };
   } catch {
-    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "" };
+    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "", version: "" };
   }
 }
 
@@ -303,6 +304,7 @@ function extractImageVersion(manifestText) {
     const revision = labels["org.opencontainers.image.revision"] || "";
     const created = labels["org.opencontainers.image.created"] || descriptor?.image?.created || "";
     const message = labels["org.opencontainers.image.description"] || "";
+    const version = labels["org.opencontainers.image.version"] || "";
     return {
       digest: String(digest || ""),
       digestShort: shortDigest(digest),
@@ -310,9 +312,10 @@ function extractImageVersion(manifestText) {
       commit: String(revision || "").slice(0, 7),
       created: String(created || ""),
       message: String(message || "").split("\n")[0] || "",
+      version: String(version || ""),
     };
   } catch {
-    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "" };
+    return { digest: "", digestShort: "", revision: "", commit: "", created: "", message: "", version: "" };
   }
 }
 

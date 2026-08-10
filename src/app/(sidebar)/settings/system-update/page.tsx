@@ -30,6 +30,7 @@ type VersionInfo = {
   remoteName?: string;
   remoteBranch?: string;
   remoteUrl?: string;
+  remoteVersion?: string;
   remoteCommit: string;
   remoteCommitMsg: string;
   remoteCommitDate?: string;
@@ -76,6 +77,7 @@ type ImageSpeedResult = {
     commit?: string;
     created?: string;
     message?: string;
+    version?: string;
   };
   error?: string;
 };
@@ -107,14 +109,35 @@ function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode
   return new Intl.DateTimeFormat("zh-CN", options).format(date).replace(/\//g, "-");
 }
 
+function cleanVersionPart(value: string | undefined) {
+  const text = String(value ?? "").trim();
+  return text && text !== "unknown" ? text : "";
+}
+
+function formatVersionLine(
+  version: string | undefined,
+  commit: string | undefined,
+  date: string | undefined,
+  timeZoneMode: TimeZoneMode,
+  timeZone: string,
+) {
+  const head = [
+    cleanVersionPart(version),
+    cleanVersionPart(commit),
+  ].filter(Boolean).join(" ");
+  return [head, formatVersionDate(date, timeZoneMode, timeZone)].filter(Boolean).join(" · ");
+}
+
 function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
   if (!result) return "";
   if (!result.ok) return result.error || "失败";
+  const version = result.version?.version || "";
   const commit = result.version?.commit || "";
   const digest = result.version?.digestShort || "";
   const date = formatVersionDate(result.version?.created, timeZoneMode, timeZone);
-  if (commit && date) return `${commit} · ${date}`;
-  if (commit) return commit;
+  const versionAndCommit = [version, commit].filter(Boolean).join(" ");
+  if (versionAndCommit && date) return `${versionAndCommit} · ${date}`;
+  if (versionAndCommit) return versionAndCommit;
   if (digest) return `digest ${digest}`;
   return "未读到版本";
 }
@@ -393,13 +416,15 @@ export default function SystemUpdatePage() {
   const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
   const currentVersionText = fnosManaged
     ? versionInfo?.localVersion
-    : ([versionInfo?.localCommit, formatVersionDate(versionInfo?.localCommitDate, timeZoneMode, timeZone)]
-      .filter(Boolean)
-      .join(" · "));
+    : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
-  const availableVersionText = [versionInfo?.remoteCommit, formatVersionDate(versionInfo?.remoteCommitDate, timeZoneMode, timeZone)]
-    .filter(Boolean)
-    .join(" · ");
+  const availableVersionText = formatVersionLine(
+    versionInfo?.remoteVersion,
+    versionInfo?.remoteCommit,
+    versionInfo?.remoteCommitDate,
+    timeZoneMode,
+    timeZone,
+  );
   const remoteSourceText = [
     versionInfo?.remoteName,
     versionInfo?.remoteUrl,
@@ -516,7 +541,7 @@ export default function SystemUpdatePage() {
                 </>
               ) : null}
 
-              <div className="text-slate-500">{fnosManaged ? "更新方式" : "远端版本"}</div>
+              <div className="text-slate-500">{fnosManaged ? "更新方式" : needsUpdate ? "可更新版本" : "远端版本"}</div>
               <div className="min-w-0">
                 {fnosManaged ? (
                   <span className="text-slate-600">由飞牛应用中心管理</span>
@@ -562,12 +587,9 @@ export default function SystemUpdatePage() {
                 >
                   {updateStatusText}
                 </span>
-                <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                  {versionInfo.localVersion}
-                </span>
                 {needsUpdate ? (
                   <span className="text-xs text-slate-500">
-                    {dockerManaged ? "将拉取应用镜像并重启服务" : `将更新到 ${versionInfo.remoteCommit}`}
+                    {dockerManaged ? "将拉取应用镜像并重启服务" : `将更新到 ${availableVersionText || versionInfo.remoteCommit}`}
                   </span>
                 ) : null}
               </div>

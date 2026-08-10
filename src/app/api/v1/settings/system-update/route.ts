@@ -6,7 +6,7 @@
  * POST ?mode=rebuild: 不拉取代码，只重新安装依赖、生成 Prisma、同步数据库、构建。
  *
  * 返回格式：
- * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
+ * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
  * - POST: text/event-stream，每条 data 为 { step, status, output? }，结束为 { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -24,12 +24,14 @@ type VersionInfo = {
   remoteName: string;
   remoteBranch: string;
   remoteUrl: string;
+  remoteVersion: string;
   remoteCommit: string;
   remoteCommitMsg: string;
   remoteCommitDate: string;
   needsUpdate: boolean;
   canCheckUpdate: boolean;
   githubUrl: string;
+  githubVersion: string;
   githubCommit: string;
   githubCommitMsg: string;
   githubCommitDate: string;
@@ -170,6 +172,7 @@ function commandErrorMessage(error: unknown) {
 }
 
 async function getGitHubVersionInfo(projectRoot: string) {
+  const githubVersion = await getGitHubPackageVersion();
   try {
     const line = readCommandWithTimeout(projectRoot, `git ls-remote ${DEFAULT_GITHUB_REPO_URL} refs/heads/main`, VERSION_CHECK_TIMEOUT_MS);
     const commit = line.split(/\s+/)[0]?.trim() || "unknown";
@@ -200,6 +203,7 @@ async function getGitHubVersionInfo(projectRoot: string) {
     }
     return {
       githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubVersion,
       githubCommit: commit === "unknown" ? "unknown" : commit.slice(0, 7),
       githubCommitMsg: commitMsg,
       githubCommitDate: commitDate,
@@ -208,12 +212,39 @@ async function getGitHubVersionInfo(projectRoot: string) {
   } catch (error) {
     return {
       githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubVersion,
       githubCommit: "unknown",
       githubCommitMsg: "",
       githubCommitDate: "",
       githubCanCheck: false,
       githubFetchError: commandErrorMessage(error),
     };
+  }
+}
+
+async function getGitHubPackageVersion() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERSION_CHECK_TIMEOUT_MS);
+    const res = await fetch("https://raw.githubusercontent.com/frankluise5220/MMH/main/package.json", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+    if (!res.ok) return "";
+    const pkg = await res.json() as { version?: string };
+    return String(pkg.version || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function getPackageVersionAtRef(projectRoot: string, ref: string) {
+  try {
+    const pkg = JSON.parse(readCommand(projectRoot, `git show ${ref}:package.json`)) as { version?: string };
+    return String(pkg.version || "").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -235,6 +266,7 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
       remoteName: "github",
       remoteBranch: "main",
       remoteUrl,
+      remoteVersion: github.githubVersion,
       remoteCommit: githubCommit,
       remoteCommitMsg: github.githubCommitMsg,
       remoteCommitDate: github.githubCommitDate,
@@ -255,6 +287,7 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
   try {
     execSync(`git fetch ${remote} ${branch}`, { cwd: projectRoot, encoding: "utf-8", timeout: 15000 });
     const remoteCommit = readCommand(projectRoot, `git rev-parse --short ${ref}`);
+    const remoteVersion = getPackageVersionAtRef(projectRoot, ref) || github.githubVersion;
     const remoteCommitMsg = readCommand(projectRoot, `git log -1 --format=%s ${ref}`);
     const remoteCommitDate = readCommand(projectRoot, `git log -1 --format=%ci ${ref}`);
     const localFull = readCommand(projectRoot, "git rev-parse HEAD");
@@ -266,6 +299,7 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
       remoteName: remote,
       remoteBranch: branch,
       remoteUrl,
+      remoteVersion,
       remoteCommit,
       remoteCommitMsg,
       remoteCommitDate,
@@ -279,6 +313,7 @@ async function getGitVersionInfo(projectRoot: string): Promise<VersionInfo> {
       remoteName: remote,
       remoteBranch: branch,
       remoteUrl,
+      remoteVersion: github.githubVersion,
       remoteCommit: "unknown",
       remoteCommitMsg: "",
       remoteCommitDate: "",
@@ -307,6 +342,7 @@ type ImageVersionSpeedResult = {
     commit?: string;
     created?: string;
     message?: string;
+    version?: string;
   };
 };
 
@@ -379,6 +415,7 @@ async function getImageVersionFallback(
       remoteName: `image:${selected.source || configuredSource}`,
       remoteBranch: "latest",
       remoteUrl: selected.image || imageSourceConfig?.appImage || "",
+      remoteVersion: String(selected.version?.version || "").trim(),
       remoteCommit,
       remoteCommitMsg: String(selected.version?.message || (revision ? "镜像版本" : "镜像摘要")).split("\n")[0],
       remoteCommitDate: String(selected.version?.created || ""),
@@ -418,12 +455,14 @@ export async function GET(req: NextRequest) {
       remoteName: "",
       remoteBranch: "",
       remoteUrl: "",
+      remoteVersion: "",
       remoteCommit: "unknown",
       remoteCommitMsg: "",
       remoteCommitDate: "",
       needsUpdate: false,
       canCheckUpdate: false,
       githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubVersion: "",
       githubCommit: "unknown",
       githubCommitMsg: "",
       githubCommitDate: "",
@@ -457,6 +496,7 @@ export async function GET(req: NextRequest) {
           remoteName: "github",
           remoteBranch: "main",
           remoteUrl: DEFAULT_GITHUB_REPO_URL,
+          remoteVersion: github.githubVersion,
           remoteCommit: githubCommit,
           remoteCommitMsg: github.githubCommitMsg,
           remoteCommitDate: github.githubCommitDate,
