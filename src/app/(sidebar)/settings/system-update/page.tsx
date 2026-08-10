@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, Download, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, XCircle } from "lucide-react";
 import {
   APP_PREFS_EVENT,
   getTimeZoneModePreference,
@@ -404,6 +404,10 @@ export default function SystemUpdatePage() {
     versionInfo?.remoteName,
     versionInfo?.remoteUrl,
   ].filter(Boolean).join(" · ");
+  const githubProjectUrl = (versionInfo?.githubUrl || "https://github.com/frankluise5220/MMH").replace(/\.git$/, "");
+  const githubReleaseUrl = versionInfo?.localVersion && versionInfo.localVersion !== "unknown"
+    ? `${githubProjectUrl}/releases/tag/v${versionInfo.localVersion}`
+    : `${githubProjectUrl}/releases`;
   const updateStatusText = needsUpdate
     ? "可更新"
     : isLatest
@@ -438,16 +442,16 @@ export default function SystemUpdatePage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">系统更新</h2>
+      <h2 className="text-sm font-semibold text-slate-800">{fnosManaged ? "版本信息" : "系统更新"}</h2>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-slate-800">
-            {fnosManaged ? "软件更新（飞牛应用包）" : dockerManaged ? "软件更新（镜像）" : "软件更新"}
+            {fnosManaged ? "版本信息" : dockerManaged ? "软件更新（镜像）" : "软件更新"}
           </div>
           <button
             onClick={() => loadVersionInfo({ checkRemote: true })}
-            disabled={loadingVersion || updating || fnosManaged}
+            disabled={loadingVersion || updating}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingVersion ? "animate-spin" : ""}`} />
@@ -457,7 +461,7 @@ export default function SystemUpdatePage() {
 
         {!loadingVersion && !versionInfo ? (
           <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">
-            读取当前版本失败，请点击“刷新”重试并查询远端版本。
+            {fnosManaged ? "读取当前版本失败，请点击“刷新”重试。" : "读取当前版本失败，请点击“刷新”重试并查询远端版本。"}
           </div>
         ) : loadingVersion && !versionInfo ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -484,7 +488,35 @@ export default function SystemUpdatePage() {
                 </>
               ) : null}
 
-              <div className="text-slate-500">远端版本</div>
+              {fnosManaged ? (
+                <>
+                  <div className="text-slate-500">项目地址</div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      <a
+                        href={githubProjectUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        GitHub 项目主页
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                      <a
+                        href={githubReleaseUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-800"
+                      >
+                        当前发布
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
+              <div className="text-slate-500">{fnosManaged ? "更新方式" : "远端版本"}</div>
               <div className="min-w-0">
                 {fnosManaged ? (
                   <span className="text-slate-600">由飞牛应用中心管理</span>
