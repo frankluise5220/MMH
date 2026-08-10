@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/fnpack/bin"
-          curl -fsSL "https://static2.fnnas.com/fnpack-${FNOS_FNPACK_VERSION}-linux-amd64" \
+          curl -fsSL "https://static2.fnnas.com/fnpack/fnpack-${FNOS_FNPACK_VERSION}-linux-amd64" \
             -o "${RUNNER_TEMP}/fnpack/bin/fnpack"
           chmod +x "${RUNNER_TEMP}/fnpack/bin/fnpack"
           echo "${RUNNER_TEMP}/fnpack/bin" >> "$GITHUB_PATH"
