@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  FNOS_FNPACK_VERSION: 1.2.3
+  FNOS_FNPACK_VERSION: 1.2.1
 
 jobs:
   build-fpk:
