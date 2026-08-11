@@ -4,18 +4,18 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh.fpk",
       "download_urls": {
-        "x86": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh.fpk",
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh-arm64.fpk"
+        "x86": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh.fpk",
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
       "changelog": "备份和恢复都改为只验证当前用户密码，并支持备份加密口令；发布加密 .mmh-backup 恢复包、表格导出和更明确的恢复失败提示；飞牛版版本信息显示 FNOS 标识。",

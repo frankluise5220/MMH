@@ -4,7 +4,7 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -12,13 +12,13 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh.fpk",
       "download_urls": {
-        "x86": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh.fpk",
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.14/mmh-arm64.fpk"
+        "x86": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh.fpk",
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.15/mmh-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.14",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.15",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
