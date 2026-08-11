@@ -74,6 +74,7 @@ export async function loadWealthStatisticSourceEntries(
           id: true,
           accountId: true,
           accountName: true,
+          account: { select: { name: true } },
           note: true,
           EntryTag: {
             select: {
@@ -134,7 +135,7 @@ export async function loadWealthStatisticSourceEntries(
         : -grossAmount;
     const productName = row.WealthProduct?.name ?? row.productName ?? "";
     const accountId = cashEntry?.accountId ?? row.cashAccountId ?? row.accountId;
-    const accountName = cashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name;
+    const accountName = cashEntry?.account?.name ?? cashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name;
 
     return [{
       id: `wealth:${row.id}`,

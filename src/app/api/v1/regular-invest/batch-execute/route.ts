@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { TransactionType, RegularInvestStatus, IntervalUnit } from "@prisma/client";
+import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
     const fundUnitsDecimals = normalizeFundUnitsDecimals(fundAcc.fundUnitsDecimals);
 
     const cashAcc = plan.cashAccountId
-      ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
+      ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true, currency: true } })
       : null;
 
     const amountNum = parseFloat(String(plan.amount));
@@ -131,34 +131,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
     }
 
-    // 防重机制：查询该定投计划已生成的所有 TxRecord
-    const existingTxRecords = await prisma.txRecord.findMany({
+    // 防重机制：查询该定投计划已生成的所有基金业务交易
+    const existingFundTransactions = await prisma.fundTransaction.findMany({
       where: {
         regularInvestPlanId: planId,
         source: "regular_invest",
+        deletedAt: null,
       },
       select: {
         id: true,
-        date: true,
+        applyDate: true,
       },
     });
 
     // 构建已有交易日期的集合
     const existingDates = new Set<string>();
-    for (const tx of existingTxRecords) {
-      if (tx.date) {
-        const dateStr = formatDateUtc(tx.date);
+    for (const tx of existingFundTransactions) {
+      if (tx.applyDate) {
+        const dateStr = formatDateUtc(tx.applyDate);
         existingDates.add(dateStr);
       }
     }
 
-    const signedAmount = -amountNum;
-
     // 从最近一次已执行日期之后开始（不补充历史）
     let currentDate: Date;
-    if (existingTxRecords.length > 0) {
+    if (existingFundTransactions.length > 0) {
       // 找到最近一条记录的日期，从其后开始
-      const latestDate = existingTxRecords.reduce((max, r) => (r.date > max ? r.date : max), new Date(0));
+      const latestDate = existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0));
       currentDate = calcNextRunDate(latestDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
     } else {
       currentDate = calcInitialScheduledRunDate(
@@ -328,21 +327,20 @@ export async function POST(req: NextRequest) {
     await prisma.$transaction(async (tx) => {
       await acquireScheduledTaskPlanLock(tx, planId);
 
-      const existingAtCommit = await tx.txRecord.findMany({
+      const existingAtCommit = await tx.fundTransaction.findMany({
         where: {
           regularInvestPlanId: planId,
           source: "regular_invest",
           deletedAt: null,
-          date: { in: runsToCreate.map((run) => run.runDate) },
+          applyDate: { in: runsToCreate.map((run) => run.runDate) },
         },
-        select: { date: true },
+        select: { applyDate: true },
       });
-      const existingDateSet = new Set(existingAtCommit.map((record) => formatDateUtc(record.date)));
+      const existingDateSet = new Set(existingAtCommit.map((record) => formatDateUtc(record.applyDate)));
       const actualRunsToCreate = runsToCreate.filter((run) => !existingDateSet.has(formatDateUtc(run.runDate)));
       skippedDuplicateAtCommit = runsToCreate.length - actualRunsToCreate.length;
       if (actualRunsToCreate.length === 0) return;
 
-      const changedFundEntryIds: string[] = [];
       for (const run of actualRunsToCreate) {
         // 暂停申购：创建两条记录，合计对冲为 0
         // 记录1：定投(暂停申购) — 从资金账户向基金账户，金额 -100
@@ -350,87 +348,85 @@ export async function POST(req: NextRequest) {
         // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
         // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
         if (run.sgzt === "暂停申购") {
-          const failedBuy = await tx.txRecord.create({
-            data: {
-              householdId,
-              type: TransactionType.investment,
-              date: run.runDate,
-              accountId: cashAcc?.id ?? fundAcc.id,
-              accountName: cashAcc?.name ?? fundAcc.name,
-              toAccountId: fundAcc.id,
-              toAccountName: fundAcc.name,
-              amount: -amountNum, // 从资金账户向基金账户 -100
-              fundCode: plan.fundCode,
-              fundName: plan.fundName || plan.fundCode,
-              fundProductType: plan.fundProductType || fundAcc.investProductType,
-              fundSubtype: "buy_failed",
-              source: "regular_invest",
-              fundFee: null,
-              fundConfirmDate: run.confirmDate,
-              fundArrivalDate: run.arrivalDate,
-              fundNav: null,
-              fundUnits: null,
-              regularInvestPlanId: planId,
-              note: `基金暂停申购 ${plan.fundCode}`,
-            },
-          });
-          const refund = await tx.txRecord.create({
-            data: {
-              householdId,
-              type: TransactionType.investment,
-              date: run.runDate,
-              accountId: fundAcc.id,
-              accountName: fundAcc.name,
-              toAccountId: cashAcc?.id ?? fundAcc.id,
-              toAccountName: cashAcc?.name ?? fundAcc.name,
-              amount: -amountNum, // 从基金账户往资金账户 -100
-              fundCode: plan.fundCode,
-              fundName: plan.fundName || plan.fundCode,
-              fundProductType: plan.fundProductType || fundAcc.investProductType,
-              fundSubtype: "buy_failed",
-              source: "regular_invest_refund",
-              fundFee: null,
-              fundConfirmDate: run.confirmDate,
-              fundArrivalDate: run.arrivalDate,
-              fundNav: null,
-              fundUnits: null,
-              fundSourceEntryId: failedBuy.id,
-              regularInvestPlanId: planId,
-              note: `基金暂停申购，资金退回 ${plan.fundCode}`,
-            },
-          });
-          changedFundEntryIds.push(failedBuy.id, refund.id);
-          continue;
-        }
-
-        // 创建 TxRecord，直接包含所有基金字段
-        const createdBuy = await tx.txRecord.create({
-          data: {
+          await createFundTransactionWithCashFlows(tx, {
             householdId,
-            type: TransactionType.investment,
-            date: run.runDate,
-            accountId: cashAcc?.id ?? fundAcc.id,
-            accountName: cashAcc?.name ?? fundAcc.name,
-            toAccountId: fundAcc.id,
-            toAccountName: fundAcc.name,
-            amount: signedAmount,
+            fundAccountId: fundAcc.id,
+            cashAccountId: cashAcc?.id ?? null,
             fundCode: plan.fundCode,
             fundName: plan.fundName || plan.fundCode,
             fundProductType: plan.fundProductType || fundAcc.investProductType,
-            fundSubtype: "buy",
+            fundSubtype: FundSubtype.buy_failed,
+            source: "regular_invest",
+            applyDate: run.runDate,
+            confirmDate: run.confirmDate,
+            arrivalDate: run.arrivalDate,
+            grossAmount: amountNum,
+            refundAmount: amountNum,
+            fee: null,
+            nav: null,
+            units: null,
+            regularInvestPlanId: planId,
+            note: `基金暂停申购 ${plan.fundCode}`,
+            cashFlows: cashAcc ? [
+              {
+                kind: FundCashFlowKind.buy_out,
+                date: run.runDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                amount: -amountNum,
+                currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
+                source: "regular_invest",
+                regularInvestPlanId: planId,
+                note: `基金暂停申购 ${plan.fundCode}`,
+              },
+              {
+                kind: FundCashFlowKind.refund_in,
+                date: run.arrivalDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                amount: amountNum,
+                currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
+                source: "regular_invest_refund",
+                regularInvestPlanId: planId,
+                note: `基金暂停申购，资金退回 ${plan.fundCode}`,
+              },
+            ] : [],
+          });
+          continue;
+        }
+
+        await createFundTransactionWithCashFlows(tx, {
+          householdId,
+          fundAccountId: fundAcc.id,
+          cashAccountId: cashAcc?.id ?? null,
+          fundCode: plan.fundCode,
+          fundName: plan.fundName || plan.fundCode,
+          fundProductType: plan.fundProductType || fundAcc.investProductType,
+          fundSubtype: FundSubtype.buy,
+          source: "regular_invest",
+          applyDate: run.runDate,
+          confirmDate: run.confirmDate,
+          arrivalDate: run.arrivalDate,
+          grossAmount: amountNum,
+          fee: run.feeAmount,
+          nav: run.fundNav,
+          units: run.fundUnits,
+          regularInvestPlanId: planId,
+          note: run.note,
+          cashFlows: cashAcc ? [{
+            kind: FundCashFlowKind.buy_out,
+            date: run.runDate,
+            accountId: cashAcc.id,
+            accountName: cashAcc.name,
+            amount: -amountNum,
+            currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
             source: "regular_invest",
             categoryId: category?.id ?? null,
             categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
-            fundFee: run.feeAmount,
-            fundConfirmDate: run.confirmDate,
-            fundArrivalDate: run.arrivalDate,
-            fundNav: run.fundNav,
-            fundUnits: run.fundUnits,
             regularInvestPlanId: planId,
             note: run.note,
-          },
+          }] : [],
         });
-        changedFundEntryIds.push(createdBuy.id);
       }
 
       // 更新定投计划状态
@@ -451,7 +447,6 @@ export async function POST(req: NextRequest) {
           status: willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active,
         },
       });
-      await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
       actualCreatedCount = actualRunsToCreate.length;
     }, BATCH_EXECUTE_TRANSACTION_OPTIONS);
 
@@ -479,23 +474,23 @@ export async function POST(req: NextRequest) {
     await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
     // 查询更新后的统计数据
-    const updatedEntries = await prisma.txRecord.findMany({
+    const updatedEntries = await prisma.fundTransaction.findMany({
       where: {
         regularInvestPlanId: planId,
-        source: { in: ["regular_invest", "regular_invest_refund"] },
+        source: "regular_invest",
         deletedAt: null,
       },
-      select: { amount: true, fundUnits: true, fundSubtype: true, source: true },
+      select: { grossAmount: true, refundAmount: true, units: true, fundSubtype: true },
     });
 
     const totalExecutedCount = updatedEntries.filter((e) => e.fundSubtype !== "buy_failed").length;
-    const totalExecutedAmount = updatedEntries.filter((e) => e.fundSubtype !== "buy_failed").reduce((sum, e) => sum + Math.abs(Number(e.amount)), 0);
-    const confirmedEntries = updatedEntries.filter((e) => e.fundSubtype !== "buy_failed" && e.fundUnits != null && Number(e.fundUnits) > 0);
+    const totalExecutedAmount = updatedEntries.filter((e) => e.fundSubtype !== "buy_failed").reduce((sum, e) => sum + Math.abs(Number(e.grossAmount)), 0);
+    const confirmedEntries = updatedEntries.filter((e) => e.fundSubtype !== "buy_failed" && e.units != null && Number(e.units) > 0);
     const totalConfirmedCount = confirmedEntries.length;
-    const totalConfirmedAmount = confirmedEntries.reduce((sum, e) => sum + Math.abs(Number(e.amount)), 0);
+    const totalConfirmedAmount = confirmedEntries.reduce((sum, e) => sum + Math.abs(Number(e.grossAmount)), 0);
     const failedEntries = updatedEntries.filter((e) => e.fundSubtype === "buy_failed");
-    const totalFailedCount = failedEntries.filter((e) => e.source === "regular_invest_refund").length; // 退回记录条数
-    const totalFailedAmount = failedEntries.filter((e) => e.source === "regular_invest_refund").reduce((sum, e) => sum + Math.abs(Number(e.amount)), 0); // 退回金额
+    const totalFailedCount = failedEntries.filter((e) => Number(e.refundAmount) > 0).length;
+    const totalFailedAmount = failedEntries.reduce((sum, e) => sum + Math.abs(Number(e.refundAmount)), 0);
 
     const updatedPlan = await prisma.regularInvestPlan.findUnique({
       where: { id: planId },

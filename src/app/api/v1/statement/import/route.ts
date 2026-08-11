@@ -14,6 +14,10 @@ import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-a
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import {
+  CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
+  mergeCreditCardCycleLockSources,
+} from "@/lib/credit/billing";
 
 export const runtime = "nodejs";
 
@@ -66,6 +70,9 @@ const ParsedItemSchema = z.object({
     billingDay: z.number().int().min(1).max(31).optional(),
     repaymentDay: z.number().int().min(1).max(31).optional(),
     statementAmount: z.number().finite().optional(),
+    statementPeriodStart: z.string().optional(),
+    statementPeriodEnd: z.string().optional(),
+    statementDueDate: z.string().optional(),
   }).optional(),
 });
 
@@ -111,9 +118,12 @@ function buildStatementFingerprint(items: ParsedItem[], defaultAccountName?: str
     .map((item) => normalizeFingerprintPart(item.date).slice(0, 10))
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
     .sort((a, b) => a.localeCompare(b));
-  const statementPeriod = datedItems.length > 0
+  const metaStatementPeriod = firstMeta?.statementPeriodStart || firstMeta?.statementPeriodEnd
+    ? `${normalizeFingerprintPart(firstMeta.statementPeriodStart)}~${normalizeFingerprintPart(firstMeta.statementPeriodEnd)}`
+    : "";
+  const statementPeriod = metaStatementPeriod || (datedItems.length > 0
     ? `${datedItems[0]}~${datedItems[datedItems.length - 1]}`
-    : normalizeFingerprintPart(items.find((item) => item.postedDate)?.postedDate).slice(0, 7);
+    : normalizeFingerprintPart(items.find((item) => item.postedDate)?.postedDate).slice(0, 7));
   const payload = {
     version: 2,
     institutionName: normalizeFingerprintPart(
@@ -154,6 +164,22 @@ function normalizeDateOnlyText(value?: string | null) {
   return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
 
+function parseDateOnlyUtc(value?: string | null) {
+  const normalized = normalizeDateOnlyText(value);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+}
+
+function formatDateUtc(date?: Date | null) {
+  if (!date) return null;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function addDaysUtc(date: Date, days: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
+}
+
 function addMonthsUtc(date: Date, months: number) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   d.setUTCMonth(d.getUTCMonth() + months);
@@ -181,12 +207,18 @@ type StatementBillLock = {
   storageAccountId: string;
   billAccountIds: string[];
   statementMonth: string;
-  amount: number;
+  amount?: number;
+  periodStart?: Date | null;
+  periodEnd?: Date | null;
+  dueDate?: Date | null;
 };
 
 async function statementBillLockForImportedRecord(tx: Db, householdId: string, item: ParsedItem, record: { accountId: string | null; toAccountId: string | null }): Promise<StatementBillLock | null> {
-  const amount = item._meta?.statementAmount;
-  if (amount === undefined || !Number.isFinite(amount)) return null;
+  const amount = Number.isFinite(item._meta?.statementAmount) ? item._meta?.statementAmount : undefined;
+  const periodStart = parseDateOnlyUtc(item._meta?.statementPeriodStart);
+  const periodEnd = parseDateOnlyUtc(item._meta?.statementPeriodEnd);
+  const dueDate = parseDateOnlyUtc(item._meta?.statementDueDate);
+  if (amount === undefined && !periodStart && !periodEnd && !dueDate) return null;
   const candidateIds = [record.toAccountId, record.accountId].filter((id): id is string => Boolean(id));
   if (candidateIds.length === 0) return null;
   const accounts = await tx.account.findMany({
@@ -210,40 +242,106 @@ async function statementBillLockForImportedRecord(tx: Db, householdId: string, i
   if (!account?.billingDay) return null;
 
   const billAccountIds = await getCreditBillAccountIds(tx, account);
-  const statementMonth = toStatementMonth(postedDateForStatement(item, parseDate(item.date)), account.billingDay);
+  const statementMonth = toStatementMonth(periodEnd ?? postedDateForStatement(item, parseDate(item.date)), account.billingDay);
   return {
     storageAccountId: billAccountIds[0] ?? account.id,
     billAccountIds,
     statementMonth,
     amount,
+    periodStart,
+    periodEnd,
+    dueDate,
   };
 }
 
 async function lockImportedStatementBills(tx: Db, locks: StatementBillLock[]) {
   const latestByKey = new Map<string, StatementBillLock>();
   for (const lock of locks) {
-    latestByKey.set(`${lock.storageAccountId}:${lock.statementMonth}`, lock);
+    const key = `${lock.storageAccountId}:${lock.statementMonth}`;
+    const existing = latestByKey.get(key);
+    latestByKey.set(key, {
+      ...existing,
+      ...lock,
+      billAccountIds: Array.from(new Set([...(existing?.billAccountIds ?? []), ...lock.billAccountIds])),
+      amount: lock.amount ?? existing?.amount,
+      periodStart: lock.periodStart ?? existing?.periodStart,
+      periodEnd: lock.periodEnd ?? existing?.periodEnd,
+      dueDate: lock.dueDate ?? existing?.dueDate,
+    });
   }
   const uniqueLocks = Array.from(latestByKey.values());
   for (const lock of uniqueLocks) {
-    await tx.billOverride.upsert({
-      where: {
-        accountId_statementMonth: {
+    if (lock.periodStart && lock.periodEnd) {
+      const existingCycle = await tx.creditCardCycle.findUnique({
+        where: {
+          accountId_statementMonth: {
+            accountId: lock.storageAccountId,
+            statementMonth: lock.statementMonth,
+          },
+        },
+        select: { lockSource: true, dueDate: true },
+      });
+      const now = new Date();
+      const isCurrentCycle = now >= lock.periodStart && now < addDaysUtc(lock.periodEnd, 1);
+      const lockSource = mergeCreditCardCycleLockSources(
+        existingCycle?.lockSource,
+        CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
+      );
+      await tx.creditCardCycle.upsert({
+        where: {
+          accountId_statementMonth: {
+            accountId: lock.storageAccountId,
+            statementMonth: lock.statementMonth,
+          },
+        },
+        create: {
           accountId: lock.storageAccountId,
           statementMonth: lock.statementMonth,
+          periodStart: lock.periodStart,
+          periodEnd: lock.periodEnd,
+          dueDate: lock.dueDate ?? null,
+          expenseAbs: "0",
+          income: "0",
+          paid: "0",
+          rawBill: "0",
+          effectiveBill: "0",
+          cumulativeRemain: "0",
+          cumulativeOverpaid: "0",
+          isCurrentCycle,
+          isLocked: true,
+          lockSource,
         },
-      },
-      create: {
-        accountId: lock.storageAccountId,
-        statementMonth: lock.statementMonth,
-        amount: String(lock.amount),
-        note: "statement_import",
-      },
-      update: {
-        amount: String(lock.amount),
-        note: "statement_import",
-      },
-    });
+        update: {
+          periodStart: lock.periodStart,
+          periodEnd: lock.periodEnd,
+          dueDate: lock.dueDate ?? existingCycle?.dueDate ?? null,
+          isCurrentCycle,
+          isLocked: true,
+          lockSource,
+        },
+      });
+    }
+
+    if (lock.amount !== undefined && Number.isFinite(lock.amount)) {
+      await tx.billOverride.upsert({
+        where: {
+          accountId_statementMonth: {
+            accountId: lock.storageAccountId,
+            statementMonth: lock.statementMonth,
+          },
+        },
+        create: {
+          accountId: lock.storageAccountId,
+          statementMonth: lock.statementMonth,
+          amount: String(lock.amount),
+          note: "statement_import",
+        },
+        update: {
+          amount: String(lock.amount),
+          note: "statement_import",
+        },
+      });
+    }
   }
   await invalidateCreditCardCycleCacheForAccountIds(uniqueLocks.flatMap((lock) => lock.billAccountIds));
   return uniqueLocks;
@@ -602,9 +700,9 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
     data.userId = await resolveUserIdByName(tx, householdId, meta.ownerName);
   }
   if (!existing.numberMasked && meta.cardNumberMasked) data.numberMasked = meta.cardNumberMasked;
-  if (existing.creditLimit == null && meta.creditLimit != null) data.creditLimit = String(meta.creditLimit);
-  if (!existing.billingDay && meta.billingDay) data.billingDay = meta.billingDay;
-  if (!existing.repaymentDay && meta.repaymentDay) data.repaymentDay = meta.repaymentDay;
+  if (meta.creditLimit != null && Number(existing.creditLimit ?? NaN) !== meta.creditLimit) data.creditLimit = String(meta.creditLimit);
+  if (meta.billingDay && existing.billingDay !== meta.billingDay) data.billingDay = meta.billingDay;
+  if (meta.repaymentDay && existing.repaymentDay !== meta.repaymentDay) data.repaymentDay = meta.repaymentDay;
 
   const filtered = Object.fromEntries(Object.entries(data).filter(([, value]) => value != null && value !== ""));
   if (Object.keys(filtered).length > 0) {
@@ -773,12 +871,6 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
         importBatchId: options.importBatchId ?? undefined,
         source: options.importBatchId ? "statement_import" : undefined,
         currency: transactionCurrency,
-        // Include fund fields in create if investment account identified
-        ...(displayFundCode && item.type === "investment" ? {
-          fundCode: displayFundCode,
-          fundProductType: "fund",
-          fundSubtype: fundSubtype as any,
-        } : {}),
       } as any,
     });
 
@@ -840,12 +932,6 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       importBatchId: options.importBatchId ?? undefined,
       source: options.importBatchId ? "statement_import" : undefined,
       currency: normalizeCurrency(currencyMeta?.currency),
-      // Include fund fields in create if investment account
-      ...(displayFundCode ? {
-        fundCode: displayFundCode,
-        fundProductType: "fund",
-        fundSubtype: fundSubtype as any,
-      } : {}),
     },
   });
 
@@ -867,8 +953,11 @@ export async function OPTIONS() {
  *   refund, send { type: "expense", amount, inflow: amount } so the row offsets the
  *   original expense category while increasing the account balance.
  * - transfer rows use fromAccount/toAccount and may carry transferDirection.
+ * - item._meta may carry statementAmount, statementPeriodStart,
+ *   statementPeriodEnd, statementDueDate, and creditLimit from a bank statement.
  *
  * Returns: { ok: true, createdCount, skippedCount, ids, importBatchId?, lockedStatementBills?, createdAccounts?, errors }
+ * - lockedStatementBills items may include amount, periodStart, periodEnd, and dueDate.
  */
 export async function POST(req: Request) {
   const currentUser = await getCurrentUser();
@@ -975,6 +1064,9 @@ export async function POST(req: Request) {
       billAccountIds: lock.billAccountIds,
       statementMonth: lock.statementMonth,
       amount: lock.amount,
+      periodStart: formatDateUtc(lock.periodStart),
+      periodEnd: formatDateUtc(lock.periodEnd),
+      dueDate: formatDateUtc(lock.dueDate),
     })),
     createdAccounts: options.createdAccounts ?? [],
     errors,

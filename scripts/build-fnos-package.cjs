@@ -13,8 +13,9 @@ const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
 const changelog = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
 const appName = "mmh";
+const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const outDir = path.join(root, "release-artifacts", "fnos");
-const stageDir = path.join(outDir, `${appName}-fpk`);
+const stageDir = path.join(outDir, target.stageDirName);
 const stageOnly = process.argv.includes("--stage-only");
 const nodeTarball = process.env.FNOS_NODE_TARBALL || "";
 const isLinux = process.platform === "linux";
@@ -42,6 +43,37 @@ function normalizeFnosVersion(value) {
     throw new Error(`FNOS_PACKAGE_VERSION must use 0.1.x format, got ${normalized}.`);
   }
   return normalized;
+}
+
+function normalizeFnosTarget(value) {
+  const raw = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (["", "x86", "x86-64", "x64", "amd64"].includes(raw)) {
+    return {
+      id: "x86",
+      manifestArch: "x86_64",
+      manifestPlatform: "x86",
+      nodeArch: "x64",
+      processArch: "x64",
+      fnpackArch: "amd64",
+      assetSuffix: "x86_64",
+      stageDirName: `${appName}-fpk`,
+      legacyAlias: true,
+    };
+  }
+  if (["arm", "arm64", "aarch64"].includes(raw)) {
+    return {
+      id: "arm64",
+      manifestArch: "aarch64",
+      manifestPlatform: "arm",
+      nodeArch: "arm64",
+      processArch: "arm64",
+      fnpackArch: "arm64",
+      assetSuffix: "arm64",
+      stageDirName: `${appName}-arm64-fpk`,
+      legacyAlias: false,
+    };
+  }
+  throw new Error(`FNOS_TARGET_ARCH must be x86 or arm64, got ${value || "(empty)"}.`);
 }
 
 function copyFile(src, dest) {
@@ -305,6 +337,25 @@ function hashFileMd5(file) {
   return hash.digest("hex");
 }
 
+function copyFileIfDifferent(src, dest) {
+  if (path.resolve(src) === path.resolve(dest)) return;
+  copyFile(src, dest);
+}
+
+function materializeFpkOutputs(source) {
+  const archPath = path.join(outDir, `${appName}-${target.assetSuffix}.fpk`);
+  const versionedArchPath = path.join(outDir, `${appName}-${target.assetSuffix}-${version}.fpk`);
+  copyFileIfDifferent(source, archPath);
+  copyFileIfDifferent(source, versionedArchPath);
+
+  if (target.legacyAlias) {
+    copyFileIfDifferent(source, path.join(outDir, `${appName}.fpk`));
+    copyFileIfDifferent(source, path.join(outDir, `${appName}-${version}.fpk`));
+  }
+
+  return archPath;
+}
+
 function findNodeHeadersDir() {
   const candidates = [
     path.dirname(path.dirname(process.execPath)),
@@ -438,8 +489,8 @@ appname=${appName}
 version=${version}
 desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
 display_name=MMH
-arch=x86_64
-platform=x86
+arch=${target.manifestArch}
+platform=${target.manifestPlatform}
 source=thirdparty
 os_min_version=${osMinVersion}
 maintainer=frankluise5220
@@ -493,11 +544,23 @@ write(path.join(stageDir, "wizard", "install"), JSON.stringify([
     ],
   },
   {
+    stepTitle: "系统密码",
+    items: [
+      {
+        type: "password",
+        field: "wizard_system_password",
+        label: "系统密码",
+        initValue: "",
+        helpText: "用于系统初始化、删除账簿等敏感操作。不填写会在首次启动时自动生成，并保存到应用数据目录 mmh-system-password.txt。",
+      },
+    ],
+  },
+  {
     stepTitle: "数据目录",
     items: [
       {
         type: "tips",
-        label: "数据目录",
+        field: "wizard_data_dir_tips",
         helpText: "SQLite 数据会保存在应用数据目录中，默认即可。",
       },
     ],
@@ -513,6 +576,18 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
         label: "服务端口",
         initValue: "7777",
         helpText: "默认使用 7777；如果该端口已被占用，可以改为其他未占用端口。",
+      },
+    ],
+  },
+  {
+    stepTitle: "系统密码",
+    items: [
+      {
+        type: "password",
+        field: "wizard_system_password",
+        label: "系统密码",
+        initValue: "",
+        helpText: "用于系统初始化、删除账簿等敏感操作。留空则沿用当前密码；如果尚未生成过，启动时会自动生成。",
       },
     ],
   },
@@ -677,13 +752,46 @@ read_env_value() {
                 val="\${line#\${key}=}"
                 val="\${val#\'}"
                 val="\${val%\'}"
-                val="\${val#\"}"
-                val="\${val%\"}"
                 printf '%s' "$val"
                 return 0
                 ;;
         esac
     done < "$env_file"
+}
+
+generate_system_password() {
+    local generated=""
+    if command -v openssl >/dev/null 2>&1; then
+        generated="$(openssl rand -base64 24 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || true)"
+    fi
+    if [ -z "$generated" ] && command -v sha256sum >/dev/null 2>&1; then
+        generated="$(date +%s%N | sha256sum | tr -dc 'A-Za-z0-9' | head -c 16 || true)"
+    fi
+    if [ -z "$generated" ]; then
+        generated="mmh$(date +%s | tail -c 11)"
+    fi
+    printf '%s' "$generated"
+}
+
+resolve_system_password() {
+    local pkgvar password_file env_password
+    pkgvar="$(resolve_pkgvar)"
+    password_file="\${pkgvar}/mmh-system-password.txt"
+
+    if [ -n "\${wizard_system_password:-}" ]; then
+        printf '%s' "\${wizard_system_password}"
+        return 0
+    fi
+    env_password="$(read_env_value MMH_SYSTEM_PASSWORD 2>/dev/null || true)"
+    if [ -n "$env_password" ]; then
+        printf '%s' "$env_password"
+        return 0
+    fi
+    if [ -f "$password_file" ]; then
+        tr -d '[:space:]' < "$password_file"
+        return 0
+    fi
+    generate_system_password
 }
 
 resolve_port() {
@@ -712,20 +820,25 @@ resolve_port() {
 }
 
 write_env_file() {
-    local port pkgvar
+    local port pkgvar system_password password_file
     port="$(resolve_port)"
     pkgvar="$(resolve_pkgvar)"
+    system_password="$(resolve_system_password)"
+    password_file="\${pkgvar}/mmh-system-password.txt"
     [ -n "$pkgvar" ] || return 1
     mkdir -p "\${pkgvar}/data" 2>/dev/null || true
 
     cat > "\${pkgvar}/mmh.env" <<EOF
 PORT=\${port}
 TZ=Asia/Shanghai
+MMH_SYSTEM_PASSWORD=\${system_password}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
+    printf '%s\\n' "$system_password" > "$password_file"
+    chmod 600 "$password_file" 2>/dev/null || true
 
     if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/ui/config" ]; then
-        sed -i "s/\"port\": \"[0-9]*\"/\"port\": \"\${port}\"/" "\${APP_ROOT}/ui/config"
+        sed -i 's/"port": "[0-9]*"/"port": "'"\${port}"'"/' "\${APP_ROOT}/ui/config"
     fi
 
     if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/manifest" ]; then
@@ -766,13 +879,80 @@ resolve_data_dest () {
 }
 
 DATA_DEST="$(resolve_data_dest)"
+if [ -n "\${TRIM_PKGVAR:-}" ]; then
+  DATA_ROOT="$TRIM_PKGVAR"
+else
+  DATA_ROOT="$(dirname "$DATA_DEST")"
+fi
+ENV_FILE="$DATA_ROOT/mmh.env"
+SYSTEM_PASSWORD_FILE="$DATA_ROOT/mmh-system-password.txt"
 SERVER_DIR="$APP_DEST/server"
 NODE_BIN="$APP_DEST/bin/node"
 PID_FILE="$DATA_DEST/mmh.pid"
 LOG_FILE="$DATA_DEST/mmh.log"
 
+read_env_value () {
+  local key="$1"
+  local line val
+  [ -f "$ENV_FILE" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "\${key}="*)
+        val="\${line#\${key}=}"
+        val="\${val#\'}"
+        val="\${val%\'}"
+        printf '%s' "$val"
+        return 0
+        ;;
+    esac
+  done < "$ENV_FILE"
+}
+
+generate_system_password () {
+  local generated=""
+  if command -v openssl >/dev/null 2>&1; then
+    generated="$(openssl rand -base64 24 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || true)"
+  fi
+  if [ -z "$generated" ] && command -v sha256sum >/dev/null 2>&1; then
+    generated="$(date +%s%N | sha256sum | tr -dc 'A-Za-z0-9' | head -c 16 || true)"
+  fi
+  if [ -z "$generated" ]; then
+    generated="mmh$(date +%s | tail -c 11)"
+  fi
+  printf '%s' "$generated"
+}
+
+ensure_runtime_settings () {
+  local env_port env_password system_password
+  mkdir -p "$DATA_DEST" "$DATA_ROOT"
+
+  env_port="$(read_env_value PORT 2>/dev/null || true)"
+  export PORT="\${PORT:-\${env_port:-7777}}"
+
+  env_password="$(read_env_value MMH_SYSTEM_PASSWORD 2>/dev/null || true)"
+  system_password="\${MMH_SYSTEM_PASSWORD:-$env_password}"
+  if [ -z "$system_password" ] && [ -f "$SYSTEM_PASSWORD_FILE" ]; then
+    system_password="$(tr -d '[:space:]' < "$SYSTEM_PASSWORD_FILE")"
+  fi
+  if [ -z "$system_password" ]; then
+    system_password="$(generate_system_password)"
+    echo "Generated MMH system password at $SYSTEM_PASSWORD_FILE" >>"$LOG_FILE" 2>/dev/null || true
+  fi
+  export MMH_SYSTEM_PASSWORD="$system_password"
+
+  cat > "$ENV_FILE" <<EOF
+PORT=\${PORT}
+TZ=Asia/Shanghai
+MMH_SYSTEM_PASSWORD=\${MMH_SYSTEM_PASSWORD}
+EOF
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
+  printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
+  chmod 600 "$SYSTEM_PASSWORD_FILE" 2>/dev/null || true
+}
+
 start_app () {
   mkdir -p "$DATA_DEST"
+  ensure_runtime_settings
   if [ ! -x "$NODE_BIN" ]; then
     echo "Bundled Linux Node runtime is missing: $NODE_BIN" >&2
     exit 1
@@ -786,7 +966,6 @@ start_app () {
   fi
   export NODE_ENV=production
   export HOSTNAME=0.0.0.0
-  export PORT="\${PORT:-7777}"
   export MMH_DEPLOY_TARGET=fnos
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
@@ -837,22 +1016,99 @@ log)
 esac
 `, 0o755);
 
-const lifecycle = `#!/bin/bash
+const noopLifecycle = `#!/bin/bash
 
 exit 0
 `;
+
+const settingsLifecycle = `#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "\${TRIM_APPNAME:-}" ]; then
+    TRIM_APPNAME=mmh
+fi
+if [ -f "$SCRIPT_DIR/app-layout" ]; then
+    . "$SCRIPT_DIR/app-layout"
+    ensure_app_ready >/dev/null 2>&1 || true
+fi
+if [ -f "$SCRIPT_DIR/apply-settings" ]; then
+    . "$SCRIPT_DIR/apply-settings"
+    write_env_file >/dev/null
+fi
+
+exit 0
+`;
+
+const backupLifecycle = (reason) => `#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/app-layout" ]; then
+    . "$SCRIPT_DIR/app-layout"
+fi
+
+if [ -z "\${TRIM_APPNAME:-}" ]; then
+    TRIM_APPNAME=mmh
+fi
+
+resolve_data_root() {
+    if [ -n "\${TRIM_PKGVAR:-}" ]; then
+        echo "$TRIM_PKGVAR"
+        return 0
+    fi
+    if [ -n "\${TRIM_DATADEST:-}" ]; then
+        dirname "$TRIM_DATADEST"
+        return 0
+    fi
+    if command -v resolve_pkgvar >/dev/null 2>&1; then
+        resolve_pkgvar
+        return 0
+    fi
+
+    local d
+    for d in /vol*/@appdata/"$TRIM_APPNAME" /usr/local/apps/@appdata/"$TRIM_APPNAME"; do
+        [ -d "$d" ] && echo "$d" && return 0
+    done
+    return 1
+}
+
+data_root="$(resolve_data_root 2>/dev/null || true)"
+[ -n "$data_root" ] || exit 0
+[ -d "$data_root" ] || exit 0
+[ -f "$data_root/data/mmh.db" ] || exit 0
+
+parent_dir="$(dirname "$data_root")"
+backup_root="$parent_dir/$TRIM_APPNAME-upgrade-backups"
+stamp="$(date +%Y%m%d-%H%M%S)"
+target="$backup_root/${reason}-$stamp"
+
+mkdir -p "$target"
+cp -a "$data_root" "$target/appdata"
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$data_root/data/mmh.db" > "$target/mmh.db.sha256"
+fi
+
+echo "MMH app data backed up to $target"
+exit 0
+`;
+
 for (const name of [
   "install_init",
-  "install_callback",
-  "upgrade_init",
-  "upgrade_callback",
-  "uninstall_init",
   "uninstall_callback",
   "config_init",
+]) {
+  write(path.join(stageDir, "cmd", name), noopLifecycle, 0o755);
+}
+for (const name of [
+  "install_callback",
+  "upgrade_callback",
   "config_callback",
 ]) {
-  write(path.join(stageDir, "cmd", name), lifecycle, 0o755);
+  write(path.join(stageDir, "cmd", name), settingsLifecycle, 0o755);
 }
+write(path.join(stageDir, "cmd", "upgrade_init"), backupLifecycle("upgrade"), 0o755);
+write(path.join(stageDir, "cmd", "uninstall_init"), backupLifecycle("uninstall"), 0o755);
 
 const standaloneDir = path.join(root, ".next", "standalone");
 const staticDir = path.join(root, ".next", "static");
@@ -945,6 +1201,9 @@ try {
 
 if (nodeTarball) {
   requirePath(nodeTarball, `FNOS_NODE_TARBALL does not exist: ${nodeTarball}`);
+  if (!path.basename(nodeTarball).includes(`linux-${target.nodeArch}`)) {
+    throw new Error(`FNOS_NODE_TARBALL must match ${target.id}: expected a linux-${target.nodeArch} tarball.`);
+  }
   const extract = run("tar", ["-xzf", nodeTarball, "-C", path.join(stageDir, "app", "bin"), "--strip-components=1"]);
   if (extract.status !== 0) {
     console.error(extract.stderr || extract.stdout || "Failed to extract FNOS_NODE_TARBALL.");
@@ -964,7 +1223,7 @@ if (hasNode) {
 console.log(`FNOS SQLite FPK source staged: ${path.relative(root, stageDir)}`);
 
 if (stageOnly) {
-  const archive = path.join(outDir, `${appName}-${version}-fpk-source.tgz`);
+  const archive = path.join(outDir, `${appName}-${target.assetSuffix}-${version}-fpk-source.tgz`);
   const tar = run("tar", ["-czf", archive, "-C", stageDir, "."]);
   if (tar.status !== 0) {
     console.error(tar.stderr || tar.stdout || "tar failed");
@@ -978,11 +1237,14 @@ try {
   if (!isLinux) {
     throw new Error("fnOS release packages must be built on Linux/fnOS so native Node modules match the target platform.");
   }
+  if (process.arch !== target.processArch && process.env.FNOS_ALLOW_CROSS_ARCH !== "1") {
+    throw new Error(`FNOS_TARGET_ARCH=${target.id} must be built on a Linux ${target.processArch} runner so native modules match the package architecture.`);
+  }
   if (process.env.FNOS_SKIP_GLIBC_CHECK !== "1") {
     assertCompatibleGlibc();
   }
   requirePath(path.join(stageDir, "app", "server", "server.js"), "Run the fnOS standalone build before packaging: npm run build:fnos:app");
-  requirePath(path.join(stageDir, "app", "bin", "node"), "Provide a Linux x64 Node runtime tarball via FNOS_NODE_TARBALL before building mmh.fpk.");
+  requirePath(path.join(stageDir, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball via FNOS_NODE_TARBALL before building ${appName}-${target.assetSuffix}.fpk.`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
@@ -1023,8 +1285,7 @@ if (manualFpk) {
   }
   fs.rmSync(path.join(stageDir, "app"), { recursive: true, force: true });
   fs.appendFileSync(path.join(stageDir, "manifest"), `checksum=${hashFileMd5(appArchive)}\n`, "utf8");
-  const fpkPath = path.join(outDir, `${appName}.fpk`);
-  const versionedFpkPath = path.join(outDir, `${appName}-${version}.fpk`);
+  const fpkPath = path.join(outDir, `${appName}-${target.assetSuffix}.fpk`);
   const fpkEntries = [
     "app.tgz",
     "cmd",
@@ -1039,8 +1300,8 @@ if (manualFpk) {
     console.error(fpkTar.stderr || fpkTar.stdout || "manual .fpk packaging failed");
     process.exit(fpkTar.status || 1);
   }
-  copyFile(fpkPath, versionedFpkPath);
-  console.log(`FNOS manual test FPK built: ${path.relative(root, fpkPath)}`);
+  const primaryOutput = materializeFpkOutputs(fpkPath);
+  console.log(`FNOS manual test FPK built: ${path.relative(root, primaryOutput)}`);
   process.exit(0);
 }
 
@@ -1058,6 +1319,5 @@ if (!fs.existsSync(produced)) {
   process.exit(1);
 }
 
-copyFile(produced, path.join(outDir, `${appName}.fpk`));
-copyFile(produced, path.join(outDir, `${appName}-${version}.fpk`));
-console.log(`FNOS SQLite FPK built: ${path.relative(root, path.join(outDir, `${appName}.fpk`))}`);
+const primaryOutput = materializeFpkOutputs(produced);
+console.log(`FNOS SQLite ${target.id} FPK built: ${path.relative(root, primaryOutput)}`);

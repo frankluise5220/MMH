@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 
 function scopeForEntity(entity: "accountGroup" | "account" | "institution" | "counterparty" | "category"): SettingsDataScope {
@@ -54,14 +54,11 @@ export function SettingsDeleteButton({
   }
 
   return (
-    <button
-      type="button"
+    <SettingsActionButton
+      label={`删除：${label}`}
+      variant="delete"
       onClick={onDelete}
       disabled={deleting}
-      title={`删除：${label}`}
-      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50"
-    >
-      <Trash2 className="w-3.5 h-3.5" />
-    </button>
+    />
   );
 }

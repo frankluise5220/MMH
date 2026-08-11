@@ -1,6 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { X } from "lucide-react";
+import {
+  SettingsActionButton,
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 import { copyToClipboard } from "@/lib/client/clipboard";
 import { generateRandomKey } from "@/lib/client/randomKey";
 
@@ -71,64 +82,91 @@ export default function ApiKeysPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">外接 API Key</h2>
-          <p className="mt-1 text-xs text-slate-500">用于第三方 Agent 访问本系统的认证密钥。</p>
-        </div>
-        <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
-          onClick={() => { setNewKey(generateRandomKey()); setName(""); setShowModal(true); }}>
-          + 新 增 Key
-        </button>
-      </div>
+      <SettingsPageHeader
+        title="外接 API Key"
+        description="用于第三方 Agent 访问本系统的认证密钥。"
+        count={keys.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => { setNewKey(generateRandomKey()); setName(""); setShowModal(true); }}>
+            新增 Key
+          </SettingsPrimaryAddButton>
+        }
+      />
 
-      {keys.length > 0 ? (
-        <div className="border border-slate-200 rounded-md overflow-hidden bg-white">
-          <div className="px-3 py-2 text-xs text-slate-500 bg-slate-50 border-b border-slate-100">已创建 Key</div>
-          <div className="divide-y divide-slate-100">
-            {keys.map((k) => (
-              <div key={k.id} className="px-3 py-2 flex items-center gap-2">
-                <span className="text-sm text-slate-800 w-32 truncate shrink-0">{k.name}</span>
-                <span className="text-xs text-slate-400 flex-1 truncate font-mono">{showKeyIds.has(k.id) ? k.key : "••••••••"}</span>
-                <button className="text-xs text-slate-500 hover:text-blue-600 shrink-0" onClick={() => toggleShow(k.id)}>
-                  {showKeyIds.has(k.id) ? "隐藏" : "显示"}
-                </button>
-                {showKeyIds.has(k.id) && <button className="text-xs text-slate-500 hover:text-blue-600 shrink-0" onClick={() => copyToClipboard(k.key)}>复制</button>}
-                <button className="text-xs text-red-500 hover:text-red-600 shrink-0" onClick={() => handleDelete(k.id)}>删除</button>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="h-20 flex flex-col items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-md bg-white">
-          <span>暂无 API Key</span>
-        </div>
-      )}
+      <SettingsTable minWidth={760} maxWidth="full">
+        <thead className="sticky top-0 z-10">
+          <tr>
+            <SettingsTh>名称</SettingsTh>
+            <SettingsTh>Key</SettingsTh>
+            <SettingsTh>创建时间</SettingsTh>
+            <SettingsTh align="right">操作</SettingsTh>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.length > 0 ? keys.map((k) => {
+            const visible = showKeyIds.has(k.id);
+            return (
+              <tr key={k.id} className="hover:bg-slate-50">
+                <SettingsTd className="text-sm font-medium text-slate-800">{k.name}</SettingsTd>
+                <SettingsTd className="max-w-[24rem] truncate font-mono text-[11px] text-slate-500">
+                  {visible ? k.key : "••••••••"}
+                </SettingsTd>
+                <SettingsTd>{k.createdAt ? new Date(k.createdAt).toLocaleString() : "-"}</SettingsTd>
+                <SettingsTd align="right">
+                  <SettingsRowActions>
+                    <SettingsActionButton
+                      label={visible ? "隐藏 Key" : "显示 Key"}
+                      variant={visible ? "hide" : "view"}
+                      onClick={() => toggleShow(k.id)}
+                    />
+                    {visible ? (
+                      <SettingsActionButton
+                        label="复制 Key"
+                        variant="copy"
+                        onClick={() => copyToClipboard(k.key)}
+                      />
+                    ) : null}
+                    <SettingsActionButton
+                      label="删除 Key"
+                      variant="delete"
+                      onClick={() => handleDelete(k.id)}
+                    />
+                  </SettingsRowActions>
+                </SettingsTd>
+              </tr>
+            );
+          }) : (
+            <SettingsEmptyRow colSpan={4}>暂无 API Key</SettingsEmptyRow>
+          )}
+        </tbody>
+      </SettingsTable>
 
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
+        <div className="app-modal-backdrop z-[1100]">
+          <div className="app-modal-panel max-w-md">
+            <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">新增 API Key</div>
+              <button type="button" onClick={() => setShowModal(false)} className="secondary-button h-8 px-2">
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="p-5 space-y-4">
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">名称</label>
-                <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                <label className="form-label mb-1.5 block">名称</label>
+                <input className="form-input"
                   value={name} onChange={(e) => setName(e.target.value)} placeholder="如：OpenClaw-Prod" autoFocus />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">Key</label>
+                <label className="form-label mb-1.5 block">Key</label>
                 <div className="flex items-center gap-2">
                   <div className="h-9 flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 overflow-hidden font-mono">{newKey}</div>
-                  <button className="h-9 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                  <button className="secondary-button h-9 px-3"
                     onClick={() => copyToClipboard(newKey)}>复制</button>
                 </div>
               </div>
-              <div className="flex justify-end gap-2">
-                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={() => setShowModal(false)}>取消</button>
-                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                <button className="secondary-button h-9 px-4" onClick={() => setShowModal(false)}>取消</button>
+                <button className="primary-button h-9 px-4 disabled:opacity-50"
                   onClick={handleCreate} disabled={!name.trim()}>保存</button>
               </div>
             </div>

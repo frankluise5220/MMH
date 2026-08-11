@@ -32,6 +32,8 @@ type OnboardingStatus = {
   familyMemberCount: number;
   accountCount: number;
   cashLikeAccountCount: number;
+  defaultMoneyAccountId: string | null;
+  defaultMoneyAccountLabel: string | null;
   cashAccountCount: number;
   debitAccountCount: number;
   creditAccountCount: number;
@@ -54,7 +56,7 @@ type StepItem = {
   optional?: boolean;
   icon: ElementType;
   actionLabel: string;
-  action: { type: "initialData" } | { type: "route"; href: string };
+  action: { type: "initialData"; tab?: "balance" | "fund" } | { type: "route"; href: string };
   guide: {
     intro: string;
     why: string[];
@@ -168,6 +170,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [initOpen, setInitOpen] = useState(false);
+  const [initTab, setInitTab] = useState<"balance" | "fund">("balance");
   const [activeKey, setActiveKey] = useState("ledger");
   const [routeContentOpen, setRouteContentOpen] = useState(false);
 
@@ -241,6 +244,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
   const handleStepAction = useCallback((step: StepItem) => {
     if (step.action.type === "initialData") {
       setRouteContentOpen(false);
+      setInitTab(step.action.tab ?? "balance");
       setInitOpen(true);
       return;
     }
@@ -264,6 +268,8 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
       familyMemberCount: 0,
       accountCount: 0,
       cashLikeAccountCount: 0,
+      defaultMoneyAccountId: null,
+      defaultMoneyAccountLabel: null,
       cashAccountCount: 0,
       debitAccountCount: 0,
       creditAccountCount: 0,
@@ -280,6 +286,10 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
     const ownerName = current.defaultOwnerName || resolvedHouseholdName;
     const hasBaseAccounts = current.cashAccountCount > 0 && current.debitAccountCount > 0 && current.creditAccountCount > 0;
     const hasInitialData = current.initializationEntryCount > 0 || current.fundHoldingCount > 0;
+    const defaultMoneyAccountLabel = current.defaultMoneyAccountLabel || "默认资金账户";
+    const dailyActionHref = current.defaultMoneyAccountId
+      ? `/?accountId=${encodeURIComponent(current.defaultMoneyAccountId)}&view=detail&guide=daily-table`
+      : "/overview";
 
     return [
       {
@@ -357,8 +367,8 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
           : "补齐现金账户、借记卡、信用卡",
         done: hasBaseAccounts,
         icon: WalletCards,
-        actionLabel: "录入初始余额",
-        action: { type: "initialData" },
+        actionLabel: "维护账户",
+        action: { type: "route", href: "/settings/accounts?guide=accounts" },
         guide: {
           intro: "资金账户是余额计算的起点。系统应该从账户余额和有序流水推导余额，而不是用收入减支出临时拼出一个数字。",
           why: [
@@ -370,6 +380,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
             `现金账户：${current.cashAccountCount > 0 ? "已建立" : "先补一个常用现金账户"}。`,
             `借记卡：${current.debitAccountCount > 0 ? "已建立" : "补银行卡/储蓄卡账户，并写清机构和尾号"}。`,
             `信用卡：${current.creditAccountCount > 0 ? "已建立" : "补信用卡账户，建议写机构、尾号、账单日和还款日"}。`,
+            "新增普通账户时，同时填写时间节点和余额，系统会写入期初余额锚点。",
           ],
           doneWhen: [
             "至少有一个现金账户、一个借记卡账户、一个信用卡账户。",
@@ -393,7 +404,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
         done: current.investmentAccountCount > 0 && hasInitialData,
         icon: Database,
         actionLabel: "录入持仓",
-        action: { type: "initialData" },
+        action: { type: "initialData", tab: "fund" },
         guide: {
           intro: "投资账户用于把基金、理财、贵金属等持仓放到正确账户下。基金以代码作为计算身份，名称只负责展示。",
           why: [
@@ -490,13 +501,13 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
         key: "daily",
         title: "日常记账",
         eyebrow: "最后",
-        detail: current.transactionCount > 0 ? `已有 ${current.transactionCount} 条日常流水` : "开始记录收支、转账和业务流水",
+        detail: current.transactionCount > 0 ? `已有 ${current.transactionCount} 条日常流水` : `打开${defaultMoneyAccountLabel}的资金明细`,
         done: current.transactionCount > 0,
         icon: ReceiptText,
-        actionLabel: "进入工作区",
-        action: { type: "route", href: "/" },
+        actionLabel: current.defaultMoneyAccountId ? "打开资金明细" : "进入工作区",
+        action: { type: "route", href: dailyActionHref },
         guide: {
-          intro: "日常记账是初始化完成后的主流程。先把账户和期初数据定好，再开始录收支、转账、账单导入和定期计划。",
+          intro: `日常记账从${defaultMoneyAccountLabel}的资金明细表开始。表格按发生日期展示流水，重点核对类型、分类、对方账户、流入/流出和余额是否符合真实资金方向。`,
           why: [
             "日常流水会影响账户余额、分类统计、信用卡账单和资产变化。",
             "如果账户起点不清楚，后续每一笔流水都会变成修余额的补丁。",
@@ -513,9 +524,9 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
             "常见备注会逐渐沉淀为识别规则，之后导入会更省事。",
           ],
           tips: [
-            "先保证方向，再细化分类。",
-            "同备注退款可跟随原支出分类。",
-            "批量导入后要重点看流入/流出列。",
+            "先看流入/流出方向，再细化分类。",
+            "余额来自期初余额和有序流水。",
+            "批量导入后重点核对账户和方向。",
           ],
         },
       },
@@ -667,7 +678,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
         </div>
         )}
       </div>
-      <InitModal open={initOpen} onOpenChange={setInitOpen} />
+      <InitModal open={initOpen} onOpenChange={setInitOpen} initialTab={initTab} />
     </section>
   );
 }

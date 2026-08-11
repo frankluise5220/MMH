@@ -208,8 +208,11 @@ function calcDateOf(entry: FundPositionEntryLike) {
 function toFundEntry(row: FundTxRow, refundAmountByBuyId: Map<string, number>): FundPositionEntryLike {
   const amount = toNumber(row.amount);
   const fee = toNumber(row.fundFee ?? 0);
+  const grossAfterRefund = row.fundSubtype === "buy"
+    ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(row.id) ?? 0))
+    : null;
   const netBuyAmount = row.fundSubtype === "buy"
-    ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(row.id) ?? 0) - fee)
+    ? Math.max(0, (grossAfterRefund ?? 0) - fee)
     : null;
   return {
     id: row.id,
@@ -224,6 +227,7 @@ function toFundEntry(row: FundTxRow, refundAmountByBuyId: Map<string, number>): 
     confirmDate: row.fundConfirmDate ? ymd(row.fundConfirmDate) : null,
     arrivalDate: row.fundArrivalDate ? ymd(row.fundArrivalDate) : null,
     netBuyAmount,
+    pendingBuyAmount: grossAfterRefund,
   };
 }
 

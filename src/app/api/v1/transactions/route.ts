@@ -30,12 +30,20 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const accountName = (url.searchParams.get("accountName") ?? "").trim();
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "200") || 200, 1), 1000);
+  const matchedAccountIds = accountName
+    ? (
+        await prisma.account.findMany({
+          where: { ...scope.hidFilter, name: accountName },
+          select: { id: true },
+        })
+      ).map((account) => account.id)
+    : [];
   const where = {
     ...scope.hidFilter,
     ...(accountName
-      ? {
-          OR: [{ accountName }, { toAccountName: accountName }],
-        }
+      ? matchedAccountIds.length > 0
+        ? { OR: [{ accountId: { in: matchedAccountIds } }, { toAccountId: { in: matchedAccountIds } }] }
+        : { id: "__no_matching_account__" }
       : {}),
   };
 
@@ -58,11 +66,11 @@ export async function GET(req: Request) {
     type: e.type,
     amount: e.amount,
     accountId: e.accountId,
-    accountName: e.accountName,
+    accountName: e.account?.name ?? e.accountName,
     accountKind: e.account?.kind ?? null,
     accountInstitutionName: e.account?.Institution?.name ?? "",
     toAccountId: e.toAccountId,
-    toAccountName: e.toAccountName,
+    toAccountName: e.toAccount?.name ?? e.toAccountName,
     toAccountKind: e.toAccount?.kind ?? null,
     toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
     categoryName: e.categoryName,

@@ -75,14 +75,6 @@
           "webHref": "/settings/family-members"
         },
         {
-          "id": "insurance-products",
-          "label": "保险产品",
-          "description": "保单、缴费和保险资料",
-          "icon": "shield-check",
-          "surfaces": ["web"],
-          "webHref": "/settings/insurance-products"
-        },
-        {
           "id": "categories",
           "label": "分类管理",
           "description": "收入、支出、代付、转账和投资分类",

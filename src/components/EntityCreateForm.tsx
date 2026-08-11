@@ -5,8 +5,10 @@ import { Plus } from "lucide-react";
 import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
 import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS, TRADING_CALENDAR_LABELS } from "@/lib/fund/trading-calendar";
+import { DateStepper } from "@/components/DateStepper";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 /* ---- Types ---- */
 
@@ -72,6 +74,8 @@ type CompactModeProps = {
   defaultParentId?: string;
   /** Pre-populated data for dynamic select fields (groups & institutions) in compact account creation */
   nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
+  /** When creating a non-investment account, also collect initial balance anchor data. */
+  includeInitialBalanceFields?: boolean;
 };
 
 /* ---- Full mode props (new, for settings pages) ---- */
@@ -106,6 +110,8 @@ type FullModeProps = {
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI */
   hiddenFields?: string[];
+  /** When creating a non-investment account, also collect initial balance anchor data. */
+  includeInitialBalanceFields?: boolean;
 };
 
 export type EntityCreateFormProps = CompactModeProps | FullModeProps;
@@ -153,6 +159,10 @@ const INVEST_PRODUCT_OPTIONS = (Object.keys(PRODUCT_LABELS) as ProductType[]).ma
   value: pt,
   label: PRODUCT_LABELS[pt],
 }));
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /* ---- ENTITY_CONFIG ---- */
 
@@ -302,6 +312,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const displayTitle = props.title ?? config.title;
   const displayNameLabel = props.nameLabel ?? config.nameLabel;
   const displayNamePlaceholder = props.namePlaceholder ?? config.namePlaceholder;
+  const includeInitialBalanceFields = entityType === "account" && Boolean(props.includeInitialBalanceFields);
 
   // Unpack mode-specific props
   const onCreated = props.onCreated;
@@ -438,11 +449,16 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }
     }
 
+    if (includeInitialBalanceFields && entityType === "account") {
+      initial.initialBalanceDate = todayStr();
+      initial.initialBalance = "";
+    }
+
     setForm(initial);
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes]);
+  }, [mode, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -502,6 +518,36 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(type ?? "");
   }
 
+  const shouldShowInitialBalanceFields =
+    includeInitialBalanceFields &&
+    entityType === "account" &&
+    (form.kind || form.type || defaultType) !== "investment";
+
+  function renderInitialBalanceFields() {
+    if (!shouldShowInitialBalanceFields) return null;
+    return (
+      <>
+        <div>
+          <label className="form-label mb-1 block">时间节点</label>
+          <DateStepper
+            value={form.initialBalanceDate || todayStr()}
+            onChange={(value) => setForm((prev) => ({ ...prev, initialBalanceDate: value }))}
+          />
+        </div>
+        <div>
+          <label className="form-label mb-1 block">余额</label>
+          <input
+            value={form.initialBalance ?? ""}
+            onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
+            placeholder="例如：1000"
+            className="form-input text-right tabular-nums"
+            inputMode="decimal"
+          />
+        </div>
+      </>
+    );
+  }
+
   /** Build the POST body and submit */
   async function onSubmit(e?: FormEvent<HTMLFormElement>) {
     e?.preventDefault();
@@ -511,6 +557,13 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (mode === "compact" && entityType === "category" && parentCategories && parentCategories.length > 0 && !form.parentId) {
       setError("请选择上级分类");
       return;
+    }
+    if (shouldShowInitialBalanceFields && form.initialBalance?.trim()) {
+      const initialBalance = Number(form.initialBalance);
+      if (!Number.isFinite(initialBalance)) {
+        setError("余额必须是有效数字");
+        return;
+      }
     }
     setSaving(true);
     setError("");
@@ -527,6 +580,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         Object.entries(extraFields).forEach(([k, v]) => {
           if (v !== undefined && v !== "") body[k] = v;
         });
+      }
+      if (shouldShowInitialBalanceFields && form.initialBalance?.trim()) {
+        body.initialBalance = form.initialBalance.trim();
+        body.initialBalanceDate = form.initialBalanceDate || todayStr();
       }
 
       const res = await fetch(config.apiPath, {
@@ -555,6 +612,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           reason: `${entityType}:create`,
           prefetch: true,
         });
+        if (entityType === "account" && shouldShowInitialBalanceFields && form.initialBalance?.trim() && Number(form.initialBalance) !== 0) {
+          dispatchFinanceDataChanged({ reason: "account-initial-balance:create", accountIds: [created.id] });
+        }
         onCreated(created.id, created.name, {
           parentId: form.parentId || undefined,
           kind: entityType === "account" ? (form.kind || created.kind || "") : undefined,
@@ -726,6 +786,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   </div>
                 );
               })}
+              {renderInitialBalanceFields()}
               {/* Parent category selector - only for category entityType when parentCategories provided */}
               {entityType === "category" && parentCategories && parentCategories.length > 0 && (
                 <div className="space-y-1">
@@ -833,6 +894,23 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </select>
             );
           })}
+          {shouldShowInitialBalanceFields && (
+            <>
+              <div className="min-w-[150px]">
+                <DateStepper
+                  value={form.initialBalanceDate || todayStr()}
+                  onChange={(value) => setForm((prev) => ({ ...prev, initialBalanceDate: value }))}
+                />
+              </div>
+              <input
+                value={form.initialBalance ?? ""}
+                onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
+                placeholder="余额"
+                className="form-input min-w-[120px] text-right tabular-nums"
+                inputMode="decimal"
+              />
+            </>
+          )}
           <button
             type="submit"
             disabled={saving || !(form.name?.trim())}
@@ -947,6 +1025,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     </div>
                   );
                 })}
+                {renderInitialBalanceFields()}
               </div>
 
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
@@ -1084,6 +1163,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   </div>
                 );
               })}
+              {renderInitialBalanceFields()}
             </div>
 
             <div className="flex justify-end gap-2">

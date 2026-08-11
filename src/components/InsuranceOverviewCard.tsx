@@ -85,7 +85,7 @@ export function InsuranceOverviewCard({
             ))}
           </div>
           <div className="hidden overflow-x-auto sm:block">
-            <table className="min-w-[520px] w-full border-separate border-spacing-0 text-xs">
+            <table className="w-full table-fixed border-separate border-spacing-0 text-xs">
               <thead>
                 <tr className="text-slate-500">
                   <th className="sticky left-0 z-10 bg-white px-0 py-2 pr-3 text-left font-semibold">人员</th>

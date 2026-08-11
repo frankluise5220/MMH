@@ -1,12 +1,14 @@
 import { FundSubtype, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { ensureFundTransactionCashFlowLinks, syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import {
   classifyEntryBusinessType,
+  upsertEntryBusinessCashFlowLink,
   type EntryBusinessType,
 } from "@/lib/server/entry-business-link";
+import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 
 type BusinessIntegrityType = Exclude<EntryBusinessType, "other_investment">;
 
@@ -24,13 +26,14 @@ type ExpectedBusinessEntry = {
   cannotRepairDetail?: string;
 };
 
-const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "insurance", "wealth", "deposit", "metal"];
+const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "deposit", "metal"];
 
 function isRegularInvestRefund(entry: { fundSubtype?: string | null; source?: string | null }) {
   return entry.fundSubtype === FundSubtype.buy_failed && entry.source === "regular_invest_refund";
 }
 
 async function getExpectedBusinessEntries(householdId: string): Promise<ExpectedBusinessEntry[]> {
+  const expected = new Map<string, ExpectedBusinessEntry>();
   const rows = await prisma.txRecord.findMany({
     where: {
       householdId,
@@ -56,7 +59,6 @@ async function getExpectedBusinessEntries(householdId: string): Promise<Expected
     },
   });
 
-  const expected: ExpectedBusinessEntry[] = [];
   for (const row of rows) {
     if (isRegularInvestRefund(row)) continue;
     const businessType = classifyEntryBusinessType(row);
@@ -78,26 +80,67 @@ async function getExpectedBusinessEntries(householdId: string): Promise<Expected
       cannotRepairDetail = "贵金属记录缺少品种或单位";
     }
 
-    expected.push({
+    expected.set(`${businessType}:${row.id}`, {
       id: row.id,
       businessType,
       canRepair,
       cannotRepairDetail,
     });
   }
-  return expected;
+
+  const fundTransactions = await prisma.fundTransaction.findMany({
+    where: { householdId, deletedAt: null },
+    select: {
+      id: true,
+      fundAccountId: true,
+      fundCode: true,
+    },
+  });
+  for (const row of fundTransactions) {
+    let canRepair = true;
+    let cannotRepairDetail: string | undefined;
+    if (!row.fundCode) {
+      canRepair = false;
+      cannotRepairDetail = "基金交易缺少 fundCode";
+    } else if (!row.fundAccountId) {
+      canRepair = false;
+      cannotRepairDetail = "基金交易缺少基金账户";
+    }
+    expected.set(`fund:${row.id}`, {
+      id: row.id,
+      businessType: "fund",
+      canRepair,
+      cannotRepairDetail,
+    });
+  }
+
+  const stockTransactions = await prisma.stockTransaction.findMany({
+    where: { householdId, deletedAt: null },
+    select: { id: true },
+  });
+  for (const row of stockTransactions) {
+    expected.set(`stock:${row.id}`, {
+      id: row.id,
+      businessType: "stock",
+      canRepair: true,
+    });
+  }
+
+  return Array.from(expected.values());
 }
 
 async function existingBusinessIdsByType(householdId: string) {
-  const [fund, insurance, wealth, deposit, metal] = await Promise.all([
-    prisma.fundTransaction.findMany({ where: { householdId }, select: { id: true } }),
-    prisma.insuranceTransaction.findMany({ where: { householdId }, select: { id: true } }),
-    prisma.wealthTransaction.findMany({ where: { householdId }, select: { id: true } }),
-    prisma.depositTransaction.findMany({ where: { householdId }, select: { id: true } }),
-    prisma.preciousMetalTransaction.findMany({ where: { householdId }, select: { id: true } }),
+  const [fund, stock, insurance, wealth, deposit, metal] = await Promise.all([
+    prisma.fundTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.stockTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.insuranceTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.wealthTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.depositTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.preciousMetalTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
   ]);
   return {
     fund: new Set(fund.map((row) => row.id)),
+    stock: new Set(stock.map((row) => row.id)),
     insurance: new Set(insurance.map((row) => row.id)),
     wealth: new Set(wealth.map((row) => row.id)),
     deposit: new Set(deposit.map((row) => row.id)),
@@ -116,11 +159,13 @@ async function linkedBusinessIdsByType(householdId: string) {
       wealthTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
+      stockTransactionId: true,
     },
   });
 
   const result: Record<BusinessIntegrityType, Set<string>> = {
     fund: new Set(),
+    stock: new Set(),
     insurance: new Set(),
     wealth: new Set(),
     deposit: new Set(),
@@ -135,6 +180,7 @@ async function linkedBusinessIdsByType(householdId: string) {
       row.wealthTransactionId ??
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
+      row.stockTransactionId ??
       row.businessEntryId;
     if (id) result[type].add(id);
   }
@@ -207,6 +253,7 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
   const before = await auditBusinessTransactionIntegrity(householdId);
   const repairableIdsByType: Record<BusinessIntegrityType, Set<string>> = {
     fund: new Set(),
+    stock: new Set(),
     insurance: new Set(),
     wealth: new Set(),
     deposit: new Set(),
@@ -222,8 +269,51 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
   let attempted = 0;
   const fundIds = Array.from(repairableIdsByType.fund);
   if (fundIds.length > 0) {
-    await syncFundTransactionsFromTxRecords(fundIds);
+    const legacyFundRows = await prisma.txRecord.findMany({
+      where: {
+        householdId,
+        id: { in: fundIds },
+        fundCode: { not: null },
+      },
+      select: { id: true },
+    });
+    const legacyFundIds = new Set(legacyFundRows.map((row) => row.id));
+    if (legacyFundIds.size > 0) {
+      await syncFundTransactionsFromTxRecords(Array.from(legacyFundIds));
+    }
+    const independentFundIds = fundIds.filter((id) => !legacyFundIds.has(id));
+    if (independentFundIds.length > 0) {
+      await ensureFundTransactionCashFlowLinks(prisma, independentFundIds);
+    }
     attempted += fundIds.length;
+  }
+  for (const id of repairableIdsByType.stock) {
+    const row = await prisma.stockTransaction.findFirst({
+      where: { id, householdId, deletedAt: null },
+      include: { StockAccount: true, CashAccount: true },
+    });
+    if (!row) continue;
+    if (row.cashAccountId || row.cashEntryId) {
+      await ensureStockTransactionCashFlow(prisma, {
+        householdId,
+        row,
+        stockAccount: row.StockAccount,
+        cashAccount: row.CashAccount,
+        metadata: { repairedBy: "business-integrity" },
+      });
+    } else {
+      await upsertEntryBusinessCashFlowLink(prisma, {
+        householdId,
+        cashEntryId: null,
+        stockTransactionId: row.id,
+        businessType: "stock",
+        cashFlowDirection: "none",
+        source: row.source ?? "manual",
+        note: "Linked stock transaction without cash side",
+        metadata: { independentBusinessTransaction: true, repairedBy: "business-integrity" },
+      });
+    }
+    attempted += 1;
   }
   for (const type of ["insurance", "wealth", "deposit", "metal"] satisfies BusinessIntegrityType[]) {
     for (const id of repairableIdsByType[type]) {

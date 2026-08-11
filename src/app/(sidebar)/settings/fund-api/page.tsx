@@ -1,6 +1,17 @@
 "use client";
 
 import { useState, useEffect, type DragEvent } from "react";
+import { Power, PowerOff } from "lucide-react";
+import {
+  SettingsActionButton,
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
 
@@ -188,7 +199,7 @@ export default function FundQueryApiPage() {
     }
   }
 
-  function handleDragStart(event: DragEvent<HTMLDivElement>, id: string) {
+  function handleDragStart(event: DragEvent<HTMLTableRowElement>, id: string) {
     setDraggingId(id);
     setDragOverId(null);
     event.dataTransfer.effectAllowed = "move";
@@ -196,10 +207,11 @@ export default function FundQueryApiPage() {
     const ghost = event.currentTarget.cloneNode(true) as HTMLElement;
     ghost.style.width = `${event.currentTarget.offsetWidth}px`;
     ghost.style.border = "2px solid rgb(37 99 235)";
-    ghost.style.borderRadius = "0.75rem";
+    ghost.style.borderRadius = "0.375rem";
     ghost.style.boxShadow = "0 18px 45px rgba(15, 23, 42, 0.22)";
     ghost.style.background = "white";
     ghost.style.opacity = "0.98";
+    ghost.style.display = "table";
     ghost.style.position = "fixed";
     ghost.style.top = "-1000px";
     ghost.style.left = "-1000px";
@@ -209,19 +221,19 @@ export default function FundQueryApiPage() {
     window.setTimeout(() => ghost.remove(), 0);
   }
 
-  function handleDragOver(event: DragEvent<HTMLDivElement>, id: string) {
+  function handleDragOver(event: DragEvent<HTMLTableRowElement>, id: string) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     if (draggingId && draggingId !== id) setDragOverId(id);
   }
 
-  function handleDragLeave(event: DragEvent<HTMLDivElement>, id: string) {
+  function handleDragLeave(event: DragEvent<HTMLTableRowElement>, id: string) {
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     if (dragOverId === id) setDragOverId(null);
   }
 
-  async function handleDrop(event: DragEvent<HTMLDivElement>, targetId: string) {
+  async function handleDrop(event: DragEvent<HTMLTableRowElement>, targetId: string) {
     event.preventDefault();
     const sourceId = draggingId || event.dataTransfer.getData("text/plain");
     setDraggingId(null);
@@ -289,24 +301,17 @@ export default function FundQueryApiPage() {
     return <div className="text-sm text-slate-400">加载中...</div>;
   }
 
+  const isCreating = editingId === "__new__";
+  const editingApi = editingId && !isCreating ? apis.find((api) => api.id === editingId) ?? null : null;
+
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">基金查询 API 管理</h2>
-          <p className="text-xs text-slate-500 leading-relaxed mt-1">
-            请求地址含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 占位符的 API 支持按日期查询历史净值；
-            不含 <code className="bg-slate-100 px-1 rounded text-[11px]">{"{date}"}</code> 的 API 仅返回最新净值，查询指定日期时会被自动跳过。
-            拖拽卡片调整全局优先级，越上面越先尝试；账户里单独指定默认 API 时优先于这里的顺序。
-          </p>
-        </div>
-        <button
-          onClick={openCreate}
-          className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"
-        >
-          + 添加 API
-        </button>
-      </div>
+      <SettingsPageHeader
+        title="基金查询 API 管理"
+        description="含 {date} 占位符的 API 支持历史净值；不含 {date} 的 API 仅返回最新净值。拖拽列表行调整全局优先级，越上面越先尝试。"
+        count={apis.length}
+        actions={<SettingsPrimaryAddButton onClick={openCreate}>添加 API</SettingsPrimaryAddButton>}
+      />
 
       {loadError && (
         <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
@@ -314,20 +319,102 @@ export default function FundQueryApiPage() {
         </div>
       )}
 
-      <div className="space-y-2">
-        {editingId === "__new__" && (
-          <div className="rounded-lg border border-blue-200 bg-white p-4">
-            <div className="space-y-3">
+      <SettingsTable minWidth={920} maxWidth="full">
+        <colgroup>
+          <col className="w-[4.5rem]" />
+          <col className="w-[13rem]" />
+          <col className="w-[9rem]" />
+          <col />
+          <col className="w-[6rem]" />
+          <col className="w-[6.5rem]" />
+        </colgroup>
+        <thead className="sticky top-0 z-10">
+          <tr>
+            <SettingsTh align="center">顺序</SettingsTh>
+            <SettingsTh>名称</SettingsTh>
+            <SettingsTh>代码</SettingsTh>
+            <SettingsTh>请求地址</SettingsTh>
+            <SettingsTh>状态</SettingsTh>
+            <SettingsTh align="right">操作</SettingsTh>
+          </tr>
+        </thead>
+        <tbody>
+          {apis.length > 0 ? apis.map((api, index) => (
+            <tr
+              key={api.id}
+              draggable={editingId === null && !saving}
+              onDragStart={(event) => handleDragStart(event, api.id)}
+              onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
+              onDragOver={(event) => handleDragOver(event, api.id)}
+              onDragLeave={(event) => handleDragLeave(event, api.id)}
+              onDrop={(event) => handleDrop(event, api.id)}
+              className={[
+                api.isActive ? "hover:bg-slate-50" : "bg-slate-50/70 opacity-70",
+                draggingId === api.id ? "bg-blue-50/80 opacity-95 ring-2 ring-inset ring-blue-200" : "",
+                dragOverId === api.id && draggingId !== api.id ? "bg-blue-50 ring-2 ring-inset ring-blue-300" : "",
+              ].join(" ")}
+            >
+              <SettingsTd align="center">
+                <span className="inline-flex h-7 w-7 cursor-grab select-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 active:cursor-grabbing">
+                  {index + 1}
+                </span>
+              </SettingsTd>
+              <SettingsTd className="text-sm font-medium text-slate-800">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate">{api.name}</span>
+                  {api.code === "alipay" ? (
+                    <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">支付宝账户优先</span>
+                  ) : null}
+                </div>
+              </SettingsTd>
+              <SettingsTd className="font-mono text-[11px] text-slate-500">{api.code}</SettingsTd>
+              <SettingsTd className="truncate font-mono text-[11px] text-slate-400" title={api.baseUrl}>{api.baseUrl}</SettingsTd>
+              <SettingsTd>
+                <span className={`rounded px-2 py-0.5 text-xs ${api.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+                  {api.isActive ? "启用" : "停用"}
+                </span>
+              </SettingsTd>
+              <SettingsTd align="right">
+                <SettingsRowActions>
+                  <SettingsActionButton
+                    label={api.isActive ? "停用 API" : "启用 API"}
+                    icon={api.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                    onClick={() => toggleActive(api)}
+                    disabled={saving}
+                  />
+                  <SettingsActionButton label="编辑 API" variant="edit" onClick={() => openEdit(api)} />
+                </SettingsRowActions>
+              </SettingsTd>
+            </tr>
+          )) : (
+            <SettingsEmptyRow colSpan={6}>暂无基金查询 API，请点击右上角“添加 API”。</SettingsEmptyRow>
+          )}
+        </tbody>
+      </SettingsTable>
+
+      {(isCreating || editingApi) ? (
+        <div className="app-modal-backdrop z-[1100]">
+          <div className="app-modal-panel max-w-2xl">
+            <div className="modal-header shrink-0">
+              <div className="text-sm font-semibold text-slate-800">{isCreating ? "新增基金查询 API" : "编辑基金查询 API"}</div>
+            </div>
+            <div className="space-y-3 p-5">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">代码</div>
-                  <input value={form.code ?? ""} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                  {isCreating ? (
+                    <input value={form.code ?? ""} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                  ) : (
+                    <div className="flex h-9 items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm font-mono text-slate-500">
+                      {editingApi?.code ?? form.code}
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">排序</div>
-                  <div className="h-9 flex items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
-                    创建后可拖拽调整
+                  <div className="flex h-9 items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
+                    {isCreating ? "创建后可拖拽调整" : `第 ${apis.findIndex((api) => api.id === editingId) + 1} 位，保存后可拖拽调整`}
                   </div>
                 </div>
               </div>
@@ -345,92 +432,16 @@ export default function FundQueryApiPage() {
                 <input value={form.apiKey ?? ""} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
               </div>
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
                 <button onClick={() => { setEditingId(null); setForm(makeForm()); }}
-                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">取消</button>
+                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">取消</button>
                 <button onClick={save} disabled={saving}
-                  className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">创建</button>
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isCreating ? "创建" : "保存"}</button>
               </div>
             </div>
           </div>
-        )}
-
-        {apis.length === 0 && editingId !== "__new__" && (
-          <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-400">
-            暂无基金查询 API，请点击右上角"添加 API"。
-          </div>
-        )}
-        {apis.map((api, index) => (
-          <div key={api.id}
-            draggable={editingId === null && !saving}
-            onDragStart={(event) => handleDragStart(event, api.id)}
-            onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
-            onDragOver={(event) => handleDragOver(event, api.id)}
-            onDragLeave={(event) => handleDragLeave(event, api.id)}
-            onDrop={(event) => handleDrop(event, api.id)}
-            className={`relative rounded-lg border p-4 transition ${api.isActive ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50 opacity-60"} ${draggingId === api.id ? "z-10 border-blue-500 bg-blue-50/70 opacity-95 shadow-xl shadow-blue-100 ring-2 ring-blue-200" : ""} ${dragOverId === api.id && draggingId !== api.id ? "border-blue-400 bg-blue-50/60 shadow-md before:absolute before:-top-1 before:left-4 before:right-4 before:h-1 before:rounded-full before:bg-blue-500" : ""}`}
-          >
-            {editingId === api.id ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">名称</div>
-                    <input value={form.name ?? ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">排序</div>
-                    <div className="h-9 flex items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
-                      第 {index + 1} 位，退出编辑后可拖拽调整
-                    </div>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">请求地址</div>
-                  <UrlInputGroup value={form.urlParts} onChange={next => setForm(f => ({ ...f, urlParts: next }))} />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">API Key（可选）</div>
-                  <input value={form.apiKey ?? ""} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button onClick={() => setEditingId(null)}
-                    className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">取消</button>
-                  <button onClick={save} disabled={saving}
-                    className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">保存</button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <div className="flex h-9 w-9 shrink-0 cursor-grab select-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 active:cursor-grabbing">
-                    {index + 1}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-800">{api.name}</span>
-                    <span className="text-[10px] text-slate-400 font-mono">{api.code}</span>
-                    {api.code === "alipay" && (
-                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">支付宝账户优先</span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{api.baseUrl}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 ml-4">
-                  <button onClick={() => toggleActive(api)} disabled={saving}
-                    className={`text-xs px-2 py-0.5 rounded ${api.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                    {api.isActive ? "启用" : "停用"}
-                  </button>
-                  <button onClick={() => openEdit(api)}
-                    className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50">编辑</button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

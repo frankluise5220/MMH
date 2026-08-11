@@ -208,12 +208,7 @@ async function _loadInvestAccountData(
   const selectedFundCode =
     account.investProductType === "wealth"
       ? (params.wealthProductIdParam || "")
-      : params.fundCodeParam ||
-        (positionDisplay.positions.length > 0
-          ? positionDisplay.positions[0]!.fundCode
-          : positionDisplay.clearedPositions.length > 0
-            ? positionDisplay.clearedPositions[0]!.fundCode
-            : "");
+      : (params.fundCodeParam || "");
 
   const fundEntries =
     account.investProductType === "wealth"
@@ -263,7 +258,7 @@ async function _loadInvestAccountData(
             ? e.metalTypeId === selectedFundCode
             : e.fundCode === selectedFundCode
       )
-    : fundEntries;
+    : [];
   const totalEntries = filtered.length;
   const totalPages = Math.max(1, Math.ceil(totalEntries / params.fundPageSize));
   const safePage = Math.min(params.fundPage, totalPages);

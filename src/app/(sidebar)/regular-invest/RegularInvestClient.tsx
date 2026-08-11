@@ -1,16 +1,15 @@
 "use client";
 
 import {
-  Fragment,
   useEffect,
-  useRef,
+  useMemo,
   useState,
-  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
-import { ArrowDownAZ, ArrowDownUp, Pause, Pencil, Play, Plus, RefreshCw, SlidersHorizontal, Square, Trash2 } from "lucide-react";
+import { Pause, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
-import { TableColumnFilter } from "@/components/TableColumnFilter";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
@@ -42,8 +41,6 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 };
 
 type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "none";
-type SortKey = "taskContent" | "startDate" | "nextRunDate";
-type SortDirection = "asc" | "desc";
 type RegularInvestColumnKey =
   | "taskContent"
   | "taskType"
@@ -55,7 +52,6 @@ type RegularInvestColumnKey =
   | "interval"
   | "status"
   | "executedCount";
-type RegularInvestTableColumnKey = RegularInvestColumnKey | "actions";
 
 type RegularInvestPlanView = {
   id: string;
@@ -104,6 +100,10 @@ type RegularInvestPlanView = {
   confirmedCount?: number;
   confirmedAmount?: number;
 };
+
+type RegularInvestDisplayRow =
+  | { kind: "group"; key: string; label: string; title: string; count: number }
+  | { kind: "plan"; plan: RegularInvestPlanView };
 
 type ExecutionProgressState = {
   title: string;
@@ -154,22 +154,9 @@ const REGULAR_INVEST_COLUMN_WIDTHS: Record<RegularInvestColumnKey, number> = {
 };
 
 const REGULAR_INVEST_ACTION_COLUMN_WIDTH = 152;
-const REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY = "regular-invest:main-table:widths";
+const REGULAR_INVEST_ACTION_COLUMN_MIN_WIDTH = 132;
 const SCHEDULED_TASK_PROGRESS_ID = "scheduled-task-execute";
-const REGULAR_INVEST_TABLE_COLUMN_KEYS: ReadonlyArray<RegularInvestTableColumnKey> = [
-  "taskContent",
-  "taskType",
-  "startDate",
-  "nextRunDate",
-  "targetAccount",
-  "cashAccount",
-  "amount",
-  "interval",
-  "status",
-  "executedCount",
-  "actions",
-];
-const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, number> = {
+const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestColumnKey, number> = {
   taskContent: 160,
   taskType: 88,
   startDate: 92,
@@ -180,47 +167,11 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestTableColumnKey, numb
   interval: 92,
   status: 82,
   executedCount: 120,
-  actions: 132,
 };
-const REGULAR_INVEST_SORT_COLUMNS: Partial<Record<RegularInvestColumnKey, SortKey>> = {
-  taskContent: "taskContent",
-  startDate: "startDate",
-  nextRunDate: "nextRunDate",
-};
-
-function isRegularInvestTableColumnKey(value: string): value is RegularInvestTableColumnKey {
-  return REGULAR_INVEST_TABLE_COLUMN_KEYS.some((key) => key === value);
-}
-
-function defaultRegularInvestColumnWidth(key: RegularInvestTableColumnKey): number {
-  return key === "actions" ? REGULAR_INVEST_ACTION_COLUMN_WIDTH : REGULAR_INVEST_COLUMN_WIDTHS[key];
-}
-
-function readRegularInvestColumnWidths(): Partial<Record<RegularInvestTableColumnKey, number>> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const widths: Partial<Record<RegularInvestTableColumnKey, number>> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      if (isRegularInvestTableColumnKey(key) && typeof value === "number" && Number.isFinite(value)) {
-        widths[key] = value;
-      }
-    }
-    return widths;
-  } catch {
-    return {};
-  }
-}
-
-function writeRegularInvestColumnWidths(widths: Partial<Record<RegularInvestTableColumnKey, number>>) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(REGULAR_INVEST_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(widths));
-  } catch {}
-}
+const REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH = REGULAR_INVEST_COLUMNS.reduce(
+  (total, column) => total + REGULAR_INVEST_COLUMN_WIDTHS[column.key],
+  REGULAR_INVEST_ACTION_COLUMN_WIDTH,
+);
 
 function formatInterval(p: RegularInvestPlanView): string {
   const intervalUnit = p.intervalUnit === "biweek" ? "week" : p.intervalUnit;
@@ -328,33 +279,145 @@ function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
     .sort((a, b) => (a.label + a.title).localeCompare(b.label + b.title, "zh-Hans-CN"));
 }
 
-function compareNullableDate(a?: string | null, b?: string | null): number {
-  const left = a ? new Date(a).getTime() : Number.POSITIVE_INFINITY;
-  const right = b ? new Date(b).getTime() : Number.POSITIVE_INFINITY;
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
+function dateSortValue(value?: string | null): number | null {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(time) ? time : null;
 }
 
 function compareText(a: string, b: string): number {
   return a.localeCompare(b, "zh-Hans-CN");
 }
 
-function sortPlans(
-  plans: readonly RegularInvestPlanView[],
-  sortKey: SortKey,
-  direction: SortDirection,
-): RegularInvestPlanView[] {
-  const factor = direction === "asc" ? 1 : -1;
-  return [...plans].sort((left, right) => {
-    let result = 0;
-    if (sortKey === "taskContent") {
-      result = compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
-    } else if (sortKey === "startDate") {
-      result = compareNullableDate(left.startDate, right.startDate);
-    } else if (sortKey === "nextRunDate") {
-      result = compareNullableDate(left.nextRunDate, right.nextRunDate);
+function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string): string | number | null {
+  if (key === "taskContent") return getPlanTargetLabel(plan);
+  if (key === "taskType") return getPlanTaskLabel(plan);
+  if (key === "startDate") return dateSortValue(plan.startDate);
+  if (key === "nextRunDate") return dateSortValue(plan.nextRunDate);
+  if (key === "targetAccount") return planAccountLabel(plan);
+  if (key === "cashAccount") return planCashAccountLabel(plan);
+  if (key === "amount") return Number(plan.amount || 0);
+  if (key === "interval") return formatInterval(plan);
+  if (key === "status") return STATUS_MAP[plan.status]?.label || plan.status;
+  if (key === "executedCount") return Number(plan.executedCount || 0);
+  return null;
+}
+
+function compareRegularInvestSortValue(
+  a: { value: string | number | null | undefined; index: number },
+  b: { value: string | number | null | undefined; index: number },
+  direction: AdvancedDataTableSortState["direction"],
+) {
+  const aEmpty = a.value == null || a.value === "";
+  const bEmpty = b.value == null || b.value === "";
+  if (aEmpty || bEmpty) {
+    if (aEmpty && bEmpty) return a.index - b.index;
+    return aEmpty ? 1 : -1;
+  }
+  const compared = typeof a.value === "number" && typeof b.value === "number"
+    ? a.value - b.value
+    : String(a.value).localeCompare(String(b.value), "zh-Hans-CN", { numeric: true });
+  return compared === 0
+    ? a.index - b.index
+    : direction === "asc" ? compared : -compared;
+}
+
+function sortRegularInvestDisplayRows(
+  rows: RegularInvestDisplayRow[],
+  sortState: AdvancedDataTableSortState | null,
+  columns: AdvancedDataTableColumn<RegularInvestDisplayRow>[],
+): RegularInvestDisplayRow[] {
+  if (!sortState) return rows;
+  const column = columns.find((item) => item.key === sortState.key);
+  const readValue = column?.sortValue ?? column?.filterText;
+  if (!readValue) return rows;
+
+  const sortedRows: RegularInvestDisplayRow[] = [];
+  let currentGroup: Extract<RegularInvestDisplayRow, { kind: "group" }> | null = null;
+  let currentPlanRows: Array<{
+    row: Extract<RegularInvestDisplayRow, { kind: "plan" }>;
+    index: number;
+    value: string | number | null | undefined;
+  }> = [];
+
+  const flushGroup = () => {
+    if (currentGroup) sortedRows.push(currentGroup);
+    sortedRows.push(...currentPlanRows
+      .sort((a, b) => compareRegularInvestSortValue(a, b, sortState.direction))
+      .map((item) => item.row));
+    currentGroup = null;
+    currentPlanRows = [];
+  };
+
+  rows.forEach((row, index) => {
+    if (row.kind === "group") {
+      flushGroup();
+      currentGroup = row;
+      return;
     }
-    if (result !== 0) return result * factor;
+    currentPlanRows.push({ row, index, value: readValue(row) });
+  });
+  flushGroup();
+
+  return sortedRows;
+}
+
+function regularInvestRowMatchesFilters(
+  row: RegularInvestDisplayRow,
+  filters: Partial<Record<string, string[]>>,
+  columns: AdvancedDataTableColumn<RegularInvestDisplayRow>[],
+) {
+  if (row.kind !== "plan") return false;
+  for (const [key, values] of Object.entries(filters)) {
+    if ((values?.length ?? 0) === 0) continue;
+    const column = columns.find((item) => item.key === key);
+    const rawValue = column?.filterText?.(row);
+    const value = rawValue?.trim() || "-";
+    if (!values?.includes(value)) return false;
+  }
+  return true;
+}
+
+function filterRegularInvestDisplayRows(
+  rows: RegularInvestDisplayRow[],
+  filters: Partial<Record<string, string[]>>,
+  columns: AdvancedDataTableColumn<RegularInvestDisplayRow>[],
+): RegularInvestDisplayRow[] {
+  const filteredRows: RegularInvestDisplayRow[] = [];
+  let currentGroup: Extract<RegularInvestDisplayRow, { kind: "group" }> | null = null;
+  let currentPlanRows: Array<Extract<RegularInvestDisplayRow, { kind: "plan" }>> = [];
+
+  const flushGroup = () => {
+    if (currentPlanRows.length === 0) {
+      currentGroup = null;
+      return;
+    }
+    if (currentGroup) filteredRows.push({ ...currentGroup, count: currentPlanRows.length });
+    filteredRows.push(...currentPlanRows);
+    currentGroup = null;
+    currentPlanRows = [];
+  };
+
+  for (const row of rows) {
+    if (row.kind === "group") {
+      flushGroup();
+      currentGroup = row;
+      continue;
+    }
+    if (regularInvestRowMatchesFilters(row, filters, columns)) currentPlanRows.push(row);
+  }
+  flushGroup();
+
+  return filteredRows;
+}
+
+function sortPlansByDefault(plans: readonly RegularInvestPlanView[]): RegularInvestPlanView[] {
+  return [...plans].sort((left, right) => {
+    const nextRunCompare = compareRegularInvestSortValue(
+      { value: getRegularInvestSortValue(left, "nextRunDate"), index: 0 },
+      { value: getRegularInvestSortValue(right, "nextRunDate"), index: 0 },
+      "asc",
+    );
+    if (nextRunCompare !== 0) return nextRunCompare;
     return compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
   });
 }
@@ -404,8 +467,6 @@ export function RegularInvestClient({
   transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const tableViewportRef = useRef<HTMLDivElement>(null);
-  const columnMenuRef = useRef<HTMLDivElement>(null);
   const [plans, setPlans] = useState(initialPlans);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -416,17 +477,9 @@ export function RegularInvestClient({
   const [deleteConfirm, setDeleteConfirm] = useState<{ planId: string; planName: string } | null>(null);
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
-  const [groupBy, setGroupBy] = useState<GroupByMode>("fundGroup");
-  const [sortKey, setSortKey] = useState<SortKey>("nextRunDate");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-  const [columnFilterOpen, setColumnFilterOpen] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState<RegularInvestColumnKey[]>([]);
-  const [taskTypeFilterOpen, setTaskTypeFilterOpen] = useState(false);
-  const [selectedTaskTypes, setSelectedTaskTypes] = useState<string[]>([]);
-  const [tableViewportWidth, setTableViewportWidth] = useState(0);
-  const [columnWidths, setColumnWidths] = useState<Partial<Record<RegularInvestTableColumnKey, number>>>({});
   const [executionProgress, setExecutionProgress] = useState<ExecutionProgressState | null>(null);
   const executionBusy = executionProgress?.status === "running";
+  const groupBy: GroupByMode = "fundGroup";
 
   useEffect(() => {
     if (!executionProgress) {
@@ -449,35 +502,6 @@ export function RegularInvestClient({
   useEffect(() => {
     setPlans(initialPlans);
   }, [initialPlans]);
-
-  useEffect(() => {
-    setColumnWidths(readRegularInvestColumnWidths());
-  }, []);
-
-  useEffect(() => {
-    const node = tableViewportRef.current;
-    if (!node) return;
-    const update = () => setTableViewportWidth(Math.floor(node.clientWidth));
-    update();
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", update);
-      return () => window.removeEventListener("resize", update);
-    }
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!columnFilterOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const node = columnMenuRef.current;
-      if (!node || !(event.target instanceof Node) || node.contains(event.target)) return;
-      setColumnFilterOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [columnFilterOpen]);
 
   useEffect(() => {
     async function handleEditSuccess() {
@@ -901,140 +925,8 @@ export function RegularInvestClient({
     }
   }
 
-  function toggleSort(nextKey: SortKey) {
-    if (sortKey === nextKey) {
-      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
-      return;
-    }
-    setSortKey(nextKey);
-    setSortDirection(nextKey === "taskContent" ? "asc" : "asc");
-  }
-
-  function renderSortButton(label: string, key: SortKey) {
-    const active = sortKey === key;
-    return (
-      <button
-        type="button"
-        onClick={() => toggleSort(key)}
-        className={`flex min-w-0 items-center gap-1 truncate transition-colors ${
-          active ? "text-slate-800" : "text-slate-600 hover:text-slate-800"
-        }`}
-      >
-        <span className="truncate">{label}</span>
-        {active ? (
-          <ArrowDownUp className={`h-3.5 w-3.5 ${sortDirection === "desc" ? "rotate-180" : ""}`} />
-        ) : (
-          <ArrowDownAZ className="h-3.5 w-3.5 opacity-60" />
-        )}
-      </button>
-    );
-  }
-
-  function isColumnVisible(key: RegularInvestColumnKey): boolean {
-    return visibleColumns.length === 0 || visibleColumns.includes(key);
-  }
-
-  function toggleColumnVisibility(key: RegularInvestColumnKey) {
-    const allColumnKeys = REGULAR_INVEST_COLUMNS.map((column) => column.key);
-    const currentVisibleKeys = visibleColumns.length === 0 ? allColumnKeys : visibleColumns;
-    const nextVisibleKeys = currentVisibleKeys.includes(key)
-      ? currentVisibleKeys.filter((item) => item !== key)
-      : [...currentVisibleKeys, key];
-    if (nextVisibleKeys.length === 0) return;
-    setVisibleColumns(nextVisibleKeys.length === allColumnKeys.length ? [] : nextVisibleKeys);
-  }
-
-  function baseColumnWidth(key: RegularInvestTableColumnKey): number {
-    const storedWidth = columnWidths[key];
-    const width = storedWidth ?? defaultRegularInvestColumnWidth(key);
-    return Math.max(REGULAR_INVEST_COLUMN_MIN_WIDTHS[key], width);
-  }
-
-  function layoutColumnWidth(key: RegularInvestTableColumnKey): number {
-    return baseColumnWidth(key);
-  }
-
-  function setMainTableColumnWidth(key: RegularInvestTableColumnKey, width: number) {
-    setColumnWidths((prev) => {
-      const next = {
-        ...prev,
-        [key]: Math.max(REGULAR_INVEST_COLUMN_MIN_WIDTHS[key], Math.round(width)),
-      };
-      writeRegularInvestColumnWidths(next);
-      return next;
-    });
-  }
-
-  function beginColumnResize(event: ReactMouseEvent, key: RegularInvestTableColumnKey) {
-    event.preventDefault();
-    event.stopPropagation();
-    const startX = event.clientX;
-    const startWidth = layoutColumnWidth(key);
-    const onMove = (moveEvent: MouseEvent) => {
-      setMainTableColumnWidth(key, startWidth + moveEvent.clientX - startX);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }
-
-  function renderHeaderContent(column: { key: RegularInvestColumnKey; label: string }) {
-    const columnSortKey = REGULAR_INVEST_SORT_COLUMNS[column.key];
-    const labelNode = columnSortKey ? renderSortButton(column.label, columnSortKey) : <span className="block truncate">{column.label}</span>;
-    const filterNode = column.key === "taskType" ? (
-      <TableColumnFilter
-        label={column.label}
-        options={taskTypeOptions}
-        selectedValues={selectedTaskTypes}
-        open={taskTypeFilterOpen}
-        filtered={selectedTaskTypes.length > 0}
-        showLabel={false}
-        onToggleOpen={() => setTaskTypeFilterOpen((current) => !current)}
-        onClose={() => setTaskTypeFilterOpen(false)}
-        onChange={(values) => setSelectedTaskTypes(values ?? [])}
-      />
-    ) : null;
-
-      return (
-        <div className="flex min-w-0 items-center justify-center gap-1 text-center">
-          <div className="min-w-0">{labelNode}</div>
-          {filterNode ? <div className="shrink-0">{filterNode}</div> : null}
-        </div>
-      );
-    }
-
-    function renderHeaderCell(column: { key: RegularInvestColumnKey; label: string }) {
-      return (
-        <th
-          key={column.key}
-          className="relative select-none border-b border-r border-slate-200 px-3 py-2 text-center text-xs font-semibold text-slate-600"
-        >
-          {renderHeaderContent(column)}
-          <span
-            role="separator"
-            aria-orientation="vertical"
-            onMouseDown={(event) => beginColumnResize(event, column.key)}
-            className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
-            title="拖动调整列宽"
-          />
-        </th>
-      );
-    }
-
-  const taskTypeOptions = Array.from(new Set(plans.map((plan) => getPlanTaskLabel(plan)))).sort((a, b) =>
-    a.localeCompare(b, "zh-Hans-CN"),
-  );
-
   const filteredPlans = plans.filter((plan) => {
     if (!showEnded && (plan.status === "stopped" || plan.status === "completed")) return false;
-    if (selectedTaskTypes.length > 0 && !selectedTaskTypes.includes(getPlanTaskLabel(plan))) return false;
     return true;
   });
   const todayStart = new Date();
@@ -1042,102 +934,135 @@ export function RegularInvestClient({
   const overduePlans = filteredPlans.filter(
     (plan) => plan.status === "active" && plan.nextRunDate && new Date(plan.nextRunDate).getTime() <= todayStart.getTime(),
   );
-  const sortedPlans = sortPlans(filteredPlans, sortKey, sortDirection);
+  const sortedPlans = sortPlansByDefault(filteredPlans);
   const groupedPlans = groupPlans(sortedPlans, groupBy);
-  const visibleRegularInvestColumns = REGULAR_INVEST_COLUMNS.filter((column) => isColumnVisible(column.key));
-  const mainTableColSpan = visibleRegularInvestColumns.length + 1;
-  const mainTableBaseWidth = visibleRegularInvestColumns.reduce(
-    (total, column) => total + baseColumnWidth(column.key),
-    baseColumnWidth("actions"),
-  );
-  const mainTableWidth = Math.max(tableViewportWidth || 0, mainTableBaseWidth);
-  const mainTableScale = mainTableBaseWidth > 0 && mainTableBaseWidth < mainTableWidth
-    ? mainTableWidth / mainTableBaseWidth
-    : 1;
 
-  function renderRow(plan: RegularInvestPlanView) {
+  const tableRows: RegularInvestDisplayRow[] = groupedPlans.flatMap((group, index) => {
+    const planRows = group.items.map((plan) => ({ kind: "plan" as const, plan }));
+    if (!group.label) return planRows;
+    return [
+      {
+        kind: "group" as const,
+        key: `group:${index}:${group.label}:${group.title}`,
+        label: group.label,
+        title: group.title || group.label,
+        count: group.items.length,
+      },
+      ...planRows,
+    ];
+  });
+
+  const mainTableColumns = useMemo<AdvancedDataTableColumn<RegularInvestDisplayRow>[]>(() => {
+    const groupCell = (row: RegularInvestDisplayRow) =>
+      row.kind === "group"
+        ? <span className="font-semibold text-slate-600" title={row.title}>{row.label} ({row.count})</span>
+        : null;
+
+    const planOnly = (
+      row: RegularInvestDisplayRow,
+      render: (plan: RegularInvestPlanView) => ReactNode,
+    ) => row.kind === "plan" ? render(row.plan) : null;
+
     return (
-      <tr
-        key={plan.id}
-        className={`cursor-pointer hover:bg-slate-50 ${selectedPlan?.id === plan.id ? "bg-blue-50" : ""}`}
-        onClick={() => handleSelectPlan(plan)}
-      >
-        {isColumnVisible("taskContent") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <span className="font-medium text-slate-800">{getPlanTargetLabel(plan)}</span>
-          </td>
-        ) : null}
-        {isColumnVisible("taskType") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden text-slate-500">{getPlanTaskLabel(plan)}</td>
-        ) : null}
-        {isColumnVisible("startDate") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">{formatDate(plan.startDate)}</td>
-        ) : null}
-        {isColumnVisible("nextRunDate") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-700">{formatDate(plan.nextRunDate)}</td>
-        ) : null}
-        {isColumnVisible("targetAccount") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <AccountCell label={planAccountLabel(plan)} title={plan.accountHoverTitle} />
-          </td>
-        ) : null}
-        {isColumnVisible("cashAccount") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <AccountCell label={planCashAccountLabel(plan)} title={plan.cashAccountHoverTitle} />
-          </td>
-        ) : null}
-        {isColumnVisible("amount") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-right text-xs tabular-nums overflow-hidden text-slate-700">
-            {Number(plan.amount || 0).toFixed(2)}
-          </td>
-        ) : null}
-        {isColumnVisible("interval") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden text-slate-500">{formatInterval(plan)}</td>
-        ) : null}
-        {isColumnVisible("status") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs overflow-hidden">
-            <span className={STATUS_MAP[plan.status]?.cls || "text-slate-600"}>{STATUS_MAP[plan.status]?.label || plan.status}</span>
-          </td>
-        ) : null}
-        {isColumnVisible("executedCount") ? (
-          <td className="border-b border-r border-slate-100 px-3 py-1 text-xs tabular-nums overflow-hidden text-slate-500">
-            {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
-          </td>
-        ) : null}
-        <td className="border-b border-slate-100 px-2 py-1">
-          <div className="flex items-center justify-end gap-1">
-            {plan.status === "active" && (
-              <>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleBatchExecute(plan.id); }}
-                  disabled={executionBusy}
-                  title="批量执行"
-                  className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy ? "animate-spin" : ""}`} />
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); handleAction(plan.id, "pause"); }} title="暂停" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
-                  <Pause className="h-3 w-3 text-yellow-600" />
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); handleAction(plan.id, "stop"); }} title="终止" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
-                  <Square className="h-3 w-3 text-red-600" />
-                </button>
-              </>
-            )}
-            {plan.status === "paused" && (
-              <button onClick={(e) => { e.stopPropagation(); handleAction(plan.id, "resume"); }} title="恢复" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-green-200 hover:bg-green-50">
-                <Play className="h-3 w-3 text-green-600" />
-              </button>
-            )}
-            <button onClick={(e) => { e.stopPropagation(); setEditPlan(plan); setEditOpen(true); }} title="修改" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
-              <Pencil className="h-3 w-3 text-blue-600" />
+      REGULAR_INVEST_COLUMNS.map((column) => ({
+        key: column.key,
+        label: column.label,
+        width: REGULAR_INVEST_COLUMN_WIDTHS[column.key],
+        minWidth: REGULAR_INVEST_COLUMN_MIN_WIDTHS[column.key],
+        hideable: column.key !== "taskContent",
+        align: column.key === "amount" ? "right" : undefined,
+        truncate: column.key !== "amount" && column.key !== "status",
+        sortValue: (row) => row.kind === "plan" ? getRegularInvestSortValue(row.plan, column.key) : null,
+        filterText: column.key === "taskType"
+          ? (row) => row.kind === "plan" ? getPlanTaskLabel(row.plan) : null
+          : column.key === "status"
+            ? (row) => row.kind === "plan" ? (STATUS_MAP[row.plan.status]?.label || row.plan.status) : null
+            : undefined,
+        cellTitle: (row) => {
+          if (row.kind === "group") return column.key === "taskContent" ? row.title : "";
+          if (column.key === "taskContent") return getPlanTargetLabel(row.plan);
+          if (column.key === "targetAccount") return row.plan.accountHoverTitle || planAccountLabel(row.plan);
+          if (column.key === "cashAccount") return row.plan.cashAccountHoverTitle || planCashAccountLabel(row.plan);
+          if (column.key === "taskType") return getPlanTaskLabel(row.plan);
+          if (column.key === "interval") return formatInterval(row.plan);
+          return "";
+        },
+        render: (row) => {
+          if (row.kind === "group") return column.key === "taskContent" ? groupCell(row) : null;
+          if (column.key === "taskContent") {
+            return <span className="font-medium text-slate-800">{getPlanTargetLabel(row.plan)}</span>;
+          }
+          if (column.key === "taskType") {
+            return <span className="text-slate-500">{getPlanTaskLabel(row.plan)}</span>;
+          }
+          if (column.key === "startDate") {
+            return <span className="tabular-nums text-slate-500">{formatDate(row.plan.startDate)}</span>;
+          }
+          if (column.key === "nextRunDate") {
+            return <span className="tabular-nums text-slate-700">{formatDate(row.plan.nextRunDate)}</span>;
+          }
+          if (column.key === "targetAccount") {
+            return <AccountCell label={planAccountLabel(row.plan)} title={row.plan.accountHoverTitle} />;
+          }
+          if (column.key === "cashAccount") {
+            return <AccountCell label={planCashAccountLabel(row.plan)} title={row.plan.cashAccountHoverTitle} />;
+          }
+          if (column.key === "amount") {
+            return <span className="tabular-nums text-slate-700">{Number(row.plan.amount || 0).toFixed(2)}</span>;
+          }
+          if (column.key === "interval") {
+            return <span className="text-slate-500">{formatInterval(row.plan)}</span>;
+          }
+          if (column.key === "status") {
+            return (
+              <span className={STATUS_MAP[row.plan.status]?.cls || "text-slate-600"}>
+                {STATUS_MAP[row.plan.status]?.label || row.plan.status}
+              </span>
+            );
+          }
+          return planOnly(row, (plan) => (
+            <span className="tabular-nums text-slate-500">
+              {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
+            </span>
+          ));
+        },
+      }))
+    );
+  }, []);
+
+  function renderPlanActions(plan: RegularInvestPlanView) {
+    return (
+      <>
+        {plan.status === "active" && (
+          <>
+            <button
+              onClick={() => handleBatchExecute(plan.id)}
+              disabled={executionBusy}
+              title="批量执行"
+              className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy ? "animate-spin" : ""}`} />
             </button>
-            <button onClick={(e) => { e.stopPropagation(); handleDelete(plan.id); }} title="删除" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
-              <Trash2 className="h-3 w-3 text-red-500" />
+            <button onClick={() => handleAction(plan.id, "pause")} title="暂停" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
+              <Pause className="h-3 w-3 text-yellow-600" />
             </button>
-          </div>
-        </td>
-      </tr>
+            <button onClick={() => handleAction(plan.id, "stop")} title="终止" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+              <Square className="h-3 w-3 text-red-600" />
+            </button>
+          </>
+        )}
+        {plan.status === "paused" && (
+          <button onClick={() => handleAction(plan.id, "resume")} title="恢复" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-green-200 hover:bg-green-50">
+            <Play className="h-3 w-3 text-green-600" />
+          </button>
+        )}
+        <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title="修改" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+          <Pencil className="h-3 w-3 text-blue-600" />
+        </button>
+        <button onClick={() => handleDelete(plan.id)} title="删除" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+          <Trash2 className="h-3 w-3 text-red-500" />
+        </button>
+      </>
     );
   }
 
@@ -1163,134 +1088,69 @@ export function RegularInvestClient({
                 onOpenChange={setShowCreateForm}
                 apiAction={apiCreateAction}
               />
-              <button
-                onClick={handleBatchExecuteAll}
-                disabled={executionBusy}
-                title="批量执行所有计划任务"
-                className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={`h-4 w-4 ${executionBusy ? "animate-spin" : ""}`} />执行全部
-              </button>
               <button onClick={() => setShowCreateForm(true)} className="flex h-8 items-center gap-1 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
                 <Plus className="h-4 w-4" />新增计划
               </button>
             </div>
-            <div className="flex h-11 items-center justify-between bg-slate-50 px-4">
-              <div className="flex items-center gap-3 text-sm">
-                <span className="font-semibold text-slate-800">计划任务</span>
-                <span className="text-slate-500">
-                  共 {filteredPlans.length} 个计划，{filteredPlans.filter((plan) => plan.status === "active").length} 个执行中
-                </span>
-                {overduePlans.length > 0 ? (
-                  <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
-                    待执行 {overduePlans.length}
-                  </span>
-                ) : null}
-                <select
-                  value={groupBy}
-                  onChange={(e) => setGroupBy(e.target.value as GroupByMode)}
-                  className="ml-4 h-7 rounded border border-slate-200 bg-white px-2 text-xs outline-none"
-                >
-                  <option value="fundGroup">按目标账户所有人</option>
-                  <option value="fundAccount">按目标账户</option>
-                  <option value="cashGroup">按资金账户所有人</option>
-                  <option value="cashAccount">按资金账户</option>
-                  <option value="none">不按所有人</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
-                  <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
-                  不显示已结束计划
-                </label>
-                <div ref={columnMenuRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setColumnFilterOpen((current) => !current)}
-                    className="secondary-button h-7 px-2 text-xs"
-                    title="表头设置"
-                  >
-                    <SlidersHorizontal className="h-3.5 w-3.5" />
-                    <span>表头设置</span>
-                  </button>
-                  {columnFilterOpen ? (
-                    <div className="absolute right-0 top-8 z-50 w-48 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
-                      <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">显示列</div>
-                      <div className="max-h-56 space-y-1 overflow-y-auto">
-                        {REGULAR_INVEST_COLUMNS.map((column) => {
-                          const checked = isColumnVisible(column.key);
-                          const disabled = checked && visibleRegularInvestColumns.length <= 1;
-                          return (
-                            <label
-                              key={column.key}
-                              className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
-                                disabled ? "text-slate-400" : "cursor-pointer text-slate-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={disabled}
-                                onChange={() => toggleColumnVisibility(column.key)}
-                                className="h-3.5 w-3.5 rounded border-slate-300"
-                              />
-                              <span className="truncate">{column.label}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
           </header>
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div ref={tableViewportRef} className={`${selectedPlan ? "min-h-[240px] flex-1 overflow-auto border-b border-slate-200 bg-white" : "min-h-0 flex-1 overflow-auto bg-white"}`}>
-              <table className="table-fixed w-full border-separate border-spacing-0" style={{ minWidth: mainTableWidth }}>
-                <colgroup>
-                  {visibleRegularInvestColumns.map((column) => (
-                    <col key={column.key} style={{ width: layoutColumnWidth(column.key) }} />
-                  ))}
-                  <col style={{ width: layoutColumnWidth("actions") }} />
-                </colgroup>
-                <thead className="sticky top-0 z-10 bg-white">
-                  <tr>
-                    {visibleRegularInvestColumns.map((column) => renderHeaderCell(column))}
-                    <th className="relative select-none border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">
-                      操作
-                      <span
-                        role="separator"
-                        aria-orientation="vertical"
-                        onMouseDown={(event) => beginColumnResize(event, "actions")}
-                        className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
-                        title="拖动调整列宽"
-                      />
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {groupedPlans.length === 0 || groupedPlans[0].items.length === 0 ? (
-                    <tr><td className="px-3 py-6 text-xs text-slate-500" colSpan={mainTableColSpan}>暂无计划任务</td></tr>
-                  ) : (
-                    groupedPlans.map((group, index) => (
-                      group.label ? (
-                        <Fragment key={`g-${index}`}>
-                          <tr className="bg-slate-50">
-                            <td className="px-3 py-1.5 text-xs font-semibold text-slate-600" colSpan={mainTableColSpan} title={group.title || group.label}>
-                              {group.label} ({group.items.length})
-                            </td>
-                          </tr>
-                          {group.items.map((plan) => renderRow(plan))}
-                        </Fragment>
-                      ) : (
-                        <Fragment key={`g-${index}`}>{group.items.map((plan) => renderRow(plan))}</Fragment>
-                      )
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className={`${selectedPlan ? "min-h-[240px] flex-1 border-b border-slate-200 bg-white" : "min-h-0 flex-1 bg-white"}`}>
+              <AdvancedDataTable
+                storageKey="regular-invest:main-table"
+                columns={mainTableColumns}
+                rows={tableRows}
+                rowKey={(row) => row.kind === "group" ? row.key : row.plan.id}
+                minTableWidth={REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH}
+                fillHeight
+                compactRows
+                showFilters
+                sortable
+                defaultSort={{ key: "nextRunDate", direction: "asc" }}
+                filterRows={filterRegularInvestDisplayRows}
+                sortRows={sortRegularInvestDisplayRows}
+                emptyText="暂无计划任务"
+                onRowClick={(row) => {
+                  if (row.kind === "plan") handleSelectPlan(row.plan);
+                }}
+                rowClassName={(row) => {
+                  if (row.kind === "group") return "bg-slate-50 hover:bg-slate-50";
+                  return `cursor-pointer hover:bg-slate-50 ${selectedPlan?.id === row.plan.id ? "bg-blue-50" : ""}`;
+                }}
+                rowActions={(row) => row.kind === "plan" ? renderPlanActions(row.plan) : null}
+                rowActionsWidth={REGULAR_INVEST_ACTION_COLUMN_WIDTH}
+                rowActionsMinWidth={REGULAR_INVEST_ACTION_COLUMN_MIN_WIDTH}
+                toolbarMode="custom"
+                toolbarLeftContent={(
+                  <div className="flex min-w-0 items-center gap-3 text-sm">
+                    <span className="font-semibold text-slate-800">计划任务</span>
+                    <span className="text-slate-500">
+                      共 {filteredPlans.length} 个计划，{filteredPlans.filter((plan) => plan.status === "active").length} 个执行中
+                    </span>
+                    {overduePlans.length > 0 ? (
+                      <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
+                        待执行 {overduePlans.length}
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                toolbarRightContent={(
+                  <>
+                    <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
+                      <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
+                      不显示已结束计划
+                    </label>
+                    <button
+                      onClick={handleBatchExecuteAll}
+                      disabled={executionBusy}
+                      title="批量执行所有计划任务"
+                      className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${executionBusy ? "animate-spin" : ""}`} />执行全部
+                    </button>
+                  </>
+                )}
+              />
             </div>
 
             {selectedPlan && (

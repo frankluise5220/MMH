@@ -104,6 +104,7 @@ export function DebitBalanceReconcileButton({
     <>
       <button
         type="button"
+        data-basic-detail-reconcile
         onClick={openModal}
         className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-amber-50 hover:text-amber-700"
         title="按实际余额生成一条校准流水"

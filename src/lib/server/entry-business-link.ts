@@ -6,9 +6,28 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
-export type EntryBusinessType = "fund" | "wealth" | "deposit" | "insurance" | "metal" | "other_investment";
+export type EntryBusinessLinkMetadata = Record<string, Prisma.InputJsonValue | null>;
+
+export function mergeEntryBusinessLinkMetadata(
+  metadata: Prisma.JsonValue | null | undefined,
+  patch: EntryBusinessLinkMetadata,
+): EntryBusinessLinkMetadata {
+  const base =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? { ...(metadata as EntryBusinessLinkMetadata) }
+      : {};
+  return { ...base, ...patch };
+}
+
+function inputJsonObjectOf(value: Record<string, unknown> | null | undefined, fallback: EntryBusinessLinkMetadata) {
+  const source = value ?? fallback;
+  return JSON.parse(JSON.stringify(source)) as EntryBusinessLinkMetadata;
+}
+
+export type EntryBusinessType = "fund" | "stock" | "wealth" | "deposit" | "insurance" | "metal" | "other_investment";
 export type EntryCashFlowDirection = "outflow" | "inflow" | "internal" | "none";
 export type EntryBusinessDeleteImpact = {
+  linkId: string;
   selectedEntryId: string;
   selectedSide: "cash" | "business" | "both";
   entryId: string;
@@ -22,6 +41,7 @@ export type EntryBusinessDeleteImpact = {
 };
 
 type EntryBusinessLinkSummaryRow = {
+  id?: string | null;
   cashEntryId?: string | null;
   businessEntryId?: string | null;
   fundTransactionId?: string | null;
@@ -29,6 +49,7 @@ type EntryBusinessLinkSummaryRow = {
   wealthTransactionId?: string | null;
   depositTransactionId?: string | null;
   preciousMetalTransactionId?: string | null;
+  stockTransactionId?: string | null;
   businessType: EntryBusinessType | string;
   linkType?: string | null;
   CashEntry?: { id: string; deletedAt?: Date | null } | null;
@@ -38,12 +59,14 @@ type EntryBusinessLinkSummaryRow = {
   WealthTransaction?: { id: string; deletedAt?: Date | null } | null;
   DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
   PreciousMetalTransaction?: { id: string; deletedAt?: Date | null } | null;
+  StockTransaction?: { id: string; deletedAt?: Date | null } | null;
 };
 
 export const entryBusinessLinkSummaryInclude = {
   EntryBusinessLinkCash: {
     where: { deletedAt: null },
     select: {
+      id: true,
       cashEntryId: true,
       businessEntryId: true,
       fundTransactionId: true,
@@ -51,6 +74,7 @@ export const entryBusinessLinkSummaryInclude = {
       wealthTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
+      stockTransactionId: true,
       businessType: true,
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
@@ -60,11 +84,13 @@ export const entryBusinessLinkSummaryInclude = {
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
+      StockTransaction: { select: { id: true, deletedAt: true } },
     },
   },
   EntryBusinessLinkBusiness: {
     where: { deletedAt: null },
     select: {
+      id: true,
       cashEntryId: true,
       businessEntryId: true,
       fundTransactionId: true,
@@ -72,6 +98,7 @@ export const entryBusinessLinkSummaryInclude = {
       wealthTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
+      stockTransactionId: true,
       businessType: true,
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
@@ -81,6 +108,7 @@ export const entryBusinessLinkSummaryInclude = {
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
+      StockTransaction: { select: { id: true, deletedAt: true } },
     },
   },
 } as const;
@@ -98,6 +126,7 @@ type BusinessEntryLike = {
   insuranceProductId?: string | null;
   metalTypeId?: string | null;
   depositSourceEntryId?: string | null;
+  stockTransactionId?: string | null;
   createdAt?: Date | string | null;
 };
 
@@ -111,7 +140,8 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
       entry.insuranceProductId ||
       entry.source === "insurance" ||
       entry.metalTypeId ||
-      entry.depositSourceEntryId,
+      entry.depositSourceEntryId ||
+      entry.stockTransactionId,
   );
   if (!isInvestmentEntry || !hasBusinessFields) return null;
 
@@ -119,6 +149,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
   if (entry.fundProductType === "wealth" || entry.wealthProductId) return "wealth";
   if (entry.fundProductType === "deposit" || entry.depositSourceEntryId) return "deposit";
   if (entry.fundProductType === "metal" || entry.metalTypeId) return "metal";
+  if (entry.fundProductType === "stock" || entry.stockTransactionId) return "stock";
   if (entry.fundProductType === "fund" || entry.fundProductType === "money" || entry.fundCode) return "fund";
   return "other_investment";
 }
@@ -139,44 +170,43 @@ export async function upsertLegacyCombinedEntryBusinessLink(client: TxClient, en
   const direction = classifyEntryCashFlowDirection(entry);
   const createdAt = entry.createdAt instanceof Date ? entry.createdAt : new Date();
 
-  await client.$executeRaw`
-    INSERT INTO "entry_business_links" (
-      "id",
-      "householdId",
-      "cashEntryId",
-      "businessEntryId",
-      "businessType",
-      "linkType",
-      "cashFlowDirection",
-      "source",
-      "note",
-      "metadata",
-      "createdAt",
-      "updatedAt"
-    )
-    VALUES (
-      ${linkId},
-      ${entry.householdId},
-      ${entry.id},
-      ${entry.id},
-      ${businessType}::"EntryBusinessType",
-      'legacy_combined_record'::"EntryBusinessLinkType",
-      ${direction}::"EntryCashFlowDirection",
-      ${entry.source ?? "manual"},
-      'Legacy combined cash/business TxRecord',
-      ${JSON.stringify({ legacyCombinedRecord: true })}::jsonb,
-      ${createdAt},
-      CURRENT_TIMESTAMP
-    )
-    ON CONFLICT ("cashEntryId", "businessEntryId", "linkType")
-    DO UPDATE SET
-      "businessType" = EXCLUDED."businessType",
-      "cashFlowDirection" = EXCLUDED."cashFlowDirection",
-      "source" = EXCLUDED."source",
-      "metadata" = EXCLUDED."metadata",
-      "deletedAt" = NULL,
-      "updatedAt" = CURRENT_TIMESTAMP
-  `;
+  const existing = await client.entryBusinessLink.findFirst({
+    where: {
+      cashEntryId: entry.id,
+      businessEntryId: entry.id,
+      linkType: "legacy_combined_record",
+    },
+    select: { id: true },
+  });
+
+  if (existing) {
+    await client.entryBusinessLink.update({
+      where: { id: existing.id },
+      data: {
+        businessType,
+        cashFlowDirection: direction,
+        source: entry.source ?? "manual",
+        metadata: { legacyCombinedRecord: true },
+        deletedAt: null,
+      },
+    });
+  } else {
+    await client.entryBusinessLink.create({
+      data: {
+        id: linkId,
+        householdId: entry.householdId,
+        cashEntryId: entry.id,
+        businessEntryId: entry.id,
+        businessType,
+        linkType: "legacy_combined_record",
+        cashFlowDirection: direction,
+        source: entry.source ?? "manual",
+        note: "Legacy combined cash/business TxRecord",
+        metadata: { legacyCombinedRecord: true },
+        createdAt,
+      },
+    });
+  }
   return true;
 }
 
@@ -220,6 +250,7 @@ export async function upsertEntryBusinessCashFlowLink(
     wealthTransactionId?: string | null;
     depositTransactionId?: string | null;
     preciousMetalTransactionId?: string | null;
+    stockTransactionId?: string | null;
     businessType: EntryBusinessType;
     cashFlowDirection?: EntryCashFlowDirection | null;
     source?: string | null;
@@ -233,67 +264,53 @@ export async function upsertEntryBusinessCashFlowLink(
         : params.wealthTransactionId ? `wealth_${params.wealthTransactionId}`
           : params.depositTransactionId ? `deposit_${params.depositTransactionId}`
             : params.preciousMetalTransactionId ? `metal_${params.preciousMetalTransactionId}`
-              : params.businessEntryId ? `entry_${params.businessEntryId}`
-                : "";
+              : params.stockTransactionId ? `stock_${params.stockTransactionId}`
+                : params.businessEntryId ? `entry_${params.businessEntryId}`
+                  : "";
   if (!businessTarget) return;
 
   const linkId = params.cashEntryId
     ? `ebl_${params.cashEntryId}_${businessTarget}`
     : `ebl_business_${businessTarget}`;
-  await client.$executeRaw`
-    INSERT INTO "entry_business_links" (
-      "id",
-      "householdId",
-      "cashEntryId",
-      "businessEntryId",
-      "fundTransactionId",
-      "insuranceTransactionId",
-      "wealthTransactionId",
-      "depositTransactionId",
-      "preciousMetalTransactionId",
-      "businessType",
-      "linkType",
-      "cashFlowDirection",
-      "source",
-      "note",
-      "metadata",
-      "updatedAt"
-    )
-    VALUES (
-      ${linkId},
-      ${params.householdId},
-      ${params.cashEntryId},
-      ${params.businessEntryId ?? null},
-      ${params.fundTransactionId ?? null},
-      ${params.insuranceTransactionId ?? null},
-      ${params.wealthTransactionId ?? null},
-      ${params.depositTransactionId ?? null},
-      ${params.preciousMetalTransactionId ?? null},
-      ${params.businessType}::"EntryBusinessType",
-      'cash_flow'::"EntryBusinessLinkType",
-      ${params.cashFlowDirection ?? "none"}::"EntryCashFlowDirection",
-      ${params.source ?? "manual"},
-      ${params.note ?? null},
-      ${JSON.stringify(params.metadata ?? { splitRecord: true })}::jsonb,
-      CURRENT_TIMESTAMP
-    )
-    ON CONFLICT ("id")
-    DO UPDATE SET
-      "cashEntryId" = EXCLUDED."cashEntryId",
-      "businessEntryId" = EXCLUDED."businessEntryId",
-      "fundTransactionId" = EXCLUDED."fundTransactionId",
-      "insuranceTransactionId" = EXCLUDED."insuranceTransactionId",
-      "wealthTransactionId" = EXCLUDED."wealthTransactionId",
-      "depositTransactionId" = EXCLUDED."depositTransactionId",
-      "preciousMetalTransactionId" = EXCLUDED."preciousMetalTransactionId",
-      "businessType" = EXCLUDED."businessType",
-      "cashFlowDirection" = EXCLUDED."cashFlowDirection",
-      "source" = EXCLUDED."source",
-      "note" = EXCLUDED."note",
-      "metadata" = EXCLUDED."metadata",
-      "deletedAt" = NULL,
-      "updatedAt" = CURRENT_TIMESTAMP
-  `;
+  const metadata = inputJsonObjectOf(params.metadata, { splitRecord: true });
+  await client.entryBusinessLink.upsert({
+    where: { id: linkId },
+    create: {
+      id: linkId,
+      householdId: params.householdId,
+      cashEntryId: params.cashEntryId,
+      businessEntryId: params.businessEntryId ?? null,
+      fundTransactionId: params.fundTransactionId ?? null,
+      insuranceTransactionId: params.insuranceTransactionId ?? null,
+      wealthTransactionId: params.wealthTransactionId ?? null,
+      depositTransactionId: params.depositTransactionId ?? null,
+      preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
+      stockTransactionId: params.stockTransactionId ?? null,
+      businessType: params.businessType,
+      linkType: "cash_flow",
+      cashFlowDirection: params.cashFlowDirection ?? "none",
+      source: params.source ?? "manual",
+      note: params.note ?? null,
+      metadata,
+    },
+    update: {
+      cashEntryId: params.cashEntryId,
+      businessEntryId: params.businessEntryId ?? null,
+      fundTransactionId: params.fundTransactionId ?? null,
+      insuranceTransactionId: params.insuranceTransactionId ?? null,
+      wealthTransactionId: params.wealthTransactionId ?? null,
+      depositTransactionId: params.depositTransactionId ?? null,
+      preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
+      stockTransactionId: params.stockTransactionId ?? null,
+      businessType: params.businessType,
+      cashFlowDirection: params.cashFlowDirection ?? "none",
+      source: params.source ?? "manual",
+      note: params.note ?? null,
+      metadata,
+      deletedAt: null,
+    },
+  });
+  return linkId;
 }
 
 export function entryBusinessTypeLabel(type: EntryBusinessType | string) {
@@ -301,6 +318,7 @@ export function entryBusinessTypeLabel(type: EntryBusinessType | string) {
   if (type === "wealth") return "理财交易";
   if (type === "deposit") return "存款交易";
   if (type === "metal") return "贵金属交易";
+  if (type === "stock") return "股票交易";
   if (type === "fund") return "基金交易";
   return "投资业务交易";
 }
@@ -318,12 +336,14 @@ export function buildEntryBusinessLinkSummary(entry: {
     if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
     if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
+    if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
     const targetId =
       row.fundTransactionId ??
       row.insuranceTransactionId ??
       row.wealthTransactionId ??
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
+      row.stockTransactionId ??
       row.businessEntryId ??
       "";
     const key = `${row.cashEntryId ?? ""}:${targetId}:${row.linkType ?? ""}`;
@@ -333,6 +353,8 @@ export function buildEntryBusinessLinkSummary(entry: {
   return {
     businessLinkCount: uniqueRows.size,
     businessLinkLabels: labels,
+    businessLinkIds: Array.from(uniqueRows.values()).map((row) => row.id).filter(Boolean),
+    businessLinkId: Array.from(uniqueRows.values()).find((row) => row.id)?.id ?? null,
   };
 }
 
@@ -344,101 +366,114 @@ export async function listEntryBusinessDeleteImpacts(
   if (ids.length === 0) return [];
   await upsertLegacyCombinedEntryBusinessLinks(ids).catch(() => 0);
 
-  const rows = await prisma.$queryRaw<Array<{
-    selectedEntryId: string;
-    selectedSide: "cash" | "business" | "both";
-    entryId: string;
-    businessEntryId: string;
-    counterpartEntryId: string | null;
-    businessType: EntryBusinessType;
-    linkType: string;
-    legacyCombinedRecord: boolean;
-  }>>(Prisma.sql`
-    SELECT
-      CASE
-        WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."cashEntryId"
-        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN l."businessEntryId"
-        WHEN l."fundTransactionId" IN (${Prisma.join(ids)}) THEN l."fundTransactionId"
-        WHEN l."insuranceTransactionId" IN (${Prisma.join(ids)}) THEN l."insuranceTransactionId"
-        WHEN l."wealthTransactionId" IN (${Prisma.join(ids)}) THEN l."wealthTransactionId"
-        WHEN l."depositTransactionId" IN (${Prisma.join(ids)}) THEN l."depositTransactionId"
-        WHEN l."preciousMetalTransactionId" IN (${Prisma.join(ids)}) THEN l."preciousMetalTransactionId"
-        ELSE l."cashEntryId"
-      END AS "selectedEntryId",
-      CASE
-        WHEN l."cashEntryId" IN (${Prisma.join(ids)}) AND l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'both'
-        WHEN l."businessEntryId" IN (${Prisma.join(ids)}) THEN 'business'
-        WHEN l."fundTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
-        WHEN l."insuranceTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
-        WHEN l."wealthTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
-        WHEN l."depositTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
-        WHEN l."preciousMetalTransactionId" IN (${Prisma.join(ids)}) THEN 'business'
-        ELSE 'cash'
-      END AS "selectedSide",
-      l."cashEntryId" AS "entryId",
-      COALESCE(
-        l."businessEntryId",
-        l."fundTransactionId",
-        l."insuranceTransactionId",
-        l."wealthTransactionId",
-        l."depositTransactionId",
-        l."preciousMetalTransactionId"
-      ) AS "businessEntryId",
-      CASE
-        WHEN l."businessEntryId" IN (${Prisma.join(ids)})
-          OR l."fundTransactionId" IN (${Prisma.join(ids)})
-          OR l."insuranceTransactionId" IN (${Prisma.join(ids)})
-          OR l."wealthTransactionId" IN (${Prisma.join(ids)})
-          OR l."depositTransactionId" IN (${Prisma.join(ids)})
-          OR l."preciousMetalTransactionId" IN (${Prisma.join(ids)})
-        THEN l."cashEntryId"
-        ELSE COALESCE(
-          l."businessEntryId",
-          l."fundTransactionId",
-          l."insuranceTransactionId",
-          l."wealthTransactionId",
-          l."depositTransactionId",
-          l."preciousMetalTransactionId"
-        )
-      END AS "counterpartEntryId",
-      l."businessType"::text AS "businessType",
-      l."linkType"::text AS "linkType",
-      (l."cashEntryId" = l."businessEntryId") AS "legacyCombinedRecord"
-    FROM "entry_business_links" l
-    LEFT JOIN "transactions" cash ON cash."id" = l."cashEntryId"
-    LEFT JOIN "transactions" business ON business."id" = l."businessEntryId"
-    LEFT JOIN "fund_transactions" fund_business ON fund_business."id" = l."fundTransactionId"
-    LEFT JOIN "insurance_transactions" insurance_business ON insurance_business."id" = l."insuranceTransactionId"
-    LEFT JOIN "wealth_transactions" wealth_business ON wealth_business."id" = l."wealthTransactionId"
-    LEFT JOIN "deposit_transactions" deposit_business ON deposit_business."id" = l."depositTransactionId"
-    LEFT JOIN "precious_metal_transactions" metal_business ON metal_business."id" = l."preciousMetalTransactionId"
-    WHERE (
-        l."cashEntryId" IN (${Prisma.join(ids)})
-        OR l."businessEntryId" IN (${Prisma.join(ids)})
-        OR l."fundTransactionId" IN (${Prisma.join(ids)})
-        OR l."insuranceTransactionId" IN (${Prisma.join(ids)})
-        OR l."wealthTransactionId" IN (${Prisma.join(ids)})
-        OR l."depositTransactionId" IN (${Prisma.join(ids)})
-        OR l."preciousMetalTransactionId" IN (${Prisma.join(ids)})
-      )
-      AND l."householdId" = ${ctx.householdId}
-      AND l."deletedAt" IS NULL
-      AND (l."cashEntryId" IS NULL OR cash."id" IS NOT NULL)
-      AND (l."businessEntryId" IS NULL OR business."deletedAt" IS NULL)
-      AND (l."fundTransactionId" IS NULL OR fund_business."deletedAt" IS NULL)
-      AND (l."insuranceTransactionId" IS NULL OR insurance_business."deletedAt" IS NULL)
-      AND (l."wealthTransactionId" IS NULL OR wealth_business."deletedAt" IS NULL)
-      AND (l."depositTransactionId" IS NULL OR deposit_business."deletedAt" IS NULL)
-      AND (l."preciousMetalTransactionId" IS NULL OR metal_business."deletedAt" IS NULL)
-  `);
+  const idSet = new Set(ids);
+  const hasId = (id?: string | null) => Boolean(id && idSet.has(id));
+  const businessTargetIdOf = (row: {
+    businessEntryId?: string | null;
+    fundTransactionId?: string | null;
+    insuranceTransactionId?: string | null;
+    wealthTransactionId?: string | null;
+    depositTransactionId?: string | null;
+    preciousMetalTransactionId?: string | null;
+    stockTransactionId?: string | null;
+  }) =>
+    row.businessEntryId ??
+    row.fundTransactionId ??
+    row.insuranceTransactionId ??
+    row.wealthTransactionId ??
+    row.depositTransactionId ??
+    row.preciousMetalTransactionId ??
+    row.stockTransactionId ??
+    null;
+
+  const rows = await prisma.entryBusinessLink.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [
+        { cashEntryId: { in: ids } },
+        { businessEntryId: { in: ids } },
+        { fundTransactionId: { in: ids } },
+        { insuranceTransactionId: { in: ids } },
+        { wealthTransactionId: { in: ids } },
+        { depositTransactionId: { in: ids } },
+        { preciousMetalTransactionId: { in: ids } },
+        { stockTransactionId: { in: ids } },
+      ],
+    },
+    select: {
+      id: true,
+      cashEntryId: true,
+      businessEntryId: true,
+      fundTransactionId: true,
+      insuranceTransactionId: true,
+      wealthTransactionId: true,
+      depositTransactionId: true,
+      preciousMetalTransactionId: true,
+      stockTransactionId: true,
+      businessType: true,
+      linkType: true,
+      CashEntry: { select: { id: true, deletedAt: true } },
+      BusinessEntry: { select: { id: true, deletedAt: true } },
+      FundTransaction: { select: { id: true, deletedAt: true } },
+      InsuranceTransaction: { select: { id: true, deletedAt: true } },
+      WealthTransaction: { select: { id: true, deletedAt: true } },
+      DepositTransaction: { select: { id: true, deletedAt: true } },
+      PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
+      StockTransaction: { select: { id: true, deletedAt: true } },
+    },
+  });
 
   const unique = new Map<string, EntryBusinessDeleteImpact>();
   for (const row of rows) {
-    const key = `${row.entryId}:${row.businessEntryId}:${row.businessType}`;
+    if (row.cashEntryId && !row.CashEntry) continue;
+    if (row.businessEntryId && (!row.BusinessEntry || row.BusinessEntry.deletedAt)) continue;
+    if (row.fundTransactionId && (!row.FundTransaction || row.FundTransaction.deletedAt)) continue;
+    if (row.insuranceTransactionId && (!row.InsuranceTransaction || row.InsuranceTransaction.deletedAt)) continue;
+    if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
+    if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
+    if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
+    if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
+
+    const businessEntryId = businessTargetIdOf(row);
+    const selectedEntryId =
+      hasId(row.cashEntryId) && hasId(row.businessEntryId) ? row.cashEntryId
+        : hasId(row.businessEntryId) ? row.businessEntryId
+          : hasId(row.fundTransactionId) ? row.fundTransactionId
+            : hasId(row.insuranceTransactionId) ? row.insuranceTransactionId
+              : hasId(row.wealthTransactionId) ? row.wealthTransactionId
+                : hasId(row.depositTransactionId) ? row.depositTransactionId
+                  : hasId(row.preciousMetalTransactionId) ? row.preciousMetalTransactionId
+                    : hasId(row.stockTransactionId) ? row.stockTransactionId
+                      : row.cashEntryId;
+    if (!selectedEntryId) continue;
+
+    const businessSideSelected =
+      hasId(row.businessEntryId) ||
+      hasId(row.fundTransactionId) ||
+      hasId(row.insuranceTransactionId) ||
+      hasId(row.wealthTransactionId) ||
+      hasId(row.depositTransactionId) ||
+      hasId(row.preciousMetalTransactionId) ||
+      hasId(row.stockTransactionId);
+    const selectedSide =
+      hasId(row.cashEntryId) && hasId(row.businessEntryId) ? "both"
+        : businessSideSelected ? "business"
+          : "cash";
+    const counterpartEntryId = businessSideSelected ? row.cashEntryId : businessEntryId;
+    const key = `${row.cashEntryId ?? ""}:${businessEntryId ?? ""}:${row.businessType}`;
     const businessLabel = entryBusinessTypeLabel(row.businessType);
-    const counterpartLabel = row.selectedSide === "business" ? "资金交易" : businessLabel;
+    const counterpartLabel = selectedSide === "business" ? "资金交易" : businessLabel;
     unique.set(key, {
-      ...row,
+      linkId: row.id,
+      selectedEntryId,
+      selectedSide,
+      entryId: row.cashEntryId ?? "",
+      businessEntryId: businessEntryId ?? "",
+      counterpartEntryId,
+      businessType: row.businessType,
+      linkType: row.linkType,
+      legacyCombinedRecord: Boolean(row.cashEntryId && row.cashEntryId === row.businessEntryId),
       businessLabel,
       counterpartLabel,
     });

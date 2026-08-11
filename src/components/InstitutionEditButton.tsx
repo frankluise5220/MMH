@@ -1,7 +1,7 @@
 "use client";
 
-import { Pencil } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 
 type InstitutionType = "family_member" | "person" | "organization" | "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
@@ -68,8 +68,9 @@ export function InstitutionEditButton({
 
   return (
     <>
-      <button
-        type="button"
+      <SettingsActionButton
+        label={title}
+        variant="edit"
         onClick={() => {
           setName(institution.name);
           setShortName(institution.shortName ?? "");
@@ -78,11 +79,7 @@ export function InstitutionEditButton({
           setError("");
           setOpen(true);
         }}
-        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-blue-600 hover:border-blue-200"
-        title="编辑"
-      >
-        <Pencil className="w-3.5 h-3.5" />
-      </button>
+      />
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">

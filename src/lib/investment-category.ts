@@ -2,6 +2,7 @@ export const SYSTEM_FUND_INVESTMENT_CATEGORY = "基金投资";
 export const SYSTEM_WEALTH_INVESTMENT_CATEGORY = "理财投资";
 export const SYSTEM_DEPOSIT_INVESTMENT_CATEGORY = "存款投资";
 export const SYSTEM_METAL_INVESTMENT_CATEGORY = "贵金属投资";
+export const SYSTEM_STOCK_INVESTMENT_CATEGORY = "股票投资";
 export const SYSTEM_FUND_BUY_CATEGORY = "基金买入";
 export const SYSTEM_FUND_REGULAR_INVEST_CATEGORY = "基金定投";
 export const SYSTEM_FUND_REDEEM_CATEGORY = "基金赎回";
@@ -16,6 +17,10 @@ export const SYSTEM_DEPOSIT_BUY_CATEGORY = "存款存入";
 export const SYSTEM_DEPOSIT_REDEEM_CATEGORY = "存款取出";
 export const SYSTEM_METAL_BUY_CATEGORY = "贵金属买入";
 export const SYSTEM_METAL_REDEEM_CATEGORY = "贵金属卖出";
+export const SYSTEM_STOCK_BUY_CATEGORY = "股票买入";
+export const SYSTEM_STOCK_SELL_CATEGORY = "股票卖出";
+export const SYSTEM_STOCK_DIVIDEND_CATEGORY = "股票分红";
+export const SYSTEM_STOCK_FEE_CATEGORY = "股票税费";
 export const SYSTEM_OTHER_INVESTMENT_CATEGORY = "其他投资";
 
 export const SYSTEM_INVESTMENT_CATEGORIES = [
@@ -23,6 +28,7 @@ export const SYSTEM_INVESTMENT_CATEGORIES = [
   SYSTEM_WEALTH_INVESTMENT_CATEGORY,
   SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
   SYSTEM_METAL_INVESTMENT_CATEGORY,
+  SYSTEM_STOCK_INVESTMENT_CATEGORY,
   SYSTEM_OTHER_INVESTMENT_CATEGORY,
 ] as const;
 
@@ -52,12 +58,27 @@ export const SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES = [
   SYSTEM_METAL_REDEEM_CATEGORY,
 ] as const;
 
+export const SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES = [
+  SYSTEM_STOCK_BUY_CATEGORY,
+  SYSTEM_STOCK_SELL_CATEGORY,
+  SYSTEM_STOCK_DIVIDEND_CATEGORY,
+  SYSTEM_STOCK_FEE_CATEGORY,
+] as const;
+
 export const SYSTEM_INVESTMENT_ACTION_CATEGORIES = [
   ...SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES,
+  ...SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES,
 ] as const;
+
+export function getStockInvestmentCategoryName(action?: string | null) {
+  if (action === "sell") return SYSTEM_STOCK_SELL_CATEGORY;
+  if (action === "dividend" || action === "bonus_share") return SYSTEM_STOCK_DIVIDEND_CATEGORY;
+  if (action === "fee_adjustment" || action === "tax_adjustment") return SYSTEM_STOCK_FEE_CATEGORY;
+  return SYSTEM_STOCK_BUY_CATEGORY;
+}
 
 export function getInvestmentCategoryName(entry: {
   fundProductType?: string | null;

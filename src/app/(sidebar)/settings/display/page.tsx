@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { RefreshCw } from "lucide-react";
 
 import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
@@ -123,9 +122,6 @@ export default function DisplaySettingsPage() {
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
-  const [loadingFxRates, setLoadingFxRates] = useState(false);
-  const [refreshingFxRates, setRefreshingFxRates] = useState(false);
-  const [fxRateMessage, setFxRateMessage] = useState("");
   const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingDisplayLanguage, setSavingDisplayLanguage] = useState(false);
   const [savingCreditCardSidebarDisplayName, setSavingCreditCardSidebarDisplayName] = useState(false);
@@ -145,42 +141,18 @@ export default function DisplaySettingsPage() {
     setCreditCardDisplayName(getCreditCardLabelTemplatePreference());
   }, []);
 
-  async function loadFxRates(options?: { refresh?: boolean; toCurrency?: string }) {
-    const refresh = !!options?.refresh;
-    if (refresh) {
-      setRefreshingFxRates(true);
-      setFxRateMessage("正在获取最新汇率...");
-    } else {
-      setLoadingFxRates(true);
-      setFxRateMessage("");
-    }
+  async function loadBaseCurrency() {
     try {
-      const params = new URLSearchParams();
-      if (options?.toCurrency) params.set("to", options.toCurrency);
-      if (refresh) params.set("refresh", "1");
-      const query = params.toString();
-      const res = await fetch(`/api/v1/fx-rates${query ? `?${query}` : ""}`, { cache: "no-store" });
+      const res = await fetch("/api/v1/fx-rates", { cache: "no-store" });
       const data = await res.json();
-      if (!data?.ok) throw new Error(data?.error || "汇率查询失败");
       if (data.baseCurrency) setBaseCurrency(String(data.baseCurrency).toUpperCase());
-      const missing = Array.isArray(data.rates)
-        ? data.rates.filter((rate: { missing?: boolean }) => rate.missing).map((rate: { fromCurrency?: string }) => rate.fromCurrency).filter(Boolean)
-        : [];
-      setFxRateMessage(refresh
-        ? missing.length > 0
-          ? `仍缺少汇率：${missing.join("、")}`
-          : "汇率已更新"
-        : "");
-    } catch (error) {
-      setFxRateMessage(error instanceof Error ? error.message : "汇率查询失败");
-    } finally {
-      setLoadingFxRates(false);
-      setRefreshingFxRates(false);
+    } catch {
+      // Display settings can still render with the default currency if this read fails.
     }
   }
 
   useEffect(() => {
-    void loadFxRates();
+    void loadBaseCurrency();
   }, []);
 
   async function saveScheme(next: ColorScheme) {
@@ -244,8 +216,8 @@ export default function DisplaySettingsPage() {
       const data = await res.json();
       if (!data?.ok) {
         setBaseCurrency(prev);
-      } else {
-        await loadFxRates({ toCurrency: normalized });
+      } else if (data.baseCurrency) {
+        setBaseCurrency(String(data.baseCurrency).toUpperCase());
       }
     } catch {
       setBaseCurrency(prev);
@@ -468,32 +440,19 @@ export default function DisplaySettingsPage() {
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title="当前币种" desc="用于总资产、侧边栏和跨账户汇总折算；账户和流水仍保留原币种。" wide>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={baseCurrency}
-                onChange={(e) => void saveBaseCurrency(e.target.value)}
-                disabled={savingBaseCurrency}
-                className="form-input max-w-xs"
-              >
-                {BASE_CURRENCY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => void loadFxRates({ refresh: true, toCurrency: baseCurrency })}
-                disabled={savingBaseCurrency || loadingFxRates || refreshingFxRates}
-                className="secondary-button h-9 gap-1.5 px-3 text-xs disabled:opacity-50"
-                title="从汇率服务获取缺失汇率并写入缓存"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${refreshingFxRates ? "animate-spin" : ""}`} />
-                {refreshingFxRates ? "获取中" : "获取汇率"}
-              </button>
-              {fxRateMessage ? <span className="text-xs text-slate-500">{fxRateMessage}</span> : null}
-            </div>
+          <SettingRow title="当前币种" desc="用于总资产、侧边栏和跨账户汇总折算；账户和流水仍保留原币种。">
+            <select
+              value={baseCurrency}
+              onChange={(e) => void saveBaseCurrency(e.target.value)}
+              disabled={savingBaseCurrency}
+              className="form-input"
+            >
+              {BASE_CURRENCY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </SettingRow>
           <SettingRow title="界面语言" desc="选择中文、英文或日文显示；业务数据不受影响。">
             <select
@@ -505,6 +464,24 @@ export default function DisplaySettingsPage() {
               {DISPLAY_LANGUAGE_OPTIONS.map((value) => (
                 <option key={value} value={value}>
                   {PRODUCT_INTROS[value].languageLabel}
+                </option>
+              ))}
+            </select>
+          </SettingRow>
+          <SettingRow title="时区" desc="控制页面日期与版本信息显示，可跟随系统或固定时区。">
+            <select
+              value={timeZoneMode === "system" ? "system" : timeZone}
+              onChange={(e) => {
+                const value = e.target.value;
+                void (value === "system" ? saveTimeZone("system", timeZone) : saveTimeZone("specified", value));
+              }}
+              disabled={savingTimeZone}
+              className="form-input"
+            >
+              <option value="system">跟随系统</option>
+              {TIME_ZONE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -608,48 +585,6 @@ export default function DisplaySettingsPage() {
               <div className="text-xs text-slate-500">预览：<span className="font-medium text-slate-800">{tablePreview || "请输入显示内容"}</span></div>
             </div>
           </SettingRow>
-        </div>
-      </section>
-
-      <section className="panel-surface overflow-hidden">
-        <div>
-          <SettingRow title="时区模式" desc="控制页面日期与版本信息的显示时区，可跟随系统或固定时区。">
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => saveTimeZone("system", timeZone)}
-                disabled={savingTimeZone}
-                className={`segment-button h-9 px-4 ${timeZoneMode === "system" ? "segment-button-active font-medium" : ""}`}
-              >
-                跟随系统
-              </button>
-              <button
-                type="button"
-                onClick={() => saveTimeZone("specified", timeZone)}
-                disabled={savingTimeZone}
-                className={`segment-button h-9 px-4 ${timeZoneMode === "specified" ? "segment-button-active font-medium" : ""}`}
-              >
-                指定时区
-              </button>
-            </div>
-          </SettingRow>
-
-          {timeZoneMode === "specified" ? (
-            <SettingRow title="指定时区" desc="选择固定时区，避免跨设备显示不一致。">
-              <select
-                value={timeZone}
-                onChange={(e) => saveTimeZone("specified", e.target.value)}
-                disabled={savingTimeZone}
-                className="form-input"
-              >
-                {TIME_ZONE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </SettingRow>
-          ) : null}
         </div>
       </section>
     </div>

@@ -76,6 +76,10 @@ model Account {
   PreciousMetalHolding                                       PreciousMetalHolding[]
   PreciousMetalTransaction                                   PreciousMetalTransaction[]  @relation("PreciousMetalTransaction_account")
   PreciousMetalTransactionCashAccount                        PreciousMetalTransaction[]  @relation("PreciousMetalTransaction_cashAccount")
+  StockHolding                                               StockHolding[]
+  StockFeeRule                                               StockFeeRule[]
+  StockTransaction                                           StockTransaction[]          @relation("StockTransaction_stockAccount")
+  StockTransactionCashAccount                                StockTransaction[]          @relation("StockTransaction_cashAccount")
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[]         @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[]         @relation("RegularInvestPlan_cashAccountIdToAccount")
   FxConversionFromAccount                                    FxConversion[]              @relation("FxConversion_fromAccount")
@@ -575,6 +579,150 @@ model PreciousMetalTransaction {
   @@map("precious_metal_transactions")
 }
 
+model StockSecurity {
+  id               String             @id @default(cuid())
+  householdId      String
+  market           String
+  stockCode        String
+  stockName        String
+  currency         String             @default("CNY")
+  exchange         String?
+  isActive         Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @default(now()) @updatedAt
+  Household        Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  StockHolding     StockHolding[]
+  StockPriceCache  StockPriceCache[]
+  StockFeeRule     StockFeeRule[]
+  StockTransaction StockTransaction[]
+
+  @@unique([householdId, market, stockCode])
+  @@index([householdId, stockName])
+  @@index([market, stockCode])
+  @@map("stock_securities")
+}
+
+model StockHolding {
+  id               String        @id @default(cuid())
+  householdId      String
+  accountId        String
+  securityId       String
+  market           String
+  stockCode        String
+  stockName        String?
+  quantity         Decimal       @default(0)
+  avgCost          Decimal       @default(0)
+  cost             Decimal       @default(0)
+  latestPrice      Decimal?
+  marketValue      Decimal       @default(0)
+  historicalProfit Decimal       @default(0)
+  updatedAt        DateTime      @default(now()) @updatedAt
+  Household        Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Account          Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  StockSecurity    StockSecurity @relation(fields: [securityId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, securityId])
+  @@index([householdId, accountId])
+  @@index([accountId])
+  @@index([securityId])
+  @@index([market, stockCode])
+  @@map("stock_holdings")
+}
+
+model StockTransaction {
+  id                String                 @id @default(cuid())
+  householdId       String
+  stockAccountId    String
+  cashAccountId     String?
+  cashEntryId       String?                @unique
+  securityId        String?
+  market            String
+  stockCode         String
+  stockName         String?
+  action            StockTransactionAction
+  source            String?                @default("manual")
+  tradeDate         DateTime
+  settleDate        DateTime?
+  grossAmount       Decimal
+  netAmount         Decimal?
+  quantity          Decimal?
+  price             Decimal?
+  fee               Decimal?
+  commission        Decimal?
+  stampTax          Decimal?
+  transferFee       Decimal?
+  exchangeFee       Decimal?
+  regulatoryFee     Decimal?
+  otherFee          Decimal?
+  realizedProfit    Decimal?
+  externalLinkId    String?
+  brokerTradeId     String?
+  note              String?
+  deletedAt         DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @default(now()) @updatedAt
+  Household         Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  StockAccount      Account                @relation("StockTransaction_stockAccount", fields: [stockAccountId], references: [id], onDelete: Cascade)
+  CashAccount       Account?               @relation("StockTransaction_cashAccount", fields: [cashAccountId], references: [id], onDelete: SetNull)
+  StockSecurity     StockSecurity?         @relation(fields: [securityId], references: [id], onDelete: SetNull)
+  EntryBusinessLink EntryBusinessLink[]
+
+  @@unique([householdId, stockAccountId, externalLinkId])
+  @@index([householdId, stockAccountId, tradeDate])
+  @@index([cashAccountId, tradeDate])
+  @@index([securityId, tradeDate])
+  @@index([market, stockCode, tradeDate])
+  @@index([brokerTradeId])
+  @@index([deletedAt])
+  @@map("stock_transactions")
+}
+
+model StockPriceCache {
+  id            String         @id @default(cuid())
+  securityId    String?
+  market        String
+  stockCode     String
+  priceDate     DateTime
+  closePrice    Decimal
+  currency      String         @default("CNY")
+  source        String         @default("manual")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @default(now()) @updatedAt
+  StockSecurity StockSecurity? @relation(fields: [securityId], references: [id], onDelete: SetNull)
+
+  @@unique([market, stockCode, priceDate])
+  @@index([securityId, priceDate])
+  @@index([priceDate])
+  @@map("stock_price_cache")
+}
+
+model StockFeeRule {
+  id            String              @id @default(cuid())
+  accountId     String
+  securityId    String?
+  market        String?
+  stockCode     String?
+  feeType       StockFeeType
+  direction     StockTradeDirection @default(both)
+  rate          Decimal?
+  amount        Decimal?
+  minAmount     Decimal?
+  currency      String              @default("CNY")
+  effectiveDate DateTime            @default(now())
+  source        String              @default("manual")
+  note          String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @default(now()) @updatedAt
+  Account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  StockSecurity StockSecurity?      @relation(fields: [securityId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, feeType, direction])
+  @@index([accountId, securityId, feeType, direction])
+  @@index([accountId, market, stockCode, feeType, direction])
+  @@index([effectiveDate])
+  @@map("stock_fee_rules")
+}
+
 model EntryBusinessLink {
   id                         String                    @id @default(cuid())
   householdId                String
@@ -585,6 +733,7 @@ model EntryBusinessLink {
   wealthTransactionId        String?
   depositTransactionId       String?
   preciousMetalTransactionId String?
+  stockTransactionId         String?
   businessType               EntryBusinessType
   linkType                   EntryBusinessLinkType     @default(cash_flow)
   cashFlowDirection          EntryCashFlowDirection?
@@ -602,6 +751,7 @@ model EntryBusinessLink {
   WealthTransaction          WealthTransaction?        @relation(fields: [wealthTransactionId], references: [id], onDelete: SetNull)
   DepositTransaction         DepositTransaction?       @relation(fields: [depositTransactionId], references: [id], onDelete: SetNull)
   PreciousMetalTransaction   PreciousMetalTransaction? @relation(fields: [preciousMetalTransactionId], references: [id], onDelete: SetNull)
+  StockTransaction           StockTransaction?         @relation(fields: [stockTransactionId], references: [id], onDelete: SetNull)
 
   @@unique([cashEntryId, businessEntryId, linkType])
   @@index([householdId, businessType])
@@ -612,6 +762,7 @@ model EntryBusinessLink {
   @@index([wealthTransactionId])
   @@index([depositTransactionId])
   @@index([preciousMetalTransactionId])
+  @@index([stockTransactionId])
   @@index([deletedAt])
   @@map("entry_business_links")
 }
@@ -633,6 +784,8 @@ model Household {
   WealthTransaction         WealthTransaction[]
   DepositTransaction        DepositTransaction[]
   PreciousMetalTransaction  PreciousMetalTransaction[]
+  StockSecurity             StockSecurity[]
+  StockTransaction          StockTransaction[]
   EntryBusinessLink         EntryBusinessLink[]
   ImportBatch               ImportBatch[]
   InsuranceProductMaster    InsuranceProductMaster[]
@@ -642,6 +795,7 @@ model Household {
   PreciousMetalType         PreciousMetalType[]
   PreciousMetalUnit         PreciousMetalUnit[]
   PreciousMetalHolding      PreciousMetalHolding[]
+  StockHolding              StockHolding[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
   FxConversion              FxConversion[]
@@ -1262,6 +1416,7 @@ enum FundProductType {
   wealth
   deposit
   metal
+  stock
 }
 
 enum TradingCalendar {
@@ -1295,11 +1450,39 @@ enum FundCashFlowKind {
 
 enum EntryBusinessType {
   fund
+  stock
   wealth
   deposit
   insurance
   metal
   other_investment
+}
+
+enum StockTransactionAction {
+  buy
+  sell
+  dividend
+  bonus_share
+  split_share
+  merge_share
+  fee_adjustment
+  tax_adjustment
+}
+
+enum StockFeeType {
+  commission
+  stamp_tax
+  transfer_fee
+  exchange_fee
+  regulatory_fee
+  platform_fee
+  other
+}
+
+enum StockTradeDirection {
+  buy
+  sell
+  both
 }
 
 enum EntryBusinessLinkType {

@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Trash2, ChevronRight, ChevronDown, Plus, Save, Pencil, X } from "lucide-react";
+import { ArrowRight, ChevronRight, ChevronDown, Plus, Save, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
 
 type Category = {
@@ -39,7 +41,7 @@ export default function SettingsCategoriesClient({
   const [savingEdit, setSavingEdit] = useState(false);
   const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
   const [movingParent, setMovingParent] = useState(false);
-  const [moveExpanded, setMoveExpanded] = useState<Set<string>>(new Set());
+  const [pendingMoveParentValue, setPendingMoveParentValue] = useState("__root");
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,18 +58,13 @@ export default function SettingsCategoriesClient({
   }, [initialCategories, initialLoaded]);
 
   useEffect(() => {
-    const selected = selectedId ? categories.find(c => c.id === selectedId) : null;
-    if (!selected?.parentId) return;
-
-    setMoveExpanded(prev => {
-      const next = new Set(prev);
-      let parentId: string | null = selected.parentId;
-      while (parentId) {
-        next.add(parentId);
-        parentId = categories.find(c => c.id === parentId)?.parentId ?? null;
-      }
-      return next;
-    });
+    const category = selectedId ? categories.find(c => c.id === selectedId) : null;
+    const typeSystemRoot = category
+      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeLabel(category.type)) ?? null
+      : null;
+    setPendingMoveParentValue(category
+      ? ((category.parentId ?? null) === (typeSystemRoot?.id ?? null) ? `__root:${category.type}` : category.parentId ?? `__root:${category.type}`)
+      : "__root");
   }, [categories, selectedId]);
 
   const roots = categories.filter(c => c.parentId === null);
@@ -124,20 +121,17 @@ export default function SettingsCategoriesClient({
     });
   }
 
-  function toggleMoveExpand(id: string) {
-    setMoveExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   function select(id: string) {
     const category = categories.find(c => c.id === id);
     setSelectedId(id);
     setAddingUnder(null);
     setEditingName(category?.name ?? "");
+    const typeSystemRoot = category
+      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeLabel(category.type)) ?? null
+      : null;
+    setPendingMoveParentValue(category
+      ? ((category.parentId ?? null) === (typeSystemRoot?.id ?? null) ? `__root:${category.type}` : category.parentId ?? `__root:${category.type}`)
+      : "__root");
     setEditError("");
   }
 
@@ -290,6 +284,12 @@ export default function SettingsCategoriesClient({
     }
   }
 
+  async function handleMoveSelectedCategory() {
+    if (!selectedCategory || selectedCategory.isSystem || movingParent) return;
+    const nextParentId = pendingMoveParentValue === moveRootOptionId ? moveRootActualParentId : pendingMoveParentValue;
+    await moveCategory(selectedCategory.id, nextParentId);
+  }
+
   function startInlineEdit(category: Category) {
     if (category.isSystem) return;
     setInlineEditingId(category.id);
@@ -387,22 +387,32 @@ export default function SettingsCategoriesClient({
               </button>
             </>
           ) : !cat.isSystem ? (
-            <button onClick={(e) => { e.stopPropagation(); startInlineEdit(cat); }}
-              className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title="修改名称">
-              <Pencil className="w-3 h-3" />
-            </button>
+            <SettingsActionButton
+              label="修改名称"
+              variant="edit"
+              size="sm"
+              onClick={(e) => { e.stopPropagation(); startInlineEdit(cat); }}
+              className="opacity-0 group-hover:opacity-100"
+            />
           ) : (
             <span className="h-5 w-5 shrink-0" />
           )}
-          <button onClick={(e) => { e.stopPropagation(); openAdd(cat.id); }}
-            className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-blue-100 text-slate-400 hover:text-blue-600 shrink-0" title="添加子分类">
-            <Plus className="w-3 h-3" />
-          </button>
+          <SettingsActionButton
+            label="添加子分类"
+            variant="add"
+            size="sm"
+            icon={<Plus className="w-3 h-3" />}
+            onClick={(e) => { e.stopPropagation(); openAdd(cat.id); }}
+            className="opacity-0 group-hover:opacity-100"
+          />
           {!cat.isSystem && (
-            <button onClick={(e) => { e.stopPropagation(); handleDelete(cat.id); }}
-              className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0" title="删除">
-              <Trash2 className="w-3 h-3" />
-            </button>
+            <SettingsActionButton
+              label="删除分类"
+              variant="delete"
+              size="sm"
+              onClick={(e) => { e.stopPropagation(); handleDelete(cat.id); }}
+              className="opacity-0 group-hover:opacity-100"
+            />
           )}
         </div>
         {isExpanded && addingUnder === cat.id && (
@@ -433,55 +443,62 @@ export default function SettingsCategoriesClient({
     excluded.add(selectedCategory.id);
     return excluded;
   })();
-  const moveTargetRoots = selectedCategory
-    ? roots.filter(c => c.type === selectedCategory.type && !moveExcluded.has(c.id))
-    : [];
-  function getMoveTargetChildren(id: string) {
-    if (!selectedCategory) return [];
-    return getChildren(id).filter(c => c.type === selectedCategory.type && !moveExcluded.has(c.id));
-  }
-  function renderMoveTarget(cat: Category, depth: number) {
-    const children = getMoveTargetChildren(cat.id);
-    const hasChildren = children.length > 0;
-    const isExpanded = moveExpanded.has(cat.id);
-    const isCurrent = selectedCategory?.parentId === cat.id;
+  const moveRootOptionId = selectedCategory ? `__root:${selectedCategory.type}` : "__root";
+  const selectedTypeSystemRoot = selectedCategory
+    ? roots.find(root => root.type === selectedCategory.type && root.isSystem && root.name === typeLabel(selectedCategory.type)) ?? null
+    : null;
+  const moveRootActualParentId = selectedTypeSystemRoot?.id ?? null;
+  const moveTargetOptions: SmartSelectOption[] = selectedCategory ? (() => {
+    const selectedType = selectedCategory.type;
+    const options: SmartSelectOption[] = [{
+      id: moveRootOptionId,
+      label: `${typeLabel(selectedType)}（顶层）`,
+      subLabel: "移动为该类型的一级分类",
+      isGroup: true,
+      title: `移动到：${typeLabel(selectedType)}（顶层）`,
+    }];
+    const topLevelCandidates = selectedTypeSystemRoot
+      ? getChildren(selectedTypeSystemRoot.id)
+      : roots.filter(c => c.type === selectedType);
 
-    return (
-      <div key={cat.id}>
-        <div
-          className={`flex items-center gap-1 rounded px-2 py-1 ${isCurrent ? "bg-blue-50" : "hover:bg-slate-50"}`}
-          style={{ paddingLeft: `${8 + depth * 16}px` }}
-        >
-          <button
-            type="button"
-            onClick={() => hasChildren && toggleMoveExpand(cat.id)}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 hover:text-slate-600"
-            title={hasChildren ? (isExpanded ? "收起" : "展开") : undefined}
-          >
-            {hasChildren ? (isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />) : <span className="h-3 w-3" />}
-          </button>
-          <button
-            type="button"
-            disabled={selectedCategory?.isSystem || movingParent || isCurrent}
-            onClick={() => selectedCategory && void moveCategory(selectedCategory.id, cat.id)}
-            className={`min-w-0 flex-1 truncate text-left text-xs ${isCurrent ? "font-medium text-blue-700" : "text-slate-700"} disabled:cursor-default disabled:opacity-70`}
-            title={`移动到：${getCategoryPath(cat).map(item => item.name).join(" 〉")}`}
-          >
-            {cat.name}
-          </button>
-          {cat.isSystem && <span className="shrink-0 text-[10px] text-slate-400">系统</span>}
-          {isCurrent && <span className="shrink-0 text-[10px] text-blue-500">当前</span>}
-          {hasChildren && !isExpanded && <span className="shrink-0 text-[10px] text-slate-400">{children.length}</span>}
-        </div>
-        {isExpanded && children.map(child => renderMoveTarget(child, depth + 1))}
-      </div>
-    );
-  }
+    function pushCategoryOptions(parentId: string, candidates: Category[]) {
+      for (const cat of candidates) {
+        if (cat.type !== selectedType || moveExcluded.has(cat.id)) continue;
+        const availableChildren = getChildren(cat.id).filter(child => child.type === selectedType && !moveExcluded.has(child.id));
+        const pathLabel = getCategoryPath(cat).map(item => item.name).join(" 〉");
+        options.push({
+          id: cat.id,
+          label: cat.name,
+          subLabel: pathLabel,
+          title: `移动到：${pathLabel}`,
+          parentId,
+          isGroup: availableChildren.length > 0,
+        });
+        pushCategoryOptions(cat.id, availableChildren);
+      }
+    }
+
+    pushCategoryOptions(moveRootOptionId, topLevelCandidates);
+    return options;
+  })() : [];
+  const currentMoveParentValue = selectedCategory
+    ? ((selectedCategory.parentId ?? null) === moveRootActualParentId ? moveRootOptionId : selectedCategory.parentId ?? moveRootOptionId)
+    : "__root";
+  const moveParentValue = selectedCategory
+    ? (pendingMoveParentValue === "__root" ? currentMoveParentValue : pendingMoveParentValue)
+    : "__root";
   const selectedParentName = selectedCategory?.parentId
     ? categories.find(c => c.id === selectedCategory.parentId)?.name ?? "上级分类"
     : selectedCategory
       ? typeLabel(selectedCategory.type)
       : "";
+  const selectedMoveTargetLabel = moveTargetOptions.find(option => option.id === moveParentValue)?.label
+    ?? selectedParentName
+    ?? "";
+  const currentMoveTargetLabel = moveTargetOptions.find(option => option.id === currentMoveParentValue)?.label
+    ?? selectedParentName
+    ?? "";
+  const hasPendingMoveTarget = !!selectedCategory && moveParentValue !== currentMoveParentValue;
 
   return (
     <div className="flex" style={{ height: "calc(100vh - 8.5rem)" }}>
@@ -512,11 +529,13 @@ export default function SettingsCategoriesClient({
                   ) : <span className="w-3" />}
                   <span className={`text-xs font-semibold ${typeColor(type)} flex-1`}>{typeLabel(type)}</span>
                   <span className="text-[10px] text-slate-400">{visibleRoots.length}</span>
-                  <button onClick={(e) => { e.stopPropagation(); openAdd(addParentId, type); }}
-                    className="h-5 w-5 flex items-center justify-center rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 shrink-0"
-                    title="创建一级分类">
-                    <Plus className="w-3 h-3" />
-                  </button>
+                  <SettingsActionButton
+                    label="创建一级分类"
+                    variant="add"
+                    size="sm"
+                    icon={<Plus className="w-3 h-3" />}
+                    onClick={(e) => { e.stopPropagation(); openAdd(addParentId, type); }}
+                  />
                 </div>
 
                 {addingUnder === addParentId && addingType === type && (
@@ -551,9 +570,9 @@ export default function SettingsCategoriesClient({
               </div>
               <div className="p-4">
                 <div className="text-xs text-slate-500 mb-3">路径：{selectedPath.join(" 〉")}</div>
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]">
-                  <div className="flex items-end gap-3">
-                    <label className="min-w-0 flex-1">
+                <div>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="min-w-[12rem] w-full sm:w-48 xl:w-56">
                       <span className="form-label mb-1 block">分类名称</span>
                       <input
                         value={editingName}
@@ -572,46 +591,60 @@ export default function SettingsCategoriesClient({
                       type="button"
                       onClick={handleRename}
                       disabled={selectedCategory.isSystem || savingEdit || !editingName.trim() || editingName.trim() === selectedCategory.name}
-                      className="primary-button h-9 gap-1.5 disabled:opacity-50"
+                      className="primary-button h-9 shrink-0 gap-1.5 disabled:opacity-50"
                     >
                       <Save className="h-3.5 w-3.5" />
                       保存
                     </button>
-                  </div>
-                  <div className="min-w-0">
-                    <span className="form-label mb-1 block">上级分类</span>
-                    <div className="rounded-lg border border-slate-200 bg-white" title={`当前上级：${selectedParentName}`}>
+                    <div className="hidden h-9 shrink-0 items-center sm:flex">
+                      <ArrowRight className="h-4 w-4 text-blue-500" aria-hidden="true" />
+                    </div>
+                    <div className="min-w-[16rem] w-full sm:w-72 xl:w-80">
+                      <span className="form-label mb-1 block">移动至</span>
                       <div
-                        className={`flex items-center gap-1 border-b border-slate-100 px-2 py-1.5 ${
-                          selectedCategory.parentId === null ? "bg-blue-50" : ""
-                        }`}
+                        className={
+                          selectedCategory.isSystem || movingParent ? "pointer-events-none opacity-60" : ""
+                        }
+                        title={`当前上级：${selectedParentName}`}
                       >
-                        <span className="h-5 w-5 shrink-0" />
-                        <button
-                          type="button"
-                          disabled={selectedCategory.isSystem || movingParent || selectedCategory.parentId === null}
-                          onClick={() => void moveCategory(selectedCategory.id, null)}
-                          className={`min-w-0 flex-1 truncate text-left text-xs ${
-                            selectedCategory.parentId === null ? "font-medium text-blue-700" : "text-slate-700"
-                          } disabled:cursor-default disabled:opacity-70`}
-                        >
-                          {typeLabel(selectedCategory.type)}（顶层）
-                        </button>
-                        {selectedCategory.parentId === null && <span className="shrink-0 text-[10px] text-blue-500">当前</span>}
-                      </div>
-                      <div className="max-h-48 overflow-y-auto py-1">
-                        {moveTargetRoots.length === 0 ? (
-                          <div className="px-3 py-3 text-center text-xs text-slate-400">暂无可移动到的分组</div>
-                        ) : (
-                          moveTargetRoots.map(root => renderMoveTarget(root, 0))
-                        )}
+                        <SmartSelect
+                          mode="single"
+                          value={moveParentValue}
+                          onChange={setPendingMoveParentValue}
+                          options={moveTargetOptions}
+                          placeholder="选择移动到哪个分类下"
+                          searchable
+                          behavior={{
+                            hierarchy: true,
+                            search: true,
+                            initialCollapsedAll: true,
+                            accordionGroups: true,
+                            selectableGroups: true,
+                            groupSelectOnDoubleClick: false,
+                            expandOnGroupSelect: true,
+                            minDropdownWidth: 420,
+                            dropdownMaxHeight: 360,
+                            density: "compact",
+                            expandedGroupColumns: 3,
+                          }}
+                        />
                       </div>
                     </div>
-                    <div className="mt-1 text-[11px] text-slate-400">
-                      {selectedCategory.isSystem
-                        ? "系统内置类别固定显示，不能改名或移动。"
-                        : `移动后，「${selectedCategory.name}」及其子分类会整体移动。`}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleMoveSelectedCategory}
+                      disabled={selectedCategory.isSystem || movingParent || !hasPendingMoveTarget}
+                      className="primary-button h-9 shrink-0 px-3 disabled:opacity-50"
+                    >
+                      {movingParent ? "移动中" : "移动"}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-400">
+                    {selectedCategory.isSystem
+                      ? "系统内置类别固定显示，不能改名或移动。"
+                      : hasPendingMoveTarget
+                        ? `已选择移动到「${selectedMoveTargetLabel}」，点击“移动”后生效。`
+                        : `当前上级：${currentMoveTargetLabel}。选择目标后点击“移动”生效。`}
                   </div>
                 </div>
                 {editError && <div className="mt-2 text-xs text-red-600">{editError}</div>}
@@ -711,19 +744,22 @@ export default function SettingsCategoriesClient({
                               </button>
                             </>
                           ) : !child.isSystem ? (
-                            <button onClick={(e) => { e.stopPropagation(); startInlineEdit(child); }}
-                              className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
-                              title="修改名称">
-                              <Pencil className="w-3 h-3" />
-                            </button>
+                            <SettingsActionButton
+                              label="修改名称"
+                              variant="edit"
+                              size="sm"
+                              onClick={(e) => { e.stopPropagation(); startInlineEdit(child); }}
+                            />
                           ) : (
                             <span className="h-6 w-6" />
                           )}
                           {!child.isSystem && (
-                            <button onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }}
-                              className="h-6 w-6 flex items-center justify-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500">
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+                            <SettingsActionButton
+                              label="删除分类"
+                              variant="delete"
+                              size="sm"
+                              onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }}
+                            />
                           )}
                         </div>
                       </div>

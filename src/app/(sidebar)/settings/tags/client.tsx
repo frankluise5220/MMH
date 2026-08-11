@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import { Pencil, Trash2, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
+  SettingsActionButton,
   SettingsEmptyRow,
   SettingsPageHeader,
   SettingsPrimaryAddButton,
@@ -118,22 +119,16 @@ export default function SettingsTagsClient({
                 </SettingsTd>
                 <SettingsTd align="right">
                   <SettingsRowActions>
-                    <button
-                      type="button"
+                    <SettingsActionButton
+                      label="编辑标签"
+                      variant="edit"
                       onClick={() => setEditing(tag)}
-                      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:text-blue-600"
-                      title="编辑标签"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
+                    />
+                    <SettingsActionButton
+                      label="删除标签"
+                      variant="delete"
                       onClick={() => handleDelete(tag.id)}
-                      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"
-                      title="删除标签"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    />
                   </SettingsRowActions>
                 </SettingsTd>
               </tr>

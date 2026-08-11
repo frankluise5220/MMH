@@ -1,13 +1,14 @@
 ﻿"use client";
 
 import { useState, useEffect } from "react";
-import { Trash2, Pencil, Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
-import { SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
+import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
@@ -52,6 +53,7 @@ function normalizedAccountKind(account: Pick<Account, "kind" | "investProductTyp
 }
 
 export default function SettingsAccountsPage() {
+  const searchParams = useSearchParams();
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
     let text: string = t(key);
@@ -76,6 +78,7 @@ export default function SettingsAccountsPage() {
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
@@ -285,7 +288,7 @@ export default function SettingsAccountsPage() {
       <SettingsPageHeader
         sticky
         title={t("settings.accounts.title")}
-        description="维护资金、信用卡、投资、贷款等账户及其默认机构、所有人和业务参数。"
+        description={guideAccountSetup ? "先补齐现金、借记卡、信用卡等资金账户；新增普通账户时可同时填写时间节点和余额，生成期初余额锚点。" : "维护资金、信用卡、投资、贷款等账户及其默认机构、所有人和业务参数。"}
         count={filteredAccounts.length}
         actions={<SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>}
         toolbar={
@@ -562,21 +565,24 @@ export default function SettingsAccountsPage() {
                     </div>
                     <div className="flex items-center gap-1 shrink-0 ml-3">
                       {!a.isPlaceholder && (
-                      <button onClick={() => toggleActive(a.id)}
-                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                        title={a.isActive ? t("common.disabled") : t("common.enabled")}>
-                        {a.isActive ? <PowerOff className="w-3 h-3 text-slate-400" /> : <Power className="w-3 h-3 text-amber-500" />}
-                      </button>
+                      <SettingsActionButton
+                        label={a.isActive ? t("common.disabled") : t("common.enabled")}
+                        icon={a.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+                        onClick={() => toggleActive(a.id)}
+                      />
                       )}
                       {!a.isPlaceholder && (
-                      <button onClick={() => openEdit(a)}
-                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50"
-                        title={t("common.edit")}>
-                        <Pencil className="w-3 h-3 text-slate-400" />
-                      </button>
+                      <SettingsActionButton
+                        label={t("common.edit")}
+                        variant="edit"
+                        onClick={() => openEdit(a)}
+                      />
                       )}
                       {!a.isPlaceholder && (
-                      <button onClick={async () => {
+                      <SettingsActionButton
+                        label={t("common.delete")}
+                        variant="delete"
+                        onClick={async () => {
                         if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
                         const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
                         const data = await res.json();
@@ -592,10 +598,7 @@ export default function SettingsAccountsPage() {
                         }
                         window.alert(data.error);
                       }}
-                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200"
-                        title={t("common.delete")}>
-                        <Trash2 className="w-3 h-3 text-slate-400" />
-                      </button>
+                      />
                       )}
                     </div>
                   </div>
@@ -620,6 +623,7 @@ export default function SettingsAccountsPage() {
         open={showCreateAccount}
         onClose={() => setShowCreateAccount(false)}
         fieldData={{ groupId: groups, institutionId: institutions }}
+        includeInitialBalanceFields={guideAccountSetup}
         onCreated={() => {
           setShowCreateAccount(false);
           void refreshSettingsAccounts("account:create");

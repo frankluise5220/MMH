@@ -36,8 +36,9 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { TransactionType, AccountKind, FundSubtype, RegularInvestStatus } from "@prisma/client";
+import { TransactionType, AccountKind, FundCashFlowKind, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { logger } from "@/lib/logger";
@@ -155,27 +156,34 @@ export async function POST(req: NextRequest) {
           const arrivalDate = item.arrivalDate ? new Date(item.arrivalDate) : null;
           const cashAccName = item.cashAccountId ? (cashAccountMap.get(item.cashAccountId) ?? "资金账户") : "资金账户";
 
-          // 创建买入记录
-          await tx.txRecord.create({
-            data: {
-              householdId,
-              date,
-              type: TransactionType.investment,
-              accountId: item.cashAccountId ?? investAcc.id,
-              accountName: cashAccName,
-              toAccountId: investAcc.id,
-              toAccountName: investAcc.name,
-              amount: -totalCost,
-              fundCode,
-              fundProductType: investAcc.investProductType ?? "fund",
-              fundSubtype: FundSubtype.buy,
-              source: "initialization",
-              fundUnits: units,
-              fundNav: avgCost,
-              fundConfirmDate: date,
-              fundArrivalDate: arrivalDate ?? date,
-              note: `[初始化]${fundCode} 持仓初始 ${units} 份`,
-            },
+          // 创建买入业务记录；TxRecord 只保存真实资金账户现金流。
+          await createFundTransactionWithCashFlows(tx, {
+            householdId,
+            fundAccountId: investAcc.id,
+            cashAccountId: item.cashAccountId ?? null,
+            fundCode,
+            fundName: fundCode,
+            fundProductType: investAcc.investProductType ?? "fund",
+            fundSubtype: FundSubtype.buy,
+            source: "initialization",
+            applyDate: date,
+            confirmDate: date,
+            arrivalDate: arrivalDate ?? date,
+            grossAmount: totalCost,
+            nav: avgCost,
+            units,
+            note: `[初始化]${fundCode} 持仓初始 ${units} 份`,
+            cashFlows: item.cashAccountId
+              ? [{
+                  kind: FundCashFlowKind.buy_out,
+                  date,
+                  accountId: item.cashAccountId,
+                  accountName: cashAccName,
+                  amount: -totalCost,
+                  source: "initialization",
+                  note: `[初始化]${fundCode} 持仓初始 ${units} 份`,
+                }]
+              : [],
           });
 
           // 如果有历史盈亏，创建现金分红记录，recalcPositions 会自动累加到 historicalProfit
@@ -183,46 +191,34 @@ export async function POST(req: NextRequest) {
             const divAmount = Math.abs(historicalProfit);
             const cashId = item.cashAccountId ?? investAcc.id;
             const cashName = cashAccName;
-            if (historicalProfit > 0) {
-              // 盈利：投资账户(发起) → 现金账户(接收), 金额为正
-              await tx.txRecord.create({
-                data: {
-                  householdId,
-                  date,
-                  type: TransactionType.investment,
-                  accountId: investAcc.id,
-                  accountName: investAcc.name,
-                  toAccountId: cashId,
-                  toAccountName: cashName,
-                  amount: divAmount,
-                  fundCode,
-                  fundProductType: investAcc.investProductType ?? "fund",
-                  fundSubtype: FundSubtype.dividend_cash,
-                  source: "initialization",
-                  note: `[初始化]${fundCode} 历史已实现盈利`,
-                },
-              });
-            } else {
-              // 亏损：现金账户(发起) → 投资账户(接收), 金额为负（recalc 中 dividend_cash 按正值加）
-              // 用负的 dividend_cash 表示亏损
-              await tx.txRecord.create({
-                data: {
-                  householdId,
-                  date,
-                  type: TransactionType.investment,
-                  accountId: cashId,
-                  accountName: cashName,
-                  toAccountId: investAcc.id,
-                  toAccountName: investAcc.name,
-                  amount: -divAmount,
-                  fundCode,
-                  fundProductType: investAcc.investProductType ?? "fund",
-                  fundSubtype: FundSubtype.dividend_cash,
-                  source: "initialization",
-                  note: `[初始化]${fundCode} 历史已实现亏损`,
-                },
-              });
-            }
+            await createFundTransactionWithCashFlows(tx, {
+              householdId,
+              fundAccountId: investAcc.id,
+              cashAccountId: item.cashAccountId ?? null,
+              fundCode,
+              fundName: fundCode,
+              fundProductType: investAcc.investProductType ?? "fund",
+              fundSubtype: FundSubtype.dividend_cash,
+              source: "initialization",
+              applyDate: date,
+              confirmDate: date,
+              arrivalDate: arrivalDate ?? date,
+              grossAmount: divAmount,
+              arrivalAmount: divAmount,
+              realizedProfit: historicalProfit,
+              note: `[初始化]${fundCode} 历史已实现${historicalProfit > 0 ? "盈利" : "亏损"}`,
+              cashFlows: item.cashAccountId
+                ? [{
+                    kind: FundCashFlowKind.dividend_in,
+                    date: arrivalDate ?? date,
+                    accountId: cashId,
+                    accountName: cashName,
+                    amount: historicalProfit > 0 ? divAmount : -divAmount,
+                    source: "initialization",
+                    note: `[初始化]${fundCode} 历史已实现${historicalProfit > 0 ? "盈利" : "亏损"}`,
+                  }]
+                : [],
+            });
           }
 
           // 重算持仓

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
+import { FundCashFlowKind, FundSubtype, Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
     const fundUnitsDecimals = normalizeFundUnitsDecimals(fundAcc.fundUnitsDecimals);
 
     const cashAcc = plan.cashAccountId
-      ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
+      ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true, currency: true } })
       : null;
 
     const task = decodeScheduledTaskMemo(plan.memo);
@@ -342,13 +342,13 @@ export async function POST(req: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       await acquireScheduledTaskPlanLock(tx, planId);
 
-      const existingForRunDate = await tx.txRecord.findFirst({
+      const existingForRunDate = await tx.fundTransaction.findFirst({
         where: {
           householdId,
           regularInvestPlanId: planId,
           source: "regular_invest",
           deletedAt: null,
-          date: runDate,
+          applyDate: runDate,
         },
         select: { id: true },
       });
@@ -360,56 +360,50 @@ export async function POST(req: NextRequest) {
       // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
       // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
       if (sgzt === "暂停申购") {
-        const failedBuy = await tx.txRecord.create({
-          data: {
-            householdId,
-            type: TransactionType.investment,
-            date: runDate,
-            accountId: cashAcc?.id ?? fundAcc.id,
-            accountName: cashAcc?.name ?? fundAcc.name,
-            toAccountId: fundAcc.id,
-            toAccountName: fundAcc.name,
-            amount: -amountNum,
-            fundCode: plan.fundCode,
-            fundName: plan.fundName || plan.fundCode,
-            fundProductType: plan.fundProductType || fundAcc.investProductType,
-            fundSubtype: "buy_failed",
-            source: "regular_invest",
-            fundFee: null,
-            fundConfirmDate: confirmDate,
-            fundArrivalDate: arrivalDate,
-            fundNav: null,
-            fundUnits: null,
-            regularInvestPlanId: planId,
-            note: `基金暂停申购 ${plan.fundCode}`,
-          },
+        await createFundTransactionWithCashFlows(tx, {
+          householdId,
+          fundAccountId: fundAcc.id,
+          cashAccountId: cashAcc?.id ?? null,
+          fundCode: plan.fundCode,
+          fundName: plan.fundName || plan.fundCode,
+          fundProductType: plan.fundProductType || fundAcc.investProductType,
+          fundSubtype: FundSubtype.buy_failed,
+          source: "regular_invest",
+          applyDate: runDate,
+          confirmDate,
+          arrivalDate,
+          grossAmount: amountNum,
+          refundAmount: amountNum,
+          fee: null,
+          nav: null,
+          units: null,
+          regularInvestPlanId: planId,
+          note: `基金暂停申购 ${plan.fundCode}`,
+          cashFlows: cashAcc ? [
+            {
+              kind: FundCashFlowKind.buy_out,
+              date: runDate,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              amount: -amountNum,
+              currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
+              source: "regular_invest",
+              regularInvestPlanId: planId,
+              note: `基金暂停申购 ${plan.fundCode}`,
+            },
+            {
+              kind: FundCashFlowKind.refund_in,
+              date: arrivalDate,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              amount: amountNum,
+              currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
+              source: "regular_invest_refund",
+              regularInvestPlanId: planId,
+              note: `基金暂停申购，资金退回 ${plan.fundCode}`,
+            },
+          ] : [],
         });
-        const refund = await tx.txRecord.create({
-          data: {
-            householdId,
-            type: TransactionType.investment,
-            date: runDate,
-            accountId: fundAcc.id,
-            accountName: fundAcc.name,
-            toAccountId: cashAcc?.id ?? fundAcc.id,
-            toAccountName: cashAcc?.name ?? fundAcc.name,
-            amount: -amountNum,
-            fundCode: plan.fundCode,
-            fundName: plan.fundName || plan.fundCode,
-            fundProductType: plan.fundProductType || fundAcc.investProductType,
-            fundSubtype: "buy_failed",
-            source: "regular_invest_refund",
-            fundFee: null,
-            fundConfirmDate: confirmDate,
-            fundArrivalDate: arrivalDate,
-            fundNav: null,
-            fundUnits: null,
-            fundSourceEntryId: failedBuy.id,
-            regularInvestPlanId: planId,
-            note: `基金暂停申购，资金退回 ${plan.fundCode}`,
-          },
-        });
-        await syncFundTransactionsFromTxRecords([failedBuy.id, refund.id], tx);
 
         // 更新定投计划（暂停申购也算一次执行）
         await tx.regularInvestPlan.update({
@@ -424,34 +418,38 @@ export async function POST(req: NextRequest) {
         return { buyFailed: true };
       }
 
-      // 创建 TxRecord，直接包含所有基金字段
-      const createdBuy = await tx.txRecord.create({
-        data: {
-          householdId,
-          type: TransactionType.investment,
+      await createFundTransactionWithCashFlows(tx, {
+        householdId,
+        fundAccountId: fundAcc.id,
+        cashAccountId: cashAcc?.id ?? null,
+        fundCode: plan.fundCode,
+        fundName: plan.fundName || plan.fundCode,
+        fundProductType: plan.fundProductType || fundAcc.investProductType,
+        fundSubtype: FundSubtype.buy,
+        source: "regular_invest",
+        applyDate: runDate,
+        confirmDate,
+        arrivalDate,
+        grossAmount: amountNum,
+        fee: feeAmount,
+        nav: fundNav,
+        units: fundUnits,
+        regularInvestPlanId: planId,
+        note: regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode),
+        cashFlows: cashAcc ? [{
+          kind: FundCashFlowKind.buy_out,
           date: runDate,
-          accountId: cashAcc?.id ?? fundAcc.id,
-          accountName: cashAcc?.name ?? fundAcc.name,
-          toAccountId: fundAcc.id,
-          toAccountName: fundAcc.name,
+          accountId: cashAcc.id,
+          accountName: cashAcc.name,
           amount: -amountNum,
-          fundCode: plan.fundCode,
-          fundName: plan.fundName || plan.fundCode,
-          fundProductType: plan.fundProductType || fundAcc.investProductType,
-          fundSubtype: "buy",
+          currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
           source: "regular_invest",
           categoryId: category?.id ?? null,
           categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
-          fundFee: feeAmount,
-          fundConfirmDate: confirmDate,
-          fundArrivalDate: arrivalDate,
-          fundNav: fundNav,
-          fundUnits: fundUnits,
           regularInvestPlanId: planId,
           note: regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode),
-        },
+        }] : [],
       });
-      await syncFundTransactionsFromTxRecords([createdBuy.id], tx);
 
       // 更新定投计划
       await tx.regularInvestPlan.update({

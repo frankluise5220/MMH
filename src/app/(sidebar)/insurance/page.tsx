@@ -325,7 +325,7 @@ export default async function InsurancePage() {
                   </div>
 
                   <div className="mt-3 overflow-auto">
-                    <table className="min-w-[720px] w-full border-separate border-spacing-0">
+                    <table className="w-full table-fixed border-separate border-spacing-0">
                       <thead>
                         <tr>
                           <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">日期</th>

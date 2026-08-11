@@ -100,4 +100,4 @@ GitHub 会按标签把改动分组生成一版说明。然后再手工补一句�
 - 面向用户的 Release 说明，优先写“这次能感知到什么变化”。
 - 不要把内部重构、临时调试、无感知的小修补写得太重。
 - 如果某次更新会影响 NAS 安装、Docker 更新、安卓兼容性，要单独写清楚。
-- 如果发布包含飞牛 fnOS 包，确认 Release 资产里有唯一用户安装包 `mmh.fpk`；不要发布第二个 `.fpk`，也不要把 `*-fpk-source.tgz` 写成用户安装包。普通 NAS Docker 更新仍按镜像 / Compose 路线说明。
+- 如果发布包含飞牛 fnOS 包，确认 Release 资产里有同一 `appname=mmh` 下的架构化安装包：x86 兼容别名 `mmh.fpk`、显式 `mmh-x86_64.fpk`、ARM64 `mmh-arm64.fpk`；不要发布第二个应用 ID，也不要把 `*-fpk-source.tgz` 写成用户安装包。普通 NAS Docker 更新仍按镜像 / Compose 路线说明。

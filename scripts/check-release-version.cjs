@@ -23,6 +23,15 @@ function findMmhApp(payload, key) {
   return apps.find((app) => app.id === "mmh");
 }
 
+function fnosDownloadUrls(version) {
+  const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
+  return {
+    x86: `${base}/mmh.fpk`,
+    x86_64: `${base}/mmh-x86_64.fpk`,
+    arm64: `${base}/mmh-arm64.fpk`,
+  };
+}
+
 const pkg = readJson("package.json");
 const version = String(pkg.version || "").trim();
 const releaseNotes = String(pkg.mmhReleaseNotes || "").trim();
@@ -41,8 +50,16 @@ for (const [file, key] of [
   const app = findMmhApp(readJson(file), key);
   expect(app, `${file} must contain the mmh app entry.`);
   if (!app) continue;
+  const downloadUrls = fnosDownloadUrls(version);
   expect(app.version === version, `${file} version must match package.json.`);
-  expect(app.download_url === `https://github.com/frankluise5220/MMH/releases/download/v${version}/mmh.fpk`, `${file} download_url must use the unified v${version} Release tag.`);
+  expect(app.platform === "x86", `${file} platform must keep x86 as the legacy default platform.`);
+  expect(Array.isArray(app.platforms), `${file} platforms must list supported fnOS architectures.`);
+  expect(app.platforms?.includes("x86"), `${file} platforms must include x86.`);
+  expect(app.platforms?.includes("arm"), `${file} platforms must include arm.`);
+  expect(app.download_url === downloadUrls.x86, `${file} download_url must keep the x86 legacy mmh.fpk URL for v${version}.`);
+  expect(app.download_urls?.x86 === downloadUrls.x86, `${file} download_urls.x86 must use the unified v${version} Release tag.`);
+  expect(app.download_urls?.x86_64 === downloadUrls.x86_64, `${file} download_urls.x86_64 must use the unified v${version} Release tag.`);
+  expect(app.download_urls?.arm64 === downloadUrls.arm64, `${file} download_urls.arm64 must use the unified v${version} Release tag.`);
   expect(app.changelog === releaseNotes, `${file} changelog must match package.json mmhReleaseNotes.`);
 }
 

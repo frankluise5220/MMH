@@ -27,7 +27,9 @@ export type FundPositionEntryLike = {
   confirmDate: string | null;
   arrivalDate: string | null;
   netBuyAmount?: number | null;
+  pendingBuyAmount?: number | null;
   effectiveUnits?: number | null;
+  realizedProfit?: number | null;
 };
 
 function entryCalcDate(e: FundPositionEntryLike): string {
@@ -52,14 +54,17 @@ export type FundPositionCalcResult = {
   realizedProfitByEntryId: Map<string, number>;
 };
 
-function buyCostBasis(amount: number, fee: number | null | undefined = 0): number {
+function buyCostBasis(amount: number): number {
   const a = Math.abs(toNum(amount));
-  const f = Math.min(a, Math.max(0, toNum(fee ?? 0)));
-  return a > 0 ? Math.max(0, a - f) : 0;
+  return a > 0 ? a : 0;
 }
 
 function buyEntryCostBasis(e: FundPositionEntryLike, amount: number): number {
-  return e.netBuyAmount != null ? Math.max(0, toNum(e.netBuyAmount)) : buyCostBasis(amount, e.fee);
+  return e.netBuyAmount != null ? Math.max(0, toNum(e.netBuyAmount)) : buyCostBasis(amount);
+}
+
+function pendingBuyAmount(e: FundPositionEntryLike, amount: number): number {
+  return e.pendingBuyAmount != null ? Math.max(0, toNum(e.pendingBuyAmount)) : buyEntryCostBasis(e, amount);
 }
 
 function redeemProceeds(e: FundPositionEntryLike, amount: number): number {
@@ -88,12 +93,11 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
 
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);
-      const a = costBasis;
       const u = e.units ?? 0;
-      if (u === 0) rec.pendingCost += a;
+      if (u === 0) rec.pendingCost += pendingBuyAmount(e, amount);
       else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
     } else if (subtype === "dividend_cash") {
-      rec.historicalProfit += Math.abs(amount);
+      rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
       if (e.units != null && e.units > 0) {
         const avgCost = rec.units > 0 ? rec.cost / rec.units : 0;
@@ -143,12 +147,11 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
 
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);
-      const a = costBasis;
       const u = e.units ?? 0;
-      if (u === 0) { rec.pendingCost += a; }
+      if (u === 0) { rec.pendingCost += pendingBuyAmount(e, amount); }
       else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
     } else if (subtype === "dividend_cash") {
-      rec.historicalProfit += Math.abs(amount);
+      rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
       const cutoff = e.confirmDate ?? "";
 
@@ -298,11 +301,14 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
     .map(e => {
       const amount = toNum(e.amount);
       const storedUnits = e.fundUnits != null ? roundFundUnits(toNum(e.fundUnits), fundUnitsDecimals) : null;
+      const grossAfterRefund = e.fundSubtype === "buy"
+        ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(e.id) ?? 0))
+        : null;
       const netBuyAmount = e.fundSubtype === "buy"
-        ? Math.max(0, Math.abs(amount) - (refundAmountByBuyId.get(e.id) ?? 0) - toNum(e.fundFee ?? 0))
+        ? grossAfterRefund
         : null;
       const effectiveUnits = e.fundSubtype === "buy" && storedUnits != null
-        ? roundFundUnits(getEffectiveBuyUnits(storedUnits, amount, netBuyAmount), fundUnitsDecimals)
+        ? roundFundUnits(getEffectiveBuyUnits(storedUnits), fundUnitsDecimals)
         : storedUnits;
       return {
         id: e.id,
@@ -318,6 +324,7 @@ export async function recalcFundPositions(accountId: string, fundCodes?: string[
         arrivalDate: e.fundArrivalDate ? e.fundArrivalDate.toISOString().slice(0, 10) : null,
         netBuyAmount,
         effectiveUnits,
+        realizedProfit: e.realizedProfit != null ? toNum(e.realizedProfit) : null,
       };
     });
 

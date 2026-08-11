@@ -1,18 +1,19 @@
 /**
  * 投资余额与持仓显示层计算
  *
- * 显示层规则：基金类显示数据从 FundHolding 读取，贵金属从 PreciousMetalHolding 读取。
- * 不同资产类型保持独立数据源，避免把贵金属混入基金持仓。
+ * 显示层规则：基金类显示数据从 FundHolding 读取，股票从 StockHolding 读取，贵金属从 PreciousMetalHolding 读取。
+ * 不同资产类型保持独立数据源，避免把股票/贵金属混入基金持仓。
  * 读取时不再触发重算，避免重复计算。
  */
 
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
-import { AccountKind, FundSubtype } from "@prisma/client";
+import { AccountKind, FundCashFlowKind, FundSubtype } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 
 export type InvestBalanceDetail = {
   marketValue: number;
@@ -73,6 +74,62 @@ function wealthDisplayCode(productName: string, productId?: string | null) {
   return productId || productName;
 }
 
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function holdingKey(accountId: string, fundCode: string) {
+  return `${accountId}::${fundCode}`;
+}
+
+function displayPendingAmount(row: {
+  grossAmount: unknown;
+  refundAmount: unknown;
+  cashFlows: Array<{ kind: FundCashFlowKind | string; amount: unknown }>;
+}) {
+  const gross = Math.abs(toNumber(row.grossAmount));
+  const refundByRow = Math.abs(toNumber(row.refundAmount));
+  const refundByFlows = row.cashFlows
+    .filter((flow) => flow.kind === FundCashFlowKind.refund_in)
+    .reduce((sum, flow) => sum + Math.abs(toNumber(flow.amount)), 0);
+  return Math.max(0, gross - Math.max(refundByRow, refundByFlows));
+}
+
+async function loadDisplayPendingCostByHoldingKey(ctx: HouseholdContext, accountIds: string[]) {
+  const result = new Map<string, number>();
+  if (accountIds.length === 0) return result;
+
+  const pendingRows = await prisma.fundTransaction.findMany({
+    where: {
+      ...ctx.hidFilter,
+      fundAccountId: { in: accountIds },
+      fundSubtype: FundSubtype.buy,
+      deletedAt: null,
+      OR: [
+        { units: null },
+        { units: { lte: 0 } },
+      ],
+    },
+    select: {
+      fundAccountId: true,
+      fundCode: true,
+      grossAmount: true,
+      refundAmount: true,
+      cashFlows: {
+        select: { kind: true, amount: true },
+      },
+    },
+  });
+
+  for (const row of pendingRows) {
+    if (!row.fundAccountId || !row.fundCode) continue;
+    const key = holdingKey(row.fundAccountId, row.fundCode);
+    result.set(key, roundMoney((result.get(key) ?? 0) + displayPendingAmount(row)));
+  }
+
+  return result;
+}
+
 const WEALTH_PRINCIPAL_EPS = 0.01;
 const WEALTH_UNITS_EPS = 0.000001;
 
@@ -111,7 +168,11 @@ export const computeInvestBalances = cache(
   const wealthAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "wealth")
     .map((account) => account.id);
-  const fundAccountIds = investIds.filter((id) => !metalAccountIds.includes(id) && !wealthAccountIds.includes(id));
+  const stockAccountIds = accounts
+    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "stock")
+    .map((account) => account.id);
+  const nonFundAccountIds = new Set([...metalAccountIds, ...wealthAccountIds, ...stockAccountIds]);
+  const fundAccountIds = investIds.filter((id) => !nonFundAccountIds.has(id));
 
   const allHoldings = await prisma.fundHolding.findMany({
     where: { accountId: { in: fundAccountIds } },
@@ -122,6 +183,13 @@ export const computeInvestBalances = cache(
   const allWealthTransactions = await prisma.wealthTransaction.findMany({
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
   });
+  const allStockHoldings = await prisma.stockHolding.findMany({
+    where: { accountId: { in: stockAccountIds } },
+  });
+  const stockCashBalanceByAccountId = await computeAccountDisplayBalances(
+    stockAccountIds.map((id) => ({ id, kind: AccountKind.investment, investProductType: "stock" })),
+    ctx.hidFilter,
+  );
 
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
   for (const holding of allHoldings) {
@@ -134,6 +202,7 @@ export const computeInvestBalances = cache(
   }
 
   const fundCodes = [...new Set(allHoldings.map(h => h.fundCode))];
+  const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, fundAccountIds);
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
     const caches = await getLatestFundNavMap(fundCodes);
@@ -153,14 +222,16 @@ export const computeInvestBalances = cache(
 
     for (const h of holdings) {
       const units = toNumber(h.units);
-      const cost = toNumber(h.cost);
-      const pending = toNumber(h.pendingCost);
+      const storedCost = toNumber(h.cost);
+      const storedPending = toNumber(h.pendingCost);
+      const displayPending = displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0;
+      const displayCost = Math.max(0, storedCost - storedPending) + displayPending;
       const navInfo = latestNavByCode.get(h.fundCode);
       const latestNav = navInfo?.nav ?? toNumber(h.nav ?? 0);
-      const confirmedCost = cost - pending;
+      const confirmedCost = Math.max(0, storedCost - storedPending);
       const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
-      marketValue += confirmedMV + pending;
-      totalCost += cost;
+      marketValue += confirmedMV + displayPending;
+      totalCost += displayCost;
     }
 
     const floatingPnL = marketValue - totalCost;
@@ -229,6 +300,16 @@ export const computeInvestBalances = cache(
     result.set(acctId, { marketValue, totalCost: marketValue, floatingPnL: 0 });
   }
 
+  for (const acctId of stockAccountIds) {
+    const holdings = allStockHoldings.filter((holding) => holding.accountId === acctId);
+    const cashBalance = stockCashBalanceByAccountId.get(acctId) ?? 0;
+    const holdingMarketValue = holdings.reduce((sum, holding) => sum + toNumber(holding.marketValue), 0);
+    const holdingCost = holdings.reduce((sum, holding) => sum + toNumber(holding.cost), 0);
+    const marketValue = holdingMarketValue + cashBalance;
+    const totalCost = holdingCost + cashBalance;
+    result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
+  }
+
   return result;
 },
 );
@@ -236,7 +317,7 @@ export const computeInvestBalances = cache(
 /**
  * 计算单个投资账户的持仓明细显示数据（显示层）
  *
- * 数据源：基金账户读 FundHolding + FundNavCache；贵金属账户读 PreciousMetalHolding。
+ * 数据源：基金账户读 FundHolding + FundNavCache；股票账户读 StockHolding；贵金属账户读 PreciousMetalHolding。
  * 不再从 entries 逐条累加计算，保证与 Sidebar/invest 页面数字一致
  */
 /** 缓存版本：同一 HTTP 请求内不重复计算 */
@@ -250,13 +331,84 @@ export const computePositionDisplay = cache(
     totalMarketValue: number;
     totalCost: number;
     totalHistoricalProfit: number;
+    cashBalance?: number;
+    cashAccountId?: string | null;
+    cashAccountName?: string | null;
+    totalAssetValue?: number;
   }> => {
   const account = await prisma.account.findFirst({
     where: { id: accountId, ...ctx.hidFilter },
-    select: { investProductType: true },
+    select: { investProductType: true, institutionId: true },
   });
   if (!account) {
     return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, totalHistoricalProfit: 0 };
+  }
+
+  if (account.investProductType === "stock") {
+    const stockHoldings = await prisma.stockHolding.findMany({
+      where: { accountId },
+      orderBy: [{ market: "asc" }, { stockCode: "asc" }],
+    });
+    const positions: PositionDisplayRow[] = stockHoldings
+      .filter((holding) => toNumber(holding.quantity) > 0.000001)
+      .map((holding) => {
+        const quantity = toNumber(holding.quantity);
+        const cost = toNumber(holding.cost);
+        const latestPrice = holding.latestPrice != null ? toNumber(holding.latestPrice) : null;
+        const marketValue = toNumber(holding.marketValue);
+        const floatingPnL = marketValue - cost;
+        return {
+          fundCode: `${holding.market}:${holding.stockCode}`,
+          name: holding.stockName || holding.stockCode,
+          holdingDate: "",
+          units: quantity,
+          avgCost: toNumber(holding.avgCost),
+          cost,
+          nav: latestPrice,
+          navDate: "",
+          marketValue,
+          floatingPnL,
+          floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+          pendingCost: 0,
+          historicalProfit: toNumber(holding.historicalProfit),
+        };
+      });
+    const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+    const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+    const totalHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const brokerageCashAccount = account.institutionId
+      ? await prisma.account.findFirst({
+          where: {
+            ...(ctx.hidFilter ?? {}),
+            institutionId: account.institutionId,
+            kind: { in: [AccountKind.bank_debit, AccountKind.cash, AccountKind.ewallet] },
+            isPlaceholder: { not: true },
+          },
+          select: { id: true, name: true, kind: true, investProductType: true },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        })
+      : null;
+    const cashAccountId = brokerageCashAccount?.id ?? accountId;
+    const stockCashBalanceMap = await computeAccountDisplayBalances(
+      [{
+        id: cashAccountId,
+        kind: brokerageCashAccount?.kind ?? AccountKind.investment,
+        investProductType: brokerageCashAccount?.investProductType ?? "stock",
+      }],
+      ctx.hidFilter,
+    );
+    const cashBalance = stockCashBalanceMap.get(cashAccountId) ?? 0;
+    return {
+      positions,
+      clearedPositions: [],
+      totalMarketValue,
+      totalCost,
+      totalHistoricalProfit,
+      cashBalance,
+      cashAccountId,
+      cashAccountName: brokerageCashAccount?.name ?? null,
+      totalAssetValue: totalMarketValue + cashBalance,
+    };
   }
 
   if (account.investProductType === "metal") {
@@ -469,6 +621,7 @@ export const computePositionDisplay = cache(
   const isMoney = account?.investProductType === "money";
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
+  const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
   const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
   if (fundCodes.length > 0 && !isMoney) {
     const caches = await getLatestFundNavMap(fundCodes);
@@ -484,8 +637,10 @@ export const computePositionDisplay = cache(
 
   for (const h of holdings) {
     const units = toNumber(h.units);
-    const cost = toNumber(h.cost);
-    const pending = toNumber(h.pendingCost);
+    const storedCost = toNumber(h.cost);
+    const storedPending = toNumber(h.pendingCost);
+    const pending = displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0;
+    const cost = Math.max(0, storedCost - storedPending) + pending;
     const avgCost = toNumber(h.avgCost);
     const navInfo = isMoney ? { nav: 1, date: "", name: null } : latestNavByCode.get(h.fundCode);
     const latestNav = navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0);
@@ -493,7 +648,7 @@ export const computePositionDisplay = cache(
     const displayName = navInfo?.name ?? h.fundName ?? h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
 
-    const confirmedCost = cost - pending;
+    const confirmedCost = Math.max(0, storedCost - storedPending);
     const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
     const marketValue = confirmedMV + pending;
     const floatingPnL = marketValue - cost;

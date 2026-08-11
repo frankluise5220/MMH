@@ -5,11 +5,17 @@ import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many"
 import type { CurrentUser } from "@/lib/server/auth";
 
 export const BACKUP_FORMAT_VERSION = 3;
-const ENCRYPTED_BACKUP_PACKAGE_VERSION = 2;
+const ENCRYPTED_BACKUP_PACKAGE_VERSION = 3;
 const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";
 const BACKUP_PACKAGE_KEY_SETTING = "backup_package_encryption_key";
+const BACKUP_PASSPHRASE_KEY_SOURCE = "passphrase";
+const BACKUP_PASSPHRASE_KDF = "pbkdf2-sha256";
+const BACKUP_PASSPHRASE_KDF_ITERATIONS = 210_000;
 
 type ExportedBy = Pick<CurrentUser, "id" | "name" | "role"> | null;
+type BackupPackageEncryptionOptions = {
+  passphrase?: string | null;
+};
 
 export type HouseholdBackupPayload = Awaited<ReturnType<typeof buildHouseholdBackupPayload>>;
 
@@ -295,9 +301,105 @@ async function getBackupPackageKey() {
   return decodeBackupPackageKey(existing.value);
 }
 
-export async function encryptBackupPayload(payload: HouseholdBackupPayload) {
-  const iv = crypto.randomBytes(12);
+function normalizeBackupPassphrase(value: string | null | undefined) {
+  const passphrase = String(value ?? "").trim();
+  return passphrase || null;
+}
+
+function deriveBackupPassphraseKey(passphrase: string, salt: Buffer, iterations: number) {
+  return new Promise<Buffer>((resolve, reject) => {
+    crypto.pbkdf2(passphrase, salt, iterations, 32, "sha256", (error, key) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(key);
+    });
+  });
+}
+
+function backupPassphraseIterations(value: unknown) {
+  const iterations = Number(value ?? BACKUP_PASSPHRASE_KDF_ITERATIONS);
+  if (!Number.isInteger(iterations) || iterations < 100_000 || iterations > 1_000_000) {
+    restoreError("备份加密参数错误");
+  }
+  return iterations;
+}
+
+function decodeBackupPassphraseSalt(value: unknown) {
+  const salt = Buffer.from(String(value ?? ""), "base64");
+  if (salt.length < 16) {
+    restoreError("备份加密参数错误");
+  }
+  return salt;
+}
+
+async function getBackupEncryptionKey(options: BackupPackageEncryptionOptions = {}) {
+  const passphrase = normalizeBackupPassphrase(options.passphrase);
+  if (passphrase) {
+    const salt = crypto.randomBytes(16);
+    const iterations = BACKUP_PASSPHRASE_KDF_ITERATIONS;
+    const key = await deriveBackupPassphraseKey(passphrase, salt, iterations);
+    return {
+      key,
+      metadata: {
+        keySource: BACKUP_PASSPHRASE_KEY_SOURCE,
+        kdf: BACKUP_PASSPHRASE_KDF,
+        iterations,
+        salt: salt.toString("base64"),
+      },
+    };
+  }
+
   const key = await getOrCreateBackupPackageKey();
+  return {
+    key,
+    metadata: {
+      keySource: BACKUP_PACKAGE_KEY_SETTING,
+    },
+  };
+}
+
+async function getBackupDecryptionKey(
+  encryption: Record<string, unknown>,
+  options: BackupPackageEncryptionOptions = {},
+) {
+  const keySource = String(encryption.keySource ?? "");
+  if (keySource === BACKUP_PASSPHRASE_KEY_SOURCE) {
+    if (String(encryption.kdf ?? "") !== BACKUP_PASSPHRASE_KDF) {
+      restoreError("不支持的备份加密口令格式");
+    }
+    const passphrase = normalizeBackupPassphrase(options.passphrase);
+    if (!passphrase) {
+      restoreError("请输入备份加密口令，或输入创建备份时使用的用户密码");
+    }
+    return deriveBackupPassphraseKey(
+      passphrase,
+      decodeBackupPassphraseSalt(encryption.salt),
+      backupPassphraseIterations(encryption.iterations),
+    );
+  }
+
+  if (keySource === BACKUP_PACKAGE_KEY_SETTING) {
+    try {
+      return await getBackupPackageKey();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("缺少备份解密密钥")) {
+        restoreError("这是旧版系统密钥加密备份，当前系统缺少原备份解密密钥；请在创建该备份的系统重新导出新版口令备份，或恢复包含该密钥的旧环境。");
+      }
+      throw error;
+    }
+  }
+
+  restoreError("不支持的备份加密密钥来源");
+}
+
+export async function encryptBackupPayload(
+  payload: HouseholdBackupPayload,
+  options: BackupPackageEncryptionOptions = {},
+) {
+  const iv = crypto.randomBytes(12);
+  const { key, metadata } = await getBackupEncryptionKey(options);
   const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
   const ciphertext = Buffer.concat([
     cipher.update(JSON.stringify(payload), "utf8"),
@@ -313,7 +415,7 @@ export async function encryptBackupPayload(payload: HouseholdBackupPayload) {
     scope: payload.scope,
     encryption: {
       algorithm: ENCRYPTED_BACKUP_ALGORITHM,
-      keySource: BACKUP_PACKAGE_KEY_SETTING,
+      ...metadata,
       iv: iv.toString("base64"),
       authTag: cipher.getAuthTag().toString("base64"),
     },
@@ -321,7 +423,10 @@ export async function encryptBackupPayload(payload: HouseholdBackupPayload) {
   };
 }
 
-export async function decryptBackupPackage(raw: unknown) {
+export async function decryptBackupPackage(
+  raw: unknown,
+  options: BackupPackageEncryptionOptions = {},
+) {
   const packageObject = ensureObject(raw, "payload");
   if (packageObject.encrypted !== true) return raw;
   if (packageObject.app !== "MMH" || packageObject.packageType !== "encrypted-backup") {
@@ -333,12 +438,7 @@ export async function decryptBackupPackage(raw: unknown) {
     restoreError("不支持的备份加密格式");
   }
 
-  const keySource = String(encryption.keySource ?? "");
-  if (keySource !== BACKUP_PACKAGE_KEY_SETTING) {
-    restoreError("不支持的备份加密密钥来源");
-  }
-
-  const key = await getBackupPackageKey();
+  const key = await getBackupDecryptionKey(encryption, options);
   try {
     const iv = Buffer.from(String(encryption.iv ?? ""), "base64");
     const authTag = Buffer.from(String(encryption.authTag ?? ""), "base64");
@@ -423,6 +523,11 @@ export async function buildHouseholdBackupPayload(
     wealthTransactions,
     depositTransactions,
     preciousMetalTransactions,
+    stockSecurities,
+    stockHoldings,
+    stockTransactions,
+    stockPriceCache,
+    stockFeeRules,
     entryBusinessLinks,
     systemSettings,
     accessKeys,
@@ -459,6 +564,11 @@ export async function buildHouseholdBackupPayload(
     prisma.wealthTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.depositTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.stockSecurity.findMany({ where: { householdId }, orderBy: [{ market: "asc" }, { stockCode: "asc" }] }),
+    prisma.stockHolding.findMany({ where: { householdId }, orderBy: [{ accountId: "asc" }, { market: "asc" }, { stockCode: "asc" }] }),
+    prisma.stockTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.stockPriceCache.findMany({ where: { StockSecurity: { is: { householdId } } }, orderBy: [{ priceDate: "asc" }, { market: "asc" }, { stockCode: "asc" }] }),
+    prisma.stockFeeRule.findMany({ where: { Account: { householdId } }, orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }] }),
     prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
     prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
@@ -542,7 +652,8 @@ export async function buildHouseholdBackupPayload(
         insuranceTransactions.length +
         wealthTransactions.length +
         depositTransactions.length +
-        preciousMetalTransactions.length,
+        preciousMetalTransactions.length +
+        stockTransactions.length,
       systemSettings: systemSettings.length,
       accessKeys: accessKeys.length,
       aiChannels: aiChannels.length,
@@ -589,6 +700,11 @@ export async function buildHouseholdBackupPayload(
       wealthTransactions,
       depositTransactions,
       preciousMetalTransactions,
+      stockSecurities,
+      stockHoldings,
+      stockTransactions,
+      stockPriceCache,
+      stockFeeRules,
       entryBusinessLinks,
       attachments,
       entryTags,
@@ -639,6 +755,11 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
     ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
     ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
+    ["StockSecurities", sheetRows(payload.data.stockSecurities)],
+    ["StockHoldings", sheetRows(payload.data.stockHoldings)],
+    ["StockTransactions", sheetRows(payload.data.stockTransactions)],
+    ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
+    ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -710,6 +831,11 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
     ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
     ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
+    ["StockSecurities", sheetRows(payload.data.stockSecurities)],
+    ["StockHoldings", sheetRows(payload.data.stockHoldings)],
+    ["StockTransactions", sheetRows(payload.data.stockTransactions)],
+    ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
+    ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -782,6 +908,11 @@ export function parseBackupPayload(raw: unknown) {
       wealthTransactions: ensureArray(data.wealthTransactions ?? [], "data.wealthTransactions"),
       depositTransactions: ensureArray(data.depositTransactions ?? [], "data.depositTransactions"),
       preciousMetalTransactions: ensureArray(data.preciousMetalTransactions ?? [], "data.preciousMetalTransactions"),
+      stockSecurities: ensureArray(data.stockSecurities ?? [], "data.stockSecurities"),
+      stockHoldings: ensureArray(data.stockHoldings ?? [], "data.stockHoldings"),
+      stockTransactions: ensureArray(data.stockTransactions ?? [], "data.stockTransactions"),
+      stockPriceCache: ensureArray(data.stockPriceCache ?? [], "data.stockPriceCache"),
+      stockFeeRules: ensureArray(data.stockFeeRules ?? [], "data.stockFeeRules"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
@@ -825,6 +956,17 @@ export async function restoreHouseholdBackup(
   const importedPreciousMetalTypes = new Set(data.preciousMetalTypes.map((item) => String(item.id)));
   const importedPreciousMetalUnits = new Set(data.preciousMetalUnits.map((item) => String(item.id)));
   const importedFundTransactions = new Set(data.fundTransactions.map((item) => String(item.id)));
+  const importedStockSecurities = new Set(data.stockSecurities.map((item) => String(item.id)));
+  const importedStockTransactions = new Set(
+    data.stockTransactions
+      .filter(
+        (item) =>
+          importedAccounts.has(String(item.stockAccountId)) &&
+          (!item.cashAccountId || importedAccounts.has(String(item.cashAccountId))) &&
+          (!item.securityId || importedStockSecurities.has(String(item.securityId))),
+      )
+      .map((item) => String(item.id)),
+  );
   const importedInsuranceTransactions = new Set(data.insuranceTransactions.map((item) => String(item.id)));
   const importedWealthTransactions = new Set(data.wealthTransactions.map((item) => String(item.id)));
   const importedDepositTransactions = new Set(data.depositTransactions.map((item) => String(item.id)));
@@ -883,6 +1025,11 @@ export async function restoreHouseholdBackup(
     await tx.wealthTransaction.deleteMany({ where: { householdId } });
     await tx.depositTransaction.deleteMany({ where: { householdId } });
     await tx.preciousMetalTransaction.deleteMany({ where: { householdId } });
+    await tx.stockTransaction.deleteMany({ where: { householdId } });
+    await tx.stockPriceCache.deleteMany({ where: { StockSecurity: { is: { householdId } } } });
+    await tx.stockFeeRule.deleteMany({ where: { Account: { householdId } } });
+    await tx.stockHolding.deleteMany({ where: { householdId } });
+    await tx.stockSecurity.deleteMany({ where: { householdId } });
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
 
@@ -895,6 +1042,8 @@ export async function restoreHouseholdBackup(
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
+      await tx.stockHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
+      await tx.stockFeeRule.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundFeeRate.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.billOverride.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -1359,6 +1508,94 @@ export async function restoreHouseholdBackup(
       });
     }
 
+    if (data.stockSecurities.length > 0) {
+      await createManySkipDuplicatesCompat(
+        tx.stockSecurity,
+        data.stockSecurities.map((item) => ({
+          id: String(item.id),
+          householdId,
+          market: String(item.market ?? "CN"),
+          stockCode: String(item.stockCode ?? ""),
+          stockName: String(item.stockName ?? item.stockCode ?? ""),
+          currency: item.currency == null ? "CNY" : String(item.currency),
+          exchange: item.exchange == null ? null : String(item.exchange),
+          isActive: item.isActive == null ? true : Boolean(item.isActive),
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
+      );
+    }
+
+    if (data.stockHoldings.length > 0) {
+      await createManySkipDuplicatesCompat(
+        tx.stockHolding,
+        data.stockHoldings
+          .filter((item) => importedAccounts.has(String(item.accountId)) && importedStockSecurities.has(String(item.securityId)))
+          .map((item) => ({
+            id: String(item.id),
+            householdId,
+            accountId: String(item.accountId),
+            securityId: String(item.securityId),
+            market: String(item.market ?? "CN"),
+            stockCode: String(item.stockCode ?? ""),
+            stockName: item.stockName == null ? null : String(item.stockName),
+            quantity: item.quantity == null ? "0" : String(item.quantity),
+            avgCost: item.avgCost == null ? "0" : String(item.avgCost),
+            cost: item.cost == null ? "0" : String(item.cost),
+            latestPrice: item.latestPrice == null ? null : String(item.latestPrice),
+            marketValue: item.marketValue == null ? "0" : String(item.marketValue),
+            historicalProfit: item.historicalProfit == null ? "0" : String(item.historicalProfit),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
+      );
+    }
+
+    if (data.stockPriceCache.length > 0) {
+      await createManySkipDuplicatesCompat(
+        tx.stockPriceCache,
+        data.stockPriceCache
+          .filter((item) => !item.securityId || importedStockSecurities.has(String(item.securityId)))
+          .map((item) => ({
+            id: String(item.id),
+            securityId: item.securityId && importedStockSecurities.has(String(item.securityId)) ? String(item.securityId) : null,
+            market: String(item.market ?? "CN"),
+            stockCode: String(item.stockCode ?? ""),
+            priceDate: item.priceDate ? new Date(String(item.priceDate)) : new Date(),
+            closePrice: item.closePrice == null ? "0" : String(item.closePrice),
+            currency: item.currency == null ? "CNY" : String(item.currency),
+            source: item.source == null ? "manual" : String(item.source),
+            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
+      );
+    }
+
+    if (data.stockFeeRules.length > 0) {
+      await createManySkipDuplicatesCompat(
+        tx.stockFeeRule,
+        data.stockFeeRules
+          .filter((item) => importedAccounts.has(String(item.accountId)) && (!item.securityId || importedStockSecurities.has(String(item.securityId))))
+          .map((item) => ({
+            id: String(item.id),
+            accountId: String(item.accountId),
+            securityId: item.securityId && importedStockSecurities.has(String(item.securityId)) ? String(item.securityId) : null,
+            market: item.market == null ? null : String(item.market),
+            stockCode: item.stockCode == null ? null : String(item.stockCode),
+            feeType: String(item.feeType ?? "commission") as never,
+            direction: String(item.direction ?? "both") as never,
+            rate: item.rate == null ? null : String(item.rate),
+            amount: item.amount == null ? null : String(item.amount),
+            minAmount: item.minAmount == null ? null : String(item.minAmount),
+            currency: item.currency == null ? "CNY" : String(item.currency),
+            effectiveDate: item.effectiveDate ? new Date(String(item.effectiveDate)) : new Date(),
+            source: item.source == null ? "manual" : String(item.source),
+            note: item.note == null ? null : String(item.note),
+            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
+      );
+    }
+
     if (data.preciousMetalHoldings.length > 0) {
       await createManySkipDuplicatesCompat(
         tx.preciousMetalHolding,
@@ -1811,6 +2048,55 @@ export async function restoreHouseholdBackup(
     );
 
     await createManyRecords(
+      tx.stockTransaction,
+      data.stockTransactions
+        .filter(
+          (item) =>
+            importedAccounts.has(String(item.stockAccountId)) &&
+            (!item.cashAccountId || importedAccounts.has(String(item.cashAccountId))) &&
+            (!item.securityId || importedStockSecurities.has(String(item.securityId))),
+        )
+        .map((item) => ({
+          ...item,
+          householdId,
+          stockAccountId: String(item.stockAccountId),
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+          securityId:
+            item.securityId && importedStockSecurities.has(String(item.securityId))
+              ? String(item.securityId)
+              : null,
+          market: String(item.market ?? "CN"),
+          stockCode: String(item.stockCode ?? ""),
+          stockName: item.stockName == null ? null : String(item.stockName),
+          action: String(item.action ?? "buy") as never,
+          source: item.source == null ? "manual" : String(item.source),
+          grossAmount: item.grossAmount == null ? "0" : String(item.grossAmount),
+          netAmount: item.netAmount == null ? null : String(item.netAmount),
+          quantity: item.quantity == null ? null : String(item.quantity),
+          price: item.price == null ? null : String(item.price),
+          fee: item.fee == null ? null : String(item.fee),
+          commission: item.commission == null ? null : String(item.commission),
+          stampTax: item.stampTax == null ? null : String(item.stampTax),
+          transferFee: item.transferFee == null ? null : String(item.transferFee),
+          exchangeFee: item.exchangeFee == null ? null : String(item.exchangeFee),
+          regulatoryFee: item.regulatoryFee == null ? null : String(item.regulatoryFee),
+          otherFee: item.otherFee == null ? null : String(item.otherFee),
+          realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
+          externalLinkId: item.externalLinkId == null ? null : String(item.externalLinkId),
+          brokerTradeId: item.brokerTradeId == null ? null : String(item.brokerTradeId),
+          note: item.note == null ? null : String(item.note),
+        })),
+      new Set(["settleDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
       tx.fundTransactionCashFlow,
       data.fundTransactionCashFlows
         .filter(
@@ -1859,6 +2145,10 @@ export async function restoreHouseholdBackup(
         preciousMetalTransactionId:
           item.preciousMetalTransactionId && importedPreciousMetalTransactions.has(String(item.preciousMetalTransactionId))
             ? String(item.preciousMetalTransactionId)
+            : null,
+        stockTransactionId:
+          item.stockTransactionId && importedStockTransactions.has(String(item.stockTransactionId))
+            ? String(item.stockTransactionId)
             : null,
       })),
       new Set(["deletedAt"]),

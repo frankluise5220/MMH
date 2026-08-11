@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AccountKind, FundSubtype, Prisma, TransactionType } from "@prisma/client";
+import { AccountKind, FundCashFlowKind, FundSubtype, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
@@ -11,7 +11,7 @@ import {
 import { getFundConfirmRule, normalizeNonNegativeDays, setFundConfirmRuleInTx } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -411,32 +411,6 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
   const isDividendReinvest = subtype === "dividend_reinvest";
   const isBuyFailedRefund = subtype === "buy_failed" && source === "regular_invest_refund";
 
-  let accountId: string;
-  let accountName: string;
-  let toAccountId: string | null;
-  let toAccountName: string | null;
-  let signedAmount: number;
-
-  if (redeemLike || isDividendCash || isBuyFailedRefund) {
-    accountId = fundAccount.id;
-    accountName = fundAccount.name;
-    toAccountId = cashAccount?.id ?? null;
-    toAccountName = cashAccount?.name ?? null;
-    signedAmount = amountAbs;
-  } else if (isDividendReinvest) {
-    accountId = fundAccount.id;
-    accountName = fundAccount.name;
-    toAccountId = fundAccount.id;
-    toAccountName = fundAccount.name;
-    signedAmount = -amountAbs;
-  } else {
-    accountId = cashAccount?.id ?? fundAccount.id;
-    accountName = cashAccount?.name ?? fundAccount.name;
-    toAccountId = fundAccount.id;
-    toAccountName = fundAccount.name;
-    signedAmount = -amountAbs;
-  }
-
   const confirmDate = item.confirmDate ? toUtcDate(item.confirmDate) : null;
   const arrivalDate = item.arrivalDate ? toUtcDate(item.arrivalDate) : (
     (subtype === "buy" || isBuyFailedRefund) && item.confirmDate && item.arrivalDays != null
@@ -455,31 +429,53 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
     })
     : item.units;
 
-  const created = await tx.txRecord.create({
-    data: {
-      householdId,
-      type: TransactionType.investment,
-      date: recordDate,
-      accountId,
-      accountName,
-      toAccountId,
-      toAccountName,
-      amount: signedAmount,
-      fundCode: item.fundCode,
-      fundName: item.fundName || item.fundCode,
-      fundProductType: (item.fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null) ?? "fund",
-      fundSubtype: subtype as FundSubtype,
+  const cashFlows: FundCashFlowInput[] = [];
+  if (cashAccount && !isDividendReinvest) {
+    const cashAmount = redeemLike || isDividendCash || isBuyFailedRefund ? amountAbs : -amountAbs;
+    const kind = isBuyFailedRefund
+      ? FundCashFlowKind.refund_in
+      : redeemLike
+        ? FundCashFlowKind.redeem_in
+        : isDividendCash
+          ? FundCashFlowKind.dividend_in
+          : FundCashFlowKind.buy_out;
+    cashFlows.push({
+      kind,
+      date: isBuyFailedRefund || redeemLike || isDividendCash ? arrivalDate ?? recordDate : recordDate,
+      accountId: cashAccount.id,
+      accountName: cashAccount.name,
+      amount: cashAmount,
       source,
-      fundUnits: normalizedUnits ?? undefined,
-      fundNav: item.nav ?? undefined,
-      fundFee: item.fee ?? undefined,
-      fundConfirmDate: confirmDate ?? undefined,
-      fundArrivalDate: arrivalDate ?? undefined,
-      note: item.remark || undefined,
-    },
+      note: item.remark || item.fundName || item.fundCode,
+    });
+  }
+
+  const created = await createFundTransactionWithCashFlows(tx, {
+    householdId,
+    fundAccountId: fundAccount.id,
+    cashAccountId: cashAccount?.id ?? null,
+    fundCode: item.fundCode,
+    fundName: item.fundName || item.fundCode,
+    fundProductType: item.fundProductType ?? "fund",
+    fundSubtype: subtype as FundSubtype,
+    source,
+    applyDate: recordDate,
+    confirmDate,
+    arrivalDate,
+    grossAmount: amountAbs,
+    refundAmount: isBuyFailedRefund ? amountAbs : 0,
+    arrivalAmount: redeemLike || isDividendCash || isBuyFailedRefund ? amountAbs : null,
+    fee: item.fee ?? null,
+    nav: item.nav ?? null,
+    units: normalizedUnits ?? null,
+    note: item.remark || null,
+    cashFlows,
   });
 
-  return created;
+  return {
+    id: created.cashEntry?.id ?? created.fundTransaction.id,
+    fundTransactionId: created.fundTransaction.id,
+  };
 }
 
 export async function OPTIONS() {
@@ -538,7 +534,6 @@ export async function POST(req: Request) {
         }
         rows.push(await createFundTransaction(tx, householdId, item));
       }
-      await syncFundTransactionsFromTxRecords(rows.map((row) => row.id), tx);
       return rows;
     }, {
       maxWait: 10_000,

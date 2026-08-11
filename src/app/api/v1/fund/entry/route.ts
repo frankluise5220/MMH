@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { FundCashFlowKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
@@ -9,10 +10,24 @@ import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 
+function cashFlowDateForKind(kind: FundCashFlowKind, applyDate?: Date, arrivalDate?: Date | null) {
+  if (kind === FundCashFlowKind.buy_out || kind === FundCashFlowKind.switch_in) return applyDate;
+  if (
+    kind === FundCashFlowKind.redeem_in ||
+    kind === FundCashFlowKind.refund_in ||
+    kind === FundCashFlowKind.dividend_in ||
+    kind === FundCashFlowKind.switch_out
+  ) {
+    return arrivalDate ?? undefined;
+  }
+  return undefined;
+}
+
 /**
  * 修改交易明细
  * PUT /api/v1/fund/entry
  * Body: { id, date?, fundConfirmDate?, fundArrivalDate?, ...其他字段 }
+ * id 可以是 FundTransaction.id，也可以是关联资金 TxRecord.id；服务端会解析到基金业务交易。
  *
  * 特殊逻辑：
  * - 如果修改了申请日期(date)，自动重新计算确认日期(fundConfirmDate)和入账日期(fundArrivalDate)
@@ -29,68 +44,75 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
     }
 
-    const entry = await prisma.txRecord.findUnique({
-      where: { id },
-      include: { toAccount: true },
-    });
+    const entry = await findFundTransactionForEntryId(prisma, { id, householdId });
 
-    if (!entry) {
-      return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
-    }
-
-    if (entry.householdId && entry.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
+    if (!entry || entry.deletedAt) {
+      return NextResponse.json({ ok: false, error: "基金交易记录不存在" }, { status: 404 });
     }
 
     const updateData: any = {};
+    let nextApplyDate: Date | undefined;
+    let nextArrivalDate: Date | null | undefined;
 
     // 如果修改了申请日期
     if (date) {
-      updateData.date = new Date(date);
+      nextApplyDate = new Date(date);
+      updateData.applyDate = nextApplyDate;
 
       // 自动计算确认日期
       if (autoCalcConfirmDate !== false) {
-        const confirmDays = entry.fundCode && entry.toAccountId
-          ? await getFundConfirmDays(entry.toAccountId, entry.fundCode)
-          : 1;
+        const confirmDays = await getFundConfirmDays(entry.fundAccountId, entry.fundCode);
         const dateStr = new Date(date).toISOString().slice(0, 10);
         const newConfirmDateStr = addWorkdaysUtc(dateStr, confirmDays);
-        updateData.fundConfirmDate = new Date(`${newConfirmDateStr}T00:00:00.000Z`);
+        updateData.confirmDate = new Date(`${newConfirmDateStr}T00:00:00.000Z`);
       }
     }
 
     // 确认日期由前端传入
     if (fundConfirmDate && !date) {
-      updateData.fundConfirmDate = new Date(fundConfirmDate);
+      updateData.confirmDate = new Date(fundConfirmDate);
     }
 
     // 到账日期由前端传入（手工填写或由 arrivalDays 推算）
     if (fundArrivalDate) {
-      updateData.fundArrivalDate = new Date(fundArrivalDate);
+      nextArrivalDate = new Date(fundArrivalDate);
+      updateData.arrivalDate = nextArrivalDate;
     }
 
-    // 更新记录
-    const updated = await prisma.txRecord.update({
-      where: { id },
-      data: updateData,
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.fundTransaction.update({
+        where: { id: entry.id },
+        data: updateData,
+      });
+
+      const flows = await tx.fundTransactionCashFlow.findMany({
+        where: { fundTransactionId: entry.id },
+      });
+      for (const flow of flows) {
+        const flowDate = cashFlowDateForKind(flow.kind, nextApplyDate, nextArrivalDate);
+        if (!flowDate) continue;
+        await tx.fundTransactionCashFlow.update({
+          where: { id: flow.id },
+          data: { flowDate },
+        });
+        await tx.txRecord.update({
+          where: { id: flow.txRecordId },
+          data: { date: flowDate },
+        }).catch(() => undefined);
+      }
+
+      await ensureFundTransactionCashFlowLinks(tx, [entry.id]);
+      return row;
     });
-    await syncFundTransactionsFromTxRecords([id]);
 
-    // 重新计算持仓 — 区分买入/赎回确定投资账户ID
-    // 买入类：accountId=资金账户, toAccountId=投资账户
-    // 赠回类：accountId=投资账户, toAccountId=资金账户
-    const isRedeemLike = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-    const investmentAccId = isRedeemLike ? entry.accountId : entry.toAccountId;
-    if (investmentAccId && entry.fundCode) {
-      await recalcFundPositions(investmentAccId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
-    }
+    await recalcFundPositions(entry.fundAccountId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
     // 刷新涉及的账户余额
     const accountsToRecalc = new Set<string>();
-    if (entry.accountId) accountsToRecalc.add(entry.accountId);
-    if (entry.toAccountId) accountsToRecalc.add(entry.toAccountId);
-    if (updated.accountId) accountsToRecalc.add(updated.accountId);
-    if (updated.toAccountId) accountsToRecalc.add(updated.toAccountId);
+    if (entry.fundAccountId) accountsToRecalc.add(entry.fundAccountId);
+    if (entry.cashAccountId) accountsToRecalc.add(entry.cashAccountId);
+    if (updated.fundAccountId) accountsToRecalc.add(updated.fundAccountId);
+    if (updated.cashAccountId) accountsToRecalc.add(updated.cashAccountId);
     for (const acctId of accountsToRecalc) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }
@@ -113,38 +135,47 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
     }
 
-    const entry = await prisma.txRecord.findUnique({
-      where: { id },
+    const entry = await findFundTransactionForEntryId(prisma, { id, householdId });
+
+    if (!entry || entry.deletedAt) {
+      return NextResponse.json({ ok: false, error: "基金交易记录不存在" }, { status: 404 });
+    }
+
+    const deletedAt = new Date();
+    const flowRows = await prisma.fundTransactionCashFlow.findMany({
+      where: { fundTransactionId: entry.id },
+    });
+    const cashEntryIds = Array.from(new Set([
+      entry.cashEntryId,
+      ...flowRows.map((flow) => flow.txRecordId),
+    ].filter((value): value is string => Boolean(value))));
+
+    await prisma.$transaction(async (tx) => {
+      await tx.fundTransaction.update({
+        where: { id: entry.id },
+        data: { deletedAt },
+      });
+      if (cashEntryIds.length > 0) {
+        await tx.txRecord.updateMany({
+          where: { id: { in: cashEntryIds }, householdId },
+          data: { deletedAt },
+        });
+      }
+      await tx.entryBusinessLink.updateMany({
+        where: { householdId, fundTransactionId: entry.id, deletedAt: null },
+        data: { deletedAt },
+      });
     });
 
-    if (!entry) {
-      return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
-    }
-
-    if (entry.householdId && entry.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
-    }
-
-    // 区分买入/赎回确定投资账户ID
-    const isRedeemLike = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-    const investmentAccId = isRedeemLike ? entry.accountId : entry.toAccountId;
-    const fundCode = entry.fundCode;
-
-    // 软删除 TxRecord
-    await prisma.txRecord.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
-    await syncFundTransactionsFromTxRecords([id]);
-
-    if (investmentAccId && fundCode) {
-      await recalcFundPositions(investmentAccId, [fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
-    }
+    await recalcFundPositions(entry.fundAccountId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
     // 刷新涉及的账户余额
     const accountsToRecalc = new Set<string>();
-    if (entry.accountId) accountsToRecalc.add(entry.accountId);
-    if (entry.toAccountId) accountsToRecalc.add(entry.toAccountId);
+    if (entry.fundAccountId) accountsToRecalc.add(entry.fundAccountId);
+    if (entry.cashAccountId) accountsToRecalc.add(entry.cashAccountId);
+    for (const flow of flowRows) {
+      if (flow.accountId) accountsToRecalc.add(flow.accountId);
+    }
     for (const acctId of accountsToRecalc) {
       await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
     }

@@ -44,10 +44,10 @@ POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"
 
 图形界面安装使用的是静态 `.env` 文件，Docker 不会自动生成这个密码。
 
-不修改也可以启动，系统会把 `CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD` 当成真实数据库密码使用。正式使用建议改成自己的密码，例如：
+不修改也可以启动，系统会把 `CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD` 当成真实数据库密码使用。正式使用请改成自己生成的长随机密码，例如：
 
 ```env
-POSTGRES_PASSWORD="mMh2026u7r9x4q2p8v6k3s5d1"
+POSTGRES_PASSWORD="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD"
 ```
 
 密码建议使用 24 位以上的字母和数字。改好后请保存；以后排查数据库问题时可能会用到。

@@ -1,6 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ArrowLeftRight } from "lucide-react";
+import {
+  SettingsActionButton,
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS, PATH_PLACEHOLDER } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
@@ -245,7 +256,7 @@ function ModelModal({
                   onClick={onCancel}>取消</button>
                 <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                   onClick={handleFetch} disabled={fetching}>
-                  {fetching ? "获取中…" : "获取模型列表"}
+                  {fetching ? "获取中…" : "获取模型"}
                 </button>
               </div>
             </>
@@ -297,7 +308,6 @@ export default function AISettingsClient({
   const [activeModel, setActiveModel] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
-  const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [quickAdd, setQuickAdd] = useState<ModelEntry | null>(null);
   const [quickFetching, setQuickFetching] = useState(false);
   const [quickModelList, setQuickModelList] = useState<ModelInfo[]>([]);
@@ -364,7 +374,6 @@ export default function AISettingsClient({
     const entry = models.find(m => m.id === id);
     if (!entry) return;
     setModels(prev => prev.filter(m => m.id !== id));
-    setMenuOpen(null);
     if (activeModel === entry.name) {
       const remaining = models.filter(m => m.id !== id);
       const nextActive = remaining[0]?.name ?? "";
@@ -376,7 +385,6 @@ export default function AISettingsClient({
   function handleSetDefault(name: string) {
     saveActiveModel(name);
     setActiveModel(name);
-    setMenuOpen(null);
   }
 
   function handleQuickAdd(base: ModelEntry) {
@@ -397,8 +405,17 @@ export default function AISettingsClient({
 
   function confirmQuickAdd() {
     if (!quickSelected || !quickAdd) return;
+    const existing = models.find(m =>
+      m.model === quickSelected &&
+      (m.channelName || m.name) === (quickAdd.channelName || quickAdd.name),
+    );
+    if (existing) {
+      handleSetDefault(existing.name || existing.model);
+      setQuickAdd(null);
+      return;
+    }
     const info = quickModelList.find(m => m.id === quickSelected) ?? detectModelInfo(quickSelected);
-    handleAddModel({
+    const entry = {
       id: genId(),
       name: quickSelected,
       channelId: "",
@@ -409,7 +426,10 @@ export default function AISettingsClient({
       model: quickSelected,
       category: info.category,
       supportsVision: info.supportsVision,
-    });
+    };
+    handleAddModel(entry);
+    handleSetDefault(entry.name);
+    setQuickAdd(null);
   }
 
   if (!pageReady) {
@@ -418,78 +438,104 @@ export default function AISettingsClient({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">AI 模型管理</h2>
-          <p className="text-xs text-slate-500 leading-relaxed mt-1">
-            管理 AI 渠道和模型，设置默认使用的模型。
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => { setEditingModel(null); setShowModal(true); }}
-            className="h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
-          >
-            + 新渠道
-          </button>
-        </div>
-      </div>
+      <SettingsPageHeader
+        title="AI 模型管理"
+        description="管理 AI 渠道和模型，设置默认使用的模型。"
+        count={models.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => { setEditingModel(null); setShowModal(true); }}>
+            新渠道
+          </SettingsPrimaryAddButton>
+        }
+      />
 
-      {models.length > 0 ? (
-        <div className="flex flex-col gap-1.5 bg-white border border-slate-200 rounded-md p-3">
-          {models.map((m) => {
+      <SettingsTable minWidth={860} maxWidth="full">
+        <thead className="sticky top-0 z-10">
+          <tr>
+            <SettingsTh>模型</SettingsTh>
+            <SettingsTh>渠道</SettingsTh>
+            <SettingsTh>类型</SettingsTh>
+            <SettingsTh>状态</SettingsTh>
+            <SettingsTh align="right">操作</SettingsTh>
+          </tr>
+        </thead>
+        <tbody>
+          {models.length > 0 ? models.map((m) => {
             const name = m.name || m.model;
             const isActive = activeModel === name;
             const info = detectModelInfo(m.model);
             const category = m.category ?? info.category;
             const supportsVision = m.supportsVision ?? info.supportsVision;
             return (
-              <div key={m.id} className={`flex items-center gap-2 h-10 px-3 rounded-md border ${isActive ? "border-blue-300 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
-                <span className={`flex-1 text-sm truncate ${isActive ? "text-blue-700 font-medium" : "text-slate-800"}`}>{name}</span>
-                <span className="text-[11px] text-slate-400 shrink-0">{m.channelId}</span>
-                <span className="text-[11px] text-slate-500 shrink-0">{categoryLabel(category)}</span>
-                {supportsVision && <span className="text-[11px] text-emerald-700 shrink-0">识图</span>}
-                {isActive && <span className="text-[11px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full shrink-0">默认</span>}
-                {/* + 号：用同渠道添加 */}
-                <button className="text-slate-400 hover:text-blue-600 shrink-0 text-sm font-bold" title="基于此渠道添加新模型"
-                  onClick={() => handleQuickAdd(m)}>+</button>
-                {/* 下拉菜单 */}
-                <div className="relative shrink-0">
-                  <button className="text-slate-400 hover:text-slate-600 text-xs" onClick={() => setMenuOpen(menuOpen === m.id ? null : m.id)}>⋮</button>
-                  {menuOpen === m.id && (
-                    <div className="absolute right-0 top-8 z-20 bg-white border border-slate-200 rounded-md shadow-lg py-1 min-w-[120px]">
-                      {!isActive && (
-                        <button className="w-full px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-blue-50"
-                          onClick={() => handleSetDefault(name)}>设为默认</button>
-                      )}
-                      <button className="w-full px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-slate-50"
-                        onClick={() => { setEditingModel(m); setShowModal(true); setMenuOpen(null); }}>编辑</button>
-                      <button className="w-full px-3 py-1.5 text-xs text-left text-red-600 hover:bg-red-50"
-                        onClick={() => handleRemoveModel(m.id)}>删除</button>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <tr key={m.id} className={isActive ? "bg-blue-50/60 hover:bg-blue-50" : "hover:bg-slate-50"}>
+                <SettingsTd className="text-sm">
+                  <div className="min-w-0">
+                    <div className={`truncate font-medium ${isActive ? "text-blue-700" : "text-slate-800"}`}>{name}</div>
+                    {m.model !== name ? <div className="mt-0.5 truncate text-[11px] text-slate-400">{m.model}</div> : null}
+                  </div>
+                </SettingsTd>
+                <SettingsTd>
+                  <div className="min-w-0">
+                    <div className="truncate text-xs text-slate-600">{m.channelName || m.channelId}</div>
+                    <div className="mt-0.5 truncate text-[11px] text-slate-400">{m.channelType}</div>
+                  </div>
+                </SettingsTd>
+                <SettingsTd>{categoryLabel(category)}</SettingsTd>
+                <SettingsTd>
+                  <div className="flex flex-wrap gap-1.5">
+                    {supportsVision ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">识图</span> : null}
+                    {isActive ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700">默认</span> : null}
+                    {!supportsVision && !isActive ? <span className="text-xs text-slate-400">-</span> : null}
+                  </div>
+                </SettingsTd>
+                <SettingsTd align="right">
+                  <SettingsRowActions>
+                    <SettingsActionButton
+                      label="切换模型"
+                      icon={<ArrowLeftRight className="h-3.5 w-3.5" />}
+                      onClick={() => handleQuickAdd(m)}
+                    />
+                    {!isActive ? (
+                      <SettingsActionButton
+                        label="设为默认模型"
+                        variant="defaultMark"
+                        onClick={() => handleSetDefault(name)}
+                      />
+                    ) : null}
+                    <SettingsActionButton
+                      label="编辑模型"
+                      variant="edit"
+                      onClick={() => { setEditingModel(m); setShowModal(true); }}
+                    />
+                    <SettingsActionButton
+                      label="删除模型"
+                      variant="delete"
+                      onClick={() => handleRemoveModel(m.id)}
+                    />
+                  </SettingsRowActions>
+                </SettingsTd>
+              </tr>
             );
-          })}
-        </div>
-      ) : (
-        <div className="h-20 flex flex-col items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-md bg-white">
-          <span>暂无模型</span>
-          <button className="mt-1 text-blue-600 hover:text-blue-700 text-xs" onClick={() => setShowModal(true)}>+ 添加第一个模型</button>
-        </div>
-      )}
+          }) : (
+            <SettingsEmptyRow colSpan={5}>
+              <button className="text-blue-600 hover:text-blue-700 text-xs" onClick={() => setShowModal(true)}>
+                添加第一个模型
+              </button>
+            </SettingsEmptyRow>
+          )}
+        </tbody>
+      </SettingsTable>
 
       {/* 快速添加弹窗 */}
       {quickAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
-              <div className="text-sm font-semibold text-slate-800">从 {quickAdd.channelName || quickAdd.channelId} 添加新模型</div>
+              <div className="text-sm font-semibold text-slate-800">切换 {quickAdd.channelName || quickAdd.channelId} 模型</div>
             </div>
             <div className="p-5 space-y-3">
               {quickFetching ? (
-                <div className="text-sm text-slate-500 text-center py-4">获取模型列表中…</div>
+                <div className="text-sm text-slate-500 text-center py-4">获取模型中…</div>
               ) : quickModelList.length > 0 ? (
                 <>
                   <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={quickSelected} onChange={e => setQuickSelected(e.target.value)}>
@@ -515,7 +561,7 @@ export default function AISettingsClient({
               )}
               <div className="flex justify-end gap-2">
                 <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={() => setQuickAdd(null)}>取消</button>
-                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={confirmQuickAdd} disabled={!quickSelected}>确认添加</button>
+                <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={confirmQuickAdd} disabled={!quickSelected}>确认切换</button>
               </div>
             </div>
           </div>

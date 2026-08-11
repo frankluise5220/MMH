@@ -48,7 +48,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
   const cookieStore = await cookies();
-  const colorScheme = cookieStore.get("colorScheme")?.value;
+  const colorScheme = cookieStore.get("colorScheme")?.value ?? "red_up_green_down";
   const isRedUp = colorScheme === "red_up_green_down";
 
   const now = new Date();

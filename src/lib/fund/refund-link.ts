@@ -37,9 +37,9 @@ export function calculateConfirmedBuyUnits(params: {
   if (!Number.isFinite(nav) || nav <= 0) return null;
   const fee = Math.max(0, Number(params.fee) || 0);
   const confirmedAmount = getConfirmedBuyAmount(params.grossAmount, params.refundAmount);
-  const principal = Math.max(0, confirmedAmount - fee);
-  if (principal <= 0) return null;
-  const units = principal / nav;
+  const sharePrincipal = Math.max(0, confirmedAmount - fee);
+  if (sharePrincipal <= 0) return null;
+  const units = sharePrincipal / nav;
   return params.roundUnits ? params.roundUnits(units) : units;
 }
 
@@ -158,11 +158,7 @@ export function getNetBuyAmount(entryId: string, grossAmount: number, refundAmou
   return getConfirmedBuyAmount(grossAmount, refundAmountByBuyId.get(entryId) ?? 0);
 }
 
-export function getEffectiveBuyUnits(
-  storedUnits: number | null | undefined,
-  grossAmount: number,
-  netBuyAmount: number | null | undefined,
-) {
+export function getEffectiveBuyUnits(storedUnits: number | null | undefined) {
   const units = Math.max(0, Number(storedUnits) || 0);
   return units;
 }
@@ -171,9 +167,8 @@ export function getEffectiveBuyUnitsByRefunds(
   entry: Pick<RefundLinkableEntry, "id" | "amount"> & { fundUnits?: number | null },
   refundAmountByBuyId: Map<string, number>,
 ) {
-  const gross = Math.max(0, Math.abs(Number(entry.amount) || 0));
-  const net = getNetBuyAmount(entry.id, gross, refundAmountByBuyId);
-  return getEffectiveBuyUnits(entry.fundUnits, gross, net);
+  void refundAmountByBuyId;
+  return getEffectiveBuyUnits(entry.fundUnits);
 }
 
 

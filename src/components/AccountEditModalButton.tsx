@@ -25,7 +25,7 @@ type AccountKindValue =
   | "investment"
   | "loan"
   | "other";
-type FundProductTypeValue = "fund" | "money" | "wealth" | "metal";
+type FundProductTypeValue = "fund" | "money" | "wealth" | "metal" | "stock";
 type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 const ACCOUNT_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
@@ -35,6 +35,7 @@ const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   money: "货币基金",
   wealth: "银行理财",
   metal: "贵金属",
+  stock: "股票",
 };
 
 const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
@@ -286,19 +287,23 @@ export function AccountEditModalButton({
                         </select>
                       </>
                     ) : null}
-                    <div className="mt-2 text-xs text-slate-500">默认净值查询 API</div>
-                    <select
-                      name="defaultFundQueryApiId"
-                      defaultValue={account.defaultFundQueryApiId ?? ""}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    >
-                      <option value="">默认（按优先级尝试）</option>
-                      {fundQueryApis.map((api) => (
-                        <option key={api.id} value={api.id}>
-                          {api.name} ({api.code})
-                        </option>
-                      ))}
-                    </select>
+                    {investProductType === "fund" || investProductType === "money" ? (
+                      <>
+                        <div className="mt-2 text-xs text-slate-500">默认净值查询 API</div>
+                        <select
+                          name="defaultFundQueryApiId"
+                          defaultValue={account.defaultFundQueryApiId ?? ""}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        >
+                          <option value="">默认（按优先级尝试）</option>
+                          {fundQueryApis.map((api) => (
+                            <option key={api.id} value={api.id}>
+                              {api.name} ({api.code})
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    ) : null}
                   </div>
                 ) : null}
 

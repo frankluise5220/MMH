@@ -22,6 +22,7 @@ export type BatchReplaceOption = {
   debtDirection?: string | null;
   institutionId?: string | null;
   currency?: string | null;
+  categoryType?: string | null;
 };
 
 type BatchReplaceSmartSelectBehavior = Extract<SmartSelectProps, { mode: "single" }>["behavior"];

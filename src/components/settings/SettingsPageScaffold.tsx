@@ -137,16 +137,28 @@ export function SettingsSection({
 
 export function SettingsTable({
   minWidth = 760,
+  maxWidth = 960,
+  className,
   children,
 }: {
   minWidth?: number;
+  maxWidth?: number | "full";
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-auto">
-      <table className="w-full table-fixed border-separate border-spacing-0" style={{ minWidth: `min(100%, ${minWidth}px)` }}>
-        {children}
-      </table>
+    <div
+      className={[
+        "w-full overflow-hidden rounded-md border border-slate-200 bg-white",
+        className ?? "",
+      ].join(" ")}
+      style={maxWidth === "full" ? undefined : { maxWidth: `${maxWidth}px` }}
+    >
+      <div className="overflow-auto">
+        <table className="w-full table-fixed border-separate border-spacing-0" style={{ minWidth: `min(100%, ${minWidth}px)` }}>
+          {children}
+        </table>
+      </div>
     </div>
   );
 }

@@ -13,6 +13,8 @@
  *     familyMemberCount: number;
  *     accountCount: number;
  *     cashLikeAccountCount: number;
+ *     defaultMoneyAccountId: string | null;
+ *     defaultMoneyAccountLabel: string | null;
  *     cashAccountCount: number;
  *     debitAccountCount: number;
  *     creditAccountCount: number;
@@ -31,10 +33,16 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { BALANCE_INITIALIZATION_SOURCE } from "@/lib/balance-reconcile";
 
 const CASH_LIKE_KINDS = ["cash", "bank_debit", "ewallet"] as const;
+const DEFAULT_MONEY_ACCOUNT_KIND_ORDER = new Map<string, number>([
+  ["cash", 0],
+  ["bank_debit", 1],
+  ["ewallet", 2],
+]);
 
 export async function GET() {
   try {
@@ -55,11 +63,30 @@ export async function GET() {
         },
         select: {
           id: true,
+          name: true,
           kind: true,
+          numberMasked: true,
+          groupId: true,
           investProductType: true,
+          Institution: { select: { name: true, shortName: true } },
+          AccountGroup: { select: { id: true, name: true } },
         },
+        orderBy: [
+          { createdAt: "asc" },
+          { name: "asc" },
+        ],
       }),
     ]);
+    const cashLikeAccounts = accounts.filter((account) => CASH_LIKE_KINDS.includes(account.kind as typeof CASH_LIKE_KINDS[number]));
+    const defaultMoneyAccount = [...cashLikeAccounts].sort((a, b) => {
+      const orderA = DEFAULT_MONEY_ACCOUNT_KIND_ORDER.get(a.kind) ?? 99;
+      const orderB = DEFAULT_MONEY_ACCOUNT_KIND_ORDER.get(b.kind) ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name, "zh-CN");
+    })[0] ?? null;
+    const defaultMoneyAccountDisplay = defaultMoneyAccount
+      ? buildAccountDisplayOption(defaultMoneyAccount)
+      : null;
     const investmentAccountIds = accounts
       .filter((account) => account.kind === "investment")
       .map((account) => account.id);
@@ -113,7 +140,9 @@ export async function GET() {
         defaultOwnerName: defaultOwner?.name ?? null,
         familyMemberCount,
         accountCount: accounts.length,
-        cashLikeAccountCount: accounts.filter((account) => CASH_LIKE_KINDS.includes(account.kind as typeof CASH_LIKE_KINDS[number])).length,
+        cashLikeAccountCount: cashLikeAccounts.length,
+        defaultMoneyAccountId: defaultMoneyAccount?.id ?? null,
+        defaultMoneyAccountLabel: defaultMoneyAccountDisplay?.fullLabel || defaultMoneyAccountDisplay?.label || defaultMoneyAccount?.name || null,
         cashAccountCount: accounts.filter((account) => account.kind === "cash").length,
         debitAccountCount: accounts.filter((account) => account.kind === "bank_debit").length,
         creditAccountCount: accounts.filter((account) => account.kind === "bank_credit").length,

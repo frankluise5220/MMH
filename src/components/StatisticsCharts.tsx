@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line,
   PieChart, Pie, Cell,
   ComposedChart,
@@ -9,8 +9,6 @@ import {
 import { formatMoney } from "@/lib/format";
 
 const COLORS = {
-  income: "#10b981",
-  expense: "#f43f5e",
   investPnL: "#8b5cf6",
   net: "#3b82f6",
   cumNet: "#06b6d4",
@@ -89,6 +87,8 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
   const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
   const pnlClsText = isRedUp ? "text-red-600" : "text-emerald-700";
   const lossClsText = isRedUp ? "text-emerald-700" : "text-red-600";
+  const incomeChartColor = isRedUp ? "#dc2626" : "#10b981";
+  const expenseChartColor = isRedUp ? "#10b981" : "#dc2626";
   const pnlTypeBadge = (item: PnLItem) => {
     if (item.subtype.includes("分红")) return "bg-emerald-50 text-emerald-600";
     return item.profit >= 0 ? "bg-orange-50 text-orange-600" : "bg-rose-50 text-rose-600";
@@ -104,8 +104,8 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
       {/* ===== 汇总卡片 ===== */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { label: "总收入", value: totalIncome, cls: "text-emerald-600" },
-          { label: "总支出", value: -totalExpense, cls: "text-rose-600" },
+          { label: "总收入", value: totalIncome, cls: pnlClsText },
+          { label: "总支出", value: -totalExpense, cls: lossClsText },
           { label: "净收支", value: totalIncome - totalExpense, cls: pnlCls(totalIncome - totalExpense) },
           { label: "投资盈亏", value: totalInvestPnL, cls: pnlCls(totalInvestPnL) },
           { label: "综合盈亏", value: totalNet, cls: pnlCls(totalNet) },
@@ -137,8 +137,8 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
                   <YAxis tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} tickFormatter={(v) => (v >= 10000 ? `${(v / 10000).toFixed(1)}万` : v)} />
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Bar dataKey="income" name="收入" fill={COLORS.income} radius={[3, 3, 0, 0]} barSize={16} />
-                  <Bar dataKey="expense" name="支出" fill={COLORS.expense} radius={[3, 3, 0, 0]} barSize={16} />
+                  <Bar dataKey="income" name="收入" fill={incomeChartColor} radius={[3, 3, 0, 0]} barSize={16} />
+                  <Bar dataKey="expense" name="支出" fill={expenseChartColor} radius={[3, 3, 0, 0]} barSize={16} />
                   <Line type="monotone" dataKey="netTotal" name="综合盈亏" stroke={COLORS.net} strokeWidth={2} dot={{ r: 3 }} />
                 </ComposedChart>
               </ResponsiveContainer>
@@ -311,7 +311,7 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
         </div>
       )}
 
-      {/* ===== 盈氯列表 ===== */}
+      {/* ===== 盈亏列表 ===== */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="text-sm font-semibold text-slate-800">投资盈亏明细</div>
@@ -321,7 +321,7 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
           <div className="px-4 py-8 text-xs text-slate-400 text-center">暂无已实现盈亏记录</div>
         ) : (
           <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-            <table className="min-w-[600px] w-full border-separate border-spacing-0">
+            <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white z-10">
                 <tr>
                   <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">日期</th>

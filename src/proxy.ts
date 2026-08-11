@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import {
+  extractAccessHostnames,
+  isAccessHostnameAllowed,
+  parseAllowedAccessList,
+} from "@/lib/access-whitelist";
 
 const VERIFIED_KEY = "mmh_access_password_verified";
 const CACHE_TTL = 5_000;
@@ -22,6 +27,10 @@ const PUBLIC_PATHS = [
   "/branding",
 ];
 
+function isPublicPath(pathname: string) {
+  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
 let allowedOriginsCache: string[] | null = null;
 let allowedOriginsCacheTime = 0;
 let originCheckEnabledCache: boolean | null = null;
@@ -40,27 +49,6 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
       clearTimeout(timeoutId);
     }
   }
-}
-
-function normalizeAllowedHostname(value: string) {
-  const raw = value.trim().toLowerCase();
-  if (!raw) return "";
-  try {
-    return new URL(raw.includes("://") ? raw : `http://${raw}`).hostname.toLowerCase();
-  } catch {
-    return raw.split(":")[0]?.trim().toLowerCase() ?? "";
-  }
-}
-
-function isAllowedHostname(hostname: string, allowedList: string[]): boolean {
-  const normalized = normalizeAllowedHostname(hostname);
-  if (!normalized) return false;
-  return allowedList.some((item) => {
-    const allowed = normalizeAllowedHostname(item);
-    if (!allowed) return false;
-    if (allowed.startsWith("*.")) return normalized.endsWith(allowed.slice(1));
-    return normalized === allowed;
-  });
 }
 
 async function isOriginCheckEnabled(): Promise<boolean> {
@@ -87,52 +75,10 @@ async function getAllowedOrigins(): Promise<string[]> {
     LOOKUP_TIMEOUT_MS,
   );
 
-  try {
-    const extra: string[] = row?.value ? JSON.parse(row.value) : [];
-    const normalized = extra.map(normalizeAllowedHostname).filter(Boolean);
-    allowedOriginsCache = Array.from(new Set(normalized));
-  } catch (error) {
-    console.error("[proxy] getAllowedOrigins failed or timed out:", error);
-    allowedOriginsCache = [];
-  }
+  allowedOriginsCache = parseAllowedAccessList(row?.value);
 
   allowedOriginsCacheTime = Date.now();
   return allowedOriginsCache;
-}
-
-function splitHeaderValues(value: string | null): string[] {
-  return (value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function extractForwardedHosts(value: string | null): string[] {
-  return splitHeaderValues(value)
-    .flatMap((entry) => entry.split(";").map((part) => part.trim()))
-    .filter((part) => part.toLowerCase().startsWith("host="))
-    .map((part) => part.slice("host=".length).replace(/^"|"$/g, ""));
-}
-
-function extractRequestHostnames(req: NextRequest): string[] {
-  const candidates: string[] = [];
-  candidates.push(...extractForwardedHosts(req.headers.get("forwarded")));
-  candidates.push(...splitHeaderValues(req.headers.get("x-forwarded-host")));
-
-  const origin = req.headers.get("origin");
-  if (origin) {
-    try {
-      candidates.push(new URL(origin).hostname);
-    } catch {
-      // Ignore malformed Origin; the Host headers still decide access.
-    }
-  }
-
-  const host = req.headers.get("host");
-  if (host) candidates.push(host);
-  if (req.nextUrl.hostname) candidates.push(req.nextUrl.hostname);
-
-  return Array.from(new Set(candidates.map(normalizeAllowedHostname).filter(Boolean)));
 }
 
 export async function proxy(req: NextRequest) {
@@ -141,17 +87,16 @@ export async function proxy(req: NextRequest) {
   const enabled = await isOriginCheckEnabled();
   if (enabled) {
     const allowed = await getAllowedOrigins();
-    const hostnames = extractRequestHostnames(req);
+    const hostnames = extractAccessHostnames(req.headers, req.nextUrl.hostname);
     const hasDisallowedHost =
-      allowed.length > 0 &&
-      (hostnames.length === 0 || hostnames.some((hostname) => !isAllowedHostname(hostname, allowed)));
+      hostnames.length === 0 || hostnames.some((hostname) => !isAccessHostnameAllowed(hostname, allowed));
     if (hasDisallowedHost) {
       console.error("[proxy] Access denied - hostnames:", hostnames, "allowed:", allowed);
-      return new NextResponse("Access Denied - 请联系管理员将您的域名或 IP 添加到访问白名单中", { status: 403 });
+      return new NextResponse("Access Denied - 请联系管理员将您访问的域名或 IP 添加到访问白名单中", { status: 403 });
     }
   }
 
-  if (PUBLIC_PATHS.some((path) => pathname.startsWith(path))) {
+  if (isPublicPath(pathname)) {
     return NextResponse.next();
   }
 

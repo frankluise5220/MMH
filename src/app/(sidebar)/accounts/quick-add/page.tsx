@@ -318,7 +318,7 @@ export default function QuickAddAccountsPage() {
             <div className="py-8 text-center text-sm text-slate-500">请选择银行、账户类型，并填写卡号后 4 位。</div>
           ) : (
             <div className="overflow-auto rounded-lg border border-slate-100">
-              <table className="w-full min-w-[560px] text-sm">
+              <table className="w-full table-fixed text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-500">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">银行</th>

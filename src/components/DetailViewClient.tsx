@@ -346,6 +346,12 @@ function canManuallyReorderDetailEntry(entry: DetailEntry) {
   return getBalanceReconcileTarget(entry) == null;
 }
 
+function batchCategoryTypeForEntry(entry: DetailEntry) {
+  if (entry.type === "expense" || entry.type === "income" || entry.type === "investment") return entry.type;
+  if (entry.source === "advance") return "advance";
+  return "";
+}
+
 function reorderEntriesToTarget(entries: DetailEntry[], sourceId: string, targetId: string, position: AdvancedDataTableDropPosition) {
   const sourceIndex = entries.findIndex((entry) => entry.id === sourceId);
   const targetIndex = entries.findIndex((entry) => entry.id === targetId);
@@ -842,6 +848,15 @@ export function DetailViewClient({
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  const selectedCategoryTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const entry of entries) {
+      if (!selectedIds.has(entry.id)) continue;
+      const categoryType = batchCategoryTypeForEntry(entry);
+      if (categoryType) types.add(categoryType);
+    }
+    return Array.from(types);
+  }, [entries, selectedIds]);
   usePruneBasicDetailSelection(currentEntryIds);
   const detailRefreshSeqRef = useRef(0);
   const lastResetKeyRef = useRef<string | undefined>(resetKey);
@@ -887,14 +902,19 @@ export function DetailViewClient({
         setRefreshedEntries((current) => {
           const currentEntries = current?.accountId === accountId ? current.entries : nextEntries;
           const orderedEntries = applyServerEntryOrder(currentEntries, data.orderedEntryIds ?? []);
-          return { accountId, entries: applyServerRunningBalances(orderedEntries, data.runningBalances) };
+          return {
+            accountId,
+            entries: showRunningBalance
+              ? applyServerRunningBalances(orderedEntries, data.runningBalances)
+              : orderedEntries,
+          };
         });
       }
     } catch (error) {
       setRefreshedEntries({ accountId, entries: previousEntries });
       window.alert(error instanceof Error ? error.message : "调整顺序失败");
     }
-  }, [accountId, canDropDetailEntry, entries, persistEntryReorder]);
+  }, [accountId, canDropDetailEntry, entries, persistEntryReorder, showRunningBalance]);
 
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
@@ -1216,7 +1236,7 @@ export function DetailViewClient({
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
       {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
       {selectedCount > 0 && toolbarTitle ? <span className="h-4 w-px bg-slate-200" /> : null}
       {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
@@ -1353,7 +1373,7 @@ export function DetailViewClient({
       rowActionsMinWidth={92}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
+          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

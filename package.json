@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
-  "mmhReleaseNotes": "备份和恢复都改为再次验证当前用户名和密码；发布加密 .mmh-backup 恢复包、表格导出和更明确的恢复失败提示；飞牛版版本信息显示 FNOS 标识。",
+  "mmhReleaseNotes": "备份和恢复都改为只验证当前用户密码，并支持备份加密口令；发布加密 .mmh-backup 恢复包、表格导出和更明确的恢复失败提示；飞牛版版本信息显示 FNOS 标识。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

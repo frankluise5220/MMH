@@ -10,7 +10,7 @@
 - `better-sqlite3.node` 来自不兼容目标系统的构建环境，可能要求高于 fnOS 1.2 / Debian 12 的 GLIBC 版本。
 - `wizard/uninstall` 会让 FN 软仓的非交互式“先卸载再安装”更新链路失败；飞牛 CLI 输出错误但退出码仍为 0，软仓会误报安装成功。
 
-下一次官方提交必须重新生成统一版本 `.fpk`，并通过 `npm run check:release-version` 与 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
+下一次官方提交必须为 x86 和 ARM64 重新生成同一版本 `.fpk`，并通过 `npm run check:release-version` 与 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
 
 ## 历史作废包
 
@@ -25,13 +25,16 @@
 ## 下一次提交包要求
 
 - 版本必须使用 `package.json` 的统一 `0.1.x`，当前下一版为 `0.1.10`。
-- Release 中的 `mmh.fpk` 与版本化资产必须由 `.github/workflows/fnos-release.yml` 重新构建并覆盖上传。
+- Release 中的 x86 `mmh.fpk` / `mmh-x86_64.fpk` 与 ARM64 `mmh-arm64.fpk` 必须由 `.github/workflows/fnos-release.yml` 重新构建并覆盖上传。
 - 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag `v0.1.x`、GHCR 镜像 tag 和文件名必须一致；不再使用 `v0.1.x-fnos`。
 - 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
 - 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
 - 包内不能包含 `wizard/uninstall`；卸载默认保留应用数据目录，避免阻塞第三方软仓更新链路。
+- 两个架构包必须保持同一个 `appname=mmh` 和同一个版本号；x86 manifest 使用 `arch=x86_64`、`platform=x86`，ARM64 manifest 使用 `arch=aarch64`、`platform=arm`。
 
 ## Manifest 摘要
+
+x86 包：
 
 ```text
 appname               = mmh
@@ -44,6 +47,21 @@ service_port          = 7777
 checkport             = true
 os_min_version        = 0.9.0
 changelog             = 修复 FN 软仓更新链路：移除阻塞非交互升级的卸载向导，并继续包含首次使用向导、当前图标和 SQLite 数据目录修复。
+```
+
+ARM64 包：
+
+```text
+appname               = mmh
+version               = 0.1.10
+display_name          = MMH
+arch                  = aarch64
+platform              = arm
+source                = thirdparty
+service_port          = 7777
+checkport             = true
+os_min_version        = 0.9.0
+changelog             = 与 x86 包保持同版本、同应用 ID，只替换为 ARM64 Linux Node runtime 与原生 SQLite 依赖。
 ```
 
 ## 应用信息
@@ -67,10 +85,12 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 ```text
 应用名：MMH
 版本：0.1.10
-平台：x86_64 / x86
+平台：x86_64 / x86；aarch64 / arm
 端口：7777
-包 SHA256：发布后填写
-下载地址：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh.fpk
+包 SHA256：发布后分别填写 x86 与 ARM64
+下载地址：
+- x86：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh.fpk
+- ARM64：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh-arm64.fpk
 项目主页：https://github.com/frankluise5220/MMH
 说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，升级不删除用户账本数据。
 ```
@@ -80,7 +100,7 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 - `npm run check:fnos` 通过。
 - Release 包 manifest 版本为 `0.1.10`。
 - 正式提交包由 fnOS 测试机上的 `fnpack build` 生成。
-- GitHub Release 的 `mmh.fpk` 与 `mmh_0.1.10_x86.fpk` 应覆盖为同一份 fnpack 包。
+- GitHub Release 的 x86 `mmh.fpk` / `mmh-x86_64.fpk` 应覆盖为同一份 fnpack 包，ARM64 `mmh-arm64.fpk` 应来自 ARM64 runner 重新构建。
 - FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级完成后不应继续提示更新。
 
 ## 待人工补充

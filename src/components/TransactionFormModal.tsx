@@ -1518,7 +1518,7 @@ export function TransactionFormModal({
           actions={[
             { key: "transaction", label: "记账" },
             { key: "fx", label: "换汇 / 购汇" },
-            { key: "investment", label: "开放式基金 / 货币基金 / 贵金属", disabled: !showInvestment },
+            { key: "investment", label: "基金 / 贵金属", disabled: !showInvestment },
             { key: "wealth", label: "银行理财" },
             { key: "deposit-buy", label: "存款存入" },
             { key: "insurance", label: "保险" },
@@ -1666,7 +1666,7 @@ export function TransactionFormModal({
                     }}
                     className="segment-button segment-button-active h-10 w-full"
                   >
-                    开放式基金 / 货币基金
+                    基金
                   </button>
                   <button
                     type="button"

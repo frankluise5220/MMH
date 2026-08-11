@@ -123,11 +123,15 @@ function toEntryLike(row: {
   fundConfirmDate: Date | null;
   fundArrivalDate: Date | null;
 }): FundPositionEntryLike {
+  const amount = toNumber(row.amount);
+  const fee = toNumber(row.fundFee ?? 0);
+  const grossAmount = Math.abs(amount);
+  const netBuyAmount = row.fundSubtype === "buy" ? Math.max(0, grossAmount - fee) : null;
   return {
     id: row.id,
     fundCode: row.fundCode,
-    amount: toNumber(row.amount),
-    fee: toNumber(row.fundFee ?? 0),
+    amount,
+    fee,
     arrivalAmount: row.fundArrivalAmount != null ? toNumber(row.fundArrivalAmount) : null,
     units: row.fundUnits != null ? toNumber(row.fundUnits) : null,
     subtype: row.fundSubtype,
@@ -135,6 +139,8 @@ function toEntryLike(row: {
     isPending: row.fundSubtype === "buy_failed" || (row.fundConfirmDate == null && row.fundSubtype === "buy"),
     confirmDate: row.fundConfirmDate ? ymd(row.fundConfirmDate) : null,
     arrivalDate: row.fundArrivalDate ? ymd(row.fundArrivalDate) : null,
+    netBuyAmount,
+    pendingBuyAmount: row.fundSubtype === "buy" ? grossAmount : null,
   };
 }
 

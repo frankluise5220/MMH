@@ -11,6 +11,8 @@ import {
   SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_METAL_INVESTMENT_CATEGORY,
   SYSTEM_OTHER_INVESTMENT_CATEGORY,
+  SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES,
+  SYSTEM_STOCK_INVESTMENT_CATEGORY,
   SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_WEALTH_INVESTMENT_CATEGORY,
   getInvestmentCategoryName,
@@ -27,7 +29,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-07-24-bank-installment-expense-category-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-11-stock-investment-category-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -104,6 +106,10 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
 
 function isSystemCategoryTemplate(type: DefaultCategoryType, name: string) {
   return systemCategoryTemplateNames[type]?.has(name) ?? false;
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
 export async function resolveCategorySnapshot(
@@ -357,6 +363,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
       { name: SYSTEM_WEALTH_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_METAL_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES] },
+      { name: SYSTEM_STOCK_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES] },
       SYSTEM_OTHER_INVESTMENT_CATEGORY,
     ],
   },
@@ -364,43 +371,38 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
 
 export async function createDefaultCategoriesForHousehold(writer: CategoryWriter, householdId: string) {
   for (const category of defaultCategoryTemplates) {
-    const parent = await writer.category.create({
-      data: {
-        type: category.type,
-        name: category.name,
-        parentId: null,
-        householdId,
-        isSystem: category.isSystem ?? isSystemCategoryTemplate(category.type, category.name),
-      },
-      select: { id: true },
-    });
+    const parent = await ensureDefaultCategory(
+      writer,
+      householdId,
+      category.type,
+      category.name,
+      null,
+      category.isSystem ?? isSystemCategoryTemplate(category.type, category.name),
+    );
 
     for (const child of category.children ?? []) {
       const childName = typeof child === "string" ? child : child.name;
-      const createdChild = await writer.category.create({
-        data: {
-          type: category.type,
-          name: childName,
-          parentId: parent.id,
-          householdId,
-          isSystem: typeof child === "string"
-            ? isSystemCategoryTemplate(category.type, childName)
-            : child.isSystem ?? isSystemCategoryTemplate(category.type, childName),
-        },
-        select: { id: true },
-      });
+      const createdChild = await ensureDefaultCategory(
+        writer,
+        householdId,
+        category.type,
+        childName,
+        parent.id,
+        typeof child === "string"
+          ? isSystemCategoryTemplate(category.type, childName)
+          : child.isSystem ?? isSystemCategoryTemplate(category.type, childName),
+      );
 
       if (typeof child !== "string") {
         for (const grandChildName of child.children ?? []) {
-          await writer.category.create({
-            data: {
-              type: category.type,
-              name: grandChildName,
-              parentId: createdChild.id,
-              householdId,
-              isSystem: isSystemCategoryTemplate(category.type, grandChildName),
-            },
-          });
+          await ensureDefaultCategory(
+            writer,
+            householdId,
+            category.type,
+            grandChildName,
+            createdChild.id,
+            isSystemCategoryTemplate(category.type, grandChildName),
+          );
         }
       }
     }
@@ -890,12 +892,22 @@ async function ensureDefaultCategory(
   }
 
   if (!category) {
-    const created = await writer.category.create({
-      data: { type, name, parentId, householdId, isSystem },
-      select: { id: true },
-    });
-    await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, created.id);
-    return created;
+    try {
+      const created = await writer.category.create({
+        data: { type, name, parentId, householdId, isSystem },
+        select: { id: true },
+      });
+      await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, created.id);
+      return created;
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      category = await writer.category.findFirst({
+        where: { householdId, type, name },
+        orderBy: { id: "asc" },
+        select: { id: true, parentId: true, isSystem: true },
+      });
+      if (!category) throw error;
+    }
   }
 
   if (category.parentId !== parentId || (isSystem && !category.isSystem)) {

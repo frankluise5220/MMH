@@ -104,6 +104,19 @@ function createVisibleReportRows(rows: IncomeExpenseReportRow[], expandedRows: S
     .filter((item) => item.visible);
 }
 
+const REPORT_SECTION_STYLES = {
+  red: {
+    row: "bg-red-50/70",
+    label: "sticky left-0 z-10 border-b border-r border-red-100 bg-red-50/70 px-4 py-2 text-sm font-semibold text-red-700",
+    cell: "border-b border-r border-red-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-red-700",
+  },
+  emerald: {
+    row: "bg-emerald-50/70",
+    label: "sticky left-0 z-10 border-b border-r border-emerald-100 bg-emerald-50/70 px-4 py-2 text-sm font-semibold text-emerald-700",
+    cell: "border-b border-r border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700",
+  },
+} as const;
+
 function AmountButton({
   value,
   count,
@@ -281,6 +294,12 @@ export function IncomeExpenseReportClient({
 
   const hasDetails = Boolean(activeDetails);
   const tableMinWidth = 240 + report.columns.length * 128 + 140;
+  const incomeSectionStyle = colorScheme === "red_up_green_down"
+    ? REPORT_SECTION_STYLES.red
+    : REPORT_SECTION_STYLES.emerald;
+  const expenseSectionStyle = colorScheme === "red_up_green_down"
+    ? REPORT_SECTION_STYLES.emerald
+    : REPORT_SECTION_STYLES.red;
 
   return (
     <ReportResizableSplit hasDetails={hasDetails}>
@@ -288,14 +307,13 @@ export function IncomeExpenseReportClient({
         <div className="min-h-0 flex-1 overflow-auto">
           <table
             className="w-full table-fixed border-separate border-spacing-0"
-            style={{ minWidth: `${tableMinWidth}px` }}
           >
             <colgroup>
-              <col style={{ width: "240px" }} />
+              <col style={{ width: `${(240 / tableMinWidth) * 100}%` }} />
               {report.columns.map((column) => (
-                <col key={column.key} style={{ width: "128px" }} />
+                <col key={column.key} style={{ width: `${(128 / tableMinWidth) * 100}%` }} />
               ))}
-              <col style={{ width: "140px" }} />
+              <col style={{ width: `${(140 / tableMinWidth) * 100}%` }} />
             </colgroup>
             <thead className="bg-white">
               <tr>
@@ -312,12 +330,12 @@ export function IncomeExpenseReportClient({
               </tr>
             </thead>
             <tbody>
-              <tr className="bg-emerald-50/70">
-                <td className="sticky left-0 z-10 border-b border-r border-emerald-100 bg-emerald-50/70 px-4 py-2 text-sm font-semibold text-emerald-700">
+              <tr className={incomeSectionStyle.row}>
+                <td className={incomeSectionStyle.label}>
                   收入合计
                 </td>
                 {report.income.periodTotals.map((value, index) => (
-                  <td key={`income-total-${index}`} className="border-b border-r border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
+                  <td key={`income-total-${index}`} className={incomeSectionStyle.cell}>
                     <AmountButton
                       value={value}
                       count={report.income.periodCounts[index]}
@@ -328,7 +346,7 @@ export function IncomeExpenseReportClient({
                     />
                   </td>
                 ))}
-                <td className="border-b border-r border-emerald-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-emerald-700">
+                <td className={incomeSectionStyle.cell}>
                   <AmountButton
                     value={report.income.total}
                     count={report.income.count}
@@ -381,12 +399,12 @@ export function IncomeExpenseReportClient({
                 </tr>
               ))}
 
-              <tr className="bg-rose-50/70">
-                <td className="sticky left-0 z-10 border-b border-r border-rose-100 bg-rose-50/70 px-4 py-2 text-sm font-semibold text-rose-700">
+              <tr className={expenseSectionStyle.row}>
+                <td className={expenseSectionStyle.label}>
                   支出合计
                 </td>
                 {report.expense.periodTotals.map((value, index) => (
-                  <td key={`expense-total-${index}`} className="border-b border-r border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
+                  <td key={`expense-total-${index}`} className={expenseSectionStyle.cell}>
                     <AmountButton
                       value={value}
                       count={report.expense.periodCounts[index]}
@@ -397,7 +415,7 @@ export function IncomeExpenseReportClient({
                     />
                   </td>
                 ))}
-                <td className="border-b border-r border-rose-100 px-3 py-2 text-right text-xs font-semibold tabular-nums text-rose-700">
+                <td className={expenseSectionStyle.cell}>
                   <AmountButton
                     value={report.expense.total}
                     count={report.expense.count}

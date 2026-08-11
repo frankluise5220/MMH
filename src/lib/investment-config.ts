@@ -11,7 +11,7 @@ import { addWorkdaysUtc } from "@/lib/date-utils";
 export type FundSubtype = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest" | "buy_failed";
 
 // 产品类型
-export type ProductType = "fund" | "money" | "wealth" | "deposit" | "metal";
+export type ProductType = "fund" | "money" | "wealth" | "deposit" | "metal" | "stock";
 
 // 产品类型标签
 export const PRODUCT_LABELS: Record<ProductType, string> = {
@@ -20,6 +20,7 @@ export const PRODUCT_LABELS: Record<ProductType, string> = {
   wealth: "银行理财",
   deposit: "定期存款",
   metal: "贵金属",
+  stock: "股票",
 };
 
 export function supportsCostBasisMethod(productType: string | null | undefined): boolean {
@@ -42,6 +43,7 @@ export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   wealth: [["buy", "redeem"]],
   deposit: [["buy", "redeem"]],
   metal: [["buy", "redeem"]],
+  stock: [],
 };
 
 // 存款产品的特殊标签

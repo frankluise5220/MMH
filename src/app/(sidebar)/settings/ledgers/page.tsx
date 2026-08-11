@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Pencil, Plus, RefreshCw, Shield, Trash2, X } from "lucide-react";
+import { Check, RefreshCw, Shield, X } from "lucide-react";
+import { SettingsActionButton, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 
 type Household = {
@@ -283,18 +284,15 @@ export default function LedgerSettingsPage() {
           >
             <RefreshCw className={`mx-auto h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <button
-            type="button"
+          <SettingsPrimaryAddButton
             onClick={() => {
               setError("");
               setCreateForm(emptyCreateForm);
               setShowCreate(true);
             }}
-            className="inline-flex h-9 items-center gap-2 rounded-md bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700"
           >
-            <Plus className="h-4 w-4" />
             新增账簿
-          </button>
+          </SettingsPrimaryAddButton>
         </div>
       </div>
 
@@ -311,7 +309,7 @@ export default function LedgerSettingsPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
                 <th className="w-[36%] px-4 py-2 text-left">账簿名</th>
@@ -398,32 +396,26 @@ export default function LedgerSettingsPage() {
                             切换
                           </button>
                           {isAdmin ? (
-                            <button
-                              type="button"
+                            <SettingsActionButton
+                              label="编辑名称"
+                              variant="edit"
                               onClick={() => {
                                 setEditingId(household.id);
                                 setEditName(displayName);
                               }}
                               disabled={rowBusy}
-                              className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                              title="编辑名称"
-                            >
-                              <Pencil className="mx-auto h-4 w-4" />
-                            </button>
+                            />
                           ) : null}
                           {isSystem ? (
-                            <button
-                              type="button"
+                            <SettingsActionButton
+                              label={isActive ? "先切换到其他账簿再删除" : "删除账簿"}
+                              variant="delete"
                               onClick={() => {
                                 setError("");
                                 setDeleteForm({ householdId: household.id, confirmName: "", dbPassword: "" });
                               }}
                               disabled={isActive || households.length <= 1 || rowBusy}
-                              className="h-8 w-8 rounded-md border border-slate-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50"
-                              title={isActive ? "先切换到其他账簿再删除" : "删除账簿"}
-                            >
-                              <Trash2 className="mx-auto h-4 w-4" />
-                            </button>
+                            />
                           ) : null}
                         </div>
                       </td>

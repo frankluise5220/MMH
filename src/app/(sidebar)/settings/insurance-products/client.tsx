@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import { Search, Trash2, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import {
+  SettingsActionButton,
   SettingsEmptyRow,
   SettingsPageHeader,
   SettingsPrimaryAddButton,
@@ -327,15 +328,14 @@ export function SettingsInsuranceProductsClient({
                     </SettingsTd>
                     <SettingsTd align="right">
                       <SettingsRowActions>
-                        <button
-                          type="button"
+                        <SettingsActionButton
+                          label="编辑保险产品"
+                          variant="edit"
                           onClick={() => setEditing(toEditState(item))}
-                          className="secondary-button h-8 px-2 text-xs"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          type="button"
+                        />
+                        <SettingsActionButton
+                          label="删除保险产品"
+                          variant="delete"
                           onClick={() => {
                             setDeleteError("");
                             setDeletePassword("");
@@ -346,11 +346,7 @@ export function SettingsInsuranceProductsClient({
                               policyCount: item.policyCount,
                             });
                           }}
-                          className="secondary-button h-8 px-2 text-xs"
-                          title="删除保险产品"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        />
                       </SettingsRowActions>
                     </SettingsTd>
                   </tr>

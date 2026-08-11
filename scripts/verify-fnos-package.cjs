@@ -7,6 +7,7 @@ const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const failures = [];
+const verifyTarget = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const fnosPublicFiles = new Set([
   "apple-touch-icon.png",
   "favicon.ico",
@@ -19,6 +20,39 @@ const fnosPublicFiles = new Set([
 
 function expect(condition, message) {
   if (!condition) failures.push(message);
+}
+
+function normalizeFnosTarget(value) {
+  const raw = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (["", "x86", "x86-64", "x64", "amd64"].includes(raw)) {
+    return {
+      id: "x86",
+      manifestArch: "x86_64",
+      manifestPlatform: "x86",
+      assetSuffix: "x86_64",
+      stageDirName: "mmh-fpk",
+      builtFpkName: "mmh.fpk",
+    };
+  }
+  if (["arm", "arm64", "aarch64"].includes(raw)) {
+    return {
+      id: "arm64",
+      manifestArch: "aarch64",
+      manifestPlatform: "arm",
+      assetSuffix: "arm64",
+      stageDirName: "mmh-arm64-fpk",
+      builtFpkName: "mmh-arm64.fpk",
+    };
+  }
+  failures.push(`FNOS_TARGET_ARCH must be x86 or arm64, got ${value || "(empty)"}.`);
+  return {
+    id: "x86",
+    manifestArch: "x86_64",
+    manifestPlatform: "x86",
+    assetSuffix: "x86_64",
+    stageDirName: "mmh-fpk",
+    builtFpkName: "mmh.fpk",
+  };
 }
 
 function read(file) {
@@ -138,8 +172,11 @@ const prismaConfig = read(path.join(root, "prisma.config.ts"));
 const dbClient = read(path.join(root, "src", "lib", "db", "prisma.ts"));
 const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"));
 const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"));
+const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
+const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
+const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
 const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
-const stageDir = path.join(root, "release-artifacts", "fnos", "mmh-fpk");
+const stageDir = path.join(root, "release-artifacts", "fnos", verifyTarget.stageDirName);
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
 
 expect(/provider = "sqlite"/.test(schemaScript), "Native schema generator must switch datasource provider to sqlite.");
@@ -148,6 +185,8 @@ expect(/PRISMA_SCHEMA_PATH/.test(prismaConfig), "Prisma config must allow select
 expect(/PrismaBetterSqlite3/.test(dbClient), "Database client must support the SQLite adapter.");
 expect(/connectionString\.startsWith\("file:"\)/.test(dbClient), "Database client must route file: URLs to SQLite.");
 expect(/FNOS_NODE_TARBALL/.test(buildScript), "fnOS package build must require an explicit Linux Node runtime input.");
+expect(/FNOS_TARGET_ARCH/.test(buildScript), "fnOS package build must accept FNOS_TARGET_ARCH for multi-architecture releases.");
+expect(/normalizeFnosTarget/.test(buildScript), "fnOS package build must normalize x86 and arm64 targets.");
 expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normalize Release tags into package versions.");
 expect(buildScript.includes("^0\\.1\\.\\d+$"), "fnOS package build must enforce the unified 0.1.x version format.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
@@ -163,6 +202,14 @@ expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(buildScript), "fnOS start
 expect(/SELECT name FROM sqlite_master WHERE type = 'table'/.test(buildScript), "fnOS SQLite init must check for existing user tables before applying the initial schema.");
 expect(/if \(!existing\)/.test(buildScript), "fnOS SQLite init must skip schema creation when an existing database is present.");
 expect(/export MMH_DEPLOY_TARGET=fnos/.test(buildScript), "fnOS start script must mark the deployment target as fnos.");
+expect(/manifestPlatform/.test(buildScript) && /manifestArch/.test(buildScript), "fnOS manifest must be generated from the target architecture.");
+expect(/assetSuffix/.test(buildScript), "fnOS package outputs must include architecture-specific asset names.");
+expect(/wizard_system_password/.test(buildScript), "fnOS install/config wizard must include a system password field.");
+expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");
+expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
+expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist wizard settings.");
+expect(/MMH_SYSTEM_PASSWORD/.test(authVerifyRoute), "System password verification must support MMH_SYSTEM_PASSWORD for SQLite/fnOS.");
+expect(/POSTGRES_PASSWORD/.test(authVerifyRoute), "System password verification must remain compatible with Docker/PostgreSQL passwords.");
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
 expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
 expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");
@@ -186,6 +233,10 @@ expect(!/existing-fpk/.test(fnosReleaseWorkflow), "fnOS workflow must rebuild re
 expect(/overwrite_files:\s*true/.test(fnosReleaseWorkflow), "fnOS workflow must overwrite existing Release .fpk assets with the newly built package.");
 expect(/Verify built fnOS FPK/.test(fnosReleaseWorkflow) && /npm run check:fnos/.test(fnosReleaseWorkflow), "fnOS workflow must verify the built .fpk before upload.");
 expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
+expect(/target_arch/.test(fnosReleaseWorkflow) && /arm64/.test(fnosReleaseWorkflow), "fnOS release workflow must build both x86 and arm64 packages.");
+expect(/linux-\$\{FNPACK_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download fnpack for the current runner architecture.");
+expect(/linux-\$\{NODE_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download the Node runtime for the package architecture.");
+expect(/target_arch/.test(fnosStageWorkflow) && /arm64/.test(fnosStageWorkflow), "fnOS stage workflow must build both x86 and arm64 package sources.");
 expect(!/path:\s*release-artifacts\/fnos\/\*-fpk-source\.tgz/.test(fnosReleaseWorkflow), "fnOS release workflow must not upload stage-only .tgz files.");
 expect(/fnpack was not found/.test(fnosReleaseWorkflow), "fnOS workflow should fail clearly when fnpack is unavailable.");
 expect(!/mmh-native\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow must not publish a second mmh-native.fpk package.");
@@ -193,8 +244,17 @@ expect(!/0\.1\.0-fnos/.test(fnosReleaseWorkflow), "fnOS release workflow must no
 expect(!/0\.1\.0-fnos/.test(fnosStageWorkflow), "fnOS stage workflow must not default to the old 0.1.0-fnos package version.");
 expect(/default:\s*""/.test(fnosReleaseWorkflow), "fnOS release workflow should let package.json own the default package version.");
 expect(/default:\s*""/.test(fnosStageWorkflow), "fnOS stage workflow should let package.json own the default package version.");
+expect(/"platform"\s*:\s*"x86"/.test(repositoryExample), "fnOS repository example must keep x86 as the legacy default platform.");
+expect(/"platforms"\s*:\s*\[\s*"x86"\s*,\s*"arm"\s*\]/.test(repositoryExample), "fnOS repository example must list x86 and arm platforms.");
+expect(/"download_urls"/.test(repositoryExample) && /"arm64"/.test(repositoryExample), "fnOS repository example must include architecture-specific download_urls.");
+expect(/"platform"\s*:\s*"x86"/.test(repositoryApiApps), "fnOS repository api/apps must keep x86 as the legacy default platform.");
+expect(/"platforms"\s*:\s*\[\s*"x86"\s*,\s*"arm"\s*\]/.test(repositoryApiApps), "fnOS repository api/apps must list x86 and arm platforms.");
+expect(/"download_urls"/.test(repositoryApiApps) && /"arm64"/.test(repositoryApiApps), "fnOS repository api/apps must include architecture-specific download_urls.");
 
 if (fs.existsSync(stageDir)) {
+  const stageManifest = read(path.join(stageDir, "manifest"));
+  expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
+  expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
   }
@@ -208,17 +268,21 @@ if (fs.existsSync(stageDir)) {
   if (fs.existsSync(publicDir)) expectFnosPublicFiles(listFilesRelative(publicDir), "fnOS stage public");
 }
 
-const builtFpk = path.join(root, "release-artifacts", "fnos", "mmh.fpk");
+const builtFpk = path.join(root, "release-artifacts", "fnos", verifyTarget.builtFpkName);
 if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
-  expect(fs.existsSync(builtFpk), "Built fnOS .fpk must exist before upload.");
+  expect(fs.existsSync(builtFpk), `Built fnOS ${verifyTarget.id} .fpk must exist before upload.`);
   const manifest = readTarEntry(builtFpk, "manifest");
   const mainScript = readTarEntry(builtFpk, "cmd/main");
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
+  expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
+  expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   expect(!tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; soft-store updates need non-interactive uninstall.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
   expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(mainScript), "Built fnOS .fpk cmd/main must store SQLite data under DATA_DEST.");
+  expect(/MMH_SYSTEM_PASSWORD/.test(mainScript), "Built fnOS .fpk cmd/main must export MMH_SYSTEM_PASSWORD.");
+  expect(/mmh-system-password\.txt/.test(mainScript), "Built fnOS .fpk cmd/main must persist generated system passwords.");
   const appEntries = listFpkAppEntries(builtFpk);
   const publicFiles = appEntries
     .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))

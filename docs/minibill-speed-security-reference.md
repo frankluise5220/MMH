@@ -61,12 +61,12 @@ mmh.fpk
 - [x] 建立 `npm run check:fnos` 飞牛 FPK 素材校验脚本。
 - [x] 生成并校验 `prisma/schema.native.prisma`。
 - [x] 数据库入口支持 PostgreSQL 和 SQLite adapter 自动切换。
-- [x] 建立 `.github/workflows/fnos-release.yml`，发布时构建并上传 SQLite 版 `mmh.fpk`。
+- [x] 建立 `.github/workflows/fnos-release.yml`，发布时构建并上传 x86 / ARM64 SQLite 版 `.fpk`。
 
 ## 仍需验证
 
-- [ ] 在安装了 `fnpack` 的 Linux/fnOS runner 上生成正式 `mmh.fpk`。
-- [ ] 在飞牛测试机安装 `mmh.fpk`，验证启动、SQLite 数据保留、升级覆盖和日志查看。
+- [ ] 在安装了 `fnpack` 的 Linux/fnOS runner 上生成正式 x86 / ARM64 `.fpk`。
+- [ ] 在 x86 与 ARM64 飞牛测试机安装对应 `.fpk`，验证启动、SQLite 数据保留、升级覆盖和日志查看。
 - [ ] 系统更新页在 `MMH_DEPLOY_TARGET=fnos` 时显示飞牛包更新方式。
 - [ ] API mutation 增加统一 Origin/CSRF 检查策略。
 - [ ] 信用卡账单页拆成小响应：账期摘要、当前页明细、统计聚合分离。

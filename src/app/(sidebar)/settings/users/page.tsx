@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Pencil, Trash2, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
+  SettingsActionButton,
   SettingsEmptyRow,
   SettingsPageHeader,
   SettingsPreferencePanel,
@@ -358,27 +359,21 @@ export default function UsersPage() {
                 </SettingsTd>
                 <SettingsTd align="right">
                   <SettingsRowActions>
-                    <button
-                      type="button"
-                      className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:text-blue-600"
+                    <SettingsActionButton
+                      label="编辑用户"
+                      variant="edit"
                       onClick={() => { setEditingUser(u); setShowModal(true); }}
-                      title="编辑用户"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                    />
                     {!u.isSystem ? (
-                      <button
-                        type="button"
-                        className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"
+                      <SettingsActionButton
+                        label="删除用户"
+                        variant="delete"
                         onClick={() => {
                           setDeleteTarget(u);
                           setDeletePassword("");
                           setDeleteError("");
                         }}
-                        title="删除用户"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      />
                     ) : null}
                   </SettingsRowActions>
                 </SettingsTd>

@@ -5,13 +5,18 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
+import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { recalcWealthPositions } from "@/lib/wealth-position";
 import { isAdmin } from "@/lib/server/auth";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
-import { listEntryBusinessDeleteImpacts, upsertLegacyCombinedEntryBusinessLink } from "@/lib/server/entry-business-link";
+import {
+  listEntryBusinessDeleteImpacts,
+  mergeEntryBusinessLinkMetadata,
+  upsertLegacyCombinedEntryBusinessLink,
+} from "@/lib/server/entry-business-link";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 
@@ -22,11 +27,12 @@ type EntryDeleteOptions = {
 };
 
 function collectInvestmentRecalcTargets(
-  txRecord: Pick<TxRecord, "accountId" | "toAccountId" | "type" | "fundProductType" | "fundSubtype" | "fundCode" | "metalTypeId">,
+  txRecord: Pick<TxRecord, "accountId" | "toAccountId" | "type" | "fundProductType" | "fundSubtype" | "metalTypeId">,
   targets: {
     accountsToRecalcBalance: Set<string>;
     fundAccountsToRecalc: Map<string, string[]>;
     metalAccountsToRecalc: Set<string>;
+    stockAccountsToRecalc: Set<string>;
     wealthAccountsToRecalc: Set<string>;
   },
 ) {
@@ -43,10 +49,9 @@ function collectInvestmentRecalcTargets(
     targets.wealthAccountsToRecalc.add(investmentAccId);
     return;
   }
-  if (txRecord.fundCode && txRecord.fundProductType && investmentAccId) {
-    const codes = targets.fundAccountsToRecalc.get(investmentAccId) ?? [];
-    if (!codes.includes(txRecord.fundCode)) codes.push(txRecord.fundCode);
-    targets.fundAccountsToRecalc.set(investmentAccId, codes);
+  if (txRecord.fundProductType === "stock" && investmentAccId) {
+    targets.stockAccountsToRecalc.add(investmentAccId);
+    return;
   }
 }
 
@@ -65,6 +70,7 @@ type InvestmentRecalcTargets = {
   accountsToRecalcBalance: Set<string>;
   fundAccountsToRecalc: Map<string, string[]>;
   metalAccountsToRecalc: Set<string>;
+  stockAccountsToRecalc: Set<string>;
   wealthAccountsToRecalc: Set<string>;
 };
 
@@ -91,6 +97,30 @@ function addFundRecalcTarget(targets: InvestmentRecalcTargets, accountId: string
   const codes = targets.fundAccountsToRecalc.get(accountId) ?? [];
   if (!codes.includes(fundCode)) codes.push(fundCode);
   targets.fundAccountsToRecalc.set(accountId, codes);
+}
+
+async function collectFundTransactionRecalcTargetsByEntryIds(
+  householdId: string,
+  entryIds: string[],
+  targets: InvestmentRecalcTargets,
+) {
+  const ids = Array.from(new Set(entryIds.filter(Boolean)));
+  if (ids.length === 0) return;
+  const rows = await prisma.fundTransaction.findMany({
+    where: {
+      householdId,
+      OR: [
+        { id: { in: ids } },
+        { cashEntryId: { in: ids } },
+        { cashFlows: { some: { txRecordId: { in: ids } } } },
+        { EntryBusinessLink: { some: { cashEntryId: { in: ids } } } },
+      ],
+    },
+    select: { fundAccountId: true, fundCode: true },
+  });
+  for (const row of rows) {
+    addFundRecalcTarget(targets, row.fundAccountId, row.fundCode);
+  }
 }
 
 async function softDeleteIndependentBusinessRecordsByIds(
@@ -222,6 +252,28 @@ async function softDeleteIndependentBusinessRecordsByIds(
     targets.metalAccountsToRecalc.add(row.accountId);
   }
 
+  const stockRows = await prisma.stockTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, stockAccountId: true, cashAccountId: true },
+  });
+  for (const row of stockRows) {
+    const updated = await prisma.stockTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.stockAccountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+    targets.stockAccountsToRecalc.add(row.stockAccountId);
+  }
+
   const independentBusinessIds = result.deletedEntryIds;
   const removedCashEntryIds = result.removedEntryIds.filter((id) => !independentBusinessIds.includes(id));
   if (independentBusinessIds.length > 0 || removedCashEntryIds.length > 0) {
@@ -237,6 +289,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
           { wealthTransactionId: { in: independentBusinessIds } },
           { depositTransactionId: { in: independentBusinessIds } },
           { preciousMetalTransactionId: { in: independentBusinessIds } },
+          { stockTransactionId: { in: independentBusinessIds } },
         ],
       },
       data: { deletedAt },
@@ -261,53 +314,71 @@ async function detachLegacyCombinedBusinessEntry(txRecord: TxRecord) {
       toAccountName: null,
     },
   });
-  await prisma.$executeRaw`
-    UPDATE "entry_business_links"
-    SET
-      "cashEntryId" = NULL,
-      "note" = 'Cash side detached; business detail kept',
-      "metadata" = COALESCE("metadata", '{}'::jsonb) || ${JSON.stringify({ cashDetached: true })}::jsonb,
-      "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "cashEntryId" = ${txRecord.id}
-      AND "businessEntryId" = ${txRecord.id}
-      AND "deletedAt" IS NULL
-  `;
+  const links = await prisma.entryBusinessLink.findMany({
+    where: { cashEntryId: txRecord.id, businessEntryId: txRecord.id, deletedAt: null },
+    select: { id: true, metadata: true },
+  });
+  for (const link of links) {
+    await prisma.entryBusinessLink.update({
+      where: { id: link.id },
+      data: {
+        cashEntryId: null,
+        note: "Cash side detached; business detail kept",
+        metadata: mergeEntryBusinessLinkMetadata(link.metadata, { cashDetached: true }),
+      },
+    });
+  }
   return true;
 }
 
 async function detachCashSideBusinessLinks(txRecord: TxRecord) {
-  const result = await prisma.$executeRaw`
-    UPDATE "entry_business_links"
-    SET
-      "cashEntryId" = NULL,
-      "note" = 'Cash side detached; business detail kept',
-      "metadata" = COALESCE("metadata", '{}'::jsonb) || ${JSON.stringify({ cashDetached: true, detachedCashEntryId: txRecord.id })}::jsonb,
-      "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "cashEntryId" = ${txRecord.id}
-      AND ("businessEntryId" IS DISTINCT FROM ${txRecord.id})
-      AND "deletedAt" IS NULL
-  `;
-  return Number(result) > 0;
+  const links = await prisma.entryBusinessLink.findMany({
+    where: { cashEntryId: txRecord.id, deletedAt: null },
+    select: { id: true, businessEntryId: true, metadata: true },
+  });
+  const detachedLinks = links.filter((link) => link.businessEntryId !== txRecord.id);
+  for (const link of detachedLinks) {
+    await prisma.entryBusinessLink.update({
+      where: { id: link.id },
+      data: {
+        cashEntryId: null,
+        note: "Cash side detached; business detail kept",
+        metadata: mergeEntryBusinessLinkMetadata(link.metadata, {
+          cashDetached: true,
+          detachedCashEntryId: txRecord.id,
+        }),
+      },
+    });
+  }
+  return detachedLinks.length > 0;
 }
 
 async function detachBusinessSideBusinessLinks(txRecord: TxRecord) {
-  const result = await prisma.$executeRaw`
-    UPDATE "entry_business_links"
-    SET
-      "businessEntryId" = NULL,
-      "fundTransactionId" = NULL,
-      "insuranceTransactionId" = NULL,
-      "wealthTransactionId" = NULL,
-      "depositTransactionId" = NULL,
-      "preciousMetalTransactionId" = NULL,
-      "note" = 'Business side detached; cash detail kept',
-      "metadata" = COALESCE("metadata", '{}'::jsonb) || ${JSON.stringify({ businessDetached: true, detachedBusinessEntryId: txRecord.id })}::jsonb,
-      "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "businessEntryId" = ${txRecord.id}
-      AND ("cashEntryId" IS DISTINCT FROM ${txRecord.id})
-      AND "deletedAt" IS NULL
-  `;
-  return Number(result) > 0;
+  const links = await prisma.entryBusinessLink.findMany({
+    where: { businessEntryId: txRecord.id, deletedAt: null },
+    select: { id: true, cashEntryId: true, metadata: true },
+  });
+  const detachedLinks = links.filter((link) => link.cashEntryId !== txRecord.id);
+  for (const link of detachedLinks) {
+    await prisma.entryBusinessLink.update({
+      where: { id: link.id },
+      data: {
+        businessEntryId: null,
+        fundTransactionId: null,
+        insuranceTransactionId: null,
+        wealthTransactionId: null,
+        depositTransactionId: null,
+        preciousMetalTransactionId: null,
+        stockTransactionId: null,
+        note: "Business side detached; cash detail kept",
+        metadata: mergeEntryBusinessLinkMetadata(link.metadata, {
+          businessDetached: true,
+          detachedBusinessEntryId: txRecord.id,
+        }),
+      },
+    });
+  }
+  return detachedLinks.length > 0;
 }
 
 export async function softDeleteEntriesByIds(
@@ -328,6 +399,7 @@ export async function softDeleteEntriesByIds(
   const removedEntryIds: string[] = [];
   const fundAccountsToRecalc = new Map<string, string[]>();
   const metalAccountsToRecalc = new Set<string>();
+  const stockAccountsToRecalc = new Set<string>();
   const wealthAccountsToRecalc = new Set<string>();
   const accountsToRecalcBalance = new Set<string>();
   const changedFundEntryIds: string[] = [];
@@ -356,6 +428,7 @@ export async function softDeleteEntriesByIds(
           accountsToRecalcBalance,
           fundAccountsToRecalc,
           metalAccountsToRecalc,
+          stockAccountsToRecalc,
           wealthAccountsToRecalc,
         });
         const businessAccount = businessAccountSnapshotOf(txRecord);
@@ -429,6 +502,7 @@ export async function softDeleteEntriesByIds(
       accountsToRecalcBalance,
       fundAccountsToRecalc,
       metalAccountsToRecalc,
+      stockAccountsToRecalc,
       wealthAccountsToRecalc,
     });
 
@@ -439,6 +513,7 @@ export async function softDeleteEntriesByIds(
       accountsToRecalcBalance,
       fundAccountsToRecalc,
       metalAccountsToRecalc,
+      stockAccountsToRecalc,
       wealthAccountsToRecalc,
     });
     deletedCount += independentDelete.deletedCount;
@@ -455,11 +530,25 @@ export async function softDeleteEntriesByIds(
       );
     }
   }
+  await collectFundTransactionRecalcTargetsByEntryIds(
+    ctx.householdId,
+    [...changedFundEntryIds, ...deletedEntryIds, ...removedEntryIds],
+    {
+      accountsToRecalcBalance,
+      fundAccountsToRecalc,
+      metalAccountsToRecalc,
+      stockAccountsToRecalc,
+      wealthAccountsToRecalc,
+    },
+  ).catch(logger.catchLog("收集基金重算目标失败", "entry-delete.ts"));
   for (const [accountId, fundCodes] of fundAccountsToRecalc) {
     await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "entry-delete.ts"));
   }
   for (const accountId of metalAccountsToRecalc) {
     await recalcPreciousMetalPositions(accountId).catch(logger.catchLog("操作失败", "entry-delete.ts"));
+  }
+  for (const accountId of stockAccountsToRecalc) {
+    await recalcStockPositions(accountId).catch(logger.catchLog("股票持仓重算失败", "entry-delete.ts"));
   }
   for (const accountId of wealthAccountsToRecalc) {
     await recalcWealthPositions(accountId).catch(logger.catchLog("理财持仓收益重算失败", "entry-delete.ts"));

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
+import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -119,11 +119,11 @@ export async function POST() {
     // Batch-check already-run-today
     plansToRun.splice(0, plansToRun.length, ...fundPlans);
     const fundCodeSet = new Set(plansToRun.map(p => p.fundCode));
-    const alreadyRunToday = await prisma.txRecord.findMany({
-      where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", date: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") } },
-      select: { fundCode: true, toAccountId: true },
+    const alreadyRunToday = await prisma.fundTransaction.findMany({
+      where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", applyDate: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") }, deletedAt: null },
+      select: { fundCode: true, fundAccountId: true },
     });
-    const runTodaySet = new Set(alreadyRunToday.map(r => `${r.fundCode}|${r.toAccountId}`));
+    const runTodaySet = new Set(alreadyRunToday.map(r => `${r.fundCode}|${r.fundAccountId}`));
 
     // Load accounts
     const accountIds = [...new Set(plansToRun.map(p => p.accountId))];
@@ -270,22 +270,21 @@ export async function POST() {
     let skippedDuplicate = 0;
 
     await prisma.$transaction(async (tx) => {
-      const changedFundEntryIds: string[] = [];
       const lockedPlanIds = [...new Set(execs.map((e) => e.plan.id))].sort();
       for (const planId of lockedPlanIds) {
         await acquireScheduledTaskPlanLock(tx, planId);
       }
-      const existingAtCommit = await tx.txRecord.findMany({
+      const existingAtCommit = await tx.fundTransaction.findMany({
         where: {
           householdId,
           regularInvestPlanId: { in: lockedPlanIds },
           source: "regular_invest",
           deletedAt: null,
-          date: { in: execs.map((e) => e.runDate) },
+          applyDate: { in: execs.map((e) => e.runDate) },
         },
-        select: { regularInvestPlanId: true, date: true },
+        select: { regularInvestPlanId: true, applyDate: true },
       });
-      const existingRunKeys = new Set(existingAtCommit.map((record) => `${record.regularInvestPlanId}|${formatDateUtc(record.date)}`));
+      const existingRunKeys = new Set(existingAtCommit.map((record) => `${record.regularInvestPlanId}|${formatDateUtc(record.applyDate)}`));
       // Batch all sgzt & nav checks
       const navChecks = await Promise.all(execs.map(e =>
         tx.fundNavCache.findUnique({ where: { fundCode_navDate: { fundCode: e.plan.fundCode, navDate: e.confirmDate } }, select: { sgzt: true, purchaseLimit: true, nav: true } })
@@ -328,20 +327,91 @@ export async function POST() {
         }
 
         if (sgzt === "暂停申购") {
-          // skipPendingPreceding=false 的旧行为：生成两条对冲 buy_failed 记录
-          const failedBuy = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: `基金暂停申购 ${e.plan.fundCode}` } });
-          const refund = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.fundAcc.id, accountName: e.fundAcc.name, toAccountId: e.cashAcc?.id ?? e.fundAcc.id, toAccountName: e.cashAcc?.name ?? e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName: e.plan.fundName || e.plan.fundCode, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy_failed", source: "regular_invest_refund", fundFee: null, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, fundSourceEntryId: failedBuy.id, regularInvestPlanId: e.plan.id, note: `基金暂停申购，资金退回 ${e.plan.fundCode}` } });
-          changedFundEntryIds.push(failedBuy.id, refund.id);
+          // skipPendingPreceding=false 的旧行为：生成两条现金对冲记录，并把基金业务写入 FundTransaction。
+          await createFundTransactionWithCashFlows(tx, {
+            householdId,
+            fundAccountId: e.fundAcc.id,
+            cashAccountId: e.cashAcc?.id ?? null,
+            fundCode: e.plan.fundCode,
+            fundName: e.plan.fundName || e.plan.fundCode,
+            fundProductType: e.plan.fundProductType || e.fundAcc.investProductType,
+            fundSubtype: FundSubtype.buy_failed,
+            source: "regular_invest",
+            applyDate: e.runDate,
+            confirmDate: e.confirmDate,
+            arrivalDate: e.arrivalDate,
+            grossAmount: e.amountNum,
+            refundAmount: e.amountNum,
+            fee: null,
+            nav: null,
+            units: null,
+            regularInvestPlanId: e.plan.id,
+            note: `基金暂停申购 ${e.plan.fundCode}`,
+            cashFlows: e.cashAcc ? [
+              {
+                kind: FundCashFlowKind.buy_out,
+                date: e.runDate,
+                accountId: e.cashAcc.id,
+                accountName: e.cashAcc.name,
+                amount: -e.amountNum,
+                currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
+                source: "regular_invest",
+                regularInvestPlanId: e.plan.id,
+                note: `基金暂停申购 ${e.plan.fundCode}`,
+              },
+              {
+                kind: FundCashFlowKind.refund_in,
+                date: e.arrivalDate,
+                accountId: e.cashAcc.id,
+                accountName: e.cashAcc.name,
+                amount: e.amountNum,
+                currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
+                source: "regular_invest_refund",
+                regularInvestPlanId: e.plan.id,
+                note: `基金暂停申购，资金退回 ${e.plan.fundCode}`,
+              },
+            ] : [],
+          });
         } else {
           const fundName = e.plan.fundName || e.plan.fundCode;
           const category = await resolveCategorySnapshot(tx, householdId, {
             categoryName: REGULAR_INVEST_CATEGORY_NAME,
             type: "investment",
           });
-          const rec = await tx.txRecord.create({ data: { householdId, type: TransactionType.investment, date: e.runDate, accountId: e.cashAcc?.id ?? e.fundAcc.id, accountName: e.cashAcc?.name ?? e.fundAcc.name, toAccountId: e.fundAcc.id, toAccountName: e.fundAcc.name, amount: -e.amountNum, fundCode: e.plan.fundCode, fundName, fundProductType: e.plan.fundProductType || e.fundAcc.investProductType, fundSubtype: "buy", source: "regular_invest", categoryId: category?.id ?? null, categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME, fundFee: feeAmount, fundConfirmDate: e.confirmDate, fundArrivalDate: e.arrivalDate, fundNav: null, fundUnits: null, regularInvestPlanId: e.plan.id, note: regularInvestBuyNote(e.plan.fundCode, fundName) } });
-          changedFundEntryIds.push(rec.id);
+          const created = await createFundTransactionWithCashFlows(tx, {
+            householdId,
+            fundAccountId: e.fundAcc.id,
+            cashAccountId: e.cashAcc?.id ?? null,
+            fundCode: e.plan.fundCode,
+            fundName,
+            fundProductType: e.plan.fundProductType || e.fundAcc.investProductType,
+            fundSubtype: FundSubtype.buy,
+            source: "regular_invest",
+            applyDate: e.runDate,
+            confirmDate: e.confirmDate,
+            arrivalDate: e.arrivalDate,
+            grossAmount: e.amountNum,
+            fee: feeAmount,
+            nav: null,
+            units: null,
+            regularInvestPlanId: e.plan.id,
+            note: regularInvestBuyNote(e.plan.fundCode, fundName),
+            cashFlows: e.cashAcc ? [{
+              kind: FundCashFlowKind.buy_out,
+              date: e.runDate,
+              accountId: e.cashAcc.id,
+              accountName: e.cashAcc.name,
+              amount: -e.amountNum,
+              currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
+              source: "regular_invest",
+              categoryId: category?.id ?? null,
+              categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
+              regularInvestPlanId: e.plan.id,
+              note: regularInvestBuyNote(e.plan.fundCode, fundName),
+            }] : [],
+          });
           generatedRecords.push({
-            id: rec.id,
+            id: created.fundTransaction.id,
             fundCode: e.plan.fundCode,
             confirmDate: e.confirmDateStr,
             grossAmount: e.amountNum,
@@ -360,7 +430,6 @@ export async function POST() {
           details.push({ planId: e.plan.id, fundCode: e.plan.fundCode, action: "executed" });
         }
       }
-      await syncFundTransactionsFromTxRecords(changedFundEntryIds, tx);
     }, AUTO_EXECUTE_TRANSACTION_OPTIONS);
     logger.info("Phase2 生成记录完成: " + generatedRecords.length + " 条 buy+" + (execs.length - generatedRecords.length) + " 条 buy_failed, 跳过重复 " + skippedDuplicate + " 条, 耗时 " + (Date.now() - genStart) + "ms", "auto-execute");
 
@@ -438,11 +507,11 @@ export async function POST() {
             roundUnits: (value) => roundFundUnits(value, r.fundUnitsDecimals),
           });
           const name = (n.name ?? "").trim();
-          await prisma.txRecord.update({
+          await prisma.fundTransaction.update({
             where: { id: r.id },
             data: {
-              fundNav: nav,
-              fundUnits: units,
+              nav,
+              units,
               ...(name && name !== r.fundCode ? { fundName: name } : {}),
             },
           });
@@ -452,9 +521,6 @@ export async function POST() {
       });
       const updateResults = await Promise.all(updates);
       const updatedCount = updateResults.filter(Boolean).length;
-      if (updatedCount > 0) {
-        await syncFundTransactionsFromTxRecords(generatedRecords.map((record) => record.id));
-      }
       logger.info("Phase4 净值回填完成: " + updatedCount + "/" + generatedRecords.length + " 条, 耗时 " + (Date.now() - updateStart) + "ms", "auto-execute");
     }
 

@@ -36,7 +36,7 @@ export type AdvancedDataTableColumn<T> = {
   defaultHidden?: boolean;
   className?: string;
   headerClassName?: string;
-  filterText?: (row: T) => string;
+  filterText?: (row: T) => string | null | undefined;
   sortValue?: (row: T) => string | number | null | undefined;
   filterKind?: "multi" | "dateRange" | "numberRange" | "text";
   filterNumber?: (row: T) => number | null | undefined;
@@ -68,6 +68,13 @@ export type AdvancedDataTableSummaryRow = {
 
 export type AdvancedDataTableDropPosition = "before" | "after";
 export type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
+
+export type AdvancedDataTablePagination = {
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onRowCountChange?: (count: number) => void;
+};
 
 type RowItem<T> = {
   row: T;
@@ -126,6 +133,17 @@ export type AdvancedDataTableProps<T> = {
   showColumnVisibilityButton?: boolean;
   sortable?: boolean;
   defaultSort?: AdvancedDataTableSortState | null;
+  filterRows?: (
+    rows: T[],
+    filters: Partial<Record<string, string[]>>,
+    columns: AdvancedDataTableColumn<T>[],
+  ) => T[];
+  sortRows?: (
+    rows: T[],
+    sortState: AdvancedDataTableSortState | null,
+    columns: AdvancedDataTableColumn<T>[],
+  ) => T[];
+  pagination?: AdvancedDataTablePagination;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   resetKey?: string;
@@ -202,7 +220,9 @@ function sortFilterValue(a: string, b: string) {
 
 function rowMatchesColumnFilter<T>(row: T, column: AdvancedDataTableColumn<T>, values: string[] | undefined) {
   if (!column.filterText || (values?.length ?? 0) === 0) return true;
-  const value = column.filterText(row).trim() || "-";
+  const rawValue = column.filterText(row);
+  if (rawValue == null) return false;
+  const value = rawValue.trim() || "-";
   if (column.filterKind === "dateRange") {
     const [from = "", to = ""] = values ?? [];
     if (from && value < from) return false;
@@ -282,6 +302,9 @@ export function AdvancedDataTable<T>({
   showColumnVisibilityButton = true,
   sortable = true,
   defaultSort = null,
+  filterRows,
+  sortRows,
+  pagination,
   columnVisibilityTriggerId,
   summaryRow,
   resetKey,
@@ -313,6 +336,10 @@ export function AdvancedDataTable<T>({
   const tableDisplayStateHydratedRef = useRef(false);
   const skipNextFiltersWriteRef = useRef(false);
   const skipNextSortWriteRef = useRef(false);
+  const paginationPage = pagination?.page;
+  const paginationPageSize = pagination?.pageSize;
+  const paginationOnPageChange = pagination?.onPageChange;
+  const paginationOnRowCountChange = pagination?.onRowCountChange;
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
   const tableColumns = useMemo<AdvancedDataTableColumn<T>[]>(() => {
@@ -328,6 +355,7 @@ export function AdvancedDataTable<T>({
         render: (row, index) => (
           <div
             data-row-double-click-ignore
+            data-advanced-table-row-actions
             className="flex items-center justify-end gap-1"
             onClick={(event) => event.stopPropagation()}
           >
@@ -478,9 +506,13 @@ export function AdvancedDataTable<T>({
       const baseRows = showFilters
         ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
         : rows;
-      options[column.key] = Array.from(
-        new Set(baseRows.map((row) => column.filterText?.(row).trim() || "-")),
-      ).sort(sortFilterValue);
+      const values: string[] = [];
+      for (const row of baseRows) {
+        const rawValue = column.filterText(row);
+        if (rawValue == null) continue;
+        values.push(rawValue.trim() || "-");
+      }
+      options[column.key] = Array.from(new Set(values)).sort(sortFilterValue);
     }
     return options;
   }, [filters, rows, showFilters, tableColumns]);
@@ -494,7 +526,9 @@ export function AdvancedDataTable<T>({
         ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
         : rows;
       for (const row of baseRows) {
-        const value = column.filterText(row).trim() || "-";
+        const rawValue = column.filterText(row);
+        if (rawValue == null) continue;
+        const value = rawValue.trim() || "-";
         columnCounts[value] = (columnCounts[value] ?? 0) + 1;
       }
       counts[column.key] = columnCounts;
@@ -505,8 +539,9 @@ export function AdvancedDataTable<T>({
     if (!showFilters) return rows;
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
     if (activeFilters.length === 0) return rows;
+    if (filterRows) return filterRows(rows, filters, tableColumns);
     return rows.filter((row) => rowMatchesFilters(row, tableColumns, filters));
-  }, [filters, rows, showFilters, tableColumns]);
+  }, [filterRows, filters, rows, showFilters, tableColumns]);
 
   useEffect(() => {
     if (!showFilters || filteredRows.length > 0) return;
@@ -519,6 +554,7 @@ export function AdvancedDataTable<T>({
 
   const orderedRows = useMemo(() => {
     if (!sortable || !sortState) return filteredRows;
+    if (sortRows) return sortRows(filteredRows, sortState, tableColumns);
     const column = tableColumns.find((item) => item.key === sortState.key);
     const readValue = column?.sortValue ?? column?.filterText;
     if (!readValue) return filteredRows;
@@ -539,11 +575,30 @@ export function AdvancedDataTable<T>({
           : sortState.direction === "asc" ? compared : -compared;
       })
       .map((item) => item.row);
-  }, [filteredRows, sortState, sortable, tableColumns]);
+  }, [filteredRows, sortRows, sortState, sortable, tableColumns]);
+  const hasPagination = paginationPage != null && !!paginationOnPageChange;
+  const pageSize = paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
+  const pageCount = Math.max(1, Math.ceil(orderedRows.length / pageSize));
+  const currentPage = Math.min(Math.max(1, paginationPage ?? 1), pageCount);
+  const pageStartIndex = hasPagination ? (currentPage - 1) * pageSize : 0;
+  const paginatedRows = useMemo(
+    () => hasPagination ? orderedRows.slice(pageStartIndex, pageStartIndex + pageSize) : orderedRows,
+    [hasPagination, orderedRows, pageSize, pageStartIndex],
+  );
+  useEffect(() => {
+    paginationOnRowCountChange?.(orderedRows.length);
+  }, [orderedRows.length, paginationOnRowCountChange]);
+  useEffect(() => {
+    if (paginationPage == null || !paginationOnPageChange) return;
+    if (paginationPage !== currentPage) paginationOnPageChange(currentPage);
+  }, [currentPage, paginationOnPageChange, paginationPage]);
   const allRowKeys = useMemo(() => orderedRows.map((row, index) => rowKey(row, index)), [orderedRows, rowKey]);
   const rowItems = useMemo(
-    () => orderedRows.map((row, index) => ({ row, index, key: rowKey(row, index) })),
-    [orderedRows, rowKey],
+    () => paginatedRows.map((row, index) => {
+      const globalIndex = pageStartIndex + index;
+      return { row, index: globalIndex, key: rowKey(row, globalIndex) };
+    }),
+    [pageStartIndex, paginatedRows, rowKey],
   );
   const displayRowItems = useMemo(() => {
     if (!draggedRowKey || !dragTarget) return rowItems;
@@ -608,16 +663,6 @@ export function AdvancedDataTable<T>({
     const preferredColumnsTotal = preferredWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
     const minTotal = controlWidth + minColumnsTotal;
     const availableWidth = viewportWidth || preferredTotal;
-
-    if (minTableWidth && availableWidth < preferredTotal) {
-      return {
-        tableWidth: preferredTotal,
-        controlWidth,
-        colWidths: Object.fromEntries(
-          preferredWidths.map((column) => [column.key, column.preferredWidth]),
-        ),
-      };
-    }
 
     if (availableWidth >= controlWidth + preferredColumnsTotal) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
@@ -960,6 +1005,7 @@ export function AdvancedDataTable<T>({
       {showToolbar ? (
         <div
           data-batch-popover-boundary
+          data-advanced-table-toolbar
           className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-white px-3 py-1.5"
         >
           <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-slate-500">
@@ -1007,11 +1053,11 @@ export function AdvancedDataTable<T>({
               </>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div data-advanced-table-toolbar-actions className="flex shrink-0 items-center gap-2">
             {toolbarRightContent}
             {showColumnVisibilityButton ? (
               <div ref={columnMenuRef} className="relative">
-                <button type="button" onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title={t("table.columnSettings")}>
+                <button type="button" data-advanced-table-column-settings onClick={() => setMenuOpen((open) => !open)} className="secondary-button h-7 px-2 text-xs" title={t("table.columnSettings")}>
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                 </button>
                 {menuOpen ? (
@@ -1047,7 +1093,7 @@ export function AdvancedDataTable<T>({
             {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-white">
-            <tr>
+            <tr data-advanced-table-header-row>
               {(selectable || draggableRows) ? (
                 <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
                   {selectable ? (
@@ -1065,7 +1111,7 @@ export function AdvancedDataTable<T>({
                 </th>
               ) : null}
               {visibleColumns.map((column) => (
-                <th key={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
+                <th key={column.key} data-advanced-table-header-cell={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
                   <div className="flex min-w-0 items-center justify-center gap-1">
                     {(column.sortValue || column.filterText) && sortable ? (
                       <span
@@ -1164,6 +1210,7 @@ export function AdvancedDataTable<T>({
                   </div>
                   <div
                     aria-hidden="true"
+                    data-advanced-table-resize-handle={column.key}
                     className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-blue-300/40"
                     onMouseDown={(event) => beginResize(event, column)}
                   />
@@ -1195,6 +1242,7 @@ export function AdvancedDataTable<T>({
                   key={key}
                   data-index={virtualRow?.index}
                   data-advanced-row-key={key}
+                  data-advanced-table-body-row
                   ref={shouldVirtualizeRows ? rowVirtualizer.measureElement : undefined}
                   onClick={() => {
                     if (suppressNextClickRef.current) {
@@ -1220,7 +1268,7 @@ export function AdvancedDataTable<T>({
                   ].filter(Boolean).join(" ")}
                 >
                   {(selectable || draggableRows) ? (
-                    <td className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
+                    <td data-advanced-table-row-controls className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
                       <div className="flex items-center justify-center gap-1">
                         {draggableRows ? (
                           <button

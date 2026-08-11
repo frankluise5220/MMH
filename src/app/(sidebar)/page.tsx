@@ -2,10 +2,11 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
-import { AccountKind, CreditCardInstallmentSourceType, DebtDirection, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
+import { AccountKind, CreditCardInstallmentSourceType, DebtDirection, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
+import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
@@ -52,7 +53,7 @@ import { syncMissingFundEntries } from "@/lib/fund/syncMissingEntries";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { AccountFxRateInline } from "@/components/AccountFxRateInline";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
@@ -66,6 +67,7 @@ import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/in
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances } from "@/lib/server/cached-data";
+import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
@@ -199,17 +201,17 @@ async function upsertFundBuyRefundRecord(
     toAccountName: params.cashAccountName,
     amount: refundAmount,
     currency: params.currency ?? "CNY",
-    fundCode: params.fundCode,
-    fundName: params.fundName,
-    fundProductType: params.fundProductType as any,
+    fundCode: null,
+    fundName: null,
+    fundProductType: null,
     fundSubtype: FundSubtype.buy_failed,
     source: "regular_invest_refund",
     fundUnits: null,
     fundNav: null,
     fundFee: null,
-    fundConfirmDate: params.fundConfirmDate ?? params.buyDate,
-    fundArrivalDate: params.fundArrivalDate ?? params.refundDate,
-    fundArrivalAmount: refundAmount,
+    fundConfirmDate: null,
+    fundArrivalDate: null,
+    fundArrivalAmount: null,
     fundSourceEntryId: params.buyEntryId ?? null,
     regularInvestPlanId: params.regularInvestPlanId ?? null,
     note: params.note || `买入退回 ${params.fundName || params.fundCode}`,
@@ -1061,6 +1063,7 @@ async function createTransaction(formData: FormData) {
         return { ok: true as const };
       }
       let createdInvestmentEntryId: string | null = null;
+      let createdFundTransactionId: string | null = null;
       const accountId = String(formData.get("accountId") ?? "").trim();
       const subtype = String(formData.get("subtype") ?? "buy").trim();
       let fundCode = String(formData.get("fundCode") ?? "").trim() || null;
@@ -1266,78 +1269,150 @@ async function createTransaction(formData: FormData) {
           }
         }
 
-        const created = await tx.txRecord.create({
-          data: {
-            date,
-            type: TransactionType.investment,
-            accountId: recordAccountId,
-            accountName: recordAccountName,
-            toAccountId: recordToAccountId,
-            toAccountName: recordToAccountName,
-            amount: signedAmount,
-            currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
-            fundCode: entryFundCode,
-            fundName: entryFundName,
-            wealthProductId: wealthProduct?.id ?? undefined,
-            metalTypeId: metalType?.id ?? undefined,
-            metalTypeName: metalType?.name ?? undefined,
-            metalUnitId: metalUnit?.id ?? undefined,
-            metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : undefined,
-            metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : undefined) : undefined,
-            metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
-            metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
-            insuranceAction: sourceValue === "insurance" ? (redeemLike ? "refund" : "premium") : undefined,
-            insuranceProductName: sourceValue === "insurance" ? entryFundName : undefined,
-            fundProductType: sourceValue === "insurance" ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
-            fundSubtype: finalFundSubtype,
-            source: sourceValue,
-            fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
-            fundNav: isMetalProduct || fundProductType === "deposit" ? undefined : fundNav ?? undefined,
-            depositAnnualRate: depositAnnualRate ?? undefined,
-            depositInterest: depositInterest ?? undefined,
-            depositSourceEntryId: depositSourceEntryId ?? undefined,
-            fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
-            fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
-            fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
-            fundArrivalAmount: entryArrivalAmount ?? undefined,
-            note: note || undefined,
-            ...{ householdId },
-          },
-        });
-        createdInvestmentEntryId = created.id;
-        if (
-          finalFundSubtype === FundSubtype.buy &&
+        const shouldDirectWriteFund =
           sourceValue !== "insurance" &&
           !isMetalProduct &&
           !isWealthProduct &&
-          buyResultStatus === "refund" &&
-          refundAmount &&
-          refundAmount > 0 &&
-          cashAcc &&
-          entryFundCode
-        ) {
-          await upsertFundBuyRefundRecord(tx, {
+          (!fundProductType || fundProductType === "fund" || fundProductType === "money") &&
+          !!entryFundCode;
+
+        if (shouldDirectWriteFund && entryFundCode) {
+          const fundCashFlows: FundCashFlowInput[] = [];
+          if (cashAcc && cashAcc.id !== investAcc.id && signedAmount !== 0 && !isDividendReinvest) {
+            const primaryCashFlowKind =
+              finalFundSubtype === FundSubtype.redeem || finalFundSubtype === FundSubtype.switch_out
+                ? FundCashFlowKind.redeem_in
+                : finalFundSubtype === FundSubtype.dividend_cash
+                  ? FundCashFlowKind.dividend_in
+                  : FundCashFlowKind.buy_out;
+            fundCashFlows.push({
+              kind: primaryCashFlowKind,
+              date: redeemLike || isDividendCash ? computedArrivalDate ?? date : date,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              amount: signedAmount,
+              currency: recordCurrency ?? cashAcc.currency ?? investAcc.currency ?? "CNY",
+              source: sourceValue,
+              note: note || entryFundName || undefined,
+            });
+          }
+
+          const effectiveRefundDate = refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date;
+          if (
+            finalFundSubtype === FundSubtype.buy &&
+            buyResultStatus === "refund" &&
+            refundAmount &&
+            refundAmount > 0 &&
+            cashAcc
+          ) {
+            fundCashFlows.push({
+              kind: FundCashFlowKind.refund_in,
+              date: effectiveRefundDate,
+              accountId: cashAcc.id,
+              accountName: cashAcc.name,
+              amount: Math.abs(refundAmount),
+              currency: recordCurrency ?? cashAcc.currency ?? investAcc.currency ?? "CNY",
+              source: "regular_invest_refund",
+              note: note || `买入退回 ${entryFundName || entryFundCode}`,
+            });
+          }
+
+          const createdFund = await createFundTransactionWithCashFlows(tx, {
             householdId,
-            buyEntryId: created.id,
-            buyDate: date,
-            refundDate: refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date,
-            refundAmount,
             fundAccountId: investAcc.id,
-            fundAccountName: investAcc.name,
-            cashAccountId: cashAcc.id,
-            cashAccountName: cashAcc.name,
-            currency: recordCurrency ?? cashAcc.currency ?? investAcc.currency ?? "CNY",
+            cashAccountId: cashAcc?.id ?? null,
             fundCode: entryFundCode,
             fundName: entryFundName,
             fundProductType,
-            fundConfirmDate: computedConfirmDate,
-            fundArrivalDate: refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date,
-            regularInvestPlanId: created.regularInvestPlanId ?? null,
-            note: note || `买入退回 ${entryFundName || entryFundCode}`,
+            fundSubtype: finalFundSubtype,
+            source: sourceValue,
+            applyDate: date,
+            confirmDate: computedConfirmDate,
+            arrivalDate: computedArrivalDate,
+            grossAmount: amountAbs,
+            refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
+            arrivalAmount: entryArrivalAmount ?? (redeemLike || isDividendCash ? Math.abs(signedAmount) : null),
+            fee: fundFee ?? null,
+            nav: fundNav ?? null,
+            units: roundedFundUnits ?? null,
+            note: note || null,
+            cashFlows: fundCashFlows,
           });
+          createdFundTransactionId = createdFund.fundTransaction.id;
+          createdInvestmentEntryId = createdFund.cashEntry?.id ?? createdFund.fundTransaction.id;
+        } else {
+          const created = await tx.txRecord.create({
+            data: {
+              date,
+              type: TransactionType.investment,
+              accountId: recordAccountId,
+              accountName: recordAccountName,
+              toAccountId: recordToAccountId,
+              toAccountName: recordToAccountName,
+              amount: signedAmount,
+              currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
+              fundName: entryFundName,
+              wealthProductId: wealthProduct?.id ?? undefined,
+              metalTypeId: metalType?.id ?? undefined,
+              metalTypeName: metalType?.name ?? undefined,
+              metalUnitId: metalUnit?.id ?? undefined,
+              metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : undefined,
+              metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : undefined) : undefined,
+              metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
+              metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
+              insuranceAction: sourceValue === "insurance" ? (redeemLike ? "refund" : "premium") : undefined,
+              insuranceProductName: sourceValue === "insurance" ? entryFundName : undefined,
+              fundProductType: sourceValue === "insurance" ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
+              fundSubtype: finalFundSubtype,
+              source: sourceValue,
+              fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
+              fundNav: isMetalProduct || fundProductType === "deposit" ? undefined : fundNav ?? undefined,
+              depositAnnualRate: depositAnnualRate ?? undefined,
+              depositInterest: depositInterest ?? undefined,
+              depositSourceEntryId: depositSourceEntryId ?? undefined,
+              fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
+              fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
+              fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
+              fundArrivalAmount: entryArrivalAmount ?? undefined,
+              note: note || undefined,
+              ...{ householdId },
+            },
+          });
+          createdInvestmentEntryId = created.id;
+          if (
+            finalFundSubtype === FundSubtype.buy &&
+            sourceValue !== "insurance" &&
+            !isMetalProduct &&
+            !isWealthProduct &&
+            buyResultStatus === "refund" &&
+            refundAmount &&
+            refundAmount > 0 &&
+            cashAcc &&
+            entryFundCode
+          ) {
+            await upsertFundBuyRefundRecord(tx, {
+              householdId,
+              buyEntryId: created.id,
+              buyDate: date,
+              refundDate: refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date,
+              refundAmount,
+              fundAccountId: investAcc.id,
+              fundAccountName: investAcc.name,
+              cashAccountId: cashAcc.id,
+              cashAccountName: cashAcc.name,
+              currency: recordCurrency ?? cashAcc.currency ?? investAcc.currency ?? "CNY",
+              fundCode: entryFundCode,
+              fundName: entryFundName,
+              fundProductType,
+              fundConfirmDate: computedConfirmDate,
+              fundArrivalDate: refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date,
+              regularInvestPlanId: created.regularInvestPlanId ?? null,
+              note: note || `买入退回 ${entryFundName || entryFundCode}`,
+            });
+          }
         }
       });
-      if (createdInvestmentEntryId) {
+      if (createdInvestmentEntryId && !createdFundTransactionId) {
         if (fundProductType !== "wealth") {
           await syncFundTransactionsFromTxRecords([createdInvestmentEntryId]).catch((e) => {
             console.error("createTransaction sync fund transaction:", e);
@@ -1823,14 +1898,18 @@ async function editInvestment(formData: FormData) {
     const isRedeemOrRefund = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out"
       || txRecord.fundSubtype === "dividend_cash"
       || (txRecord.fundSubtype === "buy_failed" && txRecord.source === "regular_invest_refund");
-    const oldInvestmentAccId = (isRedeemOrRefund ? txRecord.accountId : txRecord.toAccountId) ?? "";
-    const oldCashAccId = (isRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "";
-    const oldFundCode = txRecord.fundCode;
+    const existingFundTransactionForRecalc = fundProductType !== "wealth" && fundProductType !== "metal"
+      ? await findFundTransactionForEntryId(prisma, { id: entryId, householdId }).catch(() => null)
+      : null;
+    const oldInvestmentAccId = existingFundTransactionForRecalc?.fundAccountId ?? ((isRedeemOrRefund ? txRecord.accountId : txRecord.toAccountId) ?? "");
+    const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
+    const oldFundCode = existingFundTransactionForRecalc?.fundCode ?? null;
 
     // 检测是否有新的基金账户（通过toAccountId字段传递）
     const hasNewToAccountId = formData.has("toAccountId");
     const newToAccountIdStr = String(formData.get("toAccountId") ?? "").trim();
     const newToAccountId = hasNewToAccountId && newToAccountIdStr ? newToAccountIdStr : null;
+    let usedIndependentFundTransaction = false;
 
     await prisma.$transaction(async (tx) => {
       const requestedInvestmentAccountId = newToAccountId ?? oldInvestmentAccId;
@@ -1988,11 +2067,102 @@ async function editInvestment(formData: FormData) {
           updateData.deletedAt = null;
         }
 
+      const isFundLikeIndependentEdit =
+        !isMetalProduct &&
+        !isWealthProduct &&
+        fundProductType !== "deposit" &&
+        !!fundCode &&
+        (!fundProductType || fundProductType === "fund" || fundProductType === "money" || fundProductType === "money_fund");
+      let independentFundTransaction: Awaited<ReturnType<typeof findFundTransactionForEntryId>> = null;
+      if (isFundLikeIndependentEdit) {
+        independentFundTransaction = await findFundTransactionForEntryId(tx, { id: entryId, householdId });
+        if (!independentFundTransaction) throw new Error("基金交易不存在或尚未完成迁移");
+        usedIndependentFundTransaction = true;
+        const businessUnits = updateData.fundUnits;
+        const businessNav = fundNav ?? independentFundTransaction.nav;
+        const businessFee = fundFee ?? independentFundTransaction.fee;
+        await tx.fundTransaction.update({
+          where: { id: independentFundTransaction.id },
+          data: {
+            fundAccountId: finalFundAccountId,
+            cashAccountId: finalCashAccountId || null,
+            fundCode,
+            fundName: fundName || independentFundTransaction.fundName || fundCode,
+            fundProductType: fundProductType === "money_fund" ? "money" : ((fundProductType || "fund") as any),
+            fundSubtype: finalFundSubtype,
+            source: sourceValue,
+            applyDate: date,
+            confirmDate: fundConfirmDate ?? null,
+            arrivalDate: fundArrivalDate ?? null,
+            grossAmount: amountAbs,
+            refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
+            arrivalAmount: fundArrivalAmount ?? null,
+            fee: businessFee,
+            nav: businessNav,
+            units: businessUnits,
+            note: memo || null,
+          },
+        });
+        if (independentFundTransaction.cashEntryId && finalCashAccountId && updateData.amount !== 0 && !isDividendReinvest) {
+          const cashFlowDate = redeemLike || isDividendCash || isBuyFailedRefund ? fundArrivalDate ?? date : date;
+          const cashFlowKind =
+            finalFundSubtype === FundSubtype.redeem || finalFundSubtype === FundSubtype.switch_out
+              ? FundCashFlowKind.redeem_in
+              : finalFundSubtype === FundSubtype.dividend_cash
+                ? FundCashFlowKind.dividend_in
+                : FundCashFlowKind.buy_out;
+          await tx.fundTransactionCashFlow.upsert({
+            where: { id: `cff_${independentFundTransaction.cashEntryId}` },
+            create: {
+              id: `cff_${independentFundTransaction.cashEntryId}`,
+              fundTransactionId: independentFundTransaction.id,
+              txRecordId: independentFundTransaction.cashEntryId,
+              kind: cashFlowKind,
+              amount: Math.abs(Number(updateData.amount)),
+              flowDate: cashFlowDate,
+              accountId: finalCashAccountId,
+            },
+            update: {
+              kind: cashFlowKind,
+              amount: Math.abs(Number(updateData.amount)),
+              flowDate: cashFlowDate,
+              accountId: finalCashAccountId,
+            },
+          });
+          await upsertEntryBusinessCashFlowLink(tx, {
+            householdId,
+            cashEntryId: independentFundTransaction.cashEntryId,
+            fundTransactionId: independentFundTransaction.id,
+            businessType: "fund",
+            cashFlowDirection: Number(updateData.amount) < 0 ? "outflow" : "inflow",
+            source: sourceValue,
+            note: "Linked cash flow to fund transaction",
+            metadata: {
+              splitRecord: true,
+              independentBusinessTransaction: true,
+            },
+          });
+        }
+        Object.assign(updateData, {
+          fundCode: null,
+          fundName: null,
+          fundProductType: null,
+          fundSubtype: null,
+          fundUnits: null,
+          fundNav: null,
+          fundFee: null,
+          fundConfirmDate: null,
+          fundArrivalDate: null,
+          fundArrivalAmount: null,
+        });
+      }
+
       await tx.txRecord.update({
         where: { id: entryId },
         data: updateData,
       });
       if (
+        !isFundLikeIndependentEdit &&
         finalFundSubtype === FundSubtype.buy &&
         sourceValue !== "insurance" &&
         !isMetalProduct &&
@@ -2036,15 +2206,39 @@ async function editInvestment(formData: FormData) {
           data: { deletedAt: new Date() },
         });
       }
+      if (
+        independentFundTransaction &&
+        finalFundSubtype === FundSubtype.buy &&
+        buyResultStatus === "refund" &&
+        refundAmount &&
+        refundAmount > 0 &&
+        finalCashAccountId
+      ) {
+        const effectiveRefundDate = refundDate ?? fundArrivalDate ?? fundConfirmDate ?? date;
+        await upsertFundTransactionRefundCashFlow(tx, {
+          householdId,
+          fundTransactionId: independentFundTransaction.id,
+          linkedRefundEntryId,
+          refundDate: effectiveRefundDate,
+          refundAmount,
+          cashAccountId: finalCashAccountId,
+          cashAccountName: finalCashAccountName,
+          currency: finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
+          source: "regular_invest_refund",
+          note: memo || `买入退回 ${fundName || fundCode}`,
+        });
+      }
     });
-    if (fundProductType !== "wealth") {
+    if (fundProductType !== "wealth" && !usedIndependentFundTransaction) {
       await syncFundTransactionsFromTxRecords([entryId]).catch((e) => {
         console.error("editInvestment sync fund transaction:", e);
       });
     }
-    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
-      console.error("editInvestment sync independent business transaction:", e);
-    });
+    if (!usedIndependentFundTransaction) {
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
+        console.error("editInvestment sync independent business transaction:", e);
+      });
+    }
 
     // 重算持仓：如果基金账户变更，需要重算旧账户和新账户
     const finalInvestmentAccId = newToAccountId ?? oldInvestmentAccId;
@@ -2289,6 +2483,76 @@ async function updateTransactionFromDialog(formData: FormData) {
           signedAmount = -amountAbs;
         }
 
+        const isFundLikeIndependentEdit =
+          !isInsuranceEntry &&
+          !!fundCode &&
+          (productType === "fund" || productType === "money" || productType === "money_fund");
+        const independentFundTransaction = isFundLikeIndependentEdit
+          ? await findFundTransactionForEntryId(tx, { id: entryId, householdId: ctx.householdId })
+          : null;
+        if (isFundLikeIndependentEdit && !independentFundTransaction) {
+          throw new Error("基金交易不存在或尚未完成迁移");
+        }
+        if (independentFundTransaction) {
+          const arrivalAmount = Number.isFinite(fundArrivalAmount) && fundArrivalAmount > 0 ? fundArrivalAmount : null;
+          const fee = Number.isFinite(fundFee) && fundFee > 0 ? fundFee : independentFundTransaction.fee;
+          await tx.fundTransaction.update({
+            where: { id: independentFundTransaction.id },
+            data: {
+              fundAccountId: investAcc.id,
+              cashAccountId: cashAccId ?? null,
+              fundCode,
+              fundName: independentFundTransaction.fundName ?? fundCode,
+              fundProductType: productType === "money_fund" ? "money" : (productType as any),
+              fundSubtype: subtype as any,
+              applyDate: date,
+              grossAmount: amountAbs,
+              arrivalAmount,
+              fee,
+              note: note || null,
+            },
+          });
+          if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0) {
+            const cashFlowKind =
+              subtype === "redeem" || subtype === "switch_out"
+                ? FundCashFlowKind.redeem_in
+                : subtype === "dividend_cash"
+                  ? FundCashFlowKind.dividend_in
+                  : FundCashFlowKind.buy_out;
+            await tx.fundTransactionCashFlow.upsert({
+              where: { id: `cff_${independentFundTransaction.cashEntryId}` },
+              create: {
+                id: `cff_${independentFundTransaction.cashEntryId}`,
+                fundTransactionId: independentFundTransaction.id,
+                txRecordId: independentFundTransaction.cashEntryId,
+                kind: cashFlowKind,
+                amount: Math.abs(signedAmount),
+                flowDate: redeemLike ? date : date,
+                accountId: cashAccId,
+              },
+              update: {
+                kind: cashFlowKind,
+                amount: Math.abs(signedAmount),
+                flowDate: date,
+                accountId: cashAccId,
+              },
+            });
+            await upsertEntryBusinessCashFlowLink(tx, {
+              householdId: ctx.householdId,
+              cashEntryId: independentFundTransaction.cashEntryId,
+              fundTransactionId: independentFundTransaction.id,
+              businessType: "fund",
+              cashFlowDirection: signedAmount < 0 ? "outflow" : "inflow",
+              source: entry.source,
+              note: "Linked cash flow to fund transaction",
+              metadata: {
+                splitRecord: true,
+                independentBusinessTransaction: true,
+              },
+            });
+          }
+        }
+
         // 更新 TxRecord
         await tx.txRecord.update({
           where: { id: entryId },
@@ -2300,11 +2564,11 @@ async function updateTransactionFromDialog(formData: FormData) {
             categoryName: null,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
-            fundCode: fundCode || null,
+            fundCode: null,
             insuranceAction: isInsuranceEntry ? (redeemLike ? "refund" : "premium") : entry.insuranceAction,
             insuranceProductName: isInsuranceEntry ? (entry.fundName ?? null) : entry.insuranceProductName,
-            fundProductType: isInsuranceEntry ? null : (productType as any) || null,
-            fundSubtype: (subtype as any) || null,
+            fundProductType: isFundLikeIndependentEdit || isInsuranceEntry ? null : (productType as any) || null,
+            fundSubtype: isFundLikeIndependentEdit ? null : (subtype as any) || null,
             date,
             type: TransactionType.investment,
             note: note || null,
@@ -2516,6 +2780,7 @@ export default async function Home({
     detailOutFrom?: string;
     detailOutTo?: string;
     focusEntryId?: string;
+    guide?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -2537,13 +2802,15 @@ export default async function Home({
           ? "investmoney"
           : params?.view === "investwealth"
             ? "investwealth"
-            : params?.view === "regularinvest"
-              ? "regularinvest"
-              : params?.view === "debt"
-                ? "debt"
-                : params?.view === "deposit"
-                  ? "deposit"
-                  : "";
+            : params?.view === "investstock"
+              ? "investstock"
+              : params?.view === "regularinvest"
+                ? "regularinvest"
+                : params?.view === "debt"
+                  ? "debt"
+                  : params?.view === "deposit"
+                    ? "deposit"
+                    : "";
   const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
@@ -2574,6 +2841,7 @@ export default async function Home({
   const detailOutFrom = typeof params?.detailOutFrom === "string" ? params.detailOutFrom.trim() : "";
   const detailOutTo = typeof params?.detailOutTo === "string" ? params.detailOutTo.trim() : "";
   const focusEntryId = typeof params?.focusEntryId === "string" ? params.focusEntryId.trim() : "";
+  const guideParam = typeof params?.guide === "string" ? params.guide.trim() : "";
   const detailColumnFilters: Record<DetailFilterColumn, string[]> = {
     date: parseDetailFilterParam(params?.detailFilterDate),
     flow: parseDetailFilterParam(params?.detailFilterFlow),
@@ -2661,7 +2929,7 @@ export default async function Home({
     !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "investstock" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
       : viewParam
@@ -2989,6 +3257,7 @@ export default async function Home({
       parentId?: string;
       isHeader?: boolean;
       isGroup?: boolean;
+      categoryType?: string;
     }> = [];
     const indent = "　";
 
@@ -3008,7 +3277,7 @@ export default async function Home({
       }
 
       const headerId = `category-type:${type}`;
-      options.push({ value: headerId, label: typeLabels[type] ?? type, isHeader: true });
+      options.push({ value: headerId, label: typeLabels[type] ?? type, isHeader: true, categoryType: type });
 
       function walk(parentId: string | null, level: number, parentOptionId: string) {
         const children = childrenByParentId.get(parentId) ?? [];
@@ -3020,6 +3289,7 @@ export default async function Home({
             subLabel: typeLabels[type] ?? type,
             parentId: parentOptionId,
             isGroup: hasChildren,
+            categoryType: type,
           });
           if (hasChildren) walk(child.id, level + 1, child.id);
         }
@@ -3301,6 +3571,11 @@ export default async function Home({
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "metal"
       ? selectedAccount.id
       : investmentAccountOptions.find((account) => account.investProductType === "metal")?.id ?? "";
+  const stockAccountOptions = investmentAccountOptions.filter((account) => account.investProductType === "stock");
+  const defaultStockInvestmentAccountId =
+    selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "stock"
+      ? selectedAccount.id
+      : stockAccountOptions[0]?.id ?? "";
   const defaultInvestmentCreateAccountId =
     selectedAccount && isPureInvestmentAccount(selectedAccount)
       ? selectedAccount.id
@@ -3309,6 +3584,7 @@ export default async function Home({
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
+  const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   const debtCounterpartyOptions = counterparties;
   const debtSourceInstitutions = institutions.filter((institution) => institution.type === "bank");
@@ -3605,6 +3881,9 @@ export default async function Home({
     : null;
   const investwealthData = view === "investwealth" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
+    : null;
+  const investstockData = view === "investstock" && accountId
+    ? await computePositionDisplay(ctx, accountId)
     : null;
   const investfundData = view === "investfund" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
@@ -4353,6 +4632,19 @@ export default async function Home({
         ?? cashAccountList[0]?.id
         ?? ""
       : cashAccountList[0]?.id ?? "";
+  const defaultStockCashAccountId = (() => {
+    const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
+    if (stockAccount?.institutionId) {
+      return cashAccountList.find((account) => account.institutionId === stockAccount.institutionId && account.institutionType === "brokerage")?.id
+        ?? cashAccountList.find((account) => account.institutionId === stockAccount.institutionId)?.id
+        ?? defaultCashAccountForSelectedInstitution;
+    }
+    return defaultCashAccountForSelectedInstitution;
+  })();
+  const defaultStockTransferFromAccountId =
+    cashAccountList.find((account) => account.id !== defaultStockCashAccountId && account.kind === "bank_debit")?.id
+    ?? cashAccountList.find((account) => account.id !== defaultStockCashAccountId)?.id
+    ?? "";
   const defaultWealthAccountForSelectedInstitution =
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "wealth"
       ? selectedAccount.id
@@ -4412,6 +4704,8 @@ export default async function Home({
                 defaultAction={
                   isDepositView
                     ? "deposit"
+                    : view === "investstock"
+                      ? "stock"
                     : currentInvestData
                       ? (
                           selectedAccount?.investProductType === "metal"
@@ -4436,6 +4730,9 @@ export default async function Home({
                   defaultTransferFromAccountId: isBillAccount ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "") : (selectedAccount?.id ?? accountId ?? ""),
                   defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
                   defaultInvestmentAccountId: defaultFundInvestmentAccountId,
+                  defaultStockAccountId: defaultStockInvestmentAccountId,
+                  defaultStockCashAccountId,
+                  defaultStockTransferFromAccountId,
                   defaultMetalAccountId: defaultMetalInvestmentAccountId,
                   defaultWealthAccountId: defaultWealthAccountForSelectedInstitution,
                   defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
@@ -4457,7 +4754,9 @@ export default async function Home({
                   { key: "advance", label: "代付" },
                   { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
                   { key: "fx", label: "购入外汇" },
-                  { key: "investment", label: "开放式基金 / 货币基金" },
+                  { key: "investment", label: "基金" },
+                  { key: "stock", label: "股票" },
+                  { key: "stock-transfer", label: "银证转账" },
                   { key: "metal", label: "贵金属" },
                   { key: "wealth", label: "银行理财" },
                   { key: "deposit", label: "存款" },
@@ -4479,6 +4778,14 @@ export default async function Home({
                 isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}
                 allTags={tags.map(t => ({ id: t.id, name: t.name, color: t.color }))}
                 hideTrigger
+              />
+              <StockTransactionFormModal
+                defaultStockAccountId={defaultStockInvestmentAccountId}
+                defaultCashAccountId={defaultStockCashAccountId}
+                stockAccounts={stockAccountOptions}
+                stockAccountSSOptions={stockAccountSSOptions}
+                cashAccounts={cashAccountList}
+                cashAccountSSOptions={cashAccountSSOptions}
               />
               <InvestmentFormModal
                 mode="create"
@@ -4864,6 +5171,90 @@ export default async function Home({
               isRedUp={isRedUp}
               fundUnitsDecimals={fundUnitsDecimals}
             />
+          ) : view === "investstock" && investstockData ? (
+            <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
+              <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-slate-500">股票账户</div>
+                      <h2 className="mt-1 text-base font-semibold text-slate-900">{selectedAccountLabel}</h2>
+                    </div>
+                    <div className="grid grid-cols-4 gap-6 text-right text-xs">
+                      <div>
+                        <div className="text-slate-500">证券现金</div>
+                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                          {formatCurrencyMoney(investstockData.cashBalance ?? 0, selectedAccount?.currency ?? baseCurrency)}
+                        </div>
+                        {investstockData.cashAccountName ? (
+                          <div className="mt-0.5 max-w-[9rem] truncate text-[11px] text-slate-400">{investstockData.cashAccountName}</div>
+                        ) : null}
+                      </div>
+                      <div>
+                        <div className="text-slate-500">持仓市值</div>
+                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                          {formatCurrencyMoney(investstockData.totalMarketValue, selectedAccount?.currency ?? baseCurrency)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">总资产</div>
+                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                          {formatCurrencyMoney(investstockData.totalAssetValue ?? investstockData.totalMarketValue, selectedAccount?.currency ?? baseCurrency)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">浮动盈亏</div>
+                        <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlCls(investstockData.totalMarketValue - investstockData.totalCost)}`}>
+                          {formatCurrencyMoney(investstockData.totalMarketValue - investstockData.totalCost, selectedAccount?.currency ?? baseCurrency)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto">
+                  {investstockData.positions.length > 0 ? (
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 z-10 bg-slate-50 text-xs text-slate-500">
+                        <tr className="border-b border-slate-200">
+                          <th className="px-4 py-2 text-left font-medium">股票</th>
+                          <th className="px-3 py-2 text-right font-medium">数量</th>
+                          <th className="px-3 py-2 text-right font-medium">成本价</th>
+                          <th className="px-3 py-2 text-right font-medium">成本</th>
+                          <th className="px-3 py-2 text-right font-medium">最新价</th>
+                          <th className="px-3 py-2 text-right font-medium">市值</th>
+                          <th className="px-4 py-2 text-right font-medium">浮动盈亏</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {investstockData.positions.map((position) => (
+                          <tr key={position.fundCode} className="border-b border-slate-100 hover:bg-slate-50">
+                            <td className="px-4 py-2">
+                              <div className="font-medium text-slate-900">{position.name}</div>
+                              <div className="text-xs text-slate-500">{position.fundCode}</div>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.units)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.avgCost)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.cost, selectedAccount?.currency ?? baseCurrency)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{position.nav == null ? "-" : formatMoney(position.nav)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.marketValue, selectedAccount?.currency ?? baseCurrency)}</td>
+                            <td className={`px-4 py-2 text-right tabular-nums ${pnlCls(position.floatingPnL)}`}>
+                              {formatCurrencyMoney(position.floatingPnL, selectedAccount?.currency ?? baseCurrency)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
+                      <div className="text-sm font-medium text-slate-900">暂无股票持仓</div>
+                      <div className="mt-2 max-w-md text-xs leading-5 text-slate-500">
+                        股票账户已使用独立 stock 数据域；交易录入、券商流水导入和行情同步会写入 StockTransaction / StockHolding，不会复用基金字段。
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : view === "investfund" && investfundData ? (
             <FundShell
               key={`investfund-${accountId}`}
@@ -4925,6 +5316,7 @@ export default async function Home({
                   accountLabel={selectedAccountLabel}
                   currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}
+                  showGuideOverlay={guideParam === "daily-table"}
                 />
               </div>
             </div>

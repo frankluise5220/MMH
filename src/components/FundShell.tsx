@@ -19,7 +19,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
-import { allocateBuyFailedRefunds, findLinkedEntries, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
+import { allocateBuyFailedRefunds, findLinkedEntries, getConfirmedBuyAmount, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 
 import { WealthFormModal } from "@/components/WealthFormModal";
 
@@ -160,6 +160,7 @@ const CLEARED_COLS = [
 const DETAIL_COLS = [
   ["select", 44],
   ["date", 92],
+  ["confirmDate", 92],
   ["arrivalDate", 92],
   ["cashAccount", 132],
   ["fund", 156],
@@ -170,15 +171,19 @@ const DETAIL_COLS = [
   ["amount", 76],
   ["profit", 76],
   ["status", 72],
+  ["note", 160],
   ["actions", 112],
 ] as const;
 
 type DetailColumnKey = typeof DETAIL_COLS[number][0];
 
 const FIXED_DETAIL_COLUMNS = new Set<DetailColumnKey>(["select", "actions"]);
+const DEFAULT_HIDDEN_DETAIL_COLUMNS = new Set<DetailColumnKey>(["confirmDate", "note"]);
+const FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY = `${FUND_DETAIL_HIDDEN_COLUMNS_KEY}:defaults_v2`;
 const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
   select: "选择",
   date: "申请日期",
+  confirmDate: "确认日期",
   arrivalDate: "到账日期",
   cashAccount: "资金账户",
   fund: "基金",
@@ -189,6 +194,7 @@ const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
   amount: "金额",
   profit: "收益",
   status: "状态",
+  note: "备注",
   actions: "",
 };
 
@@ -616,6 +622,7 @@ export function FundShell(props: Props) {
   const investmentAccountLabel = isWealthAccount ? "理财账户" : "基金账户";
   const detailNameLabel = isWealthAccount ? "理财产品" : "基金";
   const navColumnLabel = isMetalAccount ? "单价" : isWealthAccount ? "净值/估值" : "净值";
+  const detailAmountColumnLabel = isWealthAccount ? "入账/出账金额" : "确认金额";
   const entryAssetKey = useCallback((entry: any) => String(
     isWealthAccount
       ? entry?.wealthProductId ?? ""
@@ -639,6 +646,7 @@ export function FundShell(props: Props) {
   const [fundPage, setFundPage] = useState(1);
 
   const [fundPageSize, setFundPageSize] = useState(20);
+  const [detailTableRowCount, setDetailTableRowCount] = useState(0);
 
   const [sortKey, setSortKey] = useState("marketValue");
 
@@ -677,7 +685,7 @@ export function FundShell(props: Props) {
     details: 0,
   });
   const [detailColumnMenuOpen, setDetailColumnMenuOpen] = useState(false);
-  const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(new Set());
+  const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(() => new Set(DEFAULT_HIDDEN_DETAIL_COLUMNS));
   const [fundChartMode, setFundChartMode] = useState<FundChartMode>("profit");
   const [fundChartRange, setFundChartRange] = useState<FundChartRange>("month");
   const [fundNavHistoryState, setFundNavHistoryState] = useState<{
@@ -728,7 +736,14 @@ export function FundShell(props: Props) {
   const displayUnitsOf = displayUnitsOfPlain;
   const detailAmountOf = useCallback((entry: any) => {
     const rawAmount = toNumber(entry?.amount);
-    if (!isWealthAccount) return rawAmount;
+    if (!isWealthAccount) {
+      if (entry?.fundSubtype !== "buy") return rawAmount;
+      const entryId = String(entry?.id ?? "");
+      const linkedRefundAmount = refundAmountByBuyId.get(entryId) ?? 0;
+      const rowRefundAmount = Math.max(0, Math.abs(toNumber(entry?.refundAmount ?? 0)));
+      const confirmedAmount = getConfirmedBuyAmount(rawAmount, Math.max(linkedRefundAmount, rowRefundAmount));
+      return rawAmount < 0 ? -confirmedAmount : confirmedAmount;
+    }
     const isCashIn =
       entry?.fundSubtype === "redeem" ||
       entry?.fundSubtype === "switch_out" ||
@@ -736,7 +751,7 @@ export function FundShell(props: Props) {
     if (!isCashIn) return rawAmount;
     const arrivalAmount = entry?.fundArrivalAmount != null ? toNumber(entry.fundArrivalAmount) : null;
     return arrivalAmount != null ? Math.abs(arrivalAmount) : Math.abs(rawAmount);
-  }, [isWealthAccount]);
+  }, [isWealthAccount, refundAmountByBuyId]);
   const linkedCandidateEntries = useMemo(() => {
     return (d.allEntries || []).map((entry: any) => ({
       id: String(entry.id ?? ""),
@@ -767,6 +782,16 @@ export function FundShell(props: Props) {
 
   const [batchDeleting, setBatchDeleting] = useState(false);
 
+  useEffect(() => {
+    setLocalData({ positions, clearedPositions, allEntries, totalMarketValue, totalCost, totalHistoricalProfit, confirmDaysMap, feeRateMap });
+    setFundCode(initialFundCode || "");
+    setShowCleared(initialShowCleared);
+    setFundPage(1);
+    setFundChartOpen(false);
+    setSelectedIds(new Set());
+    setDetailTableRowCount(0);
+  }, [accountId, allEntries, clearedPositions, confirmDaysMap, feeRateMap, initialFundCode, initialShowCleared, positions, totalCost, totalHistoricalProfit, totalMarketValue, view]);
+
 
 
   type FundBatchField = "cashAccountId" | "fundAccountId" | "amount" | "fundConfirmDate" | "fundArrivalDate" | "remark";
@@ -789,12 +814,26 @@ export function FundShell(props: Props) {
 
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY);
-      if (!raw) return;
-      const saved = JSON.parse(raw);
-      if (!Array.isArray(saved)) return;
       const allowed = new Set(DETAIL_COLS.map(([key]) => key).filter((key) => !FIXED_DETAIL_COLUMNS.has(key)));
-      setHiddenDetailColumns(new Set(saved.filter((key): key is DetailColumnKey => allowed.has(key))));
+      const raw = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY);
+      const defaultsApplied = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY) === "1";
+      const next = new Set<DetailColumnKey>();
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved)) {
+          for (const key of saved) {
+            if (typeof key === "string" && allowed.has(key as DetailColumnKey)) next.add(key as DetailColumnKey);
+          }
+        }
+      }
+      if (!defaultsApplied) {
+        for (const key of DEFAULT_HIDDEN_DETAIL_COLUMNS) {
+          if (allowed.has(key)) next.add(key);
+        }
+        window.localStorage.setItem(FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY, "1");
+        window.localStorage.setItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY, JSON.stringify(Array.from(next)));
+      }
+      setHiddenDetailColumns(next);
     } catch {}
   }, []);
 
@@ -816,15 +855,17 @@ export function FundShell(props: Props) {
   }, [columnWidths]);
 
   const isSingleNormalFundScope = Boolean(fundCode && !isMetalAccount && !isWealthAccount);
+  const isAllWealthDetailScope = Boolean(isWealthAccount && !fundCode);
+  const hideRemainingUnitsDetailColumn = !isWealthAccount || isAllWealthDetailScope;
 
   const visibleDetailCols = useMemo(
     () => DETAIL_COLS.filter(([key]) =>
       !(isWealthAccount && key === "status") &&
-      !(!isWealthAccount && key === "remainingUnits") &&
+      !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
       !(isSingleNormalFundScope && key === "fund") &&
       !hiddenDetailColumns.has(key)
     ),
-    [hiddenDetailColumns, isSingleNormalFundScope, isWealthAccount],
+    [hiddenDetailColumns, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
   );
   const visibleDetailDataCols = useMemo(
     () => visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)),
@@ -838,10 +879,10 @@ export function FundShell(props: Props) {
   const isDetailColumnVisible = useCallback(
     (key: DetailColumnKey) =>
       !(isWealthAccount && key === "status") &&
-      !(!isWealthAccount && key === "remainingUnits") &&
+      !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
       !(isSingleNormalFundScope && key === "fund") &&
       !hiddenDetailColumns.has(key),
-    [hiddenDetailColumns, isSingleNormalFundScope, isWealthAccount],
+    [hiddenDetailColumns, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
   );
 
   useEffect(() => {
@@ -882,16 +923,42 @@ export function FundShell(props: Props) {
   ) => {
     const baseWidths = cols.map(([key, fallback]) => [key, colWidth(table, key, fallback)] as const);
     const baseTotal = baseWidths.reduce((sum, [, width]) => sum + width, 0);
-    const viewport = viewportWidth || 0;
-    const targetWidth = Math.max(minTableWidth, viewport);
-    const scale = baseTotal > 0 && baseTotal < targetWidth ? targetWidth / baseTotal : 1;
-    const compressScale = baseTotal > 0 && baseTotal > targetWidth ? targetWidth / baseTotal : 1;
-    const colWidths = Object.fromEntries(baseWidths.map(([key, width]) => [
-      key,
-      Math.max(minFundColWidth(table, key), width * Math.min(scale, compressScale)),
-    ]));
+    const minTotal = cols.reduce((sum, [key]) => sum + minFundColWidth(table, key), 0);
+    const preferredTotal = Math.max(minTableWidth, baseTotal);
+    const availableWidth = viewportWidth || preferredTotal;
 
-    return { tableWidth: targetWidth, colWidths };
+    if (availableWidth >= baseTotal) {
+      const scale = baseTotal > 0 ? availableWidth / baseTotal : 1;
+      return {
+        tableWidth: availableWidth,
+        colWidths: Object.fromEntries(baseWidths.map(([key, width]) => [
+          key,
+          Math.max(minFundColWidth(table, key), width * scale),
+        ])),
+      };
+    }
+
+    if (availableWidth >= minTotal) {
+      const shrinkNeeded = baseTotal - availableWidth;
+      const shrinkCapacity = baseWidths.reduce(
+        (sum, [key, width]) => sum + Math.max(0, width - minFundColWidth(table, key)),
+        0,
+      );
+      return {
+        tableWidth: availableWidth,
+        colWidths: Object.fromEntries(baseWidths.map(([key, width]) => {
+          if (shrinkCapacity <= 0) return [key, minFundColWidth(table, key)];
+          const minWidth = minFundColWidth(table, key);
+          const capacity = Math.max(0, width - minWidth);
+          return [key, width - shrinkNeeded * (capacity / shrinkCapacity)];
+        })),
+      };
+    }
+
+    return {
+      tableWidth: minTotal,
+      colWidths: Object.fromEntries(baseWidths.map(([key]) => [key, minFundColWidth(table, key)])),
+    };
   }, [colWidth]);
 
   const clearedLayout = useMemo(
@@ -916,6 +983,7 @@ export function FundShell(props: Props) {
 
   const toggleDetailColumnVisibility = useCallback((key: DetailColumnKey) => {
     if (isWealthAccount && key === "status") return;
+    if (hideRemainingUnitsDetailColumn && key === "remainingUnits") return;
     if (FIXED_DETAIL_COLUMNS.has(key)) return;
     setHiddenDetailColumns((prev) => {
       const next = new Set(prev);
@@ -923,7 +991,7 @@ export function FundShell(props: Props) {
       else {
         const visibleOptionalCount = DETAIL_COLS.filter(([colKey]) =>
           !(isWealthAccount && colKey === "status") &&
-          !(!isWealthAccount && colKey === "remainingUnits") &&
+          !(hideRemainingUnitsDetailColumn && colKey === "remainingUnits") &&
           !FIXED_DETAIL_COLUMNS.has(colKey) &&
           !next.has(colKey)
         ).length;
@@ -935,7 +1003,7 @@ export function FundShell(props: Props) {
       } catch {}
       return next;
     });
-  }, [isWealthAccount]);
+  }, [hideRemainingUnitsDetailColumn, isWealthAccount]);
 
   const beginColumnResize = useCallback((event: ReactMouseEvent, table: FundTableKey, key: string, currentWidth: number, minWidth = 48) => {
     event.preventDefault();
@@ -1027,7 +1095,7 @@ export function FundShell(props: Props) {
       isMetalAccount ? "数量" : "份额",
       ...(isWealthAccount ? ["剩余份额"] : []),
       "交易类型",
-      isWealthAccount ? "入账/出账金额" : "金额",
+      detailAmountColumnLabel,
       "收益",
       ...(isWealthAccount ? [] : ["状态"]),
     ];
@@ -1323,9 +1391,7 @@ export function FundShell(props: Props) {
 
     window.history.replaceState(null, "", `/?${q.toString()}`);
 
-    const nextCode = isWealthAccount ? "" : on && d.clearedPositions.length > 0 ? d.clearedPositions[0].fundCode : d.positions.length > 0 ? d.positions[0].fundCode : "";
-
-    setFundCode(nextCode);
+    setFundCode("");
 
     setFundPage(1);
 
@@ -1513,7 +1579,7 @@ export function FundShell(props: Props) {
   const filtered = useMemo(() => {
     const source = fundCode
       ? d.allEntries.filter((e: any) => entryAssetKey(e) === fundCode)
-      : d.allEntries ?? [];
+      : isWealthAccount ? d.allEntries ?? [] : [];
     return [...source]
       .sort((a: any, b: any) => {
         const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
@@ -1522,7 +1588,7 @@ export function FundShell(props: Props) {
         if (byCreatedAt !== 0) return byCreatedAt;
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
-  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode]);
+  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, fundCode, positionAssetKey],
@@ -1727,11 +1793,17 @@ export function FundShell(props: Props) {
       return;
     }
 
-    if (!fundCode || !available.includes(fundCode)) {
+    if (!fundCode) {
+      if (fundChartOpen) setFundChartOpen(false);
+      q.delete("fundCode");
+      q.delete("wealthProductId");
+      window.history.replaceState(null, "", `/?${q.toString()}`);
+      return;
+    }
 
-      const next = available[0]!;
+    if (!available.includes(fundCode)) {
 
-      setFundCode(next);
+      setFundCode("");
       setFundChartOpen(false);
 
       setFundPage(1);
@@ -1741,7 +1813,13 @@ export function FundShell(props: Props) {
 
       window.history.replaceState(null, "", `/?${q.toString()}`);
 
+      return;
+
     }
+
+    q.set("fundCode", fundCode);
+    q.delete("wealthProductId");
+    window.history.replaceState(null, "", `/?${q.toString()}`);
 
   }, [baseQuery, view, showCleared, fundCode, fundChartOpen, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
 
@@ -2104,15 +2182,16 @@ export function FundShell(props: Props) {
 
   const batchTargetIds = useMemo(() => Array.from(selectedIds).filter((id) => filteredByColumnsIdSet.has(id)), [selectedIds, filteredByColumnsIdSet]);
 
-  const selectedDetailCount = batchTargetIds.length;
 
+  useEffect(() => {
+    setDetailTableRowCount(filteredByColumns.length);
+  }, [filteredByColumns.length]);
 
-
-  const totalPages = Math.max(1, Math.ceil(filteredByColumns.length / fundPageSize));
+  const totalPages = Math.max(1, Math.ceil(detailTableRowCount / fundPageSize));
 
   const safePage = Math.min(fundPage, totalPages);
 
-  const allFundPageSize = Math.max(1, filteredByColumns.length);
+  const allFundPageSize = Math.max(1, detailTableRowCount);
 
   const paged = filteredByColumns.slice((safePage - 1) * fundPageSize, safePage * fundPageSize);
 
@@ -2395,6 +2474,18 @@ export function FundShell(props: Props) {
 
 
   const detailAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
+    const numberFilterText = (value: number | null | undefined) =>
+      value == null || !Number.isFinite(value) ? null : String(value);
+    const navValueOf = (entry: any) => entry.fundNav != null ? toNumber(entry.fundNav) : null;
+    const remainingUnitsValueOf = (entry: any) => entry.wealthRemainingUnits != null ? toNumber(entry.wealthRemainingUnits) : null;
+    const detailSubtypeLabelOf = (entry: any) => {
+      const info = fl(entry.fundSubtype, entry.source);
+      return isSingleNormalFundScope ? compactFundSubtypeLabel(entry, info.label) : info.label;
+    };
+    const fundLabelOf = (entry: any) => displayFundName(entry);
+    const fundSearchTextOf = (entry: any) =>
+      [displayFundName(entry), entry.fundCode, entry.wealthProductId].filter(Boolean).join(" ");
+
     return visibleDetailDataCols.map(([key, fallback]) => {
       const baseWidth = colWidth("details", key, fallback);
       const minWidth = minFundColWidth("details", key);
@@ -2405,7 +2496,26 @@ export function FundShell(props: Props) {
           key,
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
+          filterKind: "dateRange",
+          filterText: (e: any) => fundApplyDateOf(e) || "",
+          sortValue: (e: any) => fundApplyDateOf(e) || null,
           render: (e: any) => <span className="tabular-nums text-xs text-slate-600">{fundApplyDateOf(e)}</span>,
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "confirmDate") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          filterKind: "dateRange",
+          filterText: (e: any) => fmtDate(e.fundConfirmDate) || "",
+          sortValue: (e: any) => fmtDate(e.fundConfirmDate) || null,
+          render: (e: any) => (
+            <span className="tabular-nums text-xs text-slate-500">
+              {e.fundConfirmDate ? fmtDate(e.fundConfirmDate) : <span className="text-slate-300">-</span>}
+            </span>
+          ),
         } satisfies AdvancedDataTableColumn<any>;
       }
 
@@ -2414,6 +2524,9 @@ export function FundShell(props: Props) {
           key,
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
+          filterKind: "dateRange",
+          filterText: (e: any) => fmtDate(e.fundArrivalDate) || "",
+          sortValue: (e: any) => fmtDate(e.fundArrivalDate) || null,
           render: (e: any) => (
             <span className="tabular-nums text-xs text-slate-500">
               {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
@@ -2427,6 +2540,12 @@ export function FundShell(props: Props) {
           key,
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
+          filterText: (e: any) => cashAccountInfoOf(e)?.label ?? "",
+          filterSearchText: (e: any) => {
+            const info = cashAccountInfoOf(e);
+            return [info?.label, info?.groupName].filter(Boolean).join(" ");
+          },
+          sortValue: (e: any) => cashAccountInfoOf(e)?.label ?? null,
           render: (e: any) => {
             const info = cashAccountInfoOf(e);
             if (!info || info.label === "(空)") return <span className="text-slate-300">-</span>;
@@ -2442,8 +2561,13 @@ export function FundShell(props: Props) {
       if (key === "fund") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: detailNameLabel,
           ...common,
+          filterKind: "text",
+          filterText: fundLabelOf,
+          filterSearchText: fundSearchTextOf,
+          filterTitle: fundSearchTextOf,
+          sortValue: fundLabelOf,
           render: (e: any) => (
             <div className="truncate text-xs text-slate-700" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
               {displayFundName(e)}
@@ -2456,11 +2580,15 @@ export function FundShell(props: Props) {
       if (key === "nav") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: navColumnLabel,
           ...common,
           align: "right",
+          filterKind: "numberRange",
+          filterText: (e: any) => numberFilterText(navValueOf(e)),
+          filterNumber: navValueOf,
+          sortValue: navValueOf,
           render: (e: any) => {
-            const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
+            const nav = navValueOf(e);
             return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{nav != null ? nav.toFixed(4) : <span className="text-slate-300">-</span>}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
@@ -2472,6 +2600,10 @@ export function FundShell(props: Props) {
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
           align: "right",
+          filterKind: "numberRange",
+          filterText: (e: any) => numberFilterText(displayUnitsOf(e)),
+          filterNumber: displayUnitsOf,
+          sortValue: displayUnitsOf,
           render: (e: any) => {
             const units = displayUnitsOf(e);
             return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{units != null ? formatFundUnits(units) : <span className="text-slate-300">-</span>}</span>;
@@ -2485,9 +2617,13 @@ export function FundShell(props: Props) {
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
           align: "right",
+          filterKind: "numberRange",
+          filterText: (e: any) => numberFilterText(remainingUnitsValueOf(e)),
+          filterNumber: remainingUnitsValueOf,
+          sortValue: remainingUnitsValueOf,
           render: (e: any) => (
             <span className="whitespace-nowrap tabular-nums text-xs text-slate-600">
-              {e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : <span className="text-slate-300">-</span>}
+              {remainingUnitsValueOf(e) != null ? formatFundUnits(remainingUnitsValueOf(e) ?? 0) : <span className="text-slate-300">-</span>}
             </span>
           ),
         } satisfies AdvancedDataTableColumn<any>;
@@ -2498,9 +2634,11 @@ export function FundShell(props: Props) {
           key,
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
+          filterText: detailSubtypeLabelOf,
+          sortValue: detailSubtypeLabelOf,
           render: (e: any) => {
             const info = fl(e.fundSubtype, e.source);
-            const detailSubtypeLabel = isSingleNormalFundScope ? compactFundSubtypeLabel(e, info.label) : info.label;
+            const detailSubtypeLabel = detailSubtypeLabelOf(e);
             return (
               <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>
                 {detailSubtypeLabel}
@@ -2513,9 +2651,13 @@ export function FundShell(props: Props) {
       if (key === "amount") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: detailAmountColumnLabel,
           ...common,
           align: "right",
+          filterKind: "numberRange",
+          filterText: (e: any) => numberFilterText(Math.abs(detailAmountOf(e))),
+          filterNumber: (e: any) => Math.abs(detailAmountOf(e)),
+          sortValue: (e: any) => Math.abs(detailAmountOf(e)),
           render: (e: any) => {
             const amount = detailAmountOf(e);
             const absAmt = formatMoney(Math.abs(amount));
@@ -2531,6 +2673,19 @@ export function FundShell(props: Props) {
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
           align: "right",
+          filterKind: "numberRange",
+          filterText: (e: any) => {
+            const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
+            return e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash" ? numberFilterText(profit) : null;
+          },
+          filterNumber: (e: any) => {
+            const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
+            return e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash" ? profit : null;
+          },
+          sortValue: (e: any) => {
+            const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
+            return e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash" ? profit : null;
+          },
           render: (e: any) => {
             const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
             return (
@@ -2547,6 +2702,8 @@ export function FundShell(props: Props) {
           key,
           label: DETAIL_COLUMN_LABELS[key],
           ...common,
+          filterText: statusOf,
+          sortValue: statusOf,
           render: (e: any) => {
             const s = statusOf(e);
             if (s === "待确认") return <span className="text-amber-600">{s}</span>;
@@ -2554,6 +2711,23 @@ export function FundShell(props: Props) {
             if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
             if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
             return <span className="text-emerald-700">{s}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
+      if (key === "note") {
+        return {
+          key,
+          label: DETAIL_COLUMN_LABELS[key],
+          ...common,
+          filterKind: "text",
+          filterText: (e: any) => String(e.note ?? "").trim(),
+          sortValue: (e: any) => String(e.note ?? "").trim() || null,
+          truncate: true,
+          cellTitle: (e: any) => String(e.note ?? "").trim(),
+          render: (e: any) => {
+            const note = String(e.note ?? "").trim();
+            return note ? <span className="text-xs text-slate-600">{note}</span> : <span className="text-slate-300">-</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2568,13 +2742,16 @@ export function FundShell(props: Props) {
   }, [
     colWidth,
     cashAccountInfoOf,
+    detailAmountColumnLabel,
     detailAmountOf,
+    detailNameLabel,
     displayFundName,
     displayUnitsOf,
     formatFundUnits,
     fundApplyDateOf,
     isSingleNormalFundScope,
     isWealthAccount,
+    navColumnLabel,
     pnl,
     statusOf,
     upCls,
@@ -2810,13 +2987,15 @@ export function FundShell(props: Props) {
     singleDeletingIds,
     linkDetailCashFlow,
   ]);
+  const showDetailPane = Boolean(fundCode || isWealthAccount);
+
   return (
 
     <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
 
       <ResizableVerticalSplit
         storageKey={`mmh:fund-shell:${accountId}:split-height`}
-        hasLowerPane
+        hasLowerPane={showDetailPane}
         defaultUpperHeight={360}
         separatorLabel={`调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
         separatorTitle={`拖动调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
@@ -3005,7 +3184,7 @@ export function FundShell(props: Props) {
           ) : (
 
             <table
-              className="min-w-[820px] table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
+              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200"
               style={{ width: clearedLayout.tableWidth }}
             >
               <colgroup>
@@ -3231,27 +3410,13 @@ export function FundShell(props: Props) {
         <div className="panel-header shrink-0">
 
           <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
-            <span className="shrink-0">交易明细</span>
-
-            {fundCode && (
-              <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
-                {isWealthAccount ? selectedPosition?.name ?? "" : fundCode}
-              </span>
-            )}
-
-            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${filteredByColumns.length}/${filtered.length}` : chooseHoldingText}</span>
-
-          </div>
-
-          <div className="flex min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
-
-            {selectedDetailCount > 0 ? (
-              <div className="flex items-center gap-1">
+            {batchTargetIds.length > 0 ? (
+              <div className="flex shrink-0 items-center gap-1">
                 <span
-                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 font-medium leading-6 tabular-nums text-blue-700"
-                  title={`当前筛选结果已选 ${selectedDetailCount} 条`}
+                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                  title={`当前筛选结果已选 ${batchTargetIds.length} 条`}
                 >
-                  已选 {selectedDetailCount} 条
+                  已选 {batchTargetIds.length} 条
                 </span>
 
                 <BatchReplacePopoverButton
@@ -3267,16 +3432,30 @@ export function FundShell(props: Props) {
                   type="button"
                   onClick={applyBatchDelete}
                   disabled={batchTargetIds.length === 0 || batchDeleting}
-                  className="h-6 w-6 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 flex items-center justify-center"
+                  className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
                   title="删除"
                   aria-label="删除"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
 
-                <span className="h-4 w-px bg-slate-200" />
+                <span className="mx-1 h-4 w-px bg-slate-200" />
               </div>
             ) : null}
+
+            <span className="shrink-0">交易明细</span>
+
+            {fundCode && (
+              <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
+                {isWealthAccount ? selectedPosition?.name ?? "" : fundCode}
+              </span>
+            )}
+
+            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${detailTableRowCount}/${filtered.length}` : chooseHoldingText}</span>
+
+          </div>
+
+          <div className="flex min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
 
             {isWealthAccount ? (
               <button
@@ -3325,7 +3504,7 @@ export function FundShell(props: Props) {
 
                     {DETAIL_COLS.filter(([key]) =>
                       !(isWealthAccount && key === "status") &&
-                      !(!isWealthAccount && key === "remainingUnits") &&
+                      !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
                       !(isSingleNormalFundScope && key === "fund") &&
                       !FIXED_DETAIL_COLUMNS.has(key)
                     ).map(([key]) => {
@@ -3350,6 +3529,8 @@ export function FundShell(props: Props) {
                               ? detailNameLabel
                               : key === "nav"
                                 ? navColumnLabel
+                                : key === "amount"
+                                  ? detailAmountColumnLabel
                                   : DETAIL_COLUMN_LABELS[key]}
                           </span>
                         </label>
@@ -3402,47 +3583,51 @@ export function FundShell(props: Props) {
 
             </div>
 
-            <span className="text-slate-300">|</span>
+            <div className="flex items-center gap-1">
 
-            {[10, 20, 40].map((n) => (
+              <span className="text-slate-300">|</span>
 
-              <button key={n} onClick={() => { setFundPageSize(n); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n}</button>
+              {[10, 20, 40].map((n) => (
 
-            ))}
+                <button key={n} onClick={() => { setFundPageSize(n); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n}</button>
 
-            <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>所有</button>
+              ))}
 
-            <span className="text-slate-300">|</span>
+              <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>所有</button>
 
-            {safePage > 1 ? (<>
+              <span className="text-slate-300">|</span>
 
-              <button onClick={() => setFundPage(1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsLeft className="h-3 w-3"/></button>
+              {safePage > 1 ? (<>
 
-              <button onClick={() => setFundPage(safePage - 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="h-3 w-3"/></button>
+                <button onClick={() => setFundPage(1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsLeft className="h-3 w-3"/></button>
 
-            </>) : (<>
+                <button onClick={() => setFundPage(safePage - 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="h-3 w-3"/></button>
 
-              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3"/></span>
+              </>) : (<>
 
-              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3"/></span>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3"/></span>
 
-            </>)}
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3"/></span>
 
-            <span className="text-slate-500 px-0.5">{safePage}/{totalPages}</span>
+              </>)}
 
-            {safePage < totalPages ? (<>
+              <span className="text-slate-500 px-0.5">{safePage}/{totalPages}</span>
 
-              <button onClick={() => setFundPage(safePage + 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="h-3 w-3"/></button>
+              {safePage < totalPages ? (<>
 
-              <button onClick={() => setFundPage(totalPages)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsRight className="h-3 w-3"/></button>
+                <button onClick={() => setFundPage(safePage + 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="h-3 w-3"/></button>
 
-            </>) : (<>
+                <button onClick={() => setFundPage(totalPages)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsRight className="h-3 w-3"/></button>
 
-              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3"/></span>
+              </>) : (<>
 
-              <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3"/></span>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3"/></span>
 
-            </>)}
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3"/></span>
+
+              </>)}
+
+            </div>
 
           </div>
 
@@ -3515,7 +3700,7 @@ export function FundShell(props: Props) {
                       <FundMobileDetailItem label="到账日期" value={e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : "-"} />
                       <FundMobileDetailItem label={navColumnLabel} value={nav != null ? nav.toFixed(4) : "-"} alignRight />
                       <FundMobileDetailItem label={isMetalAccount ? "数量" : "份额"} value={units != null ? formatFundUnits(units) : "-"} alignRight />
-                      {isWealthAccount ? (
+                      {!hideRemainingUnitsDetailColumn ? (
                         <FundMobileDetailItem
                           label="剩余份额"
                           value={e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : "-"}
@@ -3609,7 +3794,7 @@ export function FundShell(props: Props) {
             storageKey="mmh_fund_shell_detail_advanced_table_v1"
             resetKey={`${accountId}:${fundCode || "all"}:${showCleared ? "cleared" : "detail"}`}
             columns={detailAdvancedColumns}
-            rows={paged}
+            rows={filteredByColumns}
             rowKey={(entry) => String(entry.id)}
             minTableWidth={detailMinTableWidth}
             emptyText={fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
@@ -3626,9 +3811,15 @@ export function FundShell(props: Props) {
             fillHeight
             compactRows
             toolbarMode="none"
-            showFilters={false}
+            showFilters
             showColumnVisibilityButton={false}
-            sortable={false}
+            sortable
+            pagination={{
+              page: safePage,
+              pageSize: fundPageSize,
+              onPageChange: setFundPage,
+              onRowCountChange: setDetailTableRowCount,
+            }}
           />
 
         </div>

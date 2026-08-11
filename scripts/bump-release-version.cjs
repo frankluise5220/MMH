@@ -31,6 +31,15 @@ function getReleaseNotes(pkg) {
   return String(pkg.mmhReleaseNotes || "").trim();
 }
 
+function fnosDownloadUrls(version) {
+  const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
+  return {
+    x86: `${base}/mmh.fpk`,
+    x86_64: `${base}/mmh-x86_64.fpk`,
+    arm64: `${base}/mmh-arm64.fpk`,
+  };
+}
+
 function updatePackageJson(version) {
   const file = path.join(root, "package.json");
   const pkg = readJson(file);
@@ -55,7 +64,10 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
   for (const app of apps) {
     if (app.id !== "mmh") continue;
     app.version = version;
-    app.download_url = `https://github.com/frankluise5220/MMH/releases/download/v${version}/mmh.fpk`;
+    app.platform = "x86";
+    app.platforms = ["x86", "arm"];
+    app.download_url = fnosDownloadUrls(version).x86;
+    app.download_urls = fnosDownloadUrls(version);
     if (typeof app.icon === "string") {
       app.icon = app.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
     }

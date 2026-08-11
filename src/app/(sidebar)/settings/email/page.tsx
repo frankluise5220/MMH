@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import type { BatchReplaceFieldConfig, BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { DateStepper } from "@/components/DateStepper";
+import { SettingsActionButton, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
@@ -15,6 +16,7 @@ import {
   importPreviewFlowAmountColorFor,
   importPreviewFlowAmountTextFor,
 } from "@/lib/client/colors";
+import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 
@@ -87,9 +89,9 @@ type BookLookups = {
   users: BookUser[];
   categories: BookCategory[];
 };
-type MailItem = { uid: number; subject: string; from: string; date: string };
+type MailItem = { uid: number; subject: string; from: string; date: string; hash?: string };
 type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
-type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[] };
+type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string };
 type MailListMeta = {
   total: number;
   scanned: number;
@@ -107,6 +109,9 @@ type ParsedItemMeta = {
   billingDay?: number;
   repaymentDay?: number;
   statementAmount?: number;
+  statementPeriodStart?: string;
+  statementPeriodEnd?: string;
+  statementDueDate?: string;
 };
 type ParsedItem = {
   rawText: string; type: "expense" | "income" | "transfer" | "investment";
@@ -133,6 +138,9 @@ type LockedStatementBill = {
   billAccountIds?: string[] | null;
   statementMonth?: string | null;
   amount?: number | string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  dueDate?: string | null;
 };
 type ImportCompleteState = {
   created: number;
@@ -197,11 +205,21 @@ function formatMoneyAmount(value?: number | string | null) {
   return `¥${amount.toFixed(2)}`;
 }
 
-function uniqueStatementAmounts(items: ParsedItem[]) {
-  const amounts = items
-    .map((item) => moneyNumber(item._meta?.statementAmount))
-    .filter((amount): amount is number => amount !== null && amount > 0);
-  return Array.from(new Map(amounts.map((amount) => [amount.toFixed(2), amount])).values());
+function uniqueStatementInfoTexts(items: ParsedItem[]) {
+  const lines = items
+    .map((item) => {
+      const meta = item._meta;
+      if (!meta) return "";
+      const parts = [
+        moneyNumber(meta.statementAmount) !== null ? `账单金额 ${formatMoneyAmount(meta.statementAmount)}` : "",
+        meta.statementPeriodStart || meta.statementPeriodEnd ? `账期 ${meta.statementPeriodStart || "?"} ~ ${meta.statementPeriodEnd || "?"}` : "",
+        meta.statementDueDate ? `还款日 ${meta.statementDueDate}` : "",
+        moneyNumber(meta.creditLimit) !== null ? `总授信额度 ${formatMoneyAmount(meta.creditLimit)}` : "",
+      ].filter(Boolean);
+      return parts.join(" · ");
+    })
+    .filter(Boolean);
+  return Array.from(new Set(lines));
 }
 
 function normalizeDateOnlyText(value?: string | null) {
@@ -242,6 +260,19 @@ function shouldTreatAsTransfer(item: ParsedItem) {
     .filter(Boolean)
     .join(" ");
   return /转账|转帐|还款|信用卡还款/.test(source);
+}
+
+function mailDebugDetails(mail: Partial<MailItem & MailDetail> | null | undefined, emailAccountId?: string | null) {
+  return {
+    importKind: "credit_bill_mail",
+    source: "settings_email",
+    emailAccountId: emailAccountId ?? null,
+    uid: mail?.uid ?? null,
+    from: mail?.from ?? "",
+    mailDate: mail?.date ?? "",
+    subject: mail?.subject ?? "",
+    mailHash: mail?.hash ?? "",
+  };
 }
 
 type AccountCreateDraft = {
@@ -307,6 +338,7 @@ export default function EmailSettingsPage() {
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: "postedDate" | "type" | "counterAccount" | "category" } | null>(null);
+  const mailImportTraceIdRef = useRef(createImportTraceId("settings-email-mail"));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -517,6 +549,17 @@ export default function EmailSettingsPage() {
     setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
+    const traceId = createImportTraceId("settings-email-mail");
+    const startedAt = performance.now();
+    mailImportTraceIdRef.current = traceId;
+    postImportDebugLog(traceId, "email_list_started", {
+      importKind: "credit_bill_mail",
+      source: "settings_email",
+      emailAccountId: accountId,
+      keyword: MAIL_FIXED_KEYWORD,
+      scanLimit: scanLimitForRange(),
+      sinceDate: mailRange === "month" ? monthAgoDateString() : null,
+    });
     try {
       const res = await fetch("/api/v1/email/imap/list", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -533,9 +576,36 @@ export default function EmailSettingsPage() {
       if (data.ok) {
         setMailItems(data.items);
         setMailListHint(buildMailListHint(data.meta, Array.isArray(data.items) ? data.items.length : 0));
+        postImportDebugLog(traceId, "email_list_succeeded", {
+          importKind: "credit_bill_mail",
+          source: "settings_email",
+          emailAccountId: accountId,
+          matchedCount: Array.isArray(data.items) ? data.items.length : 0,
+          scannedCount: Number(data.meta?.scanned ?? 0),
+          totalCount: Number(data.meta?.total ?? 0),
+          durationMs: Math.round(performance.now() - startedAt),
+        });
       }
-      else setError(data.error ?? "读取失败");
+      else {
+        postImportDebugLog(traceId, "email_list_failed", {
+          importKind: "credit_bill_mail",
+          source: "settings_email",
+          emailAccountId: accountId,
+          httpStatus: res.status,
+          errorMessage: data.error ?? "读取失败",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        setError(data.error ?? "读取失败");
+      }
     } catch (e) {
+      postImportDebugLog(traceId, "email_list_failed", {
+        importKind: "credit_bill_mail",
+        source: "settings_email",
+        emailAccountId: accountId,
+        errorType: e instanceof Error ? e.name : "unknown",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       setError(e instanceof DOMException && e.name === "AbortError" ? "读取超时，请检查 IMAP 配置、授权码或网络连接" : "网络错误");
     }
     finally {
@@ -559,6 +629,11 @@ export default function EmailSettingsPage() {
     setLoadingMails(true); setError(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
+    const traceId = createImportTraceId("settings-email-mail");
+    const startedAt = performance.now();
+    const listedMail = mailItems.find((item) => item.uid === uid);
+    mailImportTraceIdRef.current = traceId;
+    postImportDebugLog(traceId, "email_fetch_started", mailDebugDetails(listedMail ?? { uid }, selectedId));
     try {
       const res = await fetch("/api/v1/email/imap/fetch", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -567,11 +642,33 @@ export default function EmailSettingsPage() {
       });
       const data = await res.json();
       if (data.ok) {
-        setSelectedMail(data.item);
-        setMailContent(data.item.text || data.item.html || "");
-        if (autoParse) await parseMail(data.item, true);
-      } else setError(data.error ?? "获取失败");
+        const nextMail = { ...data.item, hash: listedMail?.hash } as MailDetail;
+        const content = buildStatementParseContent(nextMail, nextMail.text || nextMail.html || "");
+        setSelectedMail(nextMail);
+        setMailContent(nextMail.text || nextMail.html || "");
+        postImportDebugLog(traceId, "email_fetch_succeeded", {
+          ...mailDebugDetails(nextMail, selectedId),
+          contentLength: content.length,
+          attachmentCount: Array.isArray(nextMail.attachments) ? nextMail.attachments.length : 0,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        if (autoParse) await parseMail(nextMail, true);
+      } else {
+        postImportDebugLog(traceId, "email_fetch_failed", {
+          ...mailDebugDetails(listedMail ?? { uid }, selectedId),
+          httpStatus: res.status,
+          errorMessage: data.error ?? "获取失败",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        setError(data.error ?? "获取失败");
+      }
     } catch (e) {
+      postImportDebugLog(traceId, "email_fetch_failed", {
+        ...mailDebugDetails(listedMail ?? { uid }, selectedId),
+        errorType: e instanceof Error ? e.name : "unknown",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       setError(e instanceof DOMException && e.name === "AbortError" ? "读取邮件内容超时，请稍后重试" : "网络错误");
     }
     finally {
@@ -582,9 +679,23 @@ export default function EmailSettingsPage() {
 
   async function parseMail(mail = selectedMail, autoOpenPreview = false) {
     const sourceContent = buildStatementParseContent(mail, mail === selectedMail ? mailContent : (mail?.text || mail?.html || ""));
-    if (!sourceContent) { setError("无邮件内容"); return; }
+    const traceId = mailImportTraceIdRef.current || createImportTraceId("settings-email-mail");
+    const startedAt = performance.now();
+    if (!sourceContent) {
+      postImportDebugLog(traceId, "email_parse_blocked", {
+        ...mailDebugDetails(mail, selectedId),
+        reason: "empty_content",
+      });
+      setError("无邮件内容");
+      return;
+    }
     setParsing(true); setError("");
     setImportComplete(null);
+    postImportDebugLog(traceId, "email_parse_started", {
+      ...mailDebugDetails(mail, selectedId),
+      contentLength: sourceContent.length,
+      attachmentCount: Array.isArray(mail?.attachments) ? mail.attachments.length : 0,
+    });
     try {
       const res = await fetch("/api/v1/statement/parse", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -594,6 +705,12 @@ export default function EmailSettingsPage() {
       if (data.ok) {
         const items = Array.isArray(data.items) ? data.items.map(normalizeItemForImport) : [];
         setParsedItems(items);
+        postImportDebugLog(traceId, "email_parse_succeeded", {
+          ...mailDebugDetails(mail, selectedId),
+          recognizedCount: Array.isArray(data.items) ? data.items.length : 0,
+          importableCount: items.filter(isRowReadyForImport).length,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
         if (autoOpenPreview) {
           if (items.length > 0) {
             await loadBookLookups();
@@ -602,8 +719,24 @@ export default function EmailSettingsPage() {
           else setError("这封邮件没有识别到账单明细，请换一封或检查附件内容。");
         }
       }
-      else setError(data.error ?? "解析失败");
-    } catch { setError("网络错误"); }
+      else {
+        postImportDebugLog(traceId, "email_parse_failed", {
+          ...mailDebugDetails(mail, selectedId),
+          httpStatus: res.status,
+          errorMessage: data.error ?? "解析失败",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        setError(data.error ?? "解析失败");
+      }
+    } catch (e) {
+      postImportDebugLog(traceId, "email_parse_failed", {
+        ...mailDebugDetails(mail, selectedId),
+        errorType: e instanceof Error ? e.name : "unknown",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      setError("网络错误");
+    }
     finally { setParsing(false); }
   }
 
@@ -635,10 +768,26 @@ export default function EmailSettingsPage() {
     const targetAccountId = selectedAccountIds.length === 1 ? selectedAccountIds[0] : null;
     setImporting(true); setError("");
     setImportComplete(null);
+    const traceId = mailImportTraceIdRef.current || createImportTraceId("settings-email-mail");
+    const startedAt = performance.now();
+    const mailSource = selectedMail && selectedId
+      ? {
+          emailAccountId: selectedId,
+          uid: selectedMail.uid,
+          hash: selectedMail.hash,
+          subject: selectedMail.subject,
+          from: selectedMail.from,
+          date: selectedMail.date,
+        }
+      : undefined;
+    postImportDebugLog(traceId, "email_import_started", {
+      ...mailDebugDetails(selectedMail, selectedId),
+      selectedCount: sourceItems.length,
+    });
     try {
       const res = await fetch("/api/v1/statement/import", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false }),
+        body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false, mailSource }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -652,6 +801,14 @@ export default function EmailSettingsPage() {
           : "";
         const createdCount = data.createdCount ?? 0;
         const skippedCount = data.skippedCount ?? 0;
+        postImportDebugLog(traceId, "email_import_succeeded", {
+          ...mailDebugDetails(selectedMail, selectedId),
+          selectedCount: sourceItems.length,
+          createdCount,
+          skippedCount,
+          importBatchId: data.importBatchId ?? null,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
         setInfo(`导入完成: 创建 ${createdCount} 条, 跳过 ${skippedCount} 条${accountText}`);
         if ((data.skippedCount ?? 0) > 0) {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
@@ -665,8 +822,26 @@ export default function EmailSettingsPage() {
         });
         dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: refreshAccountIds.length > 0 ? refreshAccountIds : undefined });
       }
-      else setError(data.error ?? "导入失败");
-    } catch { setError("网络错误"); }
+      else {
+        postImportDebugLog(traceId, "email_import_failed", {
+          ...mailDebugDetails(selectedMail, selectedId),
+          selectedCount: sourceItems.length,
+          httpStatus: res.status,
+          errorMessage: data.error ?? "导入失败",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        setError(data.error ?? "导入失败");
+      }
+    } catch (e) {
+      postImportDebugLog(traceId, "email_import_failed", {
+        ...mailDebugDetails(selectedMail, selectedId),
+        selectedCount: sourceItems.length,
+        errorType: e instanceof Error ? e.name : "unknown",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      setError("网络错误");
+    }
     finally { setImporting(false); }
   }
 
@@ -857,6 +1032,9 @@ export default function EmailSettingsPage() {
         billingDay: item._meta.billingDay,
         repaymentDay: item._meta.repaymentDay,
         statementAmount: item._meta.statementAmount,
+        statementPeriodStart: item._meta.statementPeriodStart,
+        statementPeriodEnd: item._meta.statementPeriodEnd,
+        statementDueDate: item._meta.statementDueDate,
       } : undefined,
     });
   }
@@ -892,7 +1070,7 @@ export default function EmailSettingsPage() {
     });
   }
 
-  const importPreviewStatementAmounts = useMemo(() => uniqueStatementAmounts(parsedItems), [parsedItems]);
+  const importPreviewStatementInfoTexts = useMemo(() => uniqueStatementInfoTexts(parsedItems), [parsedItems]);
 
   const importCompleteLockedBills = useMemo(() => {
     if (!importComplete?.lockedStatementBills?.length) return [];
@@ -902,6 +1080,9 @@ export default function EmailSettingsPage() {
         accountId,
         statementMonth: item.statementMonth ?? "",
         amount: moneyNumber(item.amount),
+        periodStart: item.periodStart ?? "",
+        periodEnd: item.periodEnd ?? "",
+        dueDate: item.dueDate ?? "",
       };
     });
   }, [importComplete?.lockedStatementBills]);
@@ -1709,7 +1890,7 @@ export default function EmailSettingsPage() {
         <div className="rounded-lg border border-slate-200 bg-white p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="text-sm font-medium text-slate-800">邮箱账户</div>
-            <button className="h-7 px-2 rounded-md border border-slate-300 text-xs hover:bg-slate-50" onClick={openCreateAccountModal}>新增</button>
+            <SettingsPrimaryAddButton onClick={openCreateAccountModal}>新增</SettingsPrimaryAddButton>
           </div>
           <div className="max-h-[220px] space-y-2 overflow-y-auto pr-1">
             {loadingAccounts ? (
@@ -1721,10 +1902,16 @@ export default function EmailSettingsPage() {
                   <div className="truncate text-[11px] text-slate-500">{acc.username}</div>
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
-                  <button title="编辑" aria-label="编辑" onClick={(e) => { e.stopPropagation(); editAccount(acc); }}
-                    className="h-7 w-7 rounded-md border border-blue-200 text-blue-600 hover:bg-blue-50">✎</button>
-                  <button title="删除" aria-label="删除" onClick={(e) => { e.stopPropagation(); deleteAccount(acc.id); }}
-                    className="h-7 w-7 rounded-md border border-red-200 text-red-600 hover:bg-red-50">×</button>
+                  <SettingsActionButton
+                    label="编辑邮箱账户"
+                    variant="edit"
+                    onClick={(e) => { e.stopPropagation(); editAccount(acc); }}
+                  />
+                  <SettingsActionButton
+                    label="删除邮箱账户"
+                    variant="delete"
+                    onClick={(e) => { e.stopPropagation(); deleteAccount(acc.id); }}
+                  />
                 </div>
               </div>
             )) : (
@@ -1864,9 +2051,9 @@ export default function EmailSettingsPage() {
                 toolbarTitle="账单导入预览"
                 toolbarRightContent={(
                   <div className="flex items-center gap-3 text-xs text-slate-500">
-                    {importPreviewStatementAmounts.length > 0 && (
+                    {importPreviewStatementInfoTexts.length > 0 && (
                       <span>
-                        账单金额：{importPreviewStatementAmounts.map((amount) => formatMoneyAmount(amount)).join(" / ")}
+                        账单信息：{importPreviewStatementInfoTexts.join(" / ")}
                       </span>
                     )}
                     {importPreview.statementAccountId && (
@@ -1897,7 +2084,9 @@ export default function EmailSettingsPage() {
                         已锁定：{importCompleteLockedBills.map((item) => {
                           const accountText = previewAccountDisplayLabelById(item.accountId) ?? "账单账户";
                           const amountText = formatMoneyAmount(item.amount);
-                          return `${item.statementMonth || "未知月份"} · ${accountText}${amountText ? ` · ${amountText}` : ""}`;
+                          const periodText = item.periodStart || item.periodEnd ? `账期 ${item.periodStart || "?"} ~ ${item.periodEnd || "?"}` : "";
+                          const dueText = item.dueDate ? `还款日 ${item.dueDate}` : "";
+                          return [item.statementMonth || "未知月份", accountText, amountText, periodText, dueText].filter(Boolean).join(" · ");
                         }).join("；")}
                       </span>
                     </span>

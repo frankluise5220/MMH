@@ -38,6 +38,43 @@ const typeOptions = [
 ];
 const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "type", "account", "toAccount", "categoryId", "remark"];
 
+function stripLeadingIndent(label: string) {
+  return label.replace(/^[\u3000\s]+/, "");
+}
+
+function scopeBatchCategoryOptions(
+  categoryOptions: BasicDetailBatchCategoryOption[],
+  categoryTypes: string[] = [],
+) {
+  const typeSet = new Set(categoryTypes.filter(Boolean));
+  if (typeSet.size === 0) return categoryOptions;
+
+  const scopedOptions = categoryOptions.filter((option) => option.categoryType && typeSet.has(option.categoryType));
+  if (typeSet.size !== 1) return scopedOptions;
+
+  const [categoryType] = Array.from(typeSet);
+  const typeHeaderId = `category-type:${categoryType}`;
+  const optionById = new Map(scopedOptions.map((option) => [option.value, option]));
+  const hasChildById = new Map<string, boolean>();
+  for (const option of scopedOptions) {
+    if (option.parentId) hasChildById.set(option.parentId, true);
+  }
+
+  return scopedOptions.flatMap((option) => {
+    if (option.value === typeHeaderId) return [];
+    const isTopCategory = option.parentId === typeHeaderId;
+    if (!isTopCategory) return [option];
+    if (!hasChildById.get(option.value)) return [];
+    return [{
+      ...option,
+      label: stripLeadingIndent(option.label),
+      parentId: undefined,
+      isHeader: true,
+      isGroup: false,
+    }];
+  }).filter((option) => optionById.has(option.value));
+}
+
 const SelectionContext = createContext<SelectionContextValue | null>(null);
 
 export function useBasicDetailSelection() {
@@ -146,6 +183,7 @@ export function BasicDetailRowCheckbox({ id }: { id: string }) {
 export function BasicDetailBatchReplaceButton({
   accountOptions,
   categoryOptions = [],
+  categoryTypes = [],
   fields = defaultBatchReplaceFields,
   targetLabel = "已选",
   contextAccountId,
@@ -153,6 +191,7 @@ export function BasicDetailBatchReplaceButton({
 }: {
   accountOptions: AccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
+  categoryTypes?: string[];
   fields?: BatchReplaceField[];
   targetLabel?: string;
   contextAccountId?: string | null;
@@ -167,7 +206,7 @@ export function BasicDetailBatchReplaceButton({
     ];
     const categorySelectOptions = [
       { value: "", label: "清除分类" },
-      ...categoryOptions,
+      ...scopeBatchCategoryOptions(categoryOptions, categoryTypes),
     ];
     const configByField: Record<BatchReplaceField, BatchReplaceFieldConfig<BatchReplaceField>> = {
       date: { value: "date", label: fieldLabels.date, kind: "date" },
@@ -207,7 +246,7 @@ export function BasicDetailBatchReplaceButton({
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
     };
     return fields.map((field) => configByField[field]).filter(Boolean);
-  }, [accountOptions, categoryOptions, fields]);
+  }, [accountOptions, categoryOptions, categoryTypes, fields]);
 
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);

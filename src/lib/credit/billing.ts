@@ -55,6 +55,7 @@ export type CreditCardCyclePersistRow = {
 };
 
 export const CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE = "manual_cycle";
+export const CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE = "statement_import";
 
 export function hasCreditCardCycleLockSource(
   lockSource: string | null | undefined,

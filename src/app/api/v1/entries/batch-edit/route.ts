@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 
 function parsePrompt(prompt: string) {
   let dateFrom = "";
@@ -62,24 +63,29 @@ export async function POST(req: NextRequest) {
 
     const { dateFrom, dateTo, amountMin, amountMax, newFundCode } = parsePrompt(prompt);
 
-    // Build filter
-    const where: any = { deletedAt: null, fundCode: { not: null }, ...hidFilter };
-    if (accountId) where.OR = [{ accountId }, { toAccountId: accountId }];
+    // Build filter against independent fund transactions. TxRecord is cash-flow only.
+    const where: any = { deletedAt: null, ...hidFilter };
+    if (accountId) where.OR = [{ fundAccountId: accountId }, { cashAccountId: accountId }];
     if (fundCodeFilter) where.fundCode = fundCodeFilter;
-    if (dateFrom) where.date = { ...(where.date || {}), gte: new Date(`${dateFrom}-01T00:00:00.000Z`) };
+    if (dateFrom) where.applyDate = { ...(where.applyDate || {}), gte: new Date(`${dateFrom}-01T00:00:00.000Z`) };
     if (dateTo) {
       const end = new Date(`${dateTo}-01T00:00:00.000Z`);
       end.setUTCMonth(end.getUTCMonth() + 1);
-      where.date = { ...(where.date || {}), lt: end };
+      where.applyDate = { ...(where.applyDate || {}), lt: end };
     }
-    if (amountMax !== undefined) where.amount = { gte: -amountMax, lte: amountMax };
+    if (amountMin !== undefined || amountMax !== undefined) {
+      where.grossAmount = {
+        ...(amountMin !== undefined ? { gte: amountMin } : {}),
+        ...(amountMax !== undefined ? { lte: amountMax } : {}),
+      };
+    }
 
     if (!apply) {
       // Preview mode
-      const preview = await prisma.txRecord.findMany({
+      const preview = await prisma.fundTransaction.findMany({
         where,
-        select: { id: true, date: true, amount: true, fundCode: true, fundName: true, fundSubtype: true, note: true, accountId: true, toAccountId: true },
-        orderBy: { date: "asc" },
+        select: { id: true, applyDate: true, grossAmount: true, fundCode: true, fundName: true, fundSubtype: true, note: true, fundAccountId: true, cashAccountId: true },
+        orderBy: { applyDate: "asc" },
         take: 200,
       });
 
@@ -88,8 +94,8 @@ export async function POST(req: NextRequest) {
         preview: {
           count: preview.length,
           samples: preview.slice(0, 10).map(e => ({
-            id: e.id, date: e.date.toISOString().slice(0, 10),
-            amount: Number(e.amount), fundCode: e.fundCode, fundName: e.fundName,
+            id: e.id, date: e.applyDate.toISOString().slice(0, 10),
+            amount: Number(e.grossAmount), fundCode: e.fundCode, fundName: e.fundName,
             subtype: e.fundSubtype, note: e.note,
           })),
           changes: newFundCode ? { fundCode: newFundCode } : null,
@@ -99,28 +105,42 @@ export async function POST(req: NextRequest) {
     }
 
     // Apply mode
-    const ids = await prisma.txRecord.findMany({ where, select: { id: true } });
+    if (!newFundCode) {
+      return NextResponse.json({ ok: false, error: "当前只支持批量修改基金代码" }, { status: 400 });
+    }
 
-    if (ids.length === 0) {
+    const records = await prisma.fundTransaction.findMany({
+      where,
+      select: { id: true, fundAccountId: true, fundCode: true },
+    });
+
+    if (records.length === 0) {
       return NextResponse.json({ ok: false, error: "没有匹配的记录" }, { status: 404 });
     }
-    const undo = await prepareEntryUndo(prisma, ctx.householdId, ids.map((entry) => entry.id));
 
-    if (newFundCode) {
-      const name = await prisma.fundNavCache.findFirst({
-        where: { fundCode: newFundCode },
-        orderBy: { navDate: "desc" },
-        select: { name: true },
-      });
-      await prisma.txRecord.updateMany({
-        where: { id: { in: ids.map(e => e.id) } },
-        data: { fundCode: newFundCode, fundName: name?.name ?? newFundCode },
-      });
+    const name = await prisma.fundNavCache.findFirst({
+      where: { fundCode: newFundCode },
+      orderBy: { navDate: "desc" },
+      select: { name: true },
+    });
+    await prisma.fundTransaction.updateMany({
+      where: { id: { in: records.map(e => e.id) } },
+      data: { fundCode: newFundCode, fundName: name?.name ?? newFundCode },
+    });
+
+    const recalcMap = new Map<string, Set<string>>();
+    for (const record of records) {
+      const codes = recalcMap.get(record.fundAccountId) ?? new Set<string>();
+      codes.add(record.fundCode);
+      codes.add(newFundCode);
+      recalcMap.set(record.fundAccountId, codes);
     }
+    for (const [fundAccountId, codes] of recalcMap.entries()) {
+      await recalcFundPositions(fundAccountId, Array.from(codes)).catch(() => {});
+    }
+    revalidateAfterInvestChange();
 
-    await saveEntryUndo(prisma, ctx, undo, "batch_edit", `批量编辑 ${ids.length} 条明细`);
-
-    return NextResponse.json({ ok: true, updatedCount: ids.length });
+    return NextResponse.json({ ok: true, updatedCount: records.length });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
   }

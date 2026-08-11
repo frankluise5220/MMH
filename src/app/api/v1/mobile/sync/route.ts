@@ -114,8 +114,14 @@ export async function GET(req: Request) {
           OR: [{ updatedAt }, { deletedAt: updatedAt }],
         }
       : { ...scope.hidFilter, deletedAt: null };
+    const stockTransactionWhere = since
+      ? {
+          ...scope.hidFilter,
+          OR: [{ updatedAt }, { deletedAt: updatedAt }],
+        }
+      : { ...scope.hidFilter, deletedAt: null };
 
-    const [accounts, categories, transactionsRaw, fundHoldings, fundConfirmDays, fundFeeRates, regularInvestPlans] = await Promise.all([
+    const [accounts, categories, transactionsRaw, fundHoldings, stockHoldings, stockTransactions, fundConfirmDays, fundFeeRates, regularInvestPlans] = await Promise.all([
       prisma.account.findMany({
         where: accountWhere,
         select: {
@@ -185,8 +191,8 @@ export async function GET(req: Request) {
           source: true,
           deletedAt: true,
           updatedAt: true,
-          account: { select: { kind: true, Institution: { select: { name: true } } } },
-          toAccount: { select: { kind: true, Institution: { select: { name: true } } } },
+          account: { select: { name: true, kind: true, Institution: { select: { name: true } } } },
+          toAccount: { select: { name: true, kind: true, Institution: { select: { name: true } } } },
         },
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         take: limit + 1,
@@ -208,6 +214,69 @@ export async function GET(req: Request) {
           pendingCost: true,
           historicalProfit: true,
           updatedAt: true,
+        },
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        take: limit + 1,
+      }),
+      prisma.stockHolding.findMany({
+        where: {
+          ...scope.hidFilter,
+          ...(updatedAt ? { updatedAt } : {}),
+        },
+        select: {
+          id: true,
+          accountId: true,
+          securityId: true,
+          market: true,
+          stockCode: true,
+          stockName: true,
+          quantity: true,
+          avgCost: true,
+          cost: true,
+          latestPrice: true,
+          marketValue: true,
+          historicalProfit: true,
+          updatedAt: true,
+        },
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        take: limit + 1,
+      }),
+      prisma.stockTransaction.findMany({
+        where: stockTransactionWhere,
+        select: {
+          id: true,
+          stockAccountId: true,
+          cashAccountId: true,
+          cashEntryId: true,
+          securityId: true,
+          market: true,
+          stockCode: true,
+          stockName: true,
+          action: true,
+          source: true,
+          tradeDate: true,
+          settleDate: true,
+          grossAmount: true,
+          netAmount: true,
+          quantity: true,
+          price: true,
+          fee: true,
+          commission: true,
+          stampTax: true,
+          transferFee: true,
+          exchangeFee: true,
+          regulatoryFee: true,
+          otherFee: true,
+          realizedProfit: true,
+          externalLinkId: true,
+          brokerTradeId: true,
+          note: true,
+          deletedAt: true,
+          updatedAt: true,
+          EntryBusinessLink: {
+            where: { deletedAt: null },
+            select: { id: true },
+          },
         },
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         take: limit + 1,
@@ -281,10 +350,10 @@ export async function GET(req: Request) {
           createdAt: true,
           updatedAt: true,
           Account_RegularInvestPlan_accountIdToAccount: {
-            select: { Institution: { select: { name: true } } },
+            select: { name: true, Institution: { select: { name: true } } },
           },
           Account_RegularInvestPlan_cashAccountIdToAccount: {
-            select: { Institution: { select: { name: true } } },
+            select: { name: true, Institution: { select: { name: true } } },
           },
         },
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
@@ -295,6 +364,8 @@ export async function GET(req: Request) {
     const accountBatch = accounts.slice(0, limit);
     const transactionBatch = transactionsRaw.slice(0, limit);
     const holdingBatch = fundHoldings.slice(0, limit);
+    const stockHoldingBatch = stockHoldings.slice(0, limit);
+    const stockTransactionBatch = stockTransactions.slice(0, limit);
     const confirmDaysBatch = fundConfirmDays.slice(0, limit);
     const feeRateBatch = fundFeeRates.slice(0, limit);
     const regularInvestPlanBatch = regularInvestPlans.slice(0, limit);
@@ -349,6 +420,8 @@ export async function GET(req: Request) {
       accounts.length > limit ||
       transactionsRaw.length > limit ||
       fundHoldings.length > limit ||
+      stockHoldings.length > limit ||
+      stockTransactions.length > limit ||
       fundConfirmDays.length > limit ||
       fundFeeRates.length > limit ||
       regularInvestPlans.length > limit ||
@@ -430,11 +503,11 @@ export async function GET(req: Request) {
             amount: toNumber(tx.amount),
             dayOrder: tx.dayOrder,
             accountId: tx.accountId,
-            accountName: tx.accountName,
+            accountName: tx.account.name ?? tx.accountName,
             accountKind: tx.account.kind,
             accountInstitutionName: tx.account.Institution?.name ?? null,
             toAccountId: tx.toAccountId,
-            toAccountName: tx.toAccountName,
+            toAccountName: tx.toAccount?.name ?? tx.toAccountName,
             toAccountKind: tx.toAccount?.kind ?? null,
             toAccountInstitutionName: tx.toAccount?.Institution?.name ?? null,
             categoryId: tx.categoryId,
@@ -479,14 +552,64 @@ export async function GET(req: Request) {
             updatedAt: item.updatedAt.toISOString(),
           };
         }),
+        stockHoldings: stockHoldingBatch.map((item) => ({
+          id: item.id,
+          accountId: item.accountId,
+          securityId: item.securityId,
+          market: item.market,
+          stockCode: item.stockCode,
+          stockName: item.stockName,
+          quantity: toNumber(item.quantity),
+          avgCost: toNumber(item.avgCost),
+          cost: toNumber(item.cost),
+          latestPrice: item.latestPrice == null ? null : toNumber(item.latestPrice),
+          marketValue: toNumber(item.marketValue),
+          floatingPnL: toNumber(item.marketValue) - toNumber(item.cost),
+          historicalProfit: toNumber(item.historicalProfit),
+          updatedAt: item.updatedAt.toISOString(),
+        })),
+        stockTransactions: stockTransactionBatch
+          .filter((item) => !item.deletedAt)
+          .map((item) => ({
+            id: item.id,
+            linkId: item.EntryBusinessLink[0]?.id ?? null,
+            stockAccountId: item.stockAccountId,
+            cashAccountId: item.cashAccountId,
+            cashEntryId: item.cashEntryId,
+            securityId: item.securityId,
+            market: item.market,
+            stockCode: item.stockCode,
+            stockName: item.stockName,
+            action: item.action,
+            source: item.source,
+            tradeDate: formatDateUtc(item.tradeDate),
+            settleDate: item.settleDate ? formatDateUtc(item.settleDate) : null,
+            grossAmount: toNumber(item.grossAmount),
+            netAmount: item.netAmount == null ? null : toNumber(item.netAmount),
+            quantity: item.quantity == null ? null : toNumber(item.quantity),
+            price: item.price == null ? null : toNumber(item.price),
+            fee: item.fee == null ? null : toNumber(item.fee),
+            commission: item.commission == null ? null : toNumber(item.commission),
+            stampTax: item.stampTax == null ? null : toNumber(item.stampTax),
+            transferFee: item.transferFee == null ? null : toNumber(item.transferFee),
+            exchangeFee: item.exchangeFee == null ? null : toNumber(item.exchangeFee),
+            regulatoryFee: item.regulatoryFee == null ? null : toNumber(item.regulatoryFee),
+            otherFee: item.otherFee == null ? null : toNumber(item.otherFee),
+            realizedProfit: item.realizedProfit == null ? null : toNumber(item.realizedProfit),
+            externalLinkId: item.externalLinkId,
+            brokerTradeId: item.brokerTradeId,
+            note: item.note,
+            updatedAt: item.updatedAt.toISOString(),
+          })),
+        deletedStockTransactionIds: stockTransactionBatch.filter((item) => item.deletedAt).map((item) => item.id),
         regularInvestPlans: regularInvestPlanBatch.map((item) => ({
           id: item.id,
           householdId: item.householdId ?? "",
           accountId: item.accountId,
-          accountName: item.accountName,
+          accountName: item.Account_RegularInvestPlan_accountIdToAccount?.name ?? item.accountName,
           accountInstitutionName: item.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? null,
           cashAccountId: item.cashAccountId,
-          cashAccountName: item.cashAccountName,
+          cashAccountName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.name ?? item.cashAccountName,
           cashAccountInstitutionName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? null,
           fundCode: item.fundCode,
           fundName: item.fundName ?? latestNavByCode.get(item.fundCode)?.name ?? "",

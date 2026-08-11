@@ -658,12 +658,6 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         statementMonth: fromStatementMonth,
         householdId: ctx.householdId,
         currency: transactionCurrency,
-        // Add fund fields for investment type
-        ...(item.type === "investment" && fundCode ? {
-          fundCode,
-          fundProductType: "fund",
-          fundSubtype: fundSubtype as any,
-        } : {}),
       },
     });
 
@@ -723,12 +717,6 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
       statementMonth,
       householdId: ctx.householdId,
       currency: normalizeCurrency(accountMeta?.currency),
-      // Add fund fields for investment type
-      ...(item.type === "investment" && fundCode ? {
-        fundCode,
-        fundProductType: "fund",
-        fundSubtype: fundSubtype as any,
-      } : {}),
     },
   });
 

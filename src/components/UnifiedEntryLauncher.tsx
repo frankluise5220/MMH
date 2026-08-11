@@ -10,6 +10,8 @@ type EntryKind =
   | "transfer"
   | "fx"
   | "investment"
+  | "stock"
+  | "stock-transfer"
   | "metal"
   | "wealth"
   | "deposit"
@@ -35,6 +37,9 @@ type Props = {
     defaultTransferFromAccountId?: string;
     defaultTransferToAccountId?: string;
     defaultInvestmentAccountId?: string;
+    defaultStockAccountId?: string;
+    defaultStockCashAccountId?: string;
+    defaultStockTransferFromAccountId?: string;
     defaultMetalAccountId?: string;
     defaultWealthAccountId?: string;
     defaultDepositAccountId?: string;
@@ -145,6 +150,31 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
             defaultProductType: "fund",
             defaultFundCode: currentFund.fundCode,
             defaultFundName: currentFund.fundName,
+          },
+        }),
+      );
+      return;
+    case "stock":
+      window.dispatchEvent(
+        new CustomEvent("mmh:stock:create", {
+          detail: {
+            requestId,
+            defaultStockAccountId: context?.defaultStockAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultCashAccountId: context?.defaultStockCashAccountId ?? context?.defaultCashAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "stock-transfer":
+      window.dispatchEvent(
+        new CustomEvent("mmh:create-transaction:open", {
+          detail: {
+            requestId,
+            source: "launcher",
+            item: { type: "transfer", remark: "银证转账" },
+            defaultAccountId: context?.defaultStockTransferFromAccountId ?? context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultFromAccountId: context?.defaultStockTransferFromAccountId ?? context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultToAccountId: context?.defaultStockCashAccountId ?? "",
           },
         }),
       );
@@ -317,6 +347,8 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
       <div className="inline-flex h-8 items-stretch overflow-hidden rounded-full bg-blue-600 text-white shadow-sm ring-1 ring-blue-600/90">
         <button
           type="button"
+          data-entry-launcher-primary
+          data-entry-launcher-primary-action={defaultItem?.key ?? ""}
           onClick={() => {
             setMenuOpen(false);
             if (defaultItem) dispatchEntryAction(defaultItem.key, context);

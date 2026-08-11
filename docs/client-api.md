@@ -103,6 +103,11 @@
 - 非首次创建时，该接口必须校验系统设置中的账簿创建邀请码，不能无门槛开放。
 - 成功后应直接建立新账簿管理员账号并写入登录态，让用户进入新账簿。
 
+系统密码规则：
+
+- `/api/v1/auth/verify` 携带 `verifySystem: true` 时用于系统初始化、删除账簿等敏感操作验证，不建立用户登录态。
+- Docker/PostgreSQL 部署兼容 `MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 和 `DATABASE_URL` 中的连接密码；fnOS/SQLite 部署没有数据库连接密码，应使用安装向导写入的 `MMH_SYSTEM_PASSWORD`。
+
 找回密码规则：
 
 - `/api/v1/auth/password-reset/request` 使用用户名和绑定邮箱定位用户。
@@ -145,6 +150,8 @@
     "familyMemberCount": 1,
     "accountCount": 4,
     "cashLikeAccountCount": 2,
+    "defaultMoneyAccountId": "account_cash_123",
+    "defaultMoneyAccountLabel": "张三·现金账户·现金",
     "cashAccountCount": 1,
     "debitAccountCount": 1,
     "creditAccountCount": 1,
@@ -165,6 +172,7 @@
 - `transactionCount` 不包含 `source="initialization"` 的期初初始化流水。
 - `householdId` 用于客户端按账簿保存“今天不再提示”等本地引导状态。
 - `defaultOwnerName` 是首个账户所有人/家庭成员名称；新建账簿默认使用账簿名，用户可改为真实姓名。
+- `defaultMoneyAccountId` 和 `defaultMoneyAccountLabel` 用于首次使用向导最后一步打开默认资金账户明细表；优先现金账户，其次借记卡和电子钱包。
 - `cashAccountCount`、`debitAccountCount`、`creditAccountCount`、`investmentAccountCount`、`insuranceAccountCount`、`settlementAccountCount` 用于首次使用横轴节点进度。
 - `shouldShowGuide` 表示当前账簿还没有用户数据，客户端可以自动显示首次使用向导。
 
@@ -209,7 +217,7 @@
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
 - `POST /api/v1/accounts` 与 `PUT /api/v1/accounts` 在这类账户上接受 `tradingCalendar`；当账户类型不支持该字段时，服务端会自动清空。
 - `/api/v1/business-transactions/integrity` 用于迁移期检查和修复资金流水与独立业务交易表的一致性。`GET` 返回各业务类型的 expected/existing/linked/missing 统计和问题列表；`POST { limit? }` 会复用正式同步逻辑补齐缺失的业务交易和 `EntryBusinessLink`，不直接清空 `TxRecord` 兼容字段。
-- `/api/v1/business-transactions/link-cash-flow` 用于从独立业务交易补建或恢复资金侧流水并建立 `EntryBusinessLink`。`POST { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund", businessTransactionId }`，成功返回 `{ ok:true, data:{ cashEntryId, businessTransactionId } }`；缺少资金账户、业务记录 ID 或不支持的类型时返回 `{ ok:false, error }`。
+- `/api/v1/business-transactions/link-cash-flow` 用于从独立业务交易补建或恢复资金侧流水并建立 `EntryBusinessLink`。`POST { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund" | "stock", businessTransactionId }`，成功返回 `{ ok:true, data:{ cashEntryId, businessTransactionId, linkId? } }`；缺少资金账户、业务记录 ID 或不支持的类型时返回 `{ ok:false, error }`。
 - `/api/v1/business-transactions/insurance?accountId=...` 从独立 `InsuranceTransaction` 表读取某个保险账户的业务交易明细，返回 `{ ok:true, data:{ entries } }`。保险页面保存后的刷新应使用该接口，不再通过 `/api/v1/transactions/detail` 筛选 `source=insurance` 作为业务台账来源。
 - `/api/v1/accounts/internal` 返回账户刷新数据时包含当前账簿 `baseCurrency`。当账户币种与 `baseCurrency` 不同时，账户项可包含 `convertedBalance`、`baseCurrency`、`fxRate`、`fxRateDate`、`fxRateMissing`；响应可包含 `totalConvertedBalance` 和 `missingFxCurrencies`。缺少汇率的账户金额不得按 1:1 混入折算合计。
 
@@ -235,10 +243,11 @@
 - 批量导入前端区分普通账单和信用卡账单：普通账单逐行解析账户；信用卡账单先统一确定整份文件的信用卡账户，还款行再单独提供 `fromAccount`。
 - 账单导入项可用 `inflow` / `outflow` 表达账户侧方向。原支出的退款、退货、退回或冲正应提交为 `type="expense"`，并把金额放在 `inflow` 中，服务端保存为账户侧流入以抵减原支出分类，而不是保存为收入。
 - 导入账户名称只有“机构 + 账户类型”而没有后四位时，只在该机构下恰好存在一个启用的对应类型账户时自动匹配；存在多个候选时不自动选择。
+- 交易接口保留 `accountName`、`toAccountName` 字段用于显示和旧客户端兼容，但服务端返回时应优先按 `accountId`、`toAccountId` 关联 `Account.name` 生成；筛选、统计、余额和移动同步都不能依赖 `TxRecord.accountName` / `toAccountName` 快照参与计算。
 - `/api/v1/transactions` 与 `/api/v1/transactions/detail` 的交易项会返回 `accountKind` 和 `toAccountKind`，用于跨客户端判断转账、还款、以及特殊账户目标语义。
 - `/api/v1/transactions/detail` 的交易项返回 `currency`，表示该流水原始币种。客户端明细金额应显示原币种；侧栏、净值和跨账户统计应使用账簿当前显示币种折算口径，不能把缺失汇率的外币金额按 1:1 混入。
 - 交易项中的 `date` 是业务发生日期。支出记录可带 `postedAt` 表示实际入账日期，格式为 `YYYY-MM-DD`；未提供时服务端在新增支出时默认按 `date` 写入，收入、转账和投资记录通常为 `null`。
-- 信用卡邮箱账单导入调用 `/api/v1/statement/import` 时，`mailSource` 可携带 `{ emailAccountId, uid, hash, subject, from, date }`。服务端会用 UID、邮件列表 hash 和解析后的稳定账单指纹阻止重复导入；稳定账单指纹只使用机构、卡号后四位、账单月份/周期，避免分类、备注、明细文本等解析规则变化造成同一账单被当作新账单。
+- 信用卡邮箱账单导入调用 `/api/v1/statement/import` 时，`mailSource` 可携带 `{ emailAccountId, uid, hash, subject, from, date }`。服务端会用 UID、邮件列表 hash 和解析后的稳定账单指纹阻止重复导入；稳定账单指纹优先使用机构、卡号后四位、银行账单周期，避免分类、备注、明细文本等解析规则变化造成同一账单被当作新账单。返回的 `lockedStatementBills` 可包含 `{ accountId, billAccountIds, statementMonth, amount, periodStart, periodEnd, dueDate }`，客户端应展示已锁定的账单金额、账期和到期还款日。
 
 ### Categories
 
@@ -303,6 +312,7 @@
 - 手续费率。
 - 确认天数/到账天数。
 - 持仓重算和净值刷新。
+- 基金交易事实字段以 `FundTransaction` 为准；关联资金账户流水只表示现金流，二者通过 `FundTransactionCashFlow` 和 `EntryBusinessLink` 关联。`/api/v1/fund/nav` 的补净值和 `/api/v1/fund/entry` 的明细编辑可接收 `FundTransaction.id`，也兼容传入关联资金 `TxRecord.id` 后由服务端解析关联。
 
 相关路径示例：
 
@@ -503,6 +513,36 @@ Notes:
 - `monthlyBuy` 统计确认日期落在目标月份内的基金申购交易，不包含红利再投资。
 - 如果缺少净值，账户快照和持仓行会返回 `missingNavCodes`，客户端应提示先补净值再解释结果。
 
+### Stock
+
+范围：
+
+- 股票账户、股票标的、股票交易、股票持仓、股票手续费规则。
+- 股票归在 `Account.kind = "investment"` + `investProductType = "stock"` 下，但业务表、API、字段和 UI 语义都使用独立 `stock` 域。
+- 股票资金流水只表示现金侧，股票身份、数量、价格、手续费和券商成交号保存在 `StockTransaction`；二者通过 `EntryBusinessLink.stockTransactionId` 关联，返回给客户端的 `linkId` 可直接用于 UI 高亮、删除预检和后续补链。
+- 创建或更新股票账户时，如果请求带有证券机构，服务端会确保同账簿、同所有人、同证券机构、同币种下存在一个现金/钱包类“证券资金账户”；不存在时自动创建，`POST /api/v1/accounts` 会在响应中返回 `brokerageCashAccount`。
+- 股票交易的 `cashAccountId` 表示买入、卖出、分红、费用或税费调整使用的证券资金账户/券商可用资金账户；它可以和同一证券公司名下的基金交易共用同一个现金/钱包类账户。`cashAccountId` 可省略，服务端仅为兼容旧路径默认使用 `stockAccountId`。银行卡与证券资金账户之间的资金移动应作为普通转账/银证转账创建，不应伪装成股票买入或卖出。
+- 股票不得复用 `fundCode`、`fundUnits`、`fundNav`、`fundFeeRate`、基金净值、确认天数或到账天数模块；外部券商流水号使用 `externalLinkId` / `brokerTradeId`，不能混同为基金 refund link。
+
+相关路径：
+
+- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`。
+- `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market, stockCode, stockName?, currency?, exchange? }`。
+- `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
+- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。
+- `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
+- `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值。
+- `POST /api/v1/stocks/holdings` 使用 `{ accountId, securityIds? }` 触发股票持仓重算。
+- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票费用规则；`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。
+
+股票动作：
+
+- `buy`：买入，通常产生现金流出。
+- `sell`：卖出，通常产生现金流入并由 `recalcStockPositions` 计算已实现收益。
+- `dividend`：现金股息，产生现金流入并计入历史收益。
+- `bonus_share` / `split_share` / `merge_share`：股数变动，不创建资金侧流水。
+- `fee_adjustment` / `tax_adjustment`：费用或税费调整，通常产生现金流出。
+
 ### Insurance
 
 范围：
@@ -511,7 +551,7 @@ Notes:
 - 按保险产品名称查询公开参考资料。
 - 保险投保、赎回记录仍通过交易明细接口保存，并关联 `insuranceProductId`。
 - 通过交易明细接口选择 `insuranceProductMasterId` 创建新保单时，可传 `policyNo`；`policyNo` 和 `effectiveDate` 属于实际保单/持仓，不属于保险产品主数据。保单编辑接口也应回写这两个字段。
-- Web 设置页 `/settings/insurance-products` 用于维护保险产品库；保险持仓页只显示有交易记录的持仓。
+- 保险产品主数据不作为系统设置入口展示，`/settings/insurance-products` 直达页也不作为维护入口；Web 在保险新增/编辑和保险持仓业务流程内维护产品库，保险持仓页只显示有交易记录的持仓。
 
 相关路径示例：
 
@@ -628,8 +668,8 @@ Notes:
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。
-- `/api/v1/settings/backup`
-- `/api/v1/settings/system-update`
+- `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，再用 `backupPassphrase`（未提供时使用 `userPassword`）解密备份文件，然后执行清空和写回。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。恢复包包含账簿基础资料、业务表数据、系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
+- `/api/v1/settings/system-update`：GET 返回部署方式、当前包版本 `localVersion`、本版说明 `localReleaseNotes`、远端版本/镜像信息和更新状态；飞牛版返回版本和说明，但更新动作由飞牛应用中心管理。
 
 ### Mobile Sync
 
@@ -650,7 +690,9 @@ Notes:
 
 交易同步项包含 `accountKind`、`toAccountKind`、`categoryId` 和 `categoryName`。信用卡还款应显示为“类型：转账、分类：信用卡还款”；移动端使用账户类型校验该语义，不要依赖账户名称或备注文本猜测。
 
-投资交易保持 `type = "investment"`，并使用基金投资、理财投资、存款投资、贵金属投资或其他投资分类。客户端应优先显示保存的 `categoryId` / `categoryName`，买入、赎回、定投和分红仍是投资动作，不是收入或支出类型。`source = "insurance"` 的记录不归入投资分类：保费显示为保险支出，理赔、退保和满期领取显示为保险回款。
+投资交易保持 `type = "investment"`，并使用基金投资、理财投资、存款投资、贵金属投资、股票投资或其他投资分类。客户端应优先显示保存的 `categoryId` / `categoryName`，买入、赎回、定投、分红和股票买卖仍是投资动作，不是收入或支出类型。`source = "insurance"` 的记录不归入投资分类：保费显示为保险支出，理赔、退保和满期领取显示为保险回款。
+
+移动同步返回 `stockHoldings`、`stockTransactions` 和 `deletedStockTransactionIds`。股票同步项来自独立 stock 表，客户端不得从 `fundCode`、`fundUnits`、`fundNav` 或基金净值缓存推断股票持仓；`stockTransactions[].linkId` 是 `EntryBusinessLink` 的稳定关联 ID。
 
 账户同步项包含 `creditBillMode`，值为 `separate` 或 `consolidated`。合并账单按同一账簿、同一机构下标记为 `consolidated` 的有效信用卡归组；交易的 `accountId` / `toAccountId` 仍指向具体信用卡，不改写为代表账户。
 

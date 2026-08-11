@@ -12,7 +12,6 @@
  * records for running balance calculation.
  */
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -103,29 +102,35 @@ export async function POST(req: Request) {
     ].filter(Boolean))).slice(0, 50);
 
     const { householdId } = await getHouseholdScope();
-    const targetRows = await prisma.$queryRaw<ReorderRow[]>`
-      SELECT
-        id,
-        date,
-        "createdAt",
-        "dayOrder",
-        amount,
-        type::text AS type,
-        "accountId",
-        "toAccountId",
-        "debtPrincipalAmount",
-        "fundSubtype"::text AS "fundSubtype",
-        source,
-        "toNote",
-        "fundArrivalDate",
-        "fundArrivalAmount"
-      FROM transactions
-      WHERE id = ${entryId}
-        AND "deletedAt" IS NULL
-        AND "householdId" = ${householdId}
-        AND ("accountId" IN (${Prisma.join(scopeAccountIds)}) OR "toAccountId" IN (${Prisma.join(scopeAccountIds)}))
-      LIMIT 1
-    `;
+    const reorderRowSelect = {
+      id: true,
+      date: true,
+      createdAt: true,
+      dayOrder: true,
+      amount: true,
+      type: true,
+      accountId: true,
+      toAccountId: true,
+      debtPrincipalAmount: true,
+      fundSubtype: true,
+      source: true,
+      toNote: true,
+      fundArrivalDate: true,
+      fundArrivalAmount: true,
+    } as const;
+    const targetRows = await prisma.txRecord.findMany({
+      where: {
+        id: entryId,
+        deletedAt: null,
+        householdId,
+        OR: [
+          { accountId: { in: scopeAccountIds } },
+          { toAccountId: { in: scopeAccountIds } },
+        ],
+      },
+      select: reorderRowSelect,
+      take: 1,
+    });
     const target = targetRows[0] ?? null;
     if (!target) {
       return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
@@ -134,27 +139,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
     }
 
-    const rows = await prisma.$queryRaw<ReorderRow[]>`
-      SELECT
-        id,
-        date,
-        "createdAt",
-        "dayOrder",
-        amount,
-        type::text AS type,
-        "accountId",
-        "toAccountId",
-        "debtPrincipalAmount",
-        "fundSubtype"::text AS "fundSubtype",
-        source,
-        "toNote",
-        "fundArrivalDate",
-        "fundArrivalAmount"
-      FROM transactions
-      WHERE "deletedAt" IS NULL
-        AND "householdId" = ${householdId}
-        AND ("accountId" IN (${Prisma.join(scopeAccountIds)}) OR "toAccountId" IN (${Prisma.join(scopeAccountIds)}))
-    `;
+    const rows = await prisma.txRecord.findMany({
+      where: {
+        deletedAt: null,
+        householdId,
+        OR: [
+          { accountId: { in: scopeAccountIds } },
+          { toAccountId: { in: scopeAccountIds } },
+        ],
+      },
+      select: reorderRowSelect,
+    });
 
     const rowIds = rows.map((row) => row.id);
     const wealthLinks = rowIds.length > 0
@@ -240,12 +235,10 @@ export async function POST(req: Request) {
 
     await prisma.$transaction(async (tx) => {
       for (const row of sameDayRows) {
-        await tx.$executeRaw`
-          UPDATE transactions
-          SET "dayOrder" = ${normalizedOrders.get(row.id) ?? 0}, "updatedAt" = now()
-          WHERE id = ${row.id}
-            AND "householdId" = ${householdId}
-        `;
+        await tx.txRecord.updateMany({
+          where: { id: row.id, householdId },
+          data: { dayOrder: normalizedOrders.get(row.id) ?? 0 },
+        });
       }
     });
 

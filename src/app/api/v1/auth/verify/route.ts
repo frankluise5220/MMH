@@ -14,6 +14,36 @@ import {
 const LEGACY_PASSWORD_KEY = "access_password";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
 
+function uniqueNonEmpty(values: Array<string | null | undefined>) {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value))];
+}
+
+function databaseUrlPassword() {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) return "";
+  try {
+    const url = new URL(dbUrl);
+    return decodeURIComponent(url.password);
+  } catch {
+    return "";
+  }
+}
+
+async function verifySystemPassword(password: string) {
+  const directPasswords = uniqueNonEmpty([
+    process.env.MMH_SYSTEM_PASSWORD,
+    process.env.POSTGRES_PASSWORD,
+    databaseUrlPassword(),
+  ]);
+  if (directPasswords.includes(password)) return true;
+
+  const legacy = await withTimeout(
+    prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY }, select: { value: true } }),
+    AUTH_LOOKUP_TIMEOUT_MS,
+  );
+  return !!legacy?.value && legacy.value === password;
+}
+
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
@@ -140,7 +170,9 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  * Verify a password for login or privileged system actions.
  *
  * Body: { password: string, username?: string, householdId?: string, verifySystem?: boolean }
- * - verifySystem=true verifies the DATABASE_URL password and does not create a user session.
+ * - verifySystem=true verifies the deployment system password and does not create a user session.
+ *   Docker deployments accept MMH_SYSTEM_PASSWORD, POSTGRES_PASSWORD, or DATABASE_URL password.
+ *   fnOS/SQLite deployments accept MMH_SYSTEM_PASSWORD because file: DATABASE_URL values have no password.
  * - username + householdId verifies that exact user inside the target household.
  * - username only verifies all same-name users first. If exactly one household's
  *   password matches, that user logs in directly. If multiple households match
@@ -158,16 +190,9 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.verifySystem) {
-    const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) {
-      return NextResponse.json({ ok: false, error: "系统配置错误" }, { status: 500 });
-    }
     try {
-      const url = new URL(dbUrl);
-      const dbPass = decodeURIComponent(url.password);
-      if (password !== dbPass) {
-        return NextResponse.json({ ok: false, error: "数据库密码错误" }, { status: 401 });
-      }
+      const verified = await verifySystemPassword(password);
+      if (!verified) return NextResponse.json({ ok: false, error: "数据库密码错误" }, { status: 401 });
       return NextResponse.json({ ok: true, systemVerified: true });
     } catch {
       return NextResponse.json({ ok: false, error: "系统配置错误" }, { status: 500 });

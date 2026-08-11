@@ -60,9 +60,11 @@ function todayStr() {
 export function InitModal({
   open,
   onOpenChange,
+  initialTab = "balance",
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  initialTab?: "balance" | "fund";
 }) {
   const [tab, setTab] = useState<"balance" | "fund">("balance");
   const [busy, setBusy] = useState(false);
@@ -126,11 +128,11 @@ export function InitModal({
     if (!open) return;
     setMessage(null);
     setBusy(false);
-    setTab("balance");
+    setTab(initialTab);
     if (!accountsLoaded) {
       fetchAccounts();
     }
-  }, [open, accountsLoaded]);
+  }, [open, accountsLoaded, initialTab]);
 
   function createEmptyFundRow(defaultAcc?: AccountOption): FundHoldingRow {
     tempIdCounter.current += 1;
@@ -539,7 +541,7 @@ export function InitModal({
                 {accountFundRows.length > 0 && (
                   <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
                   <div className="overflow-auto">
-                    <table className="min-w-[640px] w-full table-fixed border-separate border-spacing-0">
+                    <table className="w-full table-fixed border-separate border-spacing-0">
                       <colgroup>
                         <col className="w-[186px]" />
                         <col className="w-[46px]" />

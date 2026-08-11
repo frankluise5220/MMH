@@ -153,7 +153,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-separate border-spacing-0">
+            <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white">
                 <tr>
                   <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">期间</th>

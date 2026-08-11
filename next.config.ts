@@ -1,17 +1,20 @@
 import type { NextConfig } from "next";
 
+const allowedDevOrigins = [
+  "localhost",
+  "127.0.0.1",
+  ...String(process.env.MMH_ALLOWED_DEV_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
+
 const nextConfig: NextConfig = {
   output: "standalone",
   experimental: {
     proxyClientMaxBodySize: "128mb",
   },
-  allowedDevOrigins: [
-    "localhost",
-    "127.0.0.1",
-    "192.168.2.199",
-    "tempswise.floatingice.win",
-    "tempswiseme.floatingice.win",
-  ],
+  allowedDevOrigins,
   async headers() {
     const headers = [
       { key: "X-Content-Type-Options", value: "nosniff" },

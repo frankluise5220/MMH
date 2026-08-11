@@ -74,6 +74,7 @@ type SmartSelectSharedBehavior = {
   initialCollapsedAll?: boolean;
   accordionGroups?: boolean;
   groupSelectOnDoubleClick?: boolean;
+  expandOnGroupSelect?: boolean;
   selectableGroups?: boolean;
   clearable?: boolean;
   cycleSelectionWithArrowKeys?: boolean;
@@ -338,6 +339,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
+    expandOnGroupSelect: behavior?.expandOnGroupSelect ?? false,
     selectableGroups: behavior?.selectableGroups ?? true,
     headerExtra: behavior?.headerExtra ?? props.headerExtra,
     cycleAction,
@@ -372,6 +374,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
+    expandOnGroupSelect: behavior?.expandOnGroupSelect ?? false,
     selectableGroups: behavior?.selectableGroups ?? true,
     headerExtra: behavior?.headerExtra,
     cycleAction: behavior?.cycleAction,
@@ -420,6 +423,7 @@ export function SmartSelect(props: SmartSelectProps) {
     initialCollapsedAll,
     accordionGroups,
     groupSelectOnDoubleClick,
+    expandOnGroupSelect,
     selectableGroups,
     headerExtra,
     cycleAction,
@@ -658,9 +662,22 @@ export function SmartSelect(props: SmartSelectProps) {
     return () => window.removeEventListener(SMART_SELECT_CREATED_EVENT, handleCreated);
   }, []);
 
-  function selectSingle(id: string) {
+  function selectSingle(id: string, options?: { close?: boolean }) {
     (onChange as (id: string) => void)(id);
-    closeDropdown();
+    if (options?.close !== false) closeDropdown();
+  }
+
+  function selectOrToggleSingleGroup(option: SmartSelectOption) {
+    if (expandOnGroupSelect && selectableGroups && !groupSelectOnDoubleClick && hierarchy && collapsibleGroups) {
+      selectSingle(option.id, { close: false });
+      if (collapsedGroups.has(option.id)) toggleGroup(option.id);
+      return;
+    }
+    if ((!selectableGroups || groupSelectOnDoubleClick) && hierarchy && collapsibleGroups) {
+      toggleGroup(option.id);
+      return;
+    }
+    selectSingle(option.id);
   }
 
   function toggleMulti(id: string) {
@@ -733,6 +750,10 @@ export function SmartSelect(props: SmartSelectProps) {
         if (search.trim() && visible.length === 1) {
           const only = visible[0];
           if (only.isHeader) return;
+          if (only.isGroup && mode === "single") {
+            selectOrToggleSingleGroup(only);
+            return;
+          }
           if (only.isGroup && hierarchy && collapsibleGroups && (!selectableGroups || groupSelectOnDoubleClick)) {
             toggleGroup(only.id);
             return;
@@ -748,8 +769,8 @@ export function SmartSelect(props: SmartSelectProps) {
           return;
         }
         if (focused.isGroup && hierarchy && collapsibleGroups) {
-          if (!selectableGroups || groupSelectOnDoubleClick) toggleGroup(focused.id);
-          else if (mode === "single") selectSingle(focused.id);
+          if (mode === "single") selectOrToggleSingleGroup(focused);
+          else if (!selectableGroups || groupSelectOnDoubleClick) toggleGroup(focused.id);
           else toggleMulti(focused.id);
           return;
         }
@@ -851,11 +872,7 @@ export function SmartSelect(props: SmartSelectProps) {
         aria-selected={selected}
         title={option.title || stripIndent(option.label)}
         onClick={() => {
-          if ((!selectableGroups || groupSelectOnDoubleClick) && hierarchy && collapsibleGroups) {
-            toggleGroup(option.id);
-            return;
-          }
-          selectSingle(option.id);
+          selectOrToggleSingleGroup(option);
         }}
         onDoubleClick={() => {
           if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);
@@ -1140,11 +1157,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     aria-selected={selected}
                     title={option.title || stripIndent(option.label)}
                     onClick={() => {
-                      if ((!selectableGroups || groupSelectOnDoubleClick) && hierarchy && collapsibleGroups) {
-                        toggleGroup(option.id);
-                        return;
-                      }
-                      selectSingle(option.id);
+                      selectOrToggleSingleGroup(option);
                     }}
                     onDoubleClick={() => {
                       if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);

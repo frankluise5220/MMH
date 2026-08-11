@@ -307,11 +307,22 @@ async function executeBatchEditPlan(plan: { year: number; month?: number; day?: 
   }
 
   if (plan.accountKeyword) {
-    where.accountName = { contains: plan.accountKeyword };
+    const accounts = await prisma.account.findMany({
+      where: { isActive: true, ...hidFilter },
+      include: { Institution: true },
+      take: 300,
+    });
+    const matchedAccountIds = accounts
+      .filter((account) => accountMatches(account, plan.accountKeyword ?? ""))
+      .map((account) => account.id);
+    where.OR = matchedAccountIds.length > 0
+      ? [{ accountId: { in: matchedAccountIds } }, { toAccountId: { in: matchedAccountIds } }]
+      : [{ id: "__no_matching_account__" }];
   }
 
   const entries = await prisma.txRecord.findMany({
     where,
+    include: { account: { select: { name: true } } },
     take: 100,
     orderBy: [{ date: "desc" }],
   });
@@ -320,7 +331,7 @@ async function executeBatchEditPlan(plan: { year: number; month?: number; day?: 
     id: e.id,
     transactionId: e.id,
     date: e.date.toISOString().slice(0, 10),
-    accountName: e.accountName,
+    accountName: e.account?.name ?? e.accountName,
     amount: Number(e.amount),
     remark: e.note ?? "",
     type: e.type ?? "expense",
@@ -459,7 +470,12 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
       ...(dateWhere ? { date: dateWhere } : {}),
       OR: [{ accountId: oldAccount.id }, { toAccountId: oldAccount.id }],
     };
-    const entries = await prisma.txRecord.findMany({ where, orderBy: { date: "asc" }, take: 500 });
+    const entries = await prisma.txRecord.findMany({
+      where,
+      include: { account: { select: { name: true } } },
+      orderBy: { date: "asc" },
+      take: 500,
+    });
 
     if (!apply) {
       return {
@@ -470,7 +486,7 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
         targets: entries.slice(0, 10).map((e) => ({
           transactionId: e.id,
           date: e.date.toISOString().slice(0, 10),
-          accountName: e.accountId === oldAccount.id ? `${oldAccount.name} → ${newAccount.name}` : `${e.accountName} / ${oldAccount.name} → ${newAccount.name}`,
+          accountName: e.accountId === oldAccount.id ? `${oldAccount.name} → ${newAccount.name}` : `${e.account?.name ?? e.accountName} / ${oldAccount.name} → ${newAccount.name}`,
           amount: Number(e.amount),
           remark: e.note ?? "",
           type: e.type ?? "expense",
@@ -513,15 +529,24 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
     accountId = accountResult.account.id;
     accountFullName = accountResult.account.name;
   }
+  let filterAccountId: string | undefined = undefined;
+  let filterAccountName = accountName ?? "";
+  if (accountName) {
+    const accountResult = findSingleAccount(accountName, "筛选账户");
+    if (accountResult.error || !accountResult.account) return { ok: false, error: accountResult.error ?? `未找到账户：${accountName}` };
+    filterAccountId = accountResult.account.id;
+    filterAccountName = accountResult.account.name;
+  }
 
   const where: Record<string, unknown> = { deletedAt: null, ...hidFilter };
   if (plan.remarkKeyword) where.note = { contains: plan.remarkKeyword };
-  if (accountName) where.accountName = accountName;
+  if (filterAccountId) where.OR = [{ accountId: filterAccountId }, { toAccountId: filterAccountId }];
   if (dateWhere) where.date = dateWhere;
   if (plan.fundSubtype) where.fundSubtype = plan.fundSubtype;
 
   const entries = await prisma.txRecord.findMany({
     where,
+    include: { account: { select: { name: true } } },
     orderBy: { date: "asc" },
     take: 500,
   });
@@ -531,11 +556,11 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
       ok: true,
       requiresConfirm: true,
       count: entries.length,
-      accountName: accountFullName,
+      accountName: accountFullName || filterAccountName,
       targets: entries.slice(0, 10).map(e => ({
         transactionId: e.id,
         date: e.date.toISOString().slice(0, 10),
-        accountName: e.accountName,
+        accountName: e.account?.name ?? e.accountName,
         amount: Number(e.amount),
         remark: e.note ?? "",
         type: e.type ?? "expense",
@@ -845,7 +870,7 @@ async function executeDeletePlan(
   if (accountId) {
     andFilters.push({ OR: [{ accountId }, { toAccountId: accountId }] });
   } else if (accountName !== "全部账户") {
-    andFilters.push({ OR: [{ accountName }, { toAccountName: accountName }] });
+    return { ok: false as const, error: `未找到账户：${accountName}` };
   }
   if (plan.amountRange) andFilters.push(amountRangeToWhere(plan.amountRange));
   if (plan.remarkCondition?.keyword) andFilters.push({ note: { contains: plan.remarkCondition.keyword } });
@@ -872,7 +897,7 @@ async function executeDeletePlan(
 
   const preview = await prisma.txRecord.findMany({
     where: { id: { in: ids } },
-    select: { id: true, date: true, accountName: true, amount: true, note: true, type: true },
+    select: { id: true, date: true, accountName: true, amount: true, note: true, type: true, account: { select: { name: true } } },
     orderBy: [{ date: "desc" }, { dayOrder: "desc" }, { createdAt: "desc" }],
   });
 
@@ -880,7 +905,7 @@ async function executeDeletePlan(
     return {
       transactionId: tx.id,
       date: tx.date.toISOString().slice(0, 10),
-      accountName: tx.accountName,
+      accountName: tx.account?.name ?? tx.accountName,
       amount: Number(tx.amount),
       remark: tx.note ?? "",
       type: tx.type,
@@ -907,6 +932,7 @@ function parseRestoreCommand(text: string) {
 async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const rows = await prisma.txRecord.findMany({
     where: { deletedAt: { not: null }, ...hidFilter },
+    include: { account: { select: { name: true } } },
     orderBy: [{ deletedAt: "desc" }, { date: "desc" }],
     take: plan.take,
   });
@@ -915,7 +941,7 @@ async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFil
   const targets = rows.slice(0, 5).map((tx) => {
     return {
       date: tx.date.toISOString().slice(0, 10),
-      accountName: tx.accountName,
+      accountName: tx.account?.name ?? tx.accountName,
       amount: Number(tx.amount),
       remark: tx.note ?? "",
     };
@@ -1003,6 +1029,7 @@ async function executeStatsPlan(plan: { metric: "count" | "sum"; type: Transacti
 async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, hidFilter: Record<string, string> = {}) {
   const rows = await prisma.txRecord.findMany({
     where: { deletedAt: { not: null }, ...hidFilter },
+    include: { account: { select: { name: true } } },
     orderBy: [{ deletedAt: "desc" }, { date: "desc" }],
     take: plan.take,
   });
@@ -1014,7 +1041,7 @@ async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, 
       deletedAt: tx.deletedAt?.toISOString() ?? null,
       type: tx.type,
       amount: Number(tx.amount),
-      accountName: tx.accountName,
+      accountName: tx.account?.name ?? tx.accountName,
       remark: tx.note ?? "",
     };
   });

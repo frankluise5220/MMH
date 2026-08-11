@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, creditCardCycle, formatDateLocal, toNumber, toStatementMonth } from "@/lib/date-utils";
 import {
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
+  CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   applyNextCyclePaidToCreditBillSummaries,
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
@@ -223,6 +224,15 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     (latest, override) => (!latest || override.updatedAt > latest ? override.updatedAt : latest),
     null,
   );
+  const billOverrideAmountByMonthInitial = new Map(
+    billOverrides.map((override) => [override.statementMonth, toNumber(override.amount)]),
+  );
+  const importedStatementCycleNeedsRecalc = persistedCyclesInitial.some((cycle) => {
+    if (!hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE)) return false;
+    const overrideAmount = billOverrideAmountByMonthInitial.get(cycle.statementMonth);
+    if (overrideAmount === undefined) return false;
+    return Math.abs(toNumber(cycle.effectiveBill) - overrideAmount) > 0.005;
+  });
   const creditCycleCacheStale = !!(
     isBillAccount &&
     selectedAccount &&
@@ -243,6 +253,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       !latestCycleUpdatedAt ||
       latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
       latestCycleUpdatedAt < todayUtcStart ||
+      importedStatementCycleNeedsRecalc ||
       (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
       (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)
     )
@@ -683,7 +694,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           statementMonth: { notIn: persistStatementMonths },
           OR: [
             { lockSource: null },
-            { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
+            {
+              AND: [
+                { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
+                { NOT: { lockSource: { contains: CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE } } },
+              ],
+            },
           ],
         },
       });
@@ -694,15 +710,21 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           persistedCycle?.lockSource,
           CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
         );
+        const hasStatementImportCycleLock = hasCreditCardCycleLockSource(
+          persistedCycle?.lockSource,
+          CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
+        );
+        const hasFixedCyclePeriodLock = hasManualCycleLock || hasStatementImportCycleLock;
         const lockSource = mergeCreditCardCycleLockSources(
           row.lockSource,
           hasManualCycleLock ? CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE : null,
+          hasStatementImportCycleLock ? CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE : null,
         );
-        const isLocked = row.isLocked || hasManualCycleLock;
-        const periodStart = hasManualCycleLock && persistedCycle ? persistedCycle.periodStart : row.periodStart;
-        const periodEnd = hasManualCycleLock && persistedCycle ? persistedCycle.periodEnd : row.periodEnd;
-        const dueDate = hasManualCycleLock && persistedCycle ? persistedCycle.dueDate : row.dueDate;
-        const isCurrentCycle = hasManualCycleLock && persistedCycle
+        const isLocked = row.isLocked || hasFixedCyclePeriodLock;
+        const periodStart = hasFixedCyclePeriodLock && persistedCycle ? persistedCycle.periodStart : row.periodStart;
+        const periodEnd = hasFixedCyclePeriodLock && persistedCycle ? persistedCycle.periodEnd : row.periodEnd;
+        const dueDate = hasFixedCyclePeriodLock && persistedCycle ? persistedCycle.dueDate : row.dueDate;
+        const isCurrentCycle = hasFixedCyclePeriodLock && persistedCycle
           ? todayUtcStart >= periodStart && todayUtcStart < addDaysUtc(periodEnd, 1)
           : row.isCurrentCycle;
         await tx.creditCardCycle.upsert({

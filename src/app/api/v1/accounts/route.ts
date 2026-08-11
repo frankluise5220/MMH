@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AccountKind } from "@prisma/client";
+import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -20,7 +20,7 @@ import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import {
   accountSupportsNumberMasked,
@@ -28,10 +28,12 @@ import {
   isAccountIdentityUniqueError,
 } from "@/lib/server/account-identity-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 
 export const runtime = "nodejs";
 
-const fundProductTypes = ["fund", "money", "wealth", "metal"] as const;
+const fundProductTypes = ["fund", "money", "wealth", "metal", "stock"] as const;
 const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
@@ -51,6 +53,14 @@ function parseDay(raw: unknown) {
   const n = Number(s);
   if (!Number.isFinite(n) || n < 1 || n > 31) return undefined;
   return n;
+}
+
+function parseDateOnly(raw: unknown) {
+  const value = String(raw ?? "").trim();
+  if (!value) return new Date();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function corsHeaders() {
@@ -80,8 +90,17 @@ export async function POST(req: NextRequest) {
     const isCreditLike = kind === "bank_credit";
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
     const tradingCalendar = resolveTradingCalendarForAccount(kind, investProductType, body.tradingCalendar);
+    const initialBalanceRaw = String(body.initialBalance ?? "").trim();
+    const initialBalance = initialBalanceRaw ? Number(initialBalanceRaw) : null;
+    const initialBalanceDate = initialBalanceRaw ? parseDateOnly(body.initialBalanceDate) : null;
 
     if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
+    if (initialBalanceRaw && !Number.isFinite(initialBalance)) {
+      return NextResponse.json({ ok: false, error: "余额必须是有效数字" }, { status: 400 });
+    }
+    if (initialBalanceRaw && !initialBalanceDate) {
+      return NextResponse.json({ ok: false, error: "时间节点格式必须是 YYYY-MM-DD" }, { status: 400 });
+    }
 
     const { householdId } = await getHouseholdScope();
 
@@ -137,36 +156,71 @@ export async function POST(req: NextRequest) {
       numberMasked,
     });
 
-    const account = await prisma.account.create({
-      data: {
-        name,
-        kind,
-        debtDirection: kind === "bank_credit" ? "payable" : null,
-        ...(kind === "loan" && counterparty?.id ? { debtDirection: "receivable" } : {}),
-        currency,
-        groupId: ensuredGroup.id,
-        institutionId: institution?.id ?? null,
-        counterpartyId: counterparty?.id ?? null,
-        userId: owner?.id ?? null,
-        householdId,
-        isActive: true,
-        billingDay,
-        repaymentDay,
-        creditLimit,
-        creditBillMode,
-        numberMasked,
-        investProductType: investProductType as any,
-        costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
-        ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
-        defaultFundQueryApiId: isInvestment ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
-        fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals) : 3,
-      },
-      include: {
-        AccountGroup: { select: { id: true, name: true } },
-        Institution: { select: { id: true, name: true, shortName: true, type: true } },
-        Counterparty: { select: { id: true, name: true, shortName: true, type: true } },
-      },
+    const supportsDefaultFundQueryApi = isInvestment && (investProductType === "fund" || investProductType === "money");
+    const shouldCreateInitialBalance = !isInvestment && initialBalance != null && initialBalance !== 0;
+    let brokerageCashAccount: Awaited<ReturnType<typeof ensureBrokerageCashAccountForStockAccount>> = null;
+    const account = await prisma.$transaction(async (tx) => {
+      const createdAccount = await tx.account.create({
+        data: {
+          name,
+          kind,
+          debtDirection: kind === "bank_credit" ? "payable" : null,
+          ...(kind === "loan" && counterparty?.id ? { debtDirection: "receivable" } : {}),
+          currency,
+          groupId: ensuredGroup.id,
+          institutionId: institution?.id ?? null,
+          counterpartyId: counterparty?.id ?? null,
+          userId: owner?.id ?? null,
+          householdId,
+          isActive: true,
+          billingDay,
+          repaymentDay,
+          creditLimit,
+          creditBillMode,
+          numberMasked,
+          investProductType: investProductType as any,
+          costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
+          ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
+          defaultFundQueryApiId: supportsDefaultFundQueryApi ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
+          fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals) : 3,
+        },
+        include: {
+          AccountGroup: { select: { id: true, name: true } },
+          Institution: { select: { id: true, name: true, shortName: true, type: true } },
+          Counterparty: { select: { id: true, name: true, shortName: true, type: true } },
+        },
+      });
+
+      if (shouldCreateInitialBalance && initialBalanceDate) {
+        const initialBalanceValue = initialBalance ?? 0;
+        const isLiability = kind === "bank_credit" || kind === "loan";
+        const targetBalance = isLiability ? -Math.abs(initialBalanceValue) : initialBalanceValue;
+        await tx.txRecord.create({
+          data: {
+            householdId,
+            date: initialBalanceDate,
+            type: TransactionType.income,
+            accountId: createdAccount.id,
+            accountName: createdAccount.name,
+            amount: 0,
+            categoryName: "初始余额",
+            source: BALANCE_INITIALIZATION_SOURCE,
+            note: null,
+            toNote: encodeBalanceReconcileTarget(targetBalance),
+            currency: createdAccount.currency,
+          },
+        });
+      }
+
+      if (createdAccount.kind === AccountKind.investment && createdAccount.investProductType === "stock") {
+        brokerageCashAccount = await ensureBrokerageCashAccountForStockAccount(tx, createdAccount);
+      }
+
+      return createdAccount;
     });
+    if (shouldCreateInitialBalance) {
+      await recalcAndSaveAccountBalance(account.id);
+    }
     if (isCreditLike) {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId,
@@ -185,7 +239,7 @@ export async function POST(req: NextRequest) {
     }
     revalidateAfterSettingsChange();
     // Client-side handles page refresh
-    return NextResponse.json({ ok: true, account });
+    return NextResponse.json({ ok: true, account, brokerageCashAccount });
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
@@ -260,7 +314,10 @@ export async function PUT(req: NextRequest) {
       if (body.tradingCalendar !== undefined || body.investProductType !== undefined || existing.kind !== "investment") {
         data.tradingCalendar = resolveTradingCalendarForAccount(nextKind, nextInvestProductType, body.tradingCalendar ?? existing.tradingCalendar) as any;
       }
-      if (body.defaultFundQueryApiId !== undefined) data.defaultFundQueryApiId = String(body.defaultFundQueryApiId ?? "").trim() || null;
+      const supportsDefaultFundQueryApi = nextInvestProductType === "fund" || nextInvestProductType === "money";
+      if (body.defaultFundQueryApiId !== undefined || !supportsDefaultFundQueryApi) {
+        data.defaultFundQueryApiId = supportsDefaultFundQueryApi ? String(body.defaultFundQueryApiId ?? "").trim() || null : null;
+      }
     } else {
       data.investProductType = null;
       data.costBasisMethod = null;
@@ -307,6 +364,10 @@ export async function PUT(req: NextRequest) {
       );
 
     const updated = await prisma.account.update({ where: { id }, data });
+    const brokerageCashAccount =
+      updated.kind === AccountKind.investment && updated.investProductType === "stock"
+        ? await ensureBrokerageCashAccountForStockAccount(prisma, updated)
+        : null;
     let affectedCreditAccountIds: string[] = [];
     if (updated.kind === "bank_credit") {
       await syncCreditCardInstitutionSettings(prisma, {
@@ -338,6 +399,7 @@ export async function PUT(req: NextRequest) {
         repaymentDay: updated.repaymentDay,
         creditBillMode: updated.creditBillMode,
         institutionId: updated.institutionId,
+        brokerageCashAccountId: brokerageCashAccount?.id ?? null,
         affectedCreditAccountIds,
         creditCycleRuleChanged,
       },

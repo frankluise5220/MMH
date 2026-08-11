@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
+import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
@@ -525,26 +527,28 @@ export async function POST(req: NextRequest) {
         const statementMonth =
           (fundAcc.kind === "bank_credit" || fundAcc.kind === "loan") && fundAcc.billingDay ? toStatementMonth(date, fundAcc.billingDay) : null;
 
-        await prisma.txRecord.create({
-          data: {
-            type: "investment" as any,
-            status: "posted",
+        await createFundTransactionWithCashFlows(prisma, {
+          householdId,
+          fundAccountId: fundAcc.id,
+          cashAccountId: cashAcc?.id ?? null,
+          fundCode: fundContext.fundCode,
+          fundName: resolvedFundName ?? fundContext.fundCode,
+          fundProductType: productType,
+          fundSubtype: fundSubtypeValue as FundSubtype,
+          source: "ai_import",
+          applyDate: date,
+          grossAmount: entryAmount,
+          cashFlows: cashAcc ? [{
+            kind: fundSubtypeValue === "redeem" ? FundCashFlowKind.redeem_in : FundCashFlowKind.buy_out,
             date,
-            amount: -entryAmount,
-            accountId: cashAcc?.id ?? fundAcc.id,
-            accountName: cashAcc?.name ?? fundAcc.name,
-            toAccountId: fundAcc.id,
-            toAccountName: fundAcc.name,
-            note: normalizedRemark,
-            statementMonth,
-            fundCode: fundContext.fundCode,
-            fundName: resolvedFundName ?? fundContext.fundCode,
-            fundProductType: productType as any,
-            fundSubtype: fundSubtypeValue as any,
-            householdId,
-            currency: normalizeCurrency(cashAcc?.currency ?? fundAcc.currency),
+            accountId: cashAcc.id,
+            accountName: cashAcc.name,
+            amount: fundSubtypeValue === "redeem" ? entryAmount : -entryAmount,
+            currency: normalizeCurrency(cashAcc.currency ?? fundAcc.currency),
             source: "ai_import",
-          },
+            note: normalizedRemark,
+          }] : [],
+          note: normalizedRemark,
         });
         createdCount++;
         continue;
@@ -625,7 +629,6 @@ export async function POST(req: NextRequest) {
           const statementMonth =
             (single.kind === "bank_credit" || single.kind === "loan") && single.billingDay ? toStatementMonth(date, single.billingDay) : null;
 
-          const displayFundCode = single.kind === "investment" ? (fundCode || single.name) : fundCode;
           await prisma.txRecord.create({
             data: {
               type: "investment" as any,
@@ -641,12 +644,7 @@ export async function POST(req: NextRequest) {
               householdId,
               currency: normalizeCurrency(single.currency),
               source: "ai_import",
-              ...(displayFundCode ? {
-                fundCode: displayFundCode,
-                fundName: fundName ?? undefined,
-                fundProductType: productType,
-                fundSubtype: fundSubtypeValue as any,
-              } : {}),
+
             },
           });
           didCreate = true;
@@ -654,7 +652,6 @@ export async function POST(req: NextRequest) {
           const fromStatementMonth =
             (from.kind === "bank_credit" || from.kind === "loan") && from.billingDay ? toStatementMonth(date, from.billingDay) : null;
 
-          const displayFundCode = fundCode || (investAccount?.name ?? null);
           await prisma.txRecord.create({
             data: {
               type: "investment" as any,
@@ -670,12 +667,7 @@ export async function POST(req: NextRequest) {
               householdId,
               currency: normalizeCurrency(cashAccount?.currency ?? from.currency),
               source: "ai_import",
-              ...(displayFundCode ? {
-                fundCode: displayFundCode,
-                fundName: fundName ?? undefined,
-                fundProductType: productType,
-                fundSubtype: fundSubtypeValue as any,
-              } : {}),
+
             },
           });
           didCreate = true;

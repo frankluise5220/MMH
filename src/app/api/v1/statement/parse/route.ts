@@ -12,6 +12,9 @@ type ParsedItemMeta = {
   billingDay?: number;
   repaymentDay?: number;
   statementAmount?: number;
+  statementPeriodStart?: string;
+  statementPeriodEnd?: string;
+  statementDueDate?: string;
 };
 
 type ParsedItem = {
@@ -524,7 +527,7 @@ function htmlToLooseText(value: string) {
 }
 
 function extractTableCells(rowHtml: string) {
-  return [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
+  return [...rowHtml.matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)]
     .map((match) => stripHtml(match[1]));
 }
 
@@ -580,24 +583,64 @@ function parseLooseNumber(value?: string) {
   return Number.isFinite(valueNumber) ? valueNumber : undefined;
 }
 
+function isStatementAmountNoiseContext(value: string) {
+  return /(积分|Bonus\s*Points?|Reward\s*Points?|Points?\b|Rewards?\b)/i.test(value);
+}
+
+function extractMoneyAfterLabels(
+  text: string,
+  labels: string[],
+  options?: { rejectContext?: (context: string) => boolean },
+) {
+  const normalized = stripHtml(text);
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`${escaped}((?:\\s|[A-Za-z/()（）&-]){0,80})(?:人民币|RMB|CNY|￥|¥)?\\s*(-?[\\d,]+(?:\\.\\d+)?)`, "gi");
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const suffix = normalized.slice(pattern.lastIndex, pattern.lastIndex + 12).match(/^[ \t\u00a0]*(?:积分|Bonus\s*Points?|Reward\s*Points?|Points?\b|Rewards?\b)/i)?.[0] ?? "";
+      const context = `${label}${match[1] ?? ""}${match[2] ?? ""}${suffix}`;
+      if (options?.rejectContext?.(context)) continue;
+      const amount = parseLooseNumber(match[2]);
+      if (amount !== undefined) return amount;
+    }
+  }
+  return undefined;
+}
+
+function extractDateAfterLabels(text: string, labels: string[]) {
+  const normalized = stripHtml(text);
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = normalized.match(new RegExp(`${escaped}(?:\\s|[A-Za-z/()（）&-]){0,80}(\\d{4}[年\\/\\-.]\\d{1,2}[月\\/\\-.]\\d{1,2})`, "i"));
+    const parts = parseDateParts(match?.[1] ?? "");
+    if (parts) return parts;
+  }
+  return null;
+}
+
 function extractStatementAmount(text: string) {
-  const labels = [
+  return extractMoneyAfterLabels(text, [
     "本期应还款金额",
     "本期应还款总额",
+    "本期应还款",
     "本期应缴余额",
     "本期应还",
     "本期余额",
     "本期账单金额",
     "New Balance",
     "Total Due",
-  ];
-  for (const label of labels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = text.match(new RegExp(`${escaped}\\s*[:：]?\\s*(?:人民币|RMB|CNY|￥|¥)?\\s*(-?[\\d,]+(?:\\.\\d+)?)`, "i"));
-    const amount = parseLooseNumber(match?.[1]);
-    if (amount !== undefined) return amount;
-  }
-  return undefined;
+  ], { rejectContext: isStatementAmountNoiseContext });
+}
+
+function extractCreditLimit(text: string) {
+  return extractMoneyAfterLabels(text, [
+    "总授信额度",
+    "总信用额度",
+    "信用额度",
+    "固定额度",
+    "Credit Limit",
+  ]);
 }
 
 function parseDateParts(value?: string) {
@@ -609,6 +652,56 @@ function parseDateParts(value?: string) {
     day: Number(match[3]),
     ymd: `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`,
   };
+}
+
+type StatementDateParts = NonNullable<ReturnType<typeof parseDateParts>>;
+
+function ymdFromParts(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function dateSerial(parts: StatementDateParts) {
+  return Date.UTC(parts.year, parts.month - 1, parts.day);
+}
+
+function extractStatementPeriod(text: string) {
+  const plain = stripHtml(text);
+  const match = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})/);
+  const start = parseDateParts(match?.[1] ?? "");
+  const end = parseDateParts(match?.[2] ?? "");
+  return start && end ? { start, end } : null;
+}
+
+function normalizeStatementMonthDayCell(value?: string, period?: ReturnType<typeof extractStatementPeriod>) {
+  const fullDate = normalizeDateTimeCell(value);
+  if (fullDate) return fullDate;
+
+  const match = String(value ?? "").trim().replace(/\s+/g, "").match(/^(\d{1,2})[\/.\-](\d{1,2})$/);
+  if (!match) return undefined;
+
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (!period) return undefined;
+
+  const startSerial = dateSerial(period.start);
+  const endSerial = dateSerial(period.end);
+  const candidateYears = Array.from(new Set([
+    period.start.year,
+    period.end.year,
+    period.start.year - 1,
+    period.end.year + 1,
+  ]));
+
+  for (const year of candidateYears) {
+    const ymd = ymdFromParts(year, month, day);
+    if (!ymd) continue;
+    const serial = Date.UTC(year, month - 1, day);
+    if (serial >= startSerial && serial <= endSerial) return ymd;
+  }
+
+  return ymdFromParts(period.end.year, month, day);
 }
 
 const BANK_NAMES = [
@@ -694,12 +787,13 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
   const institutionName = detectBankName(plain);
   const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?\s*您好/)?.[1]?.trim();
   const cardNumberMasked = extractCreditCardLast4(text, institutionName);
-  const creditLimit = parseLooseNumber(plain.match(/固定额度(?:\([^)]*\)|（[^）]*）)?\s*[:：]?\s*([\d,]+(?:\.\d+)?)/)?.[1]);
+  const creditLimit = extractCreditLimit(plain);
   const periodMatch = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})/);
+  const periodStart = parseDateParts(periodMatch?.[1] ?? "");
   const periodEnd = parseDateParts(periodMatch?.[2] ?? "");
   const directBillingDay = parseLooseNumber(plain.match(/账单日\s*[:：]?\s*(\d{1,2})\s*日?/)?.[1]);
-  const dueDate = parseDateParts(plain.match(/(?:到期还款日|最后还款日|还款日)\s*[:：]?\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})/)?.[1]);
-  const billingDay = directBillingDay && directBillingDay >= 1 && directBillingDay <= 31 ? directBillingDay : periodEnd?.day;
+  const dueDate = extractDateAfterLabels(plain, ["到期还款日", "最后还款日", "还款日", "Payment Due Date", "Due Date"]);
+  const billingDay = directBillingDay && directBillingDay >= 1 && directBillingDay <= 31 ? directBillingDay : periodStart?.day ?? periodEnd?.day;
   const repaymentDay = dueDate?.day;
   const statementAmount = extractStatementAmount(plain);
   const accountCore = institutionName ? `${institutionName}信用卡${cardNumberMasked ? `(${cardNumberMasked})` : ""}` : undefined;
@@ -713,8 +807,169 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
     billingDay,
     repaymentDay,
     statementAmount,
+    statementPeriodStart: periodStart?.ymd,
+    statementPeriodEnd: periodEnd?.ymd,
+    statementDueDate: dueDate?.ymd,
     accountName,
   };
+}
+
+function compactStatementText(value: string) {
+  return stripHtml(value).replace(/\s+/g, "");
+}
+
+function isBankOfCommunicationsCreditCardStatement(text: string) {
+  const compact = compactStatementText(text);
+  return /(交通银行|BankofCommunications|BOCOM|pccc)/i.test(compact);
+}
+
+type BocomTransactionHeaderIndexes = {
+  transactionDate: number;
+  postingDate: number;
+  cardLast4: number;
+  description: number;
+  transactionAmount: number;
+  postingAmount: number;
+};
+
+function normalizeTableHeaderCell(value: string) {
+  return value.replace(/\s+/g, "").replace(/[：:]/g, "").trim();
+}
+
+function findBocomTransactionHeaderIndexes(cells: string[]): BocomTransactionHeaderIndexes | null {
+  const headers = cells.map(normalizeTableHeaderCell);
+  const find = (pattern: RegExp) => headers.findIndex((header) => pattern.test(header));
+  const indexes = {
+    transactionDate: find(/交易日期|TransactionDate/i),
+    postingDate: find(/记账日期|PostingDate/i),
+    cardLast4: find(/卡末四位|卡号末四位|CardNumber.*Last4digits|Last4digits/i),
+    description: find(/交易说明|DescriptionofTransaction/i),
+    transactionAmount: find(/交易金额|TransactionCurr\/?Amt/i),
+    postingAmount: find(/入账金额|PaymentCurr\/?Amt/i),
+  };
+
+  return Object.values(indexes).every((index) => index >= 0) ? indexes : null;
+}
+
+function parseBankOfCommunicationsCreditCardStatement(text: string): ParsedItem[] {
+  if (!/<tr[\s>]/i.test(text) || !isBankOfCommunicationsCreditCardStatement(text)) return [];
+
+  const meta = extractCreditCardMeta(text);
+  const period = extractStatementPeriod(text);
+  const institutionName = meta.institutionName || "交通银行";
+  const baseMeta: ParsedItemMeta = {
+    institutionName,
+    ownerName: meta.ownerName,
+    cardNumberMasked: meta.cardNumberMasked,
+    creditLimit: meta.creditLimit,
+    billingDay: meta.billingDay,
+    repaymentDay: meta.repaymentDay,
+    statementAmount: meta.statementAmount,
+    statementPeriodStart: meta.statementPeriodStart,
+    statementPeriodEnd: meta.statementPeriodEnd,
+    statementDueDate: meta.statementDueDate,
+  };
+
+  const items: ParsedItem[] = [];
+  const seen = new Set<string>();
+  let inTransactionSection = false;
+  let headerIndexes: BocomTransactionHeaderIndexes | null = null;
+
+  for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+    const rowText = stripHtml(row);
+    const compactRowText = rowText.replace(/\s+/g, "");
+    const cells = extractTableCells(row).map((cell) => cell.trim()).filter(Boolean);
+
+    if (/消费[、，,]?取现[、，,]?其他费用明细/i.test(compactRowText)) {
+      inTransactionSection = true;
+      headerIndexes = null;
+      continue;
+    }
+
+    const detectedHeader = findBocomTransactionHeaderIndexes(cells);
+    if (detectedHeader && (inTransactionSection || /交易日期|TransactionDate/i.test(rowText))) {
+      inTransactionSection = true;
+      headerIndexes = detectedHeader;
+      continue;
+    }
+
+    if (!inTransactionSection || !headerIndexes) continue;
+    if (/(账单说明|温馨提示|风险提示|积分明细|还款明细|分期|版权所有|客户服务热线)/i.test(rowText)) break;
+
+    const maxHeaderIndex = Math.max(...Object.values(headerIndexes));
+    if (cells.length <= maxHeaderIndex) continue;
+
+    const date = normalizeStatementMonthDayCell(cells[headerIndexes.transactionDate], period);
+    const postDate = normalizeStatementMonthDayCell(cells[headerIndexes.postingDate], period) || date;
+    const description = cleanupMerchantName(cells[headerIndexes.description] ?? "");
+    const rowCardNumberMasked = cells[headerIndexes.cardLast4]?.match(/\d{4}/)?.[0] ?? "";
+    const postingAmount = parseMoney(cells[headerIndexes.postingAmount] ?? "");
+    const transactionAmount = parseMoney(cells[headerIndexes.transactionAmount] ?? "");
+    const amount = postingAmount ?? transactionAmount;
+    const amountRaw = cells[headerIndexes.postingAmount] || cells[headerIndexes.transactionAmount] || "";
+
+    if (!date || !description || amount === null || amount === 0) continue;
+    if (isStatementSummaryText(description)) continue;
+
+    const absAmount = Math.abs(amount);
+    const { counterparty, category, institution } = aliasMatch(description);
+    const transferText = `${description} ${amountRaw}`;
+    const isRepaymentTransfer = isCreditCardRepaymentLike(transferText);
+    const isExpenseRefund = isExpenseRefundLike(transferText);
+    const isCreditIn = /存入|收入|退款|退货|返现|冲正|减免|还款|Payment|Credit/i.test(transferText);
+    const type = isRepaymentTransfer || isLikelyTransfer(description) ? "transfer" : isExpenseRefund ? "expense" : isCreditIn ? "income" : amount < 0 ? "income" : "expense";
+    const paymentFromAccount = type === "transfer" ? paymentTailAccountName(transferText) : "";
+    const cardAccount = rowCardNumberMasked ? `${institutionName}信用卡(${rowCardNumberMasked})` : meta.accountName;
+    const key = `${date}|${postDate ?? ""}|${rowCardNumberMasked}|${description}|${amount}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    items.push({
+      rawText: `${date} ${description} ${amountRaw}`.trim(),
+      type,
+      date,
+      amount: absAmount,
+      inflow: type === "income" || isExpenseRefund || isRepaymentTransfer ? absAmount : undefined,
+      outflow: type === "expense" && !isExpenseRefund ? absAmount : undefined,
+      account: cardAccount,
+      fromAccount: paymentFromAccount || undefined,
+      toAccount: type === "transfer" ? cardAccount : undefined,
+      counterparty: counterparty || undefined,
+      institution: institution || undefined,
+      category: category || undefined,
+      remark: postDate && postDate !== date ? `${description}（入账日 ${postDate}）` : description,
+      postedDate: postDate,
+      _meta: {
+        ...baseMeta,
+        cardNumberMasked: rowCardNumberMasked || baseMeta.cardNumberMasked,
+      },
+    });
+  }
+
+  return items;
+}
+
+type CreditCardStatementTemplate = {
+  name: string;
+  matches: (text: string) => boolean;
+  parse: (text: string) => ParsedItem[];
+};
+
+const CREDIT_CARD_STATEMENT_TEMPLATES: CreditCardStatementTemplate[] = [
+  {
+    name: "bank-of-communications",
+    matches: isBankOfCommunicationsCreditCardStatement,
+    parse: parseBankOfCommunicationsCreditCardStatement,
+  },
+];
+
+function parseKnownBankCreditCardStatement(text: string): ParsedItem[] {
+  for (const template of CREDIT_CARD_STATEMENT_TEMPLATES) {
+    if (!template.matches(text)) continue;
+    const items = template.parse(text);
+    if (items.length > 0) return items;
+  }
+  return [];
 }
 
 function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
@@ -732,6 +987,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
     billingDay: meta.billingDay,
     repaymentDay: meta.repaymentDay,
     statementAmount: meta.statementAmount,
+    statementPeriodStart: meta.statementPeriodStart,
+    statementPeriodEnd: meta.statementPeriodEnd,
+    statementDueDate: meta.statementDueDate,
   };
   const items: ParsedItem[] = [];
   const seen = new Set<string>();
@@ -829,6 +1087,9 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
 }
 
 function parseStructuredStatement(text: string): ParsedItem[] {
+  const bankTemplateItems = parseKnownBankCreditCardStatement(text);
+  if (bankTemplateItems.length > 0) return bankTemplateItems;
+
   const htmlItems = parseCreditCardHtmlStatement(text);
   if (htmlItems.length > 0) return htmlItems;
 

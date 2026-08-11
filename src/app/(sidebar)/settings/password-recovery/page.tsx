@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  SettingsActionButton,
+  SettingsPrimaryAddButton,
+} from "@/components/settings/SettingsPageScaffold";
 
 const RESEND_FROM = "mmh@floatingice.win";
 
@@ -45,7 +49,7 @@ export default function PasswordRecoverySettingsPage() {
           source: data.data.source ?? "none",
           canDelete: Boolean(data.data.canDelete),
         });
-        setEditingResend(!data.data.configured);
+        setEditingResend(false);
         setResendApiKey("");
       }
     } catch {
@@ -157,8 +161,23 @@ export default function PasswordRecoverySettingsPage() {
       </div>
 
       <div className="rounded-lg border border-slate-200 bg-white p-4">
-        <div className="text-sm font-medium text-slate-800 mb-1">Resend 发件服务</div>
-        <div className="text-xs text-slate-500 mb-3">API Key 保存后只显示摘要；需要更换时点修改，删除后密码找回会自动重新检测。</div>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-slate-800">Resend 发件服务</div>
+            <div className="mt-1 text-xs text-slate-500">用于登录页密码找回邮件发送。</div>
+          </div>
+          {!editingResend && !resendConfig.configured ? (
+            <SettingsPrimaryAddButton
+              onClick={() => {
+                setEditingResend(true);
+                setError("");
+                setInfo("");
+              }}
+            >
+              添加配置
+            </SettingsPrimaryAddButton>
+          ) : null}
+        </div>
         {resendConfig.configured && !editingResend ? (
           <div className="flex flex-col gap-3 rounded-md border border-slate-100 bg-slate-50 px-3 py-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -168,19 +187,21 @@ export default function PasswordRecoverySettingsPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button className="h-8 px-3 rounded-md border border-slate-300 text-xs hover:bg-white" onClick={() => setEditingResend(true)}>修改</button>
+              <SettingsActionButton label="修改 Resend 配置" variant="edit" onClick={() => setEditingResend(true)} />
               {resendConfig.canDelete && (
-                <button className="h-8 px-3 rounded-md border border-red-200 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50" onClick={deleteResendConfig} disabled={saving}>删除</button>
+                <SettingsActionButton label="删除 Resend 配置" variant="delete" onClick={deleteResendConfig} disabled={saving} />
               )}
             </div>
           </div>
-        ) : (
+        ) : editingResend ? (
           <div className="flex gap-3 items-end">
             <input className="h-9 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={resendApiKey} onChange={(e) => setResendApiKey(e.target.value)} placeholder="填写新的 Resend API Key" type="password" autoComplete="new-password" />
             <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={testAndSaveResend} disabled={testing}>{testing ? "验证中…" : "验证并保存"}</button>
-            {resendConfig.configured && (
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={() => { setEditingResend(false); setResendApiKey(""); }}>取消</button>
-            )}
+            <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={() => { setEditingResend(false); setResendApiKey(""); }}>取消</button>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-400">
+            暂无 Resend 发件服务配置
           </div>
         )}
       </div>

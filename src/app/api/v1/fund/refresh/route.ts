@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { FundCashFlowKind, FundProductType, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { addWorkdaysUtc } from "@/lib/date-utils";
@@ -6,9 +7,10 @@ import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshHeldFundLatestNavs, NavListItem } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
-import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
+import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
+import { ensureFundTransactionCashFlowLinks } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 
@@ -17,8 +19,20 @@ function utcDate(dateStr: string) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
+function refundAmountOf(row: {
+  refundAmount: unknown;
+  cashFlows: Array<{ kind: FundCashFlowKind; amount: unknown }>;
+}) {
+  const byRow = Math.abs(toNum(row.refundAmount));
+  const byFlows = row.cashFlows
+    .filter((flow) => flow.kind === FundCashFlowKind.refund_in)
+    .reduce((sum, flow) => sum + Math.abs(toNum(flow.amount)), 0);
+  return Math.max(byRow, byFlows);
+}
+
 export async function POST(req: NextRequest) {
   try {
+    const { householdId } = await getHouseholdScope();
     const body = await req.json();
     const accountId = String(body.accountId ?? "").trim();
     if (!accountId) return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
@@ -29,17 +43,22 @@ export async function POST(req: NextRequest) {
     const syncedEntryIds: string[] = [];
     const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
 
-    // 直接查询 TxRecord 中未确认的基金交易（包括 fundSubtype 为 null 的记录）
+    // 直接查询 FundTransaction 中未确认的基金交易。
     const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
-    const unconfirmedEntries = await prisma.txRecord.findMany({
+    const unconfirmedEntries = await prisma.fundTransaction.findMany({
       where: {
-        fundNav: null,
+        householdId,
+        fundAccountId: accountId,
         deletedAt: null,
+        fundProductType: { in: [FundProductType.fund, FundProductType.money] },
         OR: [
-          { toAccountId: accountId, OR: [{ fundSubtype: null }, { fundSubtype: { in: ["buy", "redeem", "switch_out"] } }] },
-          { accountId: accountId, OR: [{ fundSubtype: null }, { fundSubtype: { in: ["buy", "redeem", "switch_out"] } }] },
+          { nav: null },
+          { units: null },
+          { units: { lte: 0 } },
         ],
+        fundSubtype: { in: [FundSubtype.buy, FundSubtype.redeem, FundSubtype.switch_out] },
       },
+      include: { cashFlows: true },
       orderBy: { createdAt: "asc" },
     });
 
@@ -52,7 +71,7 @@ export async function POST(req: NextRequest) {
     let earliestDate = now.toISOString().slice(0, 10);
     for (const entry of unconfirmedEntries) {
       if (!entry.fundCode) continue;
-      const applyDate = entry.date.toISOString().slice(0, 10);
+      const applyDate = entry.applyDate.toISOString().slice(0, 10);
       if (applyDate < earliestDate) earliestDate = applyDate;
     }
     // 如果有显式请求的 symbol 但没有未确认记录，用 30 天前作为起始
@@ -61,44 +80,6 @@ export async function POST(req: NextRequest) {
       d.setDate(d.getDate() - 30);
       earliestDate = d.toISOString().slice(0, 10);
     }
-
-    const allRefundMatchEntries = await prisma.txRecord.findMany({
-      where: {
-        deletedAt: null,
-        OR: [
-          { toAccountId: accountId, fundCode: { not: null } },
-          { accountId: accountId, fundCode: { not: null } },
-        ],
-      },
-      select: {
-        id: true,
-        date: true,
-        createdAt: true,
-        fundConfirmDate: true,
-        fundArrivalDate: true,
-        accountId: true,
-        toAccountId: true,
-        fundCode: true,
-        fundSubtype: true,
-        source: true,
-        amount: true,
-        fundSourceEntryId: true,
-      },
-    });
-    const { refundAmountByBuyId } = allocateBuyFailedRefunds(allRefundMatchEntries.map((entry) => ({
-      id: entry.id,
-      date: entry.date,
-      createdAt: entry.createdAt,
-      fundConfirmDate: entry.fundConfirmDate,
-      fundArrivalDate: entry.fundArrivalDate,
-      accountId: entry.accountId,
-      toAccountId: entry.toAccountId,
-      fundCode: entry.fundCode,
-      fundSubtype: entry.fundSubtype,
-      source: entry.source,
-      amount: toNum(entry.amount),
-      fundSourceEntryId: entry.fundSourceEntryId,
-    })));
 
     // 为每个基金预加载历史净值（从最早申请日期到今天）
     for (const fundCode of fundCodes) {
@@ -114,9 +95,11 @@ export async function POST(req: NextRequest) {
     for (const entry of unconfirmedEntries) {
       if (!entry.fundCode) continue;
       try {
-        const applyDate = entry.date.toISOString().slice(0, 10);
-        const confirmDays = await getFundConfirmDays(accountId, entry.fundCode);
-        const confirmDate = addWorkdaysUtc(applyDate, confirmDays);
+        const applyDate = entry.applyDate.toISOString().slice(0, 10);
+        const confirmDays = entry.confirmDate ? null : await getFundConfirmDays(accountId, entry.fundCode);
+        const confirmDate = entry.confirmDate
+          ? entry.confirmDate.toISOString().slice(0, 10)
+          : addWorkdaysUtc(applyDate, confirmDays ?? 1);
         if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
         // 先从预加载的净值列表中查找
@@ -146,21 +129,21 @@ export async function POST(req: NextRequest) {
         const actualConfirmDate = utcDate(confirmDate);
 
         // Determine fee type based on fundSubtype (buy vs redeem/switch_out)
-        const feeType = (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out")
+        const feeType = (entry.fundSubtype === FundSubtype.redeem || entry.fundSubtype === FundSubtype.switch_out)
           ? "redeem"
           : "buy";
         const feeRateRaw = await getFundFeeRateByDate(accountId, entry.fundCode, actualConfirmDate, feeType);
         const feeRate = feeRateRaw / 100;
 
-        const amount = Math.abs(toNum(entry.amount));
-        const isBuyEntry = (entry.fundSubtype ?? (toNum(entry.amount) < 0 ? "buy" : "redeem")) === "buy";
-        const refundAmount = isBuyEntry ? refundAmountByBuyId.get(entry.id) ?? 0 : 0;
+        const amount = Math.abs(toNum(entry.grossAmount));
+        const isBuyEntry = entry.fundSubtype === FundSubtype.buy;
+        const refundAmount = isBuyEntry ? refundAmountOf(entry) : 0;
         const confirmedAmount = isBuyEntry ? Math.max(0, amount - refundAmount) : amount;
         const fee = confirmedAmount * feeRate;
 
         let units: number | null = null;
         if (hasExactNav && navData && navData.nav > 0) {
-          if (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out") {
+          if (entry.fundSubtype === FundSubtype.redeem || entry.fundSubtype === FundSubtype.switch_out) {
             // 赎回: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
             const divisor = navData.nav * (1 - feeRate);
             units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
@@ -175,37 +158,30 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 如果 fundSubtype 为 null，根据金额符号推断类型
-        const inferredSubtype = entry.fundSubtype ?? (toNum(entry.amount) < 0 ? "buy" : "redeem");
-
-        // 更新 TxRecord：写入净值、确认日期、手续费、份额、交易类型
+        // 更新 FundTransaction：写入净值、确认日期、手续费、份额。
         const updateData: {
-          fundNav?: number;
-          fundConfirmDate: Date;
-          fundFee: number;
-          fundUnits?: number;
-          fundSubtype?: string;
+          nav?: number;
+          confirmDate: Date;
+          fee: number;
+          units?: number;
           fundName?: string;
         } = {
-          fundConfirmDate: actualConfirmDate,
-          fundFee: fee,
+          confirmDate: actualConfirmDate,
+          fee,
         };
         if (hasExactNav && navData) {
-          updateData.fundNav = navData.nav;
+          updateData.nav = navData.nav;
           if (navData.name) {
             updateData.fundName = navData.name;
           }
         }
         if (units != null && Number.isFinite(units) && units > 0) {
-          updateData.fundUnits = units;
-        }
-        if (entry.fundSubtype == null) {
-          updateData.fundSubtype = inferredSubtype;
+          updateData.units = units;
         }
 
-        await prisma.txRecord.update({
+        await prisma.fundTransaction.update({
           where: { id: entry.id },
-          data: updateData as any,
+          data: updateData,
         });
         syncedEntryIds.push(entry.id);
         entryFilled++;
@@ -216,7 +192,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (entryFilled > 0) {
-      await syncFundTransactionsFromTxRecords(syncedEntryIds);
+      await ensureFundTransactionCashFlowLinks(prisma, syncedEntryIds);
       await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
 

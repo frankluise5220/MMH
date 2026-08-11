@@ -153,6 +153,13 @@ function createEmptyValues(length: number) {
   return Array.from({ length }, () => 0);
 }
 
+function accountDisplayName(
+  account: { name?: string | null } | null | undefined,
+  fallback?: string | null,
+) {
+  return account?.name?.trim() || fallback?.trim() || "";
+}
+
 function buildSectionRows(
   roots: ReportCategoryNode[],
   uncategorized: ReportCategoryNode,
@@ -254,6 +261,7 @@ export async function getIncomeExpenseReport(
         categoryName: true,
         accountId: true,
         accountName: true,
+        account: { select: { name: true } },
         counterpartyInstitutionName: true,
         note: true,
         createdAt: true,
@@ -291,6 +299,7 @@ export async function getIncomeExpenseReport(
         fundName: true,
         accountId: true,
         accountName: true,
+        account: { select: { name: true } },
         note: true,
         createdAt: true,
       },
@@ -322,8 +331,10 @@ export async function getIncomeExpenseReport(
         debtInterestAmount: true,
         accountId: true,
         accountName: true,
+        account: { select: { name: true } },
         toAccountId: true,
         toAccountName: true,
+        toAccount: { select: { name: true } },
         note: true,
         createdAt: true,
       },
@@ -437,7 +448,7 @@ export async function getIncomeExpenseReport(
         ? (type === "income" ? SYSTEM_INSURANCE_RETURN_CATEGORY : SYSTEM_INSURANCE_EXPENSE_CATEGORY)
         : record.categoryName?.trim() || null,
       accountId: record.accountId,
-      accountName: record.accountName,
+      accountName: accountDisplayName(record.account, record.accountName),
       counterpartyName: record.counterpartyInstitutionName,
       note: record.note,
       createdAt: record.createdAt,
@@ -460,7 +471,7 @@ export async function getIncomeExpenseReport(
         categoryId: category?.id ?? null,
         categoryName: category?.name ?? item.categoryName,
         accountId: record.accountId,
-        accountName: record.accountName,
+        accountName: accountDisplayName(record.account, record.accountName),
         counterpartyName: investmentName || item.label,
         note: record.note,
         createdAt: record.createdAt,
@@ -481,7 +492,9 @@ export async function getIncomeExpenseReport(
         categoryId: category?.id ?? null,
         categoryName: category?.name ?? item.categoryName,
         accountId: item.type === "income" ? record.toAccountId ?? record.accountId : record.accountId,
-        accountName: item.type === "income" ? record.toAccountName ?? record.accountName : record.accountName,
+        accountName: item.type === "income" && record.toAccountId
+          ? accountDisplayName(record.toAccount, record.toAccountName)
+          : accountDisplayName(record.account, record.accountName),
         counterpartyName: item.label,
         note: record.note,
         createdAt: record.createdAt,

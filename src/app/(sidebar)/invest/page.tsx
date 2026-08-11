@@ -24,6 +24,7 @@ const investProductTypeLabel = (type: string | null) => {
   if (type === "money") return "货币基金";
   if (type === "wealth") return "银行理财";
   if (type === "metal") return "贵金属";
+  if (type === "stock") return "股票";
   return "投资账户";
 };
 
@@ -332,10 +333,10 @@ const investProductTypeLabel = (type: string | null) => {
             <span className="text-xs text-slate-400">{filteredRows.length} 个账户</span>
           </div>
           <div className="overflow-auto">
-            <table className="min-w-[960px] w-full border-separate border-spacing-0">
+            <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 z-10 bg-white">
                 <tr>
-                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200 min-w-[220px]">账户</th>
+                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">账户</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">持仓成本</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">市值</th>
                   <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">浮动盈亏</th>

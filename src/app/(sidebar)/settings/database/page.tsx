@@ -17,9 +17,15 @@ import {
   serializeLedgerInviteCodeRecords,
   type LedgerInviteCodeRecord,
 } from "@/lib/ledger-invite-codes";
+import {
+  isAccessHostnameAllowed,
+  isDefaultAllowedAccessHostname,
+  normalizeAccessHostname,
+  normalizeAllowedAccessList,
+  parseAllowedAccessList,
+} from "@/lib/access-whitelist";
 
-const ACCESS_WHITELIST_HINT = "未开启时不限制访问来源；开启后只允许下方名单中的域名或 IP 访问。";
-const RESET_CONFIRM_TEXT = "系统初始化";
+const ACCESS_WHITELIST_HINT = "开启后只允许名单内的访问域名或 IP 打开 MMH。";
 const LEDGER_INVITE_CODE_KEY = "ledger_creation_invite_code";
 
 type SaveFilePickerHandle = {
@@ -67,8 +73,8 @@ type BackupSaveResult = {
 };
 
 type SensitiveOperationCredentials = {
-  username: string;
   userPassword: string;
+  backupPassphrase?: string;
 };
 
 type SettingsValuesResult = {
@@ -102,16 +108,6 @@ async function fetchJsonWithTimeout<T>(url: string, options?: RequestInit & { ti
   }
 }
 
-function normalizeOriginHost(value: string) {
-  const raw = value.trim().toLowerCase();
-  if (!raw) return "";
-  try {
-    return new URL(raw.includes("://") ? raw : `http://${raw}`).hostname.toLowerCase();
-  } catch {
-    return raw.split(":")[0]?.trim().toLowerCase() ?? "";
-  }
-}
-
 function filenameFromDisposition(value: string | null) {
   if (!value) return "";
   const encodedMatch = value.match(/filename\*=UTF-8''([^;]+)/i);
@@ -127,19 +123,12 @@ function filenameFromDisposition(value: string | null) {
 }
 
 function parseOriginList(value: string | null | undefined) {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return Array.from(new Set(parsed.map((item) => normalizeOriginHost(String(item ?? ""))).filter(Boolean)));
-  } catch {
-    return [];
-  }
+  return parseAllowedAccessList(value);
 }
 
 function getCurrentAccessHost() {
   if (typeof window === "undefined") return "";
-  return normalizeOriginHost(window.location.hostname);
+  return normalizeAccessHostname(window.location.hostname);
 }
 
 function formatInviteDateTime(value?: string) {
@@ -258,20 +247,20 @@ export default function DatabaseSettingsPage() {
   const [tableExporting, setTableExporting] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [backupError, setBackupError] = useState("");
-  const [backupUsername, setBackupUsername] = useState("");
   const [backupUserPassword, setBackupUserPassword] = useState("");
+  const [backupPassphrase, setBackupPassphrase] = useState("");
   const [backupPasswordDialogOpen, setBackupPasswordDialogOpen] = useState(false);
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
-  const [restoreUsername, setRestoreUsername] = useState("");
   const [restoreUserPassword, setRestoreUserPassword] = useState("");
+  const [restorePassphrase, setRestorePassphrase] = useState("");
   const [restorePasswordDialogOpen, setRestorePasswordDialogOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState("");
   const [restoreError, setRestoreError] = useState("");
 
-  const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetDbPassword, setResetDbPassword] = useState("");
+  const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
   const [resetError, setResetError] = useState("");
   const [resetting, setResetting] = useState(false);
 
@@ -378,14 +367,23 @@ export default function DatabaseSettingsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, value }),
     });
-    const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+    const raw = await res.text().catch(() => "");
+    let data: { ok?: boolean; error?: string } | null = null;
+    try {
+      data = raw ? JSON.parse(raw) as { ok?: boolean; error?: string } : null;
+    } catch {
+      data = null;
+    }
     if (!res.ok || !data?.ok) {
+      if (res.status === 403 && raw.includes("Access Denied")) {
+        throw new Error("当前访问的域名或 IP 不在访问白名单内，请用已放行的地址打开后再修改白名单。");
+      }
       throw new Error(data?.error ?? "保存失败");
     }
   }
 
   async function saveOrigins(list: string[]) {
-    const normalized = Array.from(new Set(list.map(normalizeOriginHost).filter(Boolean)));
+    const normalized = normalizeAllowedAccessList(list);
     try {
       await saveSystemSetting("allowed_dev_origins", JSON.stringify(normalized));
       setOriginError("");
@@ -405,7 +403,11 @@ export default function DatabaseSettingsPage() {
     let autoAddedHost = "";
     if (enabled) {
       const currentHost = getCurrentAccessHost();
-      if (currentHost && !nextOrigins.includes(currentHost)) {
+      if (
+        currentHost &&
+        !isDefaultAllowedAccessHostname(currentHost) &&
+        !isAccessHostnameAllowed(currentHost, nextOrigins)
+      ) {
         autoAddedHost = currentHost;
         nextOrigins = [...nextOrigins, currentHost];
         setOrigins(nextOrigins);
@@ -418,7 +420,7 @@ export default function DatabaseSettingsPage() {
       }
       if (nextOrigins.length === 0) {
         setOriginCheckEnabled(false);
-        setOriginError("无法识别当前访问地址，请先手动添加允许访问的域名或 IP，再开启访问白名单。");
+        setOriginError("请先添加至少一个非本机访问域名或 IP，再开启访问白名单。localhost 和 127.0.0.1 已默认允许。");
         return;
       }
     }
@@ -442,8 +444,13 @@ export default function DatabaseSettingsPage() {
   async function addOrigin() {
     setOriginMessage("");
     setOriginError("");
-    const value = normalizeOriginHost(newOrigin);
+    const value = normalizeAccessHostname(newOrigin);
     if (!value) return;
+    if (isDefaultAllowedAccessHostname(value)) {
+      setNewOrigin("");
+      setOriginMessage("localhost、127.0.0.1 和 ::1 已默认允许，不需要加入白名单。");
+      return;
+    }
     if (origins.includes(value)) {
       setNewOrigin("");
       setOriginMessage("该来源已在白名单中");
@@ -467,42 +474,53 @@ export default function DatabaseSettingsPage() {
     const previousOrigins = origins;
     const previousEnabled = originCheckEnabled;
     const next = origins.filter((_, i) => i !== index);
-    setOrigins(next);
     if (next.length === 0 && originCheckEnabled) {
+      setOrigins(next);
       setOriginCheckEnabled(false);
+      try {
+        await saveSystemSetting("origin_check_enabled", "false");
+        const saved = await saveOrigins(next);
+        if (!saved) {
+          setOrigins(previousOrigins);
+          return;
+        }
+        setOriginMessage("白名单已清空，访问白名单已关闭");
+      } catch (error) {
+        setOrigins(previousOrigins);
+        setOriginCheckEnabled(previousEnabled);
+        setOriginError(error instanceof Error ? error.message : "关闭白名单失败");
+      }
+      return;
     }
+    const currentHost = getCurrentAccessHost();
+    if (
+      originCheckEnabled &&
+      currentHost &&
+      !isDefaultAllowedAccessHostname(currentHost) &&
+      !isAccessHostnameAllowed(currentHost, next)
+    ) {
+      setOriginError("不能删除当前正在访问的域名或 IP，否则会把自己排除在白名单外。");
+      return;
+    }
+    setOrigins(next);
     const saved = await saveOrigins(next);
     if (!saved) {
       setOrigins(previousOrigins);
       setOriginCheckEnabled(previousEnabled);
       return;
     }
-    if (next.length === 0 && previousEnabled) {
-      try {
-        await saveSystemSetting("origin_check_enabled", "false");
-        setOriginMessage("白名单已清空，访问白名单已关闭");
-      } catch (error) {
-        setOriginError(error instanceof Error ? error.message : "关闭白名单失败");
-      }
-      return;
-    }
     setOriginMessage("白名单已更新");
   }
 
   function openBackupPasswordDialog() {
-    setBackupUsername("");
     setBackupUserPassword("");
+    setBackupPassphrase("");
     setBackupError("");
     setBackupPasswordDialogOpen(true);
   }
 
   async function handleBackup() {
-    const username = backupUsername.trim();
     const password = backupUserPassword.trim();
-    if (!username) {
-      setBackupError("请输入用户名");
-      return;
-    }
     if (!password) {
       setBackupError("请输入用户密码");
       return;
@@ -512,11 +530,14 @@ export default function DatabaseSettingsPage() {
     setBackupMessage("");
     setBackupError("");
     try {
-      const result = await saveDataBackup({ username, userPassword: password });
+      const result = await saveDataBackup({
+        userPassword: password,
+        backupPassphrase: backupPassphrase.trim(),
+      });
       if (!result) return;
       setBackupPasswordDialogOpen(false);
-      setBackupUsername("");
       setBackupUserPassword("");
+      setBackupPassphrase("");
       setBackupMessage(
         result.pickedLocation
           ? `数据备份已保存：${result.fileName}`
@@ -550,8 +571,8 @@ export default function DatabaseSettingsPage() {
 
   function applyRestoreFile(nextFile: File | null) {
     setRestoreFile(nextFile);
-    setRestoreUsername("");
     setRestoreUserPassword("");
+    setRestorePassphrase("");
     setRestorePasswordDialogOpen(false);
     setRestoreError("");
     setRestoreMessage("");
@@ -583,8 +604,8 @@ export default function DatabaseSettingsPage() {
       setRestoreError("请选择数据备份文件");
       return;
     }
-    setRestoreUsername("");
     setRestoreUserPassword("");
+    setRestorePassphrase("");
     setRestoreError("");
     setRestorePasswordDialogOpen(true);
   }
@@ -594,12 +615,7 @@ export default function DatabaseSettingsPage() {
       setRestoreError("请选择数据备份文件");
       return;
     }
-    const username = restoreUsername.trim();
     const password = restoreUserPassword.trim();
-    if (!username) {
-      setRestoreError("请输入用户名");
-      return;
-    }
     if (!password) {
       setRestoreError("请输入当前用户密码");
       return;
@@ -611,8 +627,8 @@ export default function DatabaseSettingsPage() {
     try {
       const form = new FormData();
       form.append("file", restoreFile);
-      form.append("username", username);
       form.append("userPassword", password);
+      form.append("backupPassphrase", restorePassphrase.trim());
       const res = await fetch("/api/v1/settings/backup", {
         method: "POST",
         body: form,
@@ -626,8 +642,8 @@ export default function DatabaseSettingsPage() {
       const count = data.summary?.counts?.transactions ?? 0;
       setRestoreMessage(`恢复完成，已写入 ${count} 条交易记录。页面将刷新。`);
       setRestorePasswordDialogOpen(false);
-      setRestoreUsername("");
       setRestoreUserPassword("");
+      setRestorePassphrase("");
       setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
       setRestoreError(error instanceof Error ? error.message : "恢复失败");
@@ -636,11 +652,13 @@ export default function DatabaseSettingsPage() {
     }
   }
 
+  function openFactoryResetDialog() {
+    setResetDbPassword("");
+    setResetError("");
+    setResetPasswordDialogOpen(true);
+  }
+
   async function handleFactoryReset() {
-    if (resetConfirmText !== RESET_CONFIRM_TEXT) {
-      setResetError("请输入正确的确认文字");
-      return;
-    }
     if (!resetDbPassword.trim()) {
       setResetError("请输入数据库密码");
       return;
@@ -653,18 +671,20 @@ export default function DatabaseSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: resetDbPassword, verifySystem: true }),
       });
-      const verifyData = await verifyRes.json();
-      if (!verifyData.ok) {
-        setResetError(verifyData.error ?? "数据库密码错误");
+      const verifyData = await verifyRes.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!verifyRes.ok || !verifyData?.ok) {
+        setResetError(verifyData?.error ?? "数据库密码错误");
         return;
       }
 
       const res = await fetch("/api/v1/settings/factory-reset", { method: "POST" });
-      const data = await res.json();
-      if (data.ok) {
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (res.ok && data?.ok) {
+        setResetPasswordDialogOpen(false);
+        setResetDbPassword("");
         window.location.href = "/login";
       } else {
-        setResetError(data.error ?? "操作失败");
+        setResetError(data?.error ?? "操作失败");
       }
     } catch {
       setResetError("网络错误，请重试");
@@ -697,27 +717,24 @@ export default function DatabaseSettingsPage() {
       <h2 className="text-sm font-semibold text-slate-800">数据库</h2>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-slate-800">备份与恢复</div>
             <div className="mt-1 text-xs text-slate-500">
-              保存当前账簿的加密恢复包。导出备份前需要再次输入当前用户名和密码。
+              备份生成加密恢复包；导出表格仅用于查看和处理数据，不能用于恢复。
             </div>
-            <div className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              数据备份包含账簿基础资料、系统设置、访问密钥、AI 配置、邮箱账户、账户、分类、标签、流水、投资、保险、计划任务等恢复到备份时状态所需的数据。备份包会自动加密，请妥善保存文件。
-            </div>
-            <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              导出表格会生成普通 Excel 文件，方便查看和处理数据；它不是恢复包，不能用于还原账簿，也不包含密码、API Key、邮箱密码等敏感恢复配置。
-            </div>
+            {restoreFile ? <div className="mt-2 truncate text-xs text-slate-500" title={restoreFile.name}>已选择：{restoreFile.name}</div> : null}
             {backupMessage ? <div className="mt-2 text-xs text-emerald-600">{backupMessage}</div> : null}
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
+            {restoreMessage ? <div className="mt-2 text-xs text-emerald-600">{restoreMessage}</div> : null}
+            {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="grid shrink-0 grid-cols-2 gap-2">
             <button
               type="button"
               onClick={openBackupPasswordDialog}
               disabled={!canBackup}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-blue-200 bg-white px-3 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-blue-200 bg-white px-3 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
               {backuping ? "备份中..." : "数据备份"}
@@ -726,27 +743,18 @@ export default function DatabaseSettingsPage() {
               type="button"
               onClick={() => void handleTableExport()}
               disabled={!canTableExport}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
               {tableExporting ? "导出中..." : "导出表格"}
             </button>
-          </div>
-        </div>
-
-        <div className="mt-4 border-t border-slate-100 pt-4">
-          <div className="text-sm font-medium text-slate-800">恢复备份</div>
-          <div className="mt-1 text-xs text-red-600">
-            恢复会清空当前账簿后再写入备份内容，并按备份文件写回系统设置和密钥配置。开始恢复前需要再次验证当前用户名和密码。
-          </div>
-          <div className="mt-3">
             <button
               type="button"
               onClick={() => void pickRestoreFile()}
-              className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 text-left text-sm text-slate-600 hover:border-blue-300 hover:bg-blue-50/40"
+              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
             >
               <Upload className="h-4 w-4 shrink-0" />
-              <span className="truncate">{restoreFile ? restoreFile.name : "选择 MMH 加密备份（.mmh-backup）"}</span>
+              选择备份
             </button>
             <input
               ref={restoreFileInputRef}
@@ -757,21 +765,16 @@ export default function DatabaseSettingsPage() {
                 applyRestoreFile(event.target.files?.[0] ?? null);
               }}
             />
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={openRestorePasswordDialog}
               disabled={!canRestore}
-              className="inline-flex h-9 items-center gap-2 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
             >
               <RotateCcw className="h-4 w-4" />
               {restoring ? "恢复中..." : "开始恢复"}
             </button>
-            <div className="text-xs text-slate-500">点击开始恢复后输入当前用户名和密码。</div>
           </div>
-          {restoreMessage ? <div className="mt-2 text-xs text-emerald-600">{restoreMessage}</div> : null}
-          {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
         </div>
       </section>
 
@@ -780,20 +783,8 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
             <div className="mt-1 text-xs text-slate-500">
-              数据备份包含密钥和敏感配置，请输入当前登录用户名和密码后继续。
+              数据备份包含密钥和敏感配置，请输入当前用户密码。可另外填写备份加密口令；留空则使用当前用户密码加密备份。
             </div>
-            <input
-              type="text"
-              value={backupUsername}
-              onChange={(event) => {
-                setBackupUsername(event.target.value);
-                setBackupError("");
-              }}
-              placeholder="当前用户名"
-              autoComplete="username"
-              autoFocus
-              className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
-            />
             <input
               type="password"
               value={backupUserPassword}
@@ -806,8 +797,24 @@ export default function DatabaseSettingsPage() {
               }}
               placeholder="当前用户密码"
               autoComplete="current-password"
+              autoFocus
+              className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
+            />
+            <input
+              type="password"
+              value={backupPassphrase}
+              onChange={(event) => {
+                setBackupPassphrase(event.target.value);
+                setBackupError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void handleBackup();
+              }}
+              placeholder="备份加密口令（可选）"
+              autoComplete="new-password"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
+            <div className="mt-1 text-[11px] text-slate-400">恢复时需要输入同一口令；留空则用创建备份时的用户密码解密。</div>
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -815,8 +822,8 @@ export default function DatabaseSettingsPage() {
                 onClick={() => {
                   if (backuping) return;
                   setBackupPasswordDialogOpen(false);
-                  setBackupUsername("");
                   setBackupUserPassword("");
+                  setBackupPassphrase("");
                   setBackupError("");
                 }}
                 disabled={backuping}
@@ -827,7 +834,7 @@ export default function DatabaseSettingsPage() {
               <button
                 type="button"
                 onClick={() => void handleBackup()}
-                disabled={backuping || backupUsername.trim().length === 0 || backupUserPassword.trim().length === 0}
+                disabled={backuping || backupUserPassword.trim().length === 0}
                 className="h-9 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {backuping ? "备份中..." : "确认备份"}
@@ -842,20 +849,8 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
             <div className="mt-1 text-xs text-slate-500">
-              恢复会清空当前账簿并写回备份内容，请输入当前登录用户名和密码后继续。
+              恢复会清空当前账簿并写回备份内容，请输入当前用户密码。如果备份时设置了加密口令，请输入同一口令。
             </div>
-            <input
-              type="text"
-              value={restoreUsername}
-              onChange={(event) => {
-                setRestoreUsername(event.target.value);
-                setRestoreError("");
-              }}
-              placeholder="当前用户名"
-              autoComplete="username"
-              autoFocus
-              className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
-            />
             <input
               type="password"
               value={restoreUserPassword}
@@ -868,8 +863,24 @@ export default function DatabaseSettingsPage() {
               }}
               placeholder="当前用户密码"
               autoComplete="current-password"
+              autoFocus
+              className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
+            />
+            <input
+              type="password"
+              value={restorePassphrase}
+              onChange={(event) => {
+                setRestorePassphrase(event.target.value);
+                setRestoreError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void handleRestore();
+              }}
+              placeholder="备份加密口令（如有）"
+              autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
+            <div className="mt-1 text-[11px] text-slate-400">没有单独设置过口令时留空，系统会用当前用户密码尝试解密。</div>
             {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -877,8 +888,8 @@ export default function DatabaseSettingsPage() {
                 onClick={() => {
                   if (restoring) return;
                   setRestorePasswordDialogOpen(false);
-                  setRestoreUsername("");
                   setRestoreUserPassword("");
+                  setRestorePassphrase("");
                   setRestoreError("");
                 }}
                 disabled={restoring}
@@ -889,10 +900,63 @@ export default function DatabaseSettingsPage() {
               <button
                 type="button"
                 onClick={() => void handleRestore()}
-                disabled={restoring || restoreUsername.trim().length === 0 || restoreUserPassword.trim().length === 0}
+                disabled={restoring || restoreUserPassword.trim().length === 0}
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {restoring ? "恢复中..." : "确认恢复"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {resetPasswordDialogOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+          <div className="w-full max-w-sm rounded-lg border border-red-100 bg-white p-4 shadow-xl">
+            <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
+              <Shield className="h-4 w-4 shrink-0 text-amber-500" />
+              数据库密码验证
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              系统初始化会删除所有账簿和业务数据。请输入数据库密码后继续。
+            </div>
+            <input
+              type="password"
+              value={resetDbPassword}
+              onChange={(event) => {
+                setResetDbPassword(event.target.value);
+                setResetError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void handleFactoryReset();
+              }}
+              placeholder="输入数据库密码"
+              autoComplete="off"
+              autoFocus
+              className="mt-3 h-10 w-full rounded-md border border-red-100 px-3 text-sm text-slate-700 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-50"
+            />
+            {resetError ? <div className="mt-2 text-xs text-red-600">{resetError}</div> : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (resetting) return;
+                  setResetPasswordDialogOpen(false);
+                  setResetDbPassword("");
+                  setResetError("");
+                }}
+                disabled={resetting}
+                className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleFactoryReset()}
+                disabled={resetting || resetDbPassword.trim().length === 0}
+                className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {resetting ? "执行中..." : "确认初始化"}
               </button>
             </div>
           </div>
@@ -927,54 +991,56 @@ export default function DatabaseSettingsPage() {
         {originMessage ? <div className="mt-2 text-xs text-emerald-600">{originMessage}</div> : null}
         {originError ? <div className="mt-2 text-xs text-red-600">{originError}</div> : null}
 
-        <div className="mt-3 max-w-[860px] overflow-hidden rounded-md border border-slate-200 bg-white">
-          <SettingsTable minWidth={620}>
-            <thead className="sticky top-0 z-10">
-              <tr>
-                <SettingsTh>允许来源</SettingsTh>
-                <SettingsTh align="right">操作</SettingsTh>
-              </tr>
-            </thead>
-            <tbody>
-              {originsLoading ? (
-                <SettingsEmptyRow colSpan={2}>正在读取白名单...</SettingsEmptyRow>
-              ) : origins.length > 0 ? (
-                origins.map((origin, index) => (
-                  <tr key={origin} className="hover:bg-slate-50">
-                    <SettingsTd className="max-w-[32rem] truncate font-mono text-[11px]" title={origin}>{origin}</SettingsTd>
-                    <SettingsTd align="right">
-                      <SettingsRowActions>
-                        <SettingsActionButton label="删除白名单" variant="delete" onClick={() => void removeOrigin(index)} />
-                      </SettingsRowActions>
-                    </SettingsTd>
-                  </tr>
-                ))
-              ) : (
-                <SettingsEmptyRow colSpan={2}>暂无白名单条目。请先添加允许访问的域名或 IP，再开启访问白名单。</SettingsEmptyRow>
-              )}
-              <tr className="bg-slate-50/60">
-                <SettingsTd>
-                  <input
-                    type="text"
-                    value={newOrigin}
-                    onChange={(event) => setNewOrigin(event.target.value)}
-                    placeholder="域名或 IP，例如 mmh.example.com 或 192.168.2.199"
-                    disabled={originsLoading}
-                    className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void addOrigin();
-                    }}
-                  />
-                </SettingsTd>
-                <SettingsTd align="right">
-                  <SettingsRowActions>
-                    <SettingsActionButton label="添加白名单" variant="add" onClick={() => void addOrigin()} disabled={originsLoading} />
-                  </SettingsRowActions>
-                </SettingsTd>
-              </tr>
-            </tbody>
-          </SettingsTable>
-        </div>
+        <SettingsTable minWidth={620} maxWidth="full" className="mt-3">
+          <colgroup>
+            <col />
+            <col style={{ width: "88px" }} />
+          </colgroup>
+          <thead className="sticky top-0 z-10">
+            <tr>
+              <SettingsTh>允许来源</SettingsTh>
+              <SettingsTh align="right">操作</SettingsTh>
+            </tr>
+          </thead>
+          <tbody>
+            {originsLoading ? (
+              <SettingsEmptyRow colSpan={2}>正在读取白名单...</SettingsEmptyRow>
+            ) : origins.length > 0 ? (
+              origins.map((origin, index) => (
+                <tr key={origin} className="hover:bg-slate-50">
+                  <SettingsTd className="truncate font-mono text-[11px]" title={origin}>{origin}</SettingsTd>
+                  <SettingsTd align="right">
+                    <SettingsRowActions>
+                      <SettingsActionButton label="删除白名单" variant="delete" onClick={() => void removeOrigin(index)} />
+                    </SettingsRowActions>
+                  </SettingsTd>
+                </tr>
+              ))
+            ) : (
+              <SettingsEmptyRow colSpan={2}>暂无白名单条目。请先添加允许访问的域名或 IP，再开启访问白名单。</SettingsEmptyRow>
+            )}
+            <tr className="bg-slate-50/60">
+              <SettingsTd>
+                <input
+                  type="text"
+                  value={newOrigin}
+                  onChange={(event) => setNewOrigin(event.target.value)}
+                  placeholder="域名或 IP，例如 mmh.example.com 或 192.168.1.100"
+                  disabled={originsLoading}
+                  className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void addOrigin();
+                  }}
+                />
+              </SettingsTd>
+              <SettingsTd align="right">
+                <SettingsRowActions>
+                  <SettingsActionButton label="添加白名单" variant="add" onClick={() => void addOrigin()} disabled={originsLoading} />
+                </SettingsRowActions>
+              </SettingsTd>
+            </tr>
+          </tbody>
+        </SettingsTable>
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
@@ -988,94 +1054,99 @@ export default function DatabaseSettingsPage() {
             {ledgerInviteError ? <div className="mt-2 text-xs text-red-600">{ledgerInviteError}</div> : null}
           </div>
         </div>
-        <div className="mt-4 max-w-[960px] overflow-hidden rounded-md border border-slate-200 bg-white">
-          <SettingsTable minWidth={860}>
-            <thead className="sticky top-0 z-10">
-              <tr>
-                <SettingsTh>邀请码</SettingsTh>
-                <SettingsTh>状态</SettingsTh>
-                <SettingsTh>建立账簿</SettingsTh>
-                <SettingsTh>使用时间</SettingsTh>
-                <SettingsTh align="right">操作</SettingsTh>
-              </tr>
-            </thead>
-            <tbody>
-              {ledgerInviteLoading ? (
-                <SettingsEmptyRow colSpan={5}>正在读取邀请码...</SettingsEmptyRow>
-              ) : sortedLedgerInviteRecords.length > 0 ? (
-                sortedLedgerInviteRecords.map((record) => (
-                  <tr key={record.code} className="hover:bg-slate-50">
-                    <SettingsTd>
-                      <div className="min-w-0">
-                        <div className="truncate font-mono text-[11px] text-slate-700" title={record.code}>{record.code}</div>
-                        <div className="mt-0.5 text-[10px] text-slate-400">创建：{formatInviteDateTime(record.createdAt)}</div>
-                      </div>
-                    </SettingsTd>
-                    <SettingsTd>
-                      {record.usedAt ? (
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">已使用</span>
-                      ) : (
-                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">可使用</span>
-                      )}
-                    </SettingsTd>
-                    <SettingsTd className="max-w-[16rem] truncate" title={record.usedHouseholdName || ""}>
-                      {record.usedHouseholdName || "-"}
-                    </SettingsTd>
-                    <SettingsTd>{formatInviteDateTime(record.usedAt)}</SettingsTd>
-                    <SettingsTd align="right">
-                      <SettingsRowActions>
-                        <SettingsActionButton label="删除邀请码" variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
-                      </SettingsRowActions>
-                    </SettingsTd>
-                  </tr>
-                ))
-              ) : (
-                <SettingsEmptyRow colSpan={5}>暂无已保存的邀请码</SettingsEmptyRow>
-              )}
-              <tr className="bg-slate-50/60">
-                <SettingsTd>
-                  <div className="flex min-w-0 items-center gap-2">
-                    <input
-                      type="text"
-                      value={ledgerInviteCode}
-                      onChange={(event) => {
-                        setLedgerInviteCode(event.target.value);
-                        setLedgerInviteError("");
-                        setLedgerInviteMessage("");
-                      }}
-                      placeholder={ledgerInviteLoading ? "读取中..." : "输入新的邀请码"}
-                      disabled={ledgerInviteLoading || ledgerInviteSaving}
-                      className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void addLedgerInviteCode();
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLedgerInviteCode(generateRandomKey());
-                        setLedgerInviteError("");
-                        setLedgerInviteMessage("");
-                      }}
-                      disabled={ledgerInviteLoading || ledgerInviteSaving}
-                      className="secondary-button h-8 px-2 text-xs disabled:opacity-50"
-                    >
-                      随机填入
-                    </button>
-                  </div>
-                </SettingsTd>
-                <SettingsTd><span className="text-xs text-slate-400">新增</span></SettingsTd>
-                <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
-                <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
-                <SettingsTd align="right">
-                  <SettingsRowActions>
-                    <SettingsActionButton label={ledgerInviteSaving ? "保存中" : "添加邀请码"} variant="add" onClick={() => void addLedgerInviteCode()} disabled={ledgerInviteLoading || ledgerInviteSaving} />
-                  </SettingsRowActions>
-                </SettingsTd>
-              </tr>
-            </tbody>
-          </SettingsTable>
-        </div>
+        <SettingsTable minWidth={900} maxWidth="full" className="mt-4">
+          <colgroup>
+            <col style={{ width: "42%" }} />
+            <col style={{ width: "72px" }} />
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "160px" }} />
+            <col style={{ width: "88px" }} />
+          </colgroup>
+          <thead className="sticky top-0 z-10">
+            <tr>
+              <SettingsTh>邀请码</SettingsTh>
+              <SettingsTh>状态</SettingsTh>
+              <SettingsTh>建立账簿</SettingsTh>
+              <SettingsTh>使用时间</SettingsTh>
+              <SettingsTh align="right">操作</SettingsTh>
+            </tr>
+          </thead>
+          <tbody>
+            {ledgerInviteLoading ? (
+              <SettingsEmptyRow colSpan={5}>正在读取邀请码...</SettingsEmptyRow>
+            ) : sortedLedgerInviteRecords.length > 0 ? (
+              sortedLedgerInviteRecords.map((record) => (
+                <tr key={record.code} className="hover:bg-slate-50">
+                  <SettingsTd>
+                    <div className="min-w-0">
+                      <div className="truncate font-mono text-[11px] text-slate-700" title={record.code}>{record.code}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-400">创建：{formatInviteDateTime(record.createdAt)}</div>
+                    </div>
+                  </SettingsTd>
+                  <SettingsTd>
+                    {record.usedAt ? (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">已使用</span>
+                    ) : (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">可使用</span>
+                    )}
+                  </SettingsTd>
+                  <SettingsTd className="max-w-[16rem] truncate" title={record.usedHouseholdName || ""}>
+                    {record.usedHouseholdName || "-"}
+                  </SettingsTd>
+                  <SettingsTd>{formatInviteDateTime(record.usedAt)}</SettingsTd>
+                  <SettingsTd align="right">
+                    <SettingsRowActions>
+                      <SettingsActionButton label="删除邀请码" variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
+                    </SettingsRowActions>
+                  </SettingsTd>
+                </tr>
+              ))
+            ) : (
+              <SettingsEmptyRow colSpan={5}>暂无已保存的邀请码</SettingsEmptyRow>
+            )}
+            <tr className="bg-slate-50/60">
+              <SettingsTd>
+                <div className="flex min-w-0 items-center gap-2">
+                  <input
+                    type="text"
+                    value={ledgerInviteCode}
+                    onChange={(event) => {
+                      setLedgerInviteCode(event.target.value);
+                      setLedgerInviteError("");
+                      setLedgerInviteMessage("");
+                    }}
+                    placeholder={ledgerInviteLoading ? "读取中..." : "输入新的邀请码"}
+                    disabled={ledgerInviteLoading || ledgerInviteSaving}
+                    className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void addLedgerInviteCode();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLedgerInviteCode(generateRandomKey());
+                      setLedgerInviteError("");
+                      setLedgerInviteMessage("");
+                    }}
+                    disabled={ledgerInviteLoading || ledgerInviteSaving}
+                    className="secondary-button h-8 px-2 text-xs disabled:opacity-50"
+                  >
+                    随机填入
+                  </button>
+                </div>
+              </SettingsTd>
+              <SettingsTd><span className="text-xs text-slate-400">新增</span></SettingsTd>
+              <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
+              <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
+              <SettingsTd align="right">
+                <SettingsRowActions>
+                  <SettingsActionButton label={ledgerInviteSaving ? "保存中" : "添加邀请码"} variant="add" onClick={() => void addLedgerInviteCode()} disabled={ledgerInviteLoading || ledgerInviteSaving} />
+                </SettingsRowActions>
+              </SettingsTd>
+            </tr>
+          </tbody>
+        </SettingsTable>
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
@@ -1083,7 +1154,7 @@ export default function DatabaseSettingsPage() {
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-slate-800">刷新服务端缓存</div>
             <div className="mt-1 text-xs text-slate-500">
-              当数据库被外部工具直接修改（例如批量删除重复记录、Prisma Studio 编辑）后，页面可能仍显示旧数据。点击此处强制刷新服务端缓存，让 Web 重新读取最新数据。
+              外部工具改库后，刷新服务端缓存并重新加载页面。
             </div>
             {cacheRefreshMessage ? <div className="mt-2 text-xs text-emerald-600">{cacheRefreshMessage}</div> : null}
             {cacheRefreshError ? <div className="mt-2 text-xs text-red-600">{cacheRefreshError}</div> : null}
@@ -1106,56 +1177,14 @@ export default function DatabaseSettingsPage() {
           此操作不可撤销，将删除所有账簿、交易、账户、分类、用户等数据，恢复到第一次安装完成后的状态。
         </div>
 
-        <div className="mt-3 space-y-3">
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">
-              请输入 <span className="font-bold text-red-700">{RESET_CONFIRM_TEXT}</span> 以确认操作
-            </div>
-            <input
-              value={resetConfirmText}
-              onChange={(event) => {
-                setResetConfirmText(event.target.value);
-                setResetError("");
-              }}
-              className="h-9 w-64 rounded-md border border-red-200 bg-white px-3 text-sm outline-none focus:border-red-400 focus:ring-2 focus:ring-red-100"
-              placeholder={RESET_CONFIRM_TEXT}
-              autoComplete="off"
-            />
-          </div>
-
-          <div className="border-t border-red-100 pt-2">
-            <div className="mb-1 flex items-center gap-1.5">
-              <Shield className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-              <span className="text-xs font-medium text-amber-700">数据库密码验证</span>
-            </div>
-            <input
-              type="password"
-              value={resetDbPassword}
-              onChange={(event) => {
-                setResetDbPassword(event.target.value);
-                setResetError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleFactoryReset();
-              }}
-              className="h-9 w-64 rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-              placeholder="输入数据库密码"
-              autoComplete="off"
-            />
-            <div className="mt-1 text-[10px] text-slate-400">系统初始化前必须验证数据库密码。</div>
-          </div>
-
-          {resetError ? <div className="text-sm text-red-600">{resetError}</div> : null}
-
-          <button
-            type="button"
-            onClick={() => void handleFactoryReset()}
-            disabled={resetting || resetConfirmText !== RESET_CONFIRM_TEXT || !resetDbPassword.trim()}
-            className="h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
-          >
-            {resetting ? "执行中..." : "系统初始化"}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={openFactoryResetDialog}
+          disabled={resetting}
+          className="mt-3 h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          {resetting ? "执行中..." : "系统初始化"}
+        </button>
       </section>
     </div>
   );

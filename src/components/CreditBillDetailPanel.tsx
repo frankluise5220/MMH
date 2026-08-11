@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
-import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
@@ -158,7 +157,6 @@ export function CreditBillDetailPanel({
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
   const tableResetKey = `${scopeKey}:${detailAll ? "all" : safePage}:${pageSize}`;
-  const currentAccountName = accountOptions.find((option) => option.id === accountId)?.label ?? accountId;
 
   return (
     <BasicDetailSelectionProvider resetKey={scopeKey}>
@@ -177,7 +175,7 @@ export function CreditBillDetailPanel({
           accountColumnMode="cardLast4"
           accountColumnDefaultHidden
           relatedAccountDefaultHidden
-          runningBalanceDefaultHidden
+          showRunningBalance={false}
           reorderAccountIds={reorderAccountIds}
           storageKey="mmh_credit_bill_detail_table_v1"
           resetKey={tableResetKey}
@@ -188,8 +186,6 @@ export function CreditBillDetailPanel({
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
               {periodLabel ? <span className="hidden whitespace-nowrap md:inline">{periodLabel}</span> : null}
               <span className="whitespace-nowrap text-slate-600">共 {localEntries.length} 条</span>
-              <CreditBillMailImportButton accountId={accountId} accountName={currentAccountName} />
-              <span className="text-slate-400">|</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}
                 pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}

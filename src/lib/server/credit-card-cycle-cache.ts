@@ -1,6 +1,9 @@
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } from "@/lib/credit/billing";
+import {
+  CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
+  CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
+} from "@/lib/credit/billing";
 
 export async function invalidateCreditCardCycleCacheForAccountIds(
   accountIds: Iterable<string | null | undefined>,
@@ -27,7 +30,12 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
         : {
             OR: [
               { lockSource: null },
-              { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
+              {
+                AND: [
+                  { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
+                  { NOT: { lockSource: { contains: CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE } } },
+                ],
+              },
             ],
           }),
     },
