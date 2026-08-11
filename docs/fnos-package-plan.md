@@ -8,7 +8,7 @@
 appname=mmh
 ```
 
-飞牛 `.fpk` 内部使用 SQLite 原生运行方式，不再额外发布 `mmh-native.fpk`，也不把旧 Docker Compose FPK 作为飞牛用户安装包。因为包内包含 Node runtime 和 `better-sqlite3` 原生依赖，正式 Release 资产按架构分包：x86 保留 `mmh.fpk` 兼容旧下载地址，同时提供 `mmh-x86_64.fpk`；ARM64 提供 `mmh-arm64.fpk`。这些包的 `appname` 和 `version` 必须一致。
+飞牛 `.fpk` 内部使用 SQLite 原生运行方式，不再额外发布 `mmh-native.fpk`，也不把旧 Docker Compose FPK 作为飞牛用户安装包。因为包内包含 Node runtime 和 `better-sqlite3` 原生依赖，正式 Release 资产只发布两个架构包：`mmh-x86_64.fpk` 和 `mmh-arm64.fpk`。这些包的 `appname` 和 `version` 必须一致。
 
 ## 目标
 
@@ -31,7 +31,7 @@ appname=mmh
 - `scripts/verify-fnos-package.cjs` 校验飞牛包素材，防止 `.env` 泄露、Docker resource 混入和第二个 `.fpk` 包出现。
 - `.github/workflows/fnos-release.yml` 发布时用 x86/arm64 矩阵构建并上传正式 `release-artifacts/fnos/*.fpk`。
 - `.github/workflows/fnos-stage.yml` 生成 x86/arm64 调试用 FPK 工程归档；该归档不能作为用户安装包。
-- `deploy/fnos/repository/apps.example.json` 只保留一个应用条目，`download_url` 保留 x86 兼容包，`download_urls` 提供架构化下载地址。
+- `deploy/fnos/repository/apps.example.json` 只保留一个应用条目，`download_url` 指向 x86_64 包，`download_urls` 只提供 x86_64 和 arm64 下载地址。
 - 系统更新页在 `MMH_DEPLOY_TARGET=fnos` 时显示飞牛应用包更新方式，并拒绝在飞牛版内执行 Git/Docker 更新。
 
 ## 启动链
@@ -49,7 +49,7 @@ appname=mmh
 1. 发布 GitHub Release 时，`.github/workflows/fnos-release.yml` 运行 `npm run check:fnos`。
 2. workflow 矩阵分别运行 x86 和 arm64 runner，下载与当前 Node 版本匹配的 Linux x64 / arm64 Node runtime。
 3. workflow 执行 `npm run build:fnos:app`，确保 standalone 和原生依赖都是当前 runner 架构的 Linux 产物。
-4. workflow 执行 `npm run build:fnos`，x86 生成 `mmh.fpk`、`mmh-x86_64.fpk` 和版本化 `.fpk`，ARM64 生成 `mmh-arm64.fpk` 和版本化 `.fpk`。
+4. workflow 执行 `npm run build:fnos`，x86 只生成 `mmh-x86_64.fpk`，ARM64 只生成 `mmh-arm64.fpk`。
 5. workflow 上传 `release-artifacts/fnos/*.fpk` 到 Release。
 6. 飞牛第三方源元数据更新 `version`、`download_url` 和 `download_urls`，其中 `version` 必须等于 `package.json` 的 `0.1.x`，下载地址必须指向同一个 `v0.1.x` Release 中的对应架构 `.fpk`。
 
@@ -72,7 +72,7 @@ appname=mmh
 
 - [x] 生成并校验 `prisma/schema.native.prisma`。
 - [x] 建立 `npm run build:fnos:app` Linux SQLite standalone 构建脚本。
-- [x] 建立 `npm run build:fnos` 正式飞牛包脚本，x86 产物包含 `release-artifacts/fnos/mmh.fpk` / `mmh-x86_64.fpk`，ARM64 产物包含 `release-artifacts/fnos/mmh-arm64.fpk`。
+- [x] 建立 `npm run build:fnos` 正式飞牛包脚本，x86 产物只包含 `release-artifacts/fnos/mmh-x86_64.fpk`，ARM64 产物只包含 `release-artifacts/fnos/mmh-arm64.fpk`。
 - [x] 建立 `npm run stage:fnos` 调试归档脚本。
 - [x] 建立 `npm run check:fnos` 飞牛包素材校验。
 - [x] 增加 GitHub Release workflow，发布时自动下载对应架构的 Linux Node runtime、安装对应架构官方 `fnpack` 并构建正式 `.fpk`。

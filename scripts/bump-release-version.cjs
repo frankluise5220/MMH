@@ -34,7 +34,6 @@ function getReleaseNotes(pkg) {
 function fnosDownloadUrls(version) {
   const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
   return {
-    x86: `${base}/mmh.fpk`,
     x86_64: `${base}/mmh-x86_64.fpk`,
     arm64: `${base}/mmh-arm64.fpk`,
   };
@@ -66,7 +65,7 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
     app.version = version;
     app.platform = "x86";
     app.platforms = ["x86", "arm"];
-    app.download_url = fnosDownloadUrls(version).x86;
+    app.download_url = fnosDownloadUrls(version).x86_64;
     app.download_urls = fnosDownloadUrls(version);
     if (typeof app.icon === "string") {
       app.icon = app.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
@@ -78,6 +77,26 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
   writeJson(fullPath, payload);
 }
 
+function updateLegacyFnosAppstore(version, releaseNotes) {
+  const file = path.join(root, "fn-appstores.json");
+  const payload = readJson(file);
+  for (const app of Array.isArray(payload) ? payload : []) {
+    if (app.id !== "mmh" || !app._manual) continue;
+    app._manual.version = version;
+    app._manual.platform = "x86";
+    app._manual.platforms = ["x86", "arm"];
+    app._manual.download_url = fnosDownloadUrls(version).x86_64;
+    app._manual.download_urls = fnosDownloadUrls(version);
+    if (typeof app._manual.icon === "string") {
+      app._manual.icon = app._manual.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
+    }
+    if (releaseNotes) {
+      app._manual.changelog = releaseNotes;
+    }
+  }
+  writeJson(file, payload);
+}
+
 const pkg = readJson(path.join(root, "package.json"));
 const version = nextVersion(pkg.version);
 const releaseNotes = getReleaseNotes(pkg);
@@ -86,5 +105,6 @@ updatePackageJson(version);
 updatePackageLock(version);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "apps.example.json"), "apps", releaseNotes);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "api", "apps"), undefined, releaseNotes);
+updateLegacyFnosAppstore(version, releaseNotes);
 
 console.log(`MMH release version bumped to ${version}.`);

@@ -31,7 +31,7 @@ function normalizeFnosTarget(value) {
       manifestPlatform: "x86",
       assetSuffix: "x86_64",
       stageDirName: "mmh-fpk",
-      builtFpkName: "mmh.fpk",
+      builtFpkName: "mmh-x86_64.fpk",
     };
   }
   if (["arm", "arm64", "aarch64"].includes(raw)) {
@@ -51,7 +51,7 @@ function normalizeFnosTarget(value) {
     manifestPlatform: "x86",
     assetSuffix: "x86_64",
     stageDirName: "mmh-fpk",
-    builtFpkName: "mmh.fpk",
+    builtFpkName: "mmh-x86_64.fpk",
   };
 }
 
@@ -204,6 +204,8 @@ expect(/if \(!existing\)/.test(buildScript), "fnOS SQLite init must skip schema 
 expect(/export MMH_DEPLOY_TARGET=fnos/.test(buildScript), "fnOS start script must mark the deployment target as fnos.");
 expect(/manifestPlatform/.test(buildScript) && /manifestArch/.test(buildScript), "fnOS manifest must be generated from the target architecture.");
 expect(/assetSuffix/.test(buildScript), "fnOS package outputs must include architecture-specific asset names.");
+expect(!/versionedArchPath/.test(buildScript), "fnOS release must not publish versioned .fpk duplicates.");
+expect(!/legacyAlias/.test(buildScript), "fnOS release must not publish a third legacy mmh.fpk alias.");
 expect(/wizard_system_password/.test(buildScript), "fnOS install/config wizard must include a system password field.");
 expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
@@ -219,7 +221,7 @@ expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpd
 expect(/fnosManaged \? "版本信息"/.test(systemUpdatePage), "System update page must label fnOS package details as version information.");
 expect(/GitHub 项目主页/.test(systemUpdatePage) && /githubProjectUrl/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
 expect(/可更新版本/.test(systemUpdatePage) && /availableVersionText/.test(systemUpdatePage), "System update page must show the available app version beside the update commit.");
-expect(/mmh\.fpk/.test(systemUpdatePage) && /飞牛应用中心/.test(systemUpdatePage), "System update page must guide fnOS users to update with mmh.fpk.");
+expect(/对应架构的新 FPK/.test(systemUpdatePage) && /飞牛应用中心/.test(systemUpdatePage), "System update page must guide fnOS users to update with the architecture-matched FPK.");
 expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");
 expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");
 expect(/copyFnosPublicAssets/.test(buildScript), "fnOS package build must copy only whitelisted runtime public assets.");
@@ -246,10 +248,12 @@ expect(/default:\s*""/.test(fnosReleaseWorkflow), "fnOS release workflow should 
 expect(/default:\s*""/.test(fnosStageWorkflow), "fnOS stage workflow should let package.json own the default package version.");
 expect(/"platform"\s*:\s*"x86"/.test(repositoryExample), "fnOS repository example must keep x86 as the legacy default platform.");
 expect(/"platforms"\s*:\s*\[\s*"x86"\s*,\s*"arm"\s*\]/.test(repositoryExample), "fnOS repository example must list x86 and arm platforms.");
-expect(/"download_urls"/.test(repositoryExample) && /"arm64"/.test(repositoryExample), "fnOS repository example must include architecture-specific download_urls.");
+expect(/"download_urls"/.test(repositoryExample) && /"x86_64"/.test(repositoryExample) && /"arm64"/.test(repositoryExample), "fnOS repository example must include exactly the x86_64 and arm64 download_urls.");
+expect(!/"x86"\s*:/.test(repositoryExample), "fnOS repository example must not include a third x86 alias download URL.");
 expect(/"platform"\s*:\s*"x86"/.test(repositoryApiApps), "fnOS repository api/apps must keep x86 as the legacy default platform.");
 expect(/"platforms"\s*:\s*\[\s*"x86"\s*,\s*"arm"\s*\]/.test(repositoryApiApps), "fnOS repository api/apps must list x86 and arm platforms.");
-expect(/"download_urls"/.test(repositoryApiApps) && /"arm64"/.test(repositoryApiApps), "fnOS repository api/apps must include architecture-specific download_urls.");
+expect(/"download_urls"/.test(repositoryApiApps) && /"x86_64"/.test(repositoryApiApps) && /"arm64"/.test(repositoryApiApps), "fnOS repository api/apps must include exactly the x86_64 and arm64 download_urls.");
+expect(!/"x86"\s*:/.test(repositoryApiApps), "fnOS repository api/apps must not include a third x86 alias download URL.");
 
 if (fs.existsSync(stageDir)) {
   const stageManifest = read(path.join(stageDir, "manifest"));

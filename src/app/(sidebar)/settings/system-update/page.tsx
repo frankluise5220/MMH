@@ -569,7 +569,7 @@ export default function SystemUpdatePage() {
 
             {fnosManaged ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                当前为飞牛版，系统更新由飞牛应用中心管理；应用中心会安装新的 mmh.fpk，本页只展示当前应用包版本和本版说明，应用数据会继续保存在飞牛应用数据目录中。
+                  当前为飞牛版，系统更新由飞牛应用中心管理；应用中心会安装对应架构的新 FPK，本页只展示当前应用包版本和本版说明，应用数据会继续保存在飞牛应用数据目录中。
               </div>
             ) : null}
 

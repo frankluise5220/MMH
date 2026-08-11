@@ -6,10 +6,11 @@
 
 miniBill 的几 MB 安装包来自轻量运行时：静态前端、轻后端、SQLite、清楚数据目录。MMH 当前是 Next.js、Prisma 和复杂家庭财务业务模型，不能仅靠换打包脚本做到几 MB 完整包。
 
-MMH 普通安装与更新主线仍然是 Docker。飞牛只新增一个专用包：
+MMH 普通安装与更新主线仍然是 Docker。飞牛只新增一个专用应用 ID，但按架构发布两个 FPK：
 
 ```text
-mmh.fpk
+mmh-x86_64.fpk
+mmh-arm64.fpk
 ```
 
 这个飞牛包内部使用 SQLite 原生运行方式，包含 Next standalone、Linux Node runtime、Prisma runtime 和 SQLite 数据库初始化链，不依赖 Docker/PostgreSQL。不要再额外发布 `mmh-native.fpk`。

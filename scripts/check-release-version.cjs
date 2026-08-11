@@ -26,7 +26,6 @@ function findMmhApp(payload, key) {
 function fnosDownloadUrls(version) {
   const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
   return {
-    x86: `${base}/mmh.fpk`,
     x86_64: `${base}/mmh-x86_64.fpk`,
     arm64: `${base}/mmh-arm64.fpk`,
   };
@@ -56,11 +55,28 @@ for (const [file, key] of [
   expect(Array.isArray(app.platforms), `${file} platforms must list supported fnOS architectures.`);
   expect(app.platforms?.includes("x86"), `${file} platforms must include x86.`);
   expect(app.platforms?.includes("arm"), `${file} platforms must include arm.`);
-  expect(app.download_url === downloadUrls.x86, `${file} download_url must keep the x86 legacy mmh.fpk URL for v${version}.`);
-  expect(app.download_urls?.x86 === downloadUrls.x86, `${file} download_urls.x86 must use the unified v${version} Release tag.`);
+  expect(app.download_url === downloadUrls.x86_64, `${file} download_url must point to the x86_64 FPK for v${version}.`);
+  expect(!("x86" in (app.download_urls || {})), `${file} download_urls must not publish a third x86 alias URL.`);
   expect(app.download_urls?.x86_64 === downloadUrls.x86_64, `${file} download_urls.x86_64 must use the unified v${version} Release tag.`);
   expect(app.download_urls?.arm64 === downloadUrls.arm64, `${file} download_urls.arm64 must use the unified v${version} Release tag.`);
   expect(app.changelog === releaseNotes, `${file} changelog must match package.json mmhReleaseNotes.`);
+}
+
+const legacyAppstore = readJson("fn-appstores.json");
+const legacyApp = Array.isArray(legacyAppstore) ? legacyAppstore.find((app) => app.id === "mmh")?._manual : null;
+const downloadUrls = fnosDownloadUrls(version);
+expect(legacyApp, "fn-appstores.json must contain the mmh _manual app entry.");
+if (legacyApp) {
+  expect(legacyApp.version === version, "fn-appstores.json _manual version must match package.json.");
+  expect(legacyApp.platform === "x86", "fn-appstores.json _manual platform must keep x86 as the default platform.");
+  expect(Array.isArray(legacyApp.platforms), "fn-appstores.json _manual platforms must list supported fnOS architectures.");
+  expect(legacyApp.platforms?.includes("x86"), "fn-appstores.json _manual platforms must include x86.");
+  expect(legacyApp.platforms?.includes("arm"), "fn-appstores.json _manual platforms must include arm.");
+  expect(legacyApp.download_url === downloadUrls.x86_64, "fn-appstores.json _manual download_url must point to the x86_64 FPK.");
+  expect(!("x86" in (legacyApp.download_urls || {})), "fn-appstores.json _manual download_urls must not publish a third x86 alias URL.");
+  expect(legacyApp.download_urls?.x86_64 === downloadUrls.x86_64, "fn-appstores.json _manual download_urls.x86_64 must use the unified Release tag.");
+  expect(legacyApp.download_urls?.arm64 === downloadUrls.arm64, "fn-appstores.json _manual download_urls.arm64 must use the unified Release tag.");
+  expect(legacyApp.changelog === releaseNotes, "fn-appstores.json _manual changelog must match package.json mmhReleaseNotes.");
 }
 
 const dockerWorkflow = read(".github/workflows/docker-build.yml");

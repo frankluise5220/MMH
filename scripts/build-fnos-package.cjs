@@ -57,7 +57,6 @@ function normalizeFnosTarget(value) {
       fnpackArch: "amd64",
       assetSuffix: "x86_64",
       stageDirName: `${appName}-fpk`,
-      legacyAlias: true,
     };
   }
   if (["arm", "arm64", "aarch64"].includes(raw)) {
@@ -70,7 +69,6 @@ function normalizeFnosTarget(value) {
       fnpackArch: "arm64",
       assetSuffix: "arm64",
       stageDirName: `${appName}-arm64-fpk`,
-      legacyAlias: false,
     };
   }
   throw new Error(`FNOS_TARGET_ARCH must be x86 or arm64, got ${value || "(empty)"}.`);
@@ -344,14 +342,7 @@ function copyFileIfDifferent(src, dest) {
 
 function materializeFpkOutputs(source) {
   const archPath = path.join(outDir, `${appName}-${target.assetSuffix}.fpk`);
-  const versionedArchPath = path.join(outDir, `${appName}-${target.assetSuffix}-${version}.fpk`);
   copyFileIfDifferent(source, archPath);
-  copyFileIfDifferent(source, versionedArchPath);
-
-  if (target.legacyAlias) {
-    copyFileIfDifferent(source, path.join(outDir, `${appName}.fpk`));
-    copyFileIfDifferent(source, path.join(outDir, `${appName}-${version}.fpk`));
-  }
 
   return archPath;
 }
