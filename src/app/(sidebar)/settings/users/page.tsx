@@ -6,7 +6,6 @@ import {
   SettingsActionButton,
   SettingsEmptyRow,
   SettingsPageHeader,
-  SettingsPreferencePanel,
   SettingsPrimaryAddButton,
   SettingsRowActions,
   SettingsSection,
@@ -14,12 +13,7 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
-import {
-  getAiPanelEnabledPreference,
-  getSessionDaysPreference,
-  setAiPanelEnabledPreference,
-  setSessionDaysPreference,
-} from "@/lib/client/appPreferences";
+import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
 
 type ManagedUser = {
   id: string;
@@ -28,17 +22,9 @@ type ManagedUser = {
   role: string;
   isSystem?: boolean;
   hasPassword?: boolean;
+  sessionDays?: number;
   createdAt?: string;
 };
-
-const SESSION_DAY_OPTIONS = [
-  { value: 1, label: "1 天" },
-  { value: 7, label: "7 天" },
-  { value: 30, label: "30 天" },
-  { value: 90, label: "90 天" },
-  { value: 180, label: "180 天" },
-  { value: 365, label: "365 天" },
-];
 
 function UserModal({
   initial,
@@ -173,15 +159,10 @@ export default function UsersPage() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
-  const [sessionDays, setSessionDays] = useState(30);
-  const [aiPanelEnabled, setAiPanelEnabled] = useState(true);
-  const [savingSession, setSavingSession] = useState(false);
-  const [savingAiPanel, setSavingAiPanel] = useState(false);
+  const [savingSessionUserId, setSavingSessionUserId] = useState("");
 
   useEffect(() => {
     fetchUsers();
-    setSessionDays(getSessionDaysPreference());
-    setAiPanelEnabled(getAiPanelEnabledPreference());
   }, []);
 
   async function fetchUsers() {
@@ -259,51 +240,26 @@ export default function UsersPage() {
     }
   }
 
-  async function saveSessionDays(next: number) {
-    const prev = sessionDays;
-    setSessionDays(next);
-    setSessionDaysPreference(next);
-    setSavingSession(true);
+  async function saveUserSessionDays(user: ManagedUser, next: number) {
+    const prevUsers = users;
+    setSavingSessionUserId(user.id);
+    setUsers((items) => items.map((item) => item.id === user.id ? { ...item, sessionDays: next } : item));
     try {
-      const res = await fetch("/api/v1/settings/app-preferences", {
+      const res = await fetch("/api/v1/settings/users", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionDays: next }),
+        body: JSON.stringify({ id: user.id, sessionDays: next }),
       });
       const data = await res.json();
       if (!data.ok) {
-        setSessionDays(prev);
-        setSessionDaysPreference(prev);
+        setUsers(prevUsers);
+        window.alert(data.error || "保存失败");
       }
     } catch {
-      setSessionDays(prev);
-      setSessionDaysPreference(prev);
+      setUsers(prevUsers);
+      window.alert("保存失败");
     } finally {
-      setSavingSession(false);
-    }
-  }
-
-  async function saveAiPanelEnabled(next: boolean) {
-    const prev = aiPanelEnabled;
-    setAiPanelEnabled(next);
-    setAiPanelEnabledPreference(next);
-    setSavingAiPanel(true);
-    try {
-      const res = await fetch("/api/v1/settings/app-preferences", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aiPanelEnabled: next }),
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        setAiPanelEnabled(prev);
-        setAiPanelEnabledPreference(prev);
-      }
-    } catch {
-      setAiPanelEnabled(prev);
-      setAiPanelEnabledPreference(prev);
-    } finally {
-      setSavingAiPanel(false);
+      setSavingSessionUserId("");
     }
   }
 
@@ -327,10 +283,20 @@ export default function UsersPage() {
       )}
 
       <SettingsSection title="用户列表" count={users.length}>
-        <SettingsTable minWidth={720}>
+        <SettingsTable minWidth={820} maxWidth="full">
+          <colgroup>
+            <col className="w-[22%]" />
+            <col className="w-[28%]" />
+            <col className="w-[16%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[10%]" />
+          </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
               <SettingsTh>用户</SettingsTh>
+              <SettingsTh>邮箱</SettingsTh>
+              <SettingsTh>登录保留</SettingsTh>
               <SettingsTh>角色</SettingsTh>
               <SettingsTh>状态</SettingsTh>
               <SettingsTh align="right">操作</SettingsTh>
@@ -342,8 +308,23 @@ export default function UsersPage() {
                 <SettingsTd className="text-sm">
                   <div className="min-w-0">
                     <div className="truncate font-medium text-slate-800">{u.name}</div>
-                    {u.email ? <div className="mt-0.5 truncate text-[11px] text-slate-400">{u.email}</div> : null}
                   </div>
+                </SettingsTd>
+                <SettingsTd className="text-sm">
+                  <div className="truncate text-slate-600">{u.email || "—"}</div>
+                </SettingsTd>
+                <SettingsTd>
+                  <select
+                    value={u.sessionDays ?? 30}
+                    onChange={(event) => void saveUserSessionDays(u, Number(event.target.value))}
+                    disabled={savingSessionUserId === u.id}
+                    className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none disabled:opacity-60"
+                    title="控制该用户重新登录间隔，不影响用户权限"
+                  >
+                    {SESSION_DAY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 </SettingsTd>
                 <SettingsTd>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${u.role === "admin" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}>
@@ -379,53 +360,11 @@ export default function UsersPage() {
                 </SettingsTd>
               </tr>
             )) : (
-              <SettingsEmptyRow colSpan={4}>暂无用户</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={6}>暂无用户</SettingsEmptyRow>
             )}
           </tbody>
         </SettingsTable>
       </SettingsSection>
-
-      <SettingsPreferencePanel title="登录" description="控制当前设备重新打开后是否需要重新登录。">
-        <div className="space-y-4">
-          <div className="grid gap-2 sm:max-w-xs">
-            <label className="form-label">登录保留时长</label>
-            <select
-              value={sessionDays}
-              onChange={(e) => saveSessionDays(Number(e.target.value))}
-              disabled={savingSession}
-              className="form-input"
-            >
-              {SESSION_DAY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <a
-              href="/login"
-              className="h-8 px-3 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
-            >
-              重新登录
-            </a>
-          </div>
-        </div>
-      </SettingsPreferencePanel>
-
-      <SettingsPreferencePanel title="对话" description="控制右侧记账助手是否显示。">
-        <label className="flex items-center justify-between rounded-[10px] border border-slate-200 bg-white px-3 py-3">
-          <div>
-            <div className="text-sm font-medium text-slate-800">启用记账助手</div>
-            <div className="mt-1 text-xs text-slate-500">关闭后不显示右侧 AI 对话面板。</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={aiPanelEnabled}
-            disabled={savingAiPanel}
-            onChange={(e) => saveAiPanelEnabled(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
-          />
-        </label>
-      </SettingsPreferencePanel>
 
       {showModal && (
         <UserModal

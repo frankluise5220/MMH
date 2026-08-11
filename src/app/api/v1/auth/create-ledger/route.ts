@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
+  USER_ID_COOKIE,
   USERNAME_COOKIE,
   VERIFIED_COOKIE,
   sessionCookieOptions,
@@ -150,6 +151,7 @@ export async function POST(req: NextRequest) {
   const maxAge = resolveSessionMaxAge(req);
   const cookieOptions = sessionCookieOptions(maxAge, req);
   response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
+  response.cookies.set(USER_ID_COOKIE, created.adminUser.id, cookieOptions);
   response.cookies.set(USERNAME_COOKIE, created.adminUser.name, cookieOptions);
   response.cookies.set(HOUSEHOLD_COOKIE, created.household.id, cookieOptions);
   return response;

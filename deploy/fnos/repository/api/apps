@@ -4,7 +4,7 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.16",
+      "version": "0.1.17",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -12,16 +12,16 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.16/mmh-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.16/mmh-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.16/mmh-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.16",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.17",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "备份和恢复都改为只验证当前用户密码，并支持备份加密口令；发布加密 .mmh-backup 恢复包、表格导出和更明确的恢复失败提示；飞牛版版本信息显示 FNOS 标识。"
+      "changelog": "修复局域网 IP 访问登录页无响应、同名 admin 账簿用户定位和用户列表显示问题；优化用户管理表格与登录保留时长；完善首次使用向导、访问白名单保护、股票表缺失兼容和多项设置页布局。"
     }
   ]
 }

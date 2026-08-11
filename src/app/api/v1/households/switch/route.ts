@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { HOUSEHOLD_COOKIE, USER_ID_COOKIE } from "@/lib/server/session-cookies";
 
 /**
  * POST /api/v1/households/switch
@@ -52,7 +53,13 @@ export async function POST(req: NextRequest) {
   }
 
   const res = NextResponse.json({ ok: true });
-  res.cookies.set("householdId", householdId, {
+  res.cookies.set(USER_ID_COOKIE, user.id, {
+    path: "/",
+    maxAge: 31536000,
+    httpOnly: true,
+    sameSite: "lax",
+  });
+  res.cookies.set(HOUSEHOLD_COOKIE, householdId, {
     path: "/",
     maxAge: 31536000,
     sameSite: "lax",

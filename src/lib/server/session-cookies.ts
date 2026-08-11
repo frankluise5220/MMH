@@ -1,12 +1,14 @@
 import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 
 export const VERIFIED_COOKIE = "mmh_access_password_verified";
+export const USER_ID_COOKIE = "mmh_user_id";
 export const USERNAME_COOKIE = "mmh_username";
 export const HOUSEHOLD_COOKIE = "householdId";
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 
 export const SESSION_COOKIES = [
   VERIFIED_COOKIE,
+  USER_ID_COOKIE,
   USERNAME_COOKIE,
   HOUSEHOLD_COOKIE,
 ] as const;

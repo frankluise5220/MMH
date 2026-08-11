@@ -81,6 +81,10 @@ function routeMatches(pathname: string | null, href: string) {
   return pathname === target || pathname.startsWith(`${target}/`);
 }
 
+function canAutoOpenGuide(pathname: string | null) {
+  return pathname === "/";
+}
+
 function StepGuidePanel({
   step,
   onAction,
@@ -163,6 +167,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const guideRef = useRef<HTMLElement>(null);
   const manualOpenRef = useRef(false);
+  const lastPathnameRef = useRef<string | null>(null);
   const prefetchedRoutesRef = useRef(new Set<string>());
   const [routePending, startRouteTransition] = useTransition();
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
@@ -187,7 +192,8 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
       if (!data.ok || !data.data) return;
       setStatus(data.data);
       const dismissedToday = localStorage.getItem(dismissedKey(data.data.householdId)) === todayKey();
-      const shouldShow = manualOpenRef.current || (data.data.shouldShowGuide && !dismissedToday);
+      const shouldAutoShow = canAutoOpenGuide(pathname) && data.data.shouldShowGuide && !dismissedToday;
+      const shouldShow = manualOpenRef.current || shouldAutoShow;
       setVisible(shouldShow);
       if (shouldShow && manualOpenRef.current) scrollGuideIntoView();
     } catch {
@@ -195,7 +201,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [scrollGuideIntoView]);
+  }, [pathname, scrollGuideIntoView]);
 
   const openGuide = useCallback(() => {
     manualOpenRef.current = true;
@@ -546,6 +552,17 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [prefetchStep, steps, visible]);
+
+  useEffect(() => {
+    const previousPathname = lastPathnameRef.current;
+    lastPathnameRef.current = pathname;
+    if (!visible || previousPathname == null || previousPathname === pathname) return;
+    const activeStep = steps.find((step) => step.key === activeKey) ?? steps[0];
+    if (routeContentOpen && activeStep?.action.type === "route" && routeMatches(pathname, activeStep.action.href)) return;
+    manualOpenRef.current = false;
+    setVisible(false);
+    setRouteContentOpen(false);
+  }, [activeKey, pathname, routeContentOpen, steps, visible]);
 
   if (!mounted || loading || !visible || !status) return <>{children}</>;
 

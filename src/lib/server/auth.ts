@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
 import {
   HOUSEHOLD_COOKIE,
+  USER_ID_COOKIE,
   USERNAME_COOKIE,
   VERIFIED_COOKIE,
 } from "@/lib/server/session-cookies";
@@ -43,22 +44,49 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
  * Read the verified login cookies and resolve the current database user.
  *
  * If householdId is present, username is resolved inside that household.
- * Without householdId, username-only lookup is accepted only when it is unique
- * across the whole database; otherwise the session is treated as ambiguous.
+ * Without householdId, legacy username-only lookup prefers an explicitly marked
+ * system user, then falls back to unique username lookup; otherwise the session
+ * is treated as ambiguous.
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const cookieStore = await cookies();
   const verified = cookieStore.get(VERIFIED_COOKIE)?.value === "ok";
+  const userId = cookieStore.get(USER_ID_COOKIE)?.value?.trim();
   const username = cookieStore.get(USERNAME_COOKIE)?.value?.trim();
   const householdId = cookieStore.get(HOUSEHOLD_COOKIE)?.value?.trim();
 
   if (!verified) return null;
 
+  if (userId) {
+    const user = await withTimeout(prisma.user.findUnique({
+      where: { id: userId },
+      select: currentUserSelect,
+    }), USER_LOOKUP_TIMEOUT_MS);
+    if (user) return user;
+  }
+
   if (username && householdId) {
-    return await withTimeout(prisma.user.findFirst({
+    const scopedUser = await withTimeout(prisma.user.findFirst({
       where: { name: username, householdId },
       select: currentUserSelect,
     }), USER_LOOKUP_TIMEOUT_MS);
+    if (scopedUser) return scopedUser;
+
+    const systemUser = await withTimeout(prisma.user.findFirst({
+      where: { name: username, isSystem: true },
+      select: currentUserSelect,
+      orderBy: { createdAt: "asc" },
+    }), USER_LOOKUP_TIMEOUT_MS);
+    if (systemUser) return systemUser;
+
+    const users = await withTimeout(prisma.user.findMany({
+      where: { name: username },
+      select: currentUserSelect,
+      take: 2,
+      orderBy: { createdAt: "asc" },
+    }), USER_LOOKUP_TIMEOUT_MS);
+    if (!users) return null;
+    return users.length === 1 ? users[0] : null;
   }
 
   if (!username && householdId) {
@@ -77,6 +105,13 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   }
 
   if (!username) {
+    const systemUser = await withTimeout(prisma.user.findFirst({
+      where: { isSystem: true },
+      select: currentUserSelect,
+      orderBy: { createdAt: "asc" },
+    }), USER_LOOKUP_TIMEOUT_MS);
+    if (systemUser) return systemUser;
+
     const users = await withTimeout(prisma.user.findMany({
       select: currentUserSelect,
       take: 2,
@@ -85,6 +120,13 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     if (!users) return null;
     return users.length === 1 ? users[0] : null;
   }
+
+  const systemUser = await withTimeout(prisma.user.findFirst({
+    where: { name: username, isSystem: true },
+    select: currentUserSelect,
+    orderBy: { createdAt: "asc" },
+  }), USER_LOOKUP_TIMEOUT_MS);
+  if (systemUser) return systemUser;
 
   const users = await withTimeout(prisma.user.findMany({
     where: { name: username },

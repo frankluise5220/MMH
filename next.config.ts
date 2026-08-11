@@ -1,8 +1,22 @@
 import type { NextConfig } from "next";
+import { networkInterfaces } from "node:os";
+
+function getLocalDevHostnames() {
+  const hostnames = new Set<string>();
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (!entry || entry.internal) continue;
+      if (entry.family !== "IPv4" && entry.family !== "IPv6") continue;
+      hostnames.add(entry.address);
+    }
+  }
+  return [...hostnames];
+}
 
 const allowedDevOrigins = [
   "localhost",
   "127.0.0.1",
+  ...getLocalDevHostnames(),
   ...String(process.env.MMH_ALLOWED_DEV_ORIGINS || "")
     .split(",")
     .map((origin) => origin.trim())

@@ -18,6 +18,7 @@ const CREDIT_BILL_RECENT_CYCLES_KEY = "mmh_credit_recent_cycles";
 const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const VERIFIED_KEY = "mmh_access_password_verified";
+const USER_ID_KEY = "mmh_user_id";
 const USERNAME_KEY = "mmh_username";
 const HOUSEHOLD_KEY = "householdId";
 
@@ -266,10 +267,19 @@ export async function PUT(req: NextRequest) {
   });
 
   const verified = req.cookies.get(VERIFIED_KEY)?.value;
+  const userId = req.cookies.get(USER_ID_KEY)?.value;
   const username = req.cookies.get(USERNAME_KEY)?.value;
   const householdId = req.cookies.get(HOUSEHOLD_KEY)?.value;
   if (verified === "ok") {
     response.cookies.set(VERIFIED_KEY, verified, {
+      path: "/",
+      maxAge,
+      httpOnly: true,
+      sameSite: "lax",
+    });
+  }
+  if (userId) {
+    response.cookies.set(USER_ID_KEY, userId, {
       path: "/",
       maxAge,
       httpOnly: true,

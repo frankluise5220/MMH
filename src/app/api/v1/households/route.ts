@@ -159,6 +159,11 @@ export async function DELETE(req: NextRequest) {
       await tx.undoOperation.deleteMany({ where: { householdId: id } });
       // 删除该账簿下的基金查询API
       await tx.fundQueryApi.deleteMany({ where: { householdId: id } });
+      await tx.entryBusinessLink.deleteMany({ where: { householdId: id } });
+      await tx.stockPriceCache.deleteMany({ where: { StockSecurity: { is: { householdId: id } } } });
+      await tx.stockTransaction.deleteMany({ where: { householdId: id } });
+      await tx.stockHolding.deleteMany({ where: { householdId: id } });
+      await tx.stockSecurity.deleteMany({ where: { householdId: id } });
       // 级联删除账户关联数据
       if (accountIds.length > 0) {
         // 先删除持仓快照（依赖 fundHolding）
@@ -166,6 +171,7 @@ export async function DELETE(req: NextRequest) {
         // 删除持仓
         await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
+        await tx.stockFeeRule.deleteMany({ where: { accountId: { in: accountIds } } });
         // 删除确认天数、费率、账单覆盖、信用卡周期
         await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.fundFeeRate.deleteMany({ where: { accountId: { in: accountIds } } });

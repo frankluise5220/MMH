@@ -6,10 +6,12 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
+  USER_ID_COOKIE,
   USERNAME_COOKIE,
   VERIFIED_COOKIE,
   sessionCookieOptions,
 } from "@/lib/server/session-cookies";
+import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
@@ -79,11 +81,17 @@ type LoginUser = {
   Household: { id: string; name: string } | null;
 };
 
-function resolveSessionMaxAge(req: NextRequest) {
-  const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
-  const days = Number(raw);
-  const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
-  return normalizedDays * 24 * 60 * 60;
+async function getUserSessionDays(userId: string) {
+  try {
+    const settings = await prisma.userSettings.findUnique({
+      where: { userId },
+      select: { sessionDays: true },
+    });
+    return normalizeSessionDays(settings?.sessionDays);
+  } catch {
+    // If a deployment has not applied this preference column yet, keep login working.
+    return normalizeSessionDays(undefined);
+  }
 }
 
 function householdChoicesForUsers(users: LoginUser[]) {
@@ -112,7 +120,17 @@ function ambiguousUsernameResponse(users: LoginUser[]) {
   );
 }
 
-async function resolveLoginCandidates(username: string, householdId: string): Promise<LoginUser[]> {
+async function resolveLoginCandidates(username: string, householdId: string, userId: string): Promise<LoginUser[]> {
+  if (userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: userSelect,
+    });
+    if (!user) return [];
+    if (householdId && user.householdId !== householdId) return [];
+    return [user];
+  }
+
   if (username && householdId) {
     const user = await prisma.user.findFirst({
       where: { name: username, householdId },
@@ -169,10 +187,12 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  * POST /api/v1/auth/verify
  * Verify a password for login or privileged system actions.
  *
- * Body: { password: string, username?: string, householdId?: string, verifySystem?: boolean }
+ * Body: { password: string, userId?: string, username?: string, householdId?: string, verifySystem?: boolean }
  * - verifySystem=true verifies the deployment system password and does not create a user session.
  *   Docker deployments accept MMH_SYSTEM_PASSWORD, POSTGRES_PASSWORD, or DATABASE_URL password.
  *   fnOS/SQLite deployments accept MMH_SYSTEM_PASSWORD because file: DATABASE_URL values have no password.
+ * - userId verifies that exact user. This is preferred for Web login when
+ *   multiple ledgers contain same-name users such as admin.
  * - username + householdId verifies that exact user inside the target household.
  * - username only verifies all same-name users first. If exactly one household's
  *   password matches, that user logs in directly. If multiple households match
@@ -180,8 +200,9 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  *   { ok:false, code:"AMBIGUOUS_USER", error, households }.
  */
 export async function POST(req: NextRequest) {
-  const body = await req.json() as { password?: string; username?: string; householdId?: string; verifySystem?: boolean };
+  const body = await req.json() as { password?: string; userId?: string; username?: string; householdId?: string; verifySystem?: boolean };
   const password = (body.password ?? "").trim();
+  const userId = (body.userId ?? "").trim();
   const username = (body.username ?? "").trim();
   const householdId = (body.householdId ?? "").trim();
 
@@ -199,7 +220,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const candidates = await withTimeout(resolveLoginCandidates(username, householdId), AUTH_LOOKUP_TIMEOUT_MS);
+  const candidates = await withTimeout(resolveLoginCandidates(username, householdId, userId), AUTH_LOOKUP_TIMEOUT_MS);
   if (!candidates) {
     return NextResponse.json({ ok: false, error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
   }
@@ -235,10 +256,18 @@ export async function POST(req: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
-  const maxAge = resolveSessionMaxAge(req);
+  const sessionDays = await getUserSessionDays(user.id);
+  const maxAge = sessionDaysToMaxAge(sessionDays);
   const cookieOptions = sessionCookieOptions(maxAge, req);
   response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
+  response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
   response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
+  response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
   if (user.householdId) {
     response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
   }

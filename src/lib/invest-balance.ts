@@ -95,6 +95,27 @@ function displayPendingAmount(row: {
   return Math.max(0, gross - Math.max(refundByRow, refundByFlows));
 }
 
+function isMissingStockHoldingsTableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("stock_holdings") && (
+    message.includes("does not exist") ||
+    message.includes("not exist") ||
+    message.includes("P2021")
+  );
+}
+
+async function loadStockHoldingsForInvestSummary(accountIds: string[]) {
+  if (accountIds.length === 0) return [];
+  try {
+    return await prisma.stockHolding.findMany({
+      where: { accountId: { in: accountIds } },
+    });
+  } catch (error) {
+    if (isMissingStockHoldingsTableError(error)) return [];
+    throw error;
+  }
+}
+
 async function loadDisplayPendingCostByHoldingKey(ctx: HouseholdContext, accountIds: string[]) {
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
@@ -183,13 +204,13 @@ export const computeInvestBalances = cache(
   const allWealthTransactions = await prisma.wealthTransaction.findMany({
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
   });
-  const allStockHoldings = await prisma.stockHolding.findMany({
-    where: { accountId: { in: stockAccountIds } },
-  });
-  const stockCashBalanceByAccountId = await computeAccountDisplayBalances(
-    stockAccountIds.map((id) => ({ id, kind: AccountKind.investment, investProductType: "stock" })),
-    ctx.hidFilter,
-  );
+  const allStockHoldings = await loadStockHoldingsForInvestSummary(stockAccountIds);
+  const stockCashBalanceByAccountId = stockAccountIds.length > 0
+    ? await computeAccountDisplayBalances(
+        stockAccountIds.map((id) => ({ id, kind: AccountKind.investment, investProductType: "stock" })),
+        ctx.hidFilter,
+      )
+    : new Map<string, number>();
 
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
   for (const holding of allHoldings) {

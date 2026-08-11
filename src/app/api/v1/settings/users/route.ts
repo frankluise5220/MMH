@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 
 export const runtime = "nodejs";
 
@@ -56,7 +57,16 @@ export async function GET() {
       users = await prisma.user.findMany({
         where,
         orderBy: { name: "asc" },
-        select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isSystem: true,
+          passwordHash: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -65,7 +75,15 @@ export async function GET() {
         const fallback = await prisma.user.findMany({
           where,
           orderBy: { name: "asc" },
-          select: { id: true, name: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
+          select: {
+            id: true,
+            name: true,
+            role: true,
+            isSystem: true,
+            passwordHash: true,
+            createdAt: true,
+            updatedAt: true,
+          },
         });
         users = fallback.map((u) => ({ ...u, email: null }));
       } else {
@@ -73,36 +91,27 @@ export async function GET() {
       }
     }
 
-    if (users.length === 0) {
-      const householdCount = await prisma.household.count();
-      if (householdCount <= 1) {
-        const legacyUsers = await prisma.user.findMany({
-          where: {
-            householdId: null,
-            isSystem: false,
-          },
-          select: { id: true },
-        });
-        if (legacyUsers.length > 0) {
-          await prisma.user.updateMany({
-            where: {
-              id: { in: legacyUsers.map((item) => item.id) },
-              householdId: null,
-            },
-            data: { householdId },
-          });
-          users = await prisma.user.findMany({
-            where,
-            orderBy: { name: "asc" },
-            select: { id: true, name: true, email: true, role: true, isSystem: true, passwordHash: true, createdAt: true, updatedAt: true },
-          });
-        }
+    const sessionDaysByUserId = new Map<string, number>();
+    try {
+      const settings = await prisma.userSettings.findMany({
+        where: { userId: { in: users.map((u) => u.id) } },
+        select: { userId: true, sessionDays: true },
+      });
+      for (const setting of settings) {
+        sessionDaysByUserId.set(setting.userId, normalizeSessionDays(setting.sessionDays, DEFAULT_SESSION_DAYS));
       }
+    } catch {
+      // Missing older preference columns should not prevent the user list from loading.
     }
 
     return NextResponse.json({
       ok: true,
-      users: users.map(u => ({ ...u, hasPassword: !!u.passwordHash, passwordHash: undefined })),
+      users: users.map(u => ({
+        ...u,
+        sessionDays: sessionDaysByUserId.get(u.id) ?? DEFAULT_SESSION_DAYS,
+        hasPassword: !!u.passwordHash,
+        passwordHash: undefined,
+      })),
     }, { headers: cors() });
   } catch {
     return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500, headers: cors() });
@@ -114,6 +123,7 @@ const CreateSchema = z.object({
   email: z.union([z.string().email(), z.literal("")]).optional(),
   role: z.enum(["admin", "user"]).default("user"),
   password: z.string().optional(),
+  sessionDays: z.number().optional(),
 });
 
 /** POST /api/v1/settings/users — 在当前账簿内创建用户 */
@@ -129,7 +139,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少必填字段（name）" }, { status: 400, headers: cors() });
   }
 
-  const { name, role, password, email } = parse.data;
+  const { name, role, password, email, sessionDays } = parse.data;
 
   // 检查当前账簿内同名用户是否已存在
   const existing = await prisma.user.findFirst({ where: { name, householdId } });
@@ -147,8 +157,17 @@ export async function POST(req: NextRequest) {
     data,
     select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
   });
+  await prisma.userSettings.create({
+    data: {
+      userId: user.id,
+      sessionDays: normalizeSessionDays(sessionDays, DEFAULT_SESSION_DAYS),
+    },
+  });
 
-  return NextResponse.json({ ok: true, user }, { headers: cors() });
+  return NextResponse.json({
+    ok: true,
+    user: { ...user, sessionDays: normalizeSessionDays(sessionDays, DEFAULT_SESSION_DAYS) },
+  }, { headers: cors() });
 }
 
 const UpdateSchema = z.object({
@@ -157,6 +176,7 @@ const UpdateSchema = z.object({
   email: z.union([z.string().email(), z.literal("")]).optional(),
   role: z.enum(["admin", "user"]).optional(),
   password: z.string().optional(),
+  sessionDays: z.number().optional(),
 });
 
 /** PUT /api/v1/settings/users — 更新当前账簿内的用户 */
@@ -172,7 +192,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少必填字段（id）" }, { status: 400, headers: cors() });
   }
 
-  const { id, name, role, password, email } = parse.data;
+  const { id, name, role, password, email, sessionDays } = parse.data;
 
   const existing = await prisma.user.findUnique({ where: { id } });
   if (!existing) {
@@ -200,17 +220,38 @@ export async function PUT(req: NextRequest) {
     data.passwordHash = await hashPassword(password.trim());
   }
 
-  if (Object.keys(data).length === 0) {
+  const hasSessionDays = sessionDays !== undefined;
+  if (Object.keys(data).length === 0 && !hasSessionDays) {
     return NextResponse.json({ ok: false, error: "没有需要更新的字段" }, { status: 400, headers: cors() });
   }
 
-  const user = await prisma.user.update({
-    where: { id },
-    data,
-    select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
-  });
+  const user = Object.keys(data).length > 0
+    ? await prisma.user.update({
+        where: { id },
+        data,
+        select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
+      })
+    : await prisma.user.findUnique({
+        where: { id },
+        select: { id: true, name: true, email: true, role: true, isSystem: true, createdAt: true, updatedAt: true },
+      });
+  if (!user) {
+    return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 404, headers: cors() });
+  }
 
-  return NextResponse.json({ ok: true, user }, { headers: cors() });
+  const normalizedSessionDays = normalizeSessionDays(sessionDays, DEFAULT_SESSION_DAYS);
+  if (hasSessionDays) {
+    await prisma.userSettings.upsert({
+      where: { userId: id },
+      update: { sessionDays: normalizedSessionDays },
+      create: { userId: id, sessionDays: normalizedSessionDays },
+    });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    user: { ...user, sessionDays: hasSessionDays ? normalizedSessionDays : DEFAULT_SESSION_DAYS },
+  }, { headers: cors() });
 }
 
 const DeleteSchema = z.object({

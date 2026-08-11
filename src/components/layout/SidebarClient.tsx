@@ -21,6 +21,7 @@ import {
   PanelLeftOpen,
   UserRound,
   Table2,
+  LogOut,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
@@ -286,10 +287,15 @@ export function SidebarClient({
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
   const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
+  const userMenuAnchorRef = useRef<HTMLButtonElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
   const internalHistoryTargetRef = useRef<{ url: string; index: number } | null>(null);
   const prefetchedHrefRef = useRef<Set<string>>(new Set());
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [userMenuPosition, setUserMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [appHistory, setAppHistory] = useState<{ entries: string[]; index: number }>({
     entries: [],
     index: -1,
@@ -305,9 +311,32 @@ export function SidebarClient({
     [items],
   );
 
-  async function handleSwitchUser() {
-    if (!window.confirm("确认退出当前用户吗？")) return;
+  const updateUserMenuPosition = useCallback(() => {
+    const anchor = userMenuAnchorRef.current;
+    if (!anchor || typeof window === "undefined") return;
+    const rect = anchor.getBoundingClientRect();
+    const menuWidth = 160;
+    const rawLeft = sidebarCollapsed ? rect.right + 8 : rect.left;
+    const rawTop = sidebarCollapsed ? rect.top : rect.bottom + 6;
+    const left = Math.min(Math.max(rawLeft, 8), Math.max(8, window.innerWidth - menuWidth - 8));
+    const top = Math.min(Math.max(rawTop, 8), Math.max(8, window.innerHeight - 112));
+    setUserMenuPosition({ top, left });
+  }, [sidebarCollapsed]);
+
+  function toggleUserMenu() {
+    if (userMenuOpen) {
+      setUserMenuOpen(false);
+      return;
+    }
     setSwitcherOpen(false);
+    updateUserMenuPosition();
+    setUserMenuOpen(true);
+  }
+
+  async function handleLogout() {
+    setSwitcherOpen(false);
+    setUserMenuOpen(false);
+    setLoggingOut(true);
     try {
       const res = await fetch("/api/v1/auth/logout", {
         method: "POST",
@@ -320,8 +349,34 @@ export function SidebarClient({
       window.location.assign("/login");
     } catch (error) {
       window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
+      setLoggingOut(false);
     }
   }
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    updateUserMenuPosition();
+    function handlePointerDown(event: MouseEvent | PointerEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (userMenuAnchorRef.current?.contains(target)) return;
+      if (userMenuRef.current?.contains(target)) return;
+      setUserMenuOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setUserMenuOpen(false);
+    }
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updateUserMenuPosition);
+    window.addEventListener("scroll", updateUserMenuPosition, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updateUserMenuPosition);
+      window.removeEventListener("scroll", updateUserMenuPosition, true);
+    };
+  }, [updateUserMenuPosition, userMenuOpen]);
 
   useEffect(() => {
     setAppHistory((prev) => {
@@ -804,44 +859,75 @@ export function SidebarClient({
     });
   }
 
+  const userMenu = userMenuOpen && userMenuPosition ? (
+    <div
+      ref={userMenuRef}
+      className="fixed z-[1200] w-40 overflow-hidden rounded-lg border border-slate-200 bg-white text-sm shadow-lg shadow-slate-900/12"
+      style={{ top: userMenuPosition.top, left: userMenuPosition.left }}
+      role="menu"
+      aria-label="用户菜单"
+    >
+      <div className="border-b border-slate-100 px-3 py-2">
+        <div className="text-[10px] font-medium text-slate-400">当前用户</div>
+        <div className="mt-0.5 truncate text-xs font-semibold text-slate-800" title={user?.name || "用户"}>
+          {user?.name || "用户"}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void handleLogout()}
+        disabled={loggingOut}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+        role="menuitem"
+      >
+        <LogOut size={14} />
+        <span>{loggingOut ? "退出中..." : "退出登录"}</span>
+      </button>
+    </div>
+  ) : null;
+
   if (sidebarCollapsed) {
     return (
-      <aside className="flex h-screen w-16 shrink-0 flex-col items-center overflow-hidden border-r border-slate-200/80 bg-white/84 px-2 py-3 backdrop-blur-xl transition-[width] duration-200">
-        <div className="flex shrink-0 flex-col items-center gap-1">
-          <button
-            ref={ledgerSwitcherAnchorRef}
-            type="button"
-            onClick={() => setSwitcherOpen((open) => !open)}
-            className="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
-            title="切换账簿"
-          >
-            <MmhLogo size={32} />
-          </button>
-          <button
-            type="button"
-            onClick={handleSwitchUser}
-            className={collapsedNavCls(false)}
-            title={`退出${user?.name ? `：${user.name}` : "当前用户"}`}
-          >
-            <UserRound size={18} />
-          </button>
-          <LanguageSwitcher />
-          <button
-            onClick={toggleSidebarCollapsed}
-            className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
-            title={t("common.expand")}
-          >
-            <PanelLeftOpen size={18} />
-          </button>
-          <LedgerSwitcher
-            current={household}
-            anchorRef={ledgerSwitcherAnchorRef}
-            open={switcherOpen}
-            onOpenChange={setSwitcherOpen}
-          />
-        </div>
+      <>
+        <aside className="flex h-screen w-16 shrink-0 flex-col items-center overflow-hidden border-r border-slate-200/80 bg-white/84 px-2 py-3 backdrop-blur-xl transition-[width] duration-200">
+          <div className="flex shrink-0 flex-col items-center gap-1">
+            <button
+              ref={ledgerSwitcherAnchorRef}
+              type="button"
+              onClick={() => setSwitcherOpen((open) => !open)}
+              className="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
+              title="切换账簿"
+            >
+              <MmhLogo size={32} />
+            </button>
+            <button
+              ref={userMenuAnchorRef}
+              type="button"
+              onClick={toggleUserMenu}
+              className={collapsedNavCls(userMenuOpen)}
+              title={`用户菜单${user?.name ? `：${user.name}` : ""}`}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+            >
+              <UserRound size={18} />
+            </button>
+            <LanguageSwitcher />
+            <button
+              onClick={toggleSidebarCollapsed}
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
+              title={t("common.expand")}
+            >
+              <PanelLeftOpen size={18} />
+            </button>
+            <LedgerSwitcher
+              current={household}
+              anchorRef={ledgerSwitcherAnchorRef}
+              open={switcherOpen}
+              onOpenChange={setSwitcherOpen}
+            />
+          </div>
 
-        <nav className="mt-5 flex min-h-0 flex-1 flex-col items-center gap-1">
+          <nav className="mt-5 flex min-h-0 flex-1 flex-col items-center gap-1">
           <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title={t("nav.overview")}>
             <LayoutDashboard size={18} />
           </Link>
@@ -877,15 +963,18 @@ export function SidebarClient({
           </Link>
         </nav>
 
-        <UndoLastOperationButton compact />
+          <UndoLastOperationButton compact />
 
-        <NewLedgerSetupCheck />
-        <DailyTaskCheck />
-      </aside>
+          <NewLedgerSetupCheck />
+          <DailyTaskCheck />
+        </aside>
+        {userMenu}
+      </>
     );
   }
 
   return (
+    <>
     <aside className="flex h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-slate-200/80 bg-white/84 backdrop-blur-xl transition-[width] duration-200">
       {/* Fixed Header */}
       <div className="shrink-0 px-4 pb-2 pt-4">
@@ -900,13 +989,17 @@ export function SidebarClient({
             <MmhLogo size={26} />
           </button>
           <button
+            ref={userMenuAnchorRef}
             type="button"
-            onClick={handleSwitchUser}
-            className="flex h-7 min-w-0 max-w-[72px] items-center gap-1 rounded-md px-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
-            title={`退出${user?.name ? `：${user.name}` : "当前用户"}`}
+            onClick={toggleUserMenu}
+            className={`flex h-7 min-w-0 max-w-[92px] items-center gap-1 rounded-md px-1.5 text-xs font-medium transition-colors ${userMenuOpen ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}
+            title={`用户菜单${user?.name ? `：${user.name}` : ""}`}
+            aria-haspopup="menu"
+            aria-expanded={userMenuOpen}
           >
             <UserRound size={15} className="shrink-0" />
             <span className="truncate">{user?.name || "用户"}</span>
+            <ChevronDown size={12} className={`shrink-0 transition-transform ${userMenuOpen ? "rotate-180" : ""}`} />
           </button>
           <div className="flex shrink-0 items-center gap-0.5">
             <HeaderHistoryButton
@@ -1143,5 +1236,7 @@ export function SidebarClient({
       <NewLedgerSetupCheck />
       <DailyTaskCheck />
     </aside>
+    {userMenu}
+    </>
   );
 }

@@ -1127,6 +1127,7 @@ model UserSettings {
   resendFrom           String?
   // 功能开关
   passwordResetEnabled Boolean  @default(true)
+  sessionDays          Int      @default(30)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @default(now()) @updatedAt
   colorScheme          String   @default("red_up_green_down")

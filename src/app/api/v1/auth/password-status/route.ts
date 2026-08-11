@@ -113,7 +113,15 @@ export async function GET() {
       select: { value: true },
     }),
     prisma.user.findMany({
-      select: { id: true, name: true, passwordHash: true, role: true, isSystem: true, householdId: true },
+      select: {
+        id: true,
+        name: true,
+        passwordHash: true,
+        role: true,
+        isSystem: true,
+        householdId: true,
+        Household: { select: { name: true } },
+      },
       where: householdId
         ? {
             OR: [
@@ -140,7 +148,15 @@ export async function GET() {
     hasPassword,
     needsInitialLedgerSetup,
     passwordResetEnabled,
-    users: users.map(u => ({ id: u.id, name: u.name, hasPassword: !!u.passwordHash, role: u.role, isSystem: u.isSystem })),
+    users: users.map(u => ({
+      id: u.id,
+      name: u.name,
+      hasPassword: !!u.passwordHash,
+      role: u.role,
+      isSystem: u.isSystem,
+      householdId: u.householdId,
+      householdName: u.Household?.name ?? null,
+    })),
   });
 }
 

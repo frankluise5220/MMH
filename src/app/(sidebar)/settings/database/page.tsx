@@ -1101,6 +1101,8 @@ export default function DatabaseSettingsPage() {
                   </SettingsTd>
                 </tr>
               ))
+            ) : ledgerInviteError ? (
+              <SettingsEmptyRow colSpan={5}>读取邀请码失败：{ledgerInviteError}</SettingsEmptyRow>
             ) : (
               <SettingsEmptyRow colSpan={5}>暂无已保存的邀请码</SettingsEmptyRow>
             )}

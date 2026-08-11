@@ -107,6 +107,8 @@
 
 - `/api/v1/auth/verify` 携带 `verifySystem: true` 时用于系统初始化、删除账簿等敏感操作验证，不建立用户登录态。
 - Docker/PostgreSQL 部署兼容 `MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 和 `DATABASE_URL` 中的连接密码；fnOS/SQLite 部署没有数据库连接密码，应使用安装向导写入的 `MMH_SYSTEM_PASSWORD`。
+- Web 登录优先携带 `userId` 验证具体用户；当多个账簿里都有 `admin` 这类同名用户时，不应只靠用户名定位。
+- `/api/v1/auth/password-status` 的用户列表应返回用户 `id`、`name`、`householdId` 和 `householdName`，客户端用账簿名区分同名用户。
 
 找回密码规则：
 
@@ -670,6 +672,10 @@ Notes:
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。
 - `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，再用 `backupPassphrase`（未提供时使用 `userPassword`）解密备份文件，然后执行清空和写回。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。恢复包包含账簿基础资料、业务表数据、系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
 - `/api/v1/settings/system-update`：GET 返回部署方式、当前包版本 `localVersion`、本版说明 `localReleaseNotes`、远端版本/镜像信息和更新状态；飞牛版返回版本和说明，但更新动作由飞牛应用中心管理。
+
+用户设置规则：
+
+- `/api/v1/settings/users` 返回和更新 `sessionDays`，含义是该用户登录态保留几天后需要重新登录，不是用户角色或权限有效期。
 
 ### Mobile Sync
 

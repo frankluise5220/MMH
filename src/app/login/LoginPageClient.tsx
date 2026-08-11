@@ -31,7 +31,16 @@ type PasswordStatusResponse = {
   hasPassword: boolean;
   needsInitialLedgerSetup?: boolean;
   passwordResetEnabled?: boolean;
-  users?: { id: string; name: string }[];
+  users?: LoginUserChoice[];
+};
+
+type LoginUserChoice = {
+  id: string;
+  name: string;
+  role?: string;
+  isSystem?: boolean;
+  householdId?: string | null;
+  householdName?: string | null;
 };
 
 type CreateLedgerResponse = {
@@ -44,14 +53,15 @@ type LoginMode = "login" | "setup" | "create";
 
 export function LoginPageClient({ householdName }: { householdName: string | null }) {
   const [mode, setMode] = useState<LoginMode>("login");
-  const [checking, setChecking] = useState(true);
+  const [checking, setChecking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
 
   const [username, setUsername] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState("");
   const [password, setPassword] = useState("");
-  const [systemUsers, setSystemUsers] = useState<{ id: string; name: string }[]>([]);
+  const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string } | null>(null);
@@ -84,6 +94,19 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
   const productIntro = getProductIntro(displayLanguage);
 
+  function getLoginUserLabel(user: LoginUserChoice) {
+    const scopeName = user.householdName
+      ? getHouseholdDisplayName({ id: user.householdId, name: user.householdName })
+      : user.isSystem
+        ? "系统用户"
+        : "";
+    return scopeName ? `${user.name} · ${scopeName}` : user.name;
+  }
+
+  function getSelectedLoginUser() {
+    return systemUsers.find((user) => user.id === selectedUserId) ?? null;
+  }
+
   function openPasswordReset() {
     setResetStep("request");
     setResetInfo("");
@@ -115,18 +138,23 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         if (!mounted) return;
         if (data.ok) {
           const needsInitialLedgerSetup = data.needsInitialLedgerSetup === true;
+          const users = data.users ?? [];
           setInitialLedgerSetup(needsInitialLedgerSetup);
           setMode(needsInitialLedgerSetup ? "create" : data.hasPassword ? "login" : "setup");
-          setSystemUsers(data.users ?? []);
+          setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
-          const firstUser = data.users?.[0];
+          const firstUser = users[0];
           if (firstUser) {
+            setSelectedUserId(firstUser.id);
             setUsername(firstUser.name);
+          } else {
+            setSelectedUserId("");
           }
         } else {
           setMode("login");
           setInitialLedgerSetup(false);
           setSystemUsers([]);
+          setSelectedUserId("");
           setPasswordResetEnabled(false);
         }
         if (typeof window !== "undefined" && new URL(window.location.href).searchParams.get("reset") === "1") {
@@ -138,6 +166,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         setMode("login");
         setInitialLedgerSetup(false);
         setSystemUsers([]);
+        setSelectedUserId("");
         setPasswordResetEnabled(false);
       })
       .finally(() => {
@@ -163,7 +192,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     return () => window.removeEventListener(APP_PREFS_EVENT, syncLanguagePreference);
   }, []);
 
-  async function verifyLogin(params: { username: string; password: string; householdId?: string }) {
+  async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string }) {
     const res = await fetch("/api/v1/auth/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -186,7 +215,8 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   }
 
   async function handleLogin() {
-    const trimmedUsername = username.trim();
+    const selectedUser = getSelectedLoginUser();
+    const trimmedUsername = (selectedUser?.name ?? username).trim();
     const trimmedPassword = password.trim();
     if (!trimmedUsername) { setError("请输入用户名"); return; }
     if (!trimmedPassword) { setError("请输入密码"); return; }
@@ -197,7 +227,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     setPendingLogin(null);
 
     try {
-      const data = await verifyLogin({ username: trimmedUsername, password: trimmedPassword });
+      const data = await verifyLogin({
+        ...(selectedUser ? { userId: selectedUser.id } : {}),
+        username: trimmedUsername,
+        password: trimmedPassword,
+      });
       if (data.ok) {
         window.location.href = "/";
         return;
@@ -481,21 +515,24 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
                   {systemUsers.length > 0 ? (
                     <select
-                      value={username}
+                      value={selectedUserId}
                       onChange={(event) => {
-                        setUsername(event.target.value);
+                        const user = systemUsers.find((item) => item.id === event.target.value);
+                        setSelectedUserId(user?.id ?? "");
+                        setUsername(user?.name ?? "");
                         cancelHouseholdChoice();
                       }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     >
                       {systemUsers.map((user) => (
-                        <option key={user.id} value={user.name}>{user.name}</option>
+                        <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
                       ))}
                     </select>
                   ) : (
                     <input
                       value={username}
                       onChange={(event) => {
+                        setSelectedUserId("");
                         setUsername(event.target.value);
                         cancelHouseholdChoice();
                       }}
