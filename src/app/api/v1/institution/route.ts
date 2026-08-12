@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
   assertInstitutionDisplayNamesUnique,
+  findReusableInstitutionDisplayNameOrphan,
   isInstitutionNameUniqueError,
 } from "@/lib/server/institution-name-unique";
 import { ensureCounterpartyForInstitution } from "@/lib/server/counterparty-sync";
@@ -32,10 +33,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const created = await prisma.$transaction(async (tx) => {
-      await assertInstitutionDisplayNamesUnique(tx, { householdId, name, shortName });
-      const institution = await tx.institution.create({
-        data: { name, shortName: shortName || null, type: safeType, householdId },
+      const reusable = await findReusableInstitutionDisplayNameOrphan(tx, { householdId, name, shortName });
+      await assertInstitutionDisplayNamesUnique(tx, {
+        householdId,
+        name,
+        shortName,
+        excludeId: reusable?.institution.id ?? null,
       });
+      const data = { name, shortName: shortName || null, type: safeType, householdId };
+      const institution = reusable
+        ? await tx.institution.update({ where: { id: reusable.institution.id }, data })
+        : await tx.institution.create({ data });
       await ensureCounterpartyForInstitution(tx, institution);
       return institution;
     });

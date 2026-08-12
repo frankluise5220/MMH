@@ -4,6 +4,10 @@ import { prisma } from "@/lib/db/prisma";
 import { recordDefaultCategoryDeletion } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
+import {
+  deleteUnusedSyncedCounterpartiesForInstitution,
+  deleteUnusedSyncedInstitutionForCounterparty,
+} from "@/lib/server/counterparty-sync";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
@@ -49,11 +53,14 @@ export async function POST(req: Request) {
 
   if (entity === "institution") {
     const inst = await prisma.institution.findUnique({ where: { id } });
-    if (!inst) return NextResponse.json({ ok: false, error: "往来对象不存在" }, { status: 404 });
+    if (!inst) return NextResponse.json({ ok: false, error: "机构不存在" }, { status: 404 });
     if (!isAdmin(user) && inst.householdId && inst.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { institutionId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该往来对象，无法删除" }, { status: 409 });
-    await prisma.institution.delete({ where: { id } });
+    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该机构，无法删除" }, { status: 409 });
+    await prisma.$transaction(async (tx) => {
+      await deleteUnusedSyncedCounterpartiesForInstitution(tx, inst);
+      await tx.institution.delete({ where: { id } });
+    });
     revalidateAfterSettingsChange();
     // Client-side updates settings/account caches and broadcasts local change events.
     return NextResponse.json({ ok: true });
@@ -65,7 +72,10 @@ export async function POST(req: Request) {
     if (!isAdmin(user) && counterparty.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { counterpartyId: id } });
     if (used > 0) return NextResponse.json({ ok: false, error: "已有往来款使用该往来对象，无法删除" }, { status: 409 });
-    await prisma.counterparty.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      await deleteUnusedSyncedInstitutionForCounterparty(tx, counterparty);
+      await tx.counterparty.delete({ where: { id } });
+    });
     revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   }

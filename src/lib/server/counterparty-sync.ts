@@ -1,7 +1,16 @@
 import type { Prisma } from "@prisma/client";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
-type CounterpartyStore = Pick<Prisma.TransactionClient, "counterparty" | "institution">;
+type CounterpartyStore = Pick<
+  Prisma.TransactionClient,
+  | "account"
+  | "counterparty"
+  | "institution"
+  | "insuranceProduct"
+  | "insuranceProductMaster"
+  | "txRecord"
+  | "wealthProduct"
+>;
 
 type InstitutionLike = {
   id: string;
@@ -26,6 +35,65 @@ function normalizeCounterpartyType(type?: string | null) {
   return type === "organization" ? "organization" : "person";
 }
 
+function isCounterpartyType(type?: string | null) {
+  return COUNTERPARTY_TYPES.has(type ?? "");
+}
+
+function normalizeCounterpartySyncText(value?: string | null) {
+  return String(value ?? "").trim();
+}
+
+function hasSameCounterpartySyncName(left: InstitutionLike, right: CounterpartyLike) {
+  return (
+    normalizeCounterpartySyncText(left.name) === normalizeCounterpartySyncText(right.name) &&
+    normalizeCounterpartySyncText(left.shortName) === normalizeCounterpartySyncText(right.shortName)
+  );
+}
+
+async function institutionHasBusinessUse(
+  store: CounterpartyStore,
+  institutionId: string,
+  options?: { excludingCounterpartyId?: string },
+) {
+  const [
+    accountCount,
+    linkedCounterpartyCount,
+    insuranceProductMasterCount,
+    insuranceProductCount,
+    activeTxRecordCount,
+    wealthProductCount,
+  ] = await Promise.all([
+    store.account.count({ where: { institutionId } }),
+    store.counterparty.count({
+      where: {
+        sourceInstitutionId: institutionId,
+        ...(options?.excludingCounterpartyId ? { id: { not: options.excludingCounterpartyId } } : {}),
+      },
+    }),
+    store.insuranceProductMaster.count({ where: { institutionId } }),
+    store.insuranceProduct.count({
+      where: {
+        OR: [
+          { institutionId },
+          { policyholderPersonId: institutionId },
+          { insuredPersonId: institutionId },
+        ],
+      },
+    }),
+    store.txRecord.count({ where: { counterpartyInstitutionId: institutionId, deletedAt: null } }),
+    store.wealthProduct.count({ where: { institutionId } }),
+  ]);
+
+  return (
+    accountCount > 0 ||
+    linkedCounterpartyCount > 0 ||
+    insuranceProductMasterCount > 0 ||
+    insuranceProductCount > 0 ||
+    activeTxRecordCount > 0 ||
+    wealthProductCount > 0
+  );
+}
+
 function counterpartyNameWhere(name: string, shortName?: string | null) {
   const short = shortName?.trim();
   return [
@@ -41,7 +109,7 @@ export async function ensureCounterpartyForInstitution(
 ) {
   const householdId = institution.householdId;
   const name = institution.name.trim();
-  if (!householdId || !name || !COUNTERPARTY_TYPES.has(institution.type ?? "")) return null;
+  if (!householdId || !name || !isCounterpartyType(institution.type)) return null;
 
   const type = normalizeCounterpartyType(institution.type);
   const shortName = institution.shortName?.trim() || null;
@@ -85,7 +153,7 @@ export async function ensureInstitutionForCounterparty(
 ) {
   const householdId = counterparty.householdId;
   const name = counterparty.name.trim();
-  if (!householdId || !name || !COUNTERPARTY_TYPES.has(counterparty.type ?? "")) return null;
+  if (!householdId || !name || !isCounterpartyType(counterparty.type)) return null;
 
   const type = normalizeCounterpartyType(counterparty.type);
   const shortName = counterparty.shortName?.trim() || null;
@@ -139,4 +207,42 @@ export async function ensureInstitutionForCounterparty(
   }
 
   return institution;
+}
+
+export async function deleteUnusedSyncedInstitutionForCounterparty(
+  store: CounterpartyStore,
+  counterparty: CounterpartyLike,
+) {
+  if (!counterparty.sourceInstitutionId) return false;
+
+  const institution = await store.institution.findFirst({
+    where: { id: counterparty.sourceInstitutionId, householdId: counterparty.householdId },
+  });
+  if (!institution || !isCounterpartyType(institution.type)) return false;
+  if (!hasSameCounterpartySyncName(institution, counterparty)) return false;
+  if (await institutionHasBusinessUse(store, institution.id, { excludingCounterpartyId: counterparty.id })) return false;
+
+  await store.institution.delete({ where: { id: institution.id } });
+  return true;
+}
+
+export async function deleteUnusedSyncedCounterpartiesForInstitution(
+  store: CounterpartyStore,
+  institution: InstitutionLike,
+) {
+  const householdId = institution.householdId;
+  if (!householdId || !isCounterpartyType(institution.type)) return 0;
+
+  const counterparties = await store.counterparty.findMany({
+    where: { sourceInstitutionId: institution.id, householdId },
+  });
+  let deleted = 0;
+  for (const counterparty of counterparties) {
+    if (!hasSameCounterpartySyncName(institution, counterparty)) continue;
+    const accountCount = await store.account.count({ where: { counterpartyId: counterparty.id } });
+    if (accountCount > 0) continue;
+    await store.counterparty.delete({ where: { id: counterparty.id } });
+    deleted += 1;
+  }
+  return deleted;
 }

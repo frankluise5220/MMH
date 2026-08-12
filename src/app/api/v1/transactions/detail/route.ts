@@ -36,7 +36,7 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind, FundCashFlowKind, TransactionType, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
+import { AccountKind, FundCashFlowKind, TransactionType, FundSubtype, IntervalUnit, Prisma, RegularInvestStatus } from "@prisma/client";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
@@ -110,6 +110,16 @@ const TX_EDIT_TRANSACTION_OPTIONS = {
   maxWait: 15_000,
   timeout: 20_000,
 } as const;
+type InstitutionNameTx = Pick<
+  Prisma.TransactionClient,
+  | "account"
+  | "counterparty"
+  | "institution"
+  | "insuranceProduct"
+  | "insuranceProductMaster"
+  | "txRecord"
+  | "wealthProduct"
+>;
 
 /* ────────────────── HELPERS ────────────────── */
 
@@ -1059,13 +1069,7 @@ function entryWithLinkedWealthDisplayDateFields(record: any, wealthRow: any | nu
 }
 
 async function ensureFamilyMemberInstitutionInTx(input: {
-  tx: {
-    institution: {
-      findFirst: typeof prisma.institution.findFirst;
-      findMany: typeof prisma.institution.findMany;
-      create: typeof prisma.institution.create;
-    };
-  };
+  tx: InstitutionNameTx;
   householdId: string;
   personId: string | null;
   personName: string | null;

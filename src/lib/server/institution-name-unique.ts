@@ -4,9 +4,23 @@ type InstitutionNameStore = {
   institution: {
     findMany(args: {
       where: Prisma.InstitutionWhereInput;
-      select: { id: true; name: true; shortName: true };
-    }): Promise<Array<{ id: string; name: string; shortName: string | null }>>;
+      select: { id: true; householdId: true; name: true; shortName: true; type: true };
+    }): Promise<InstitutionNameRow[]>;
   };
+  account: { count(args: { where: Prisma.AccountWhereInput }): Promise<number> };
+  counterparty: { count(args: { where: Prisma.CounterpartyWhereInput }): Promise<number> };
+  insuranceProduct: { count(args: { where: Prisma.InsuranceProductWhereInput }): Promise<number> };
+  insuranceProductMaster: { count(args: { where: Prisma.InsuranceProductMasterWhereInput }): Promise<number> };
+  txRecord: { count(args: { where: Prisma.TxRecordWhereInput }): Promise<number> };
+  wealthProduct: { count(args: { where: Prisma.WealthProductWhereInput }): Promise<number> };
+};
+
+type InstitutionNameRow = {
+  id: string;
+  householdId: string | null;
+  name: string;
+  shortName: string | null;
+  type: string | null;
 };
 
 export class InstitutionNameUniqueError extends Error {
@@ -29,7 +43,63 @@ export function normalizeInstitutionDisplayName(value: unknown) {
 export function institutionNameCandidates(name: unknown, shortName?: unknown) {
   const fullName = normalizeInstitutionDisplayName(name);
   const short = normalizeInstitutionDisplayName(shortName);
-  return [fullName, short].filter(Boolean);
+  return Array.from(new Set([fullName, short].filter(Boolean)));
+}
+
+function isCounterpartyMirrorInstitutionType(type: string | null | undefined) {
+  return type === "person" || type === "organization";
+}
+
+async function isUnusedCounterpartyMirrorInstitution(store: InstitutionNameStore, row: InstitutionNameRow) {
+  if (!isCounterpartyMirrorInstitutionType(row.type)) return false;
+
+  const [
+    accountCount,
+    linkedCounterpartyCount,
+    insuranceProductMasterCount,
+    insuranceProductCount,
+    activeTxRecordCount,
+    wealthProductCount,
+  ] = await Promise.all([
+    store.account.count({ where: { institutionId: row.id } }),
+    store.counterparty.count({ where: { sourceInstitutionId: row.id } }),
+    store.insuranceProductMaster.count({ where: { institutionId: row.id } }),
+    store.insuranceProduct.count({
+      where: {
+        OR: [
+          { institutionId: row.id },
+          { policyholderPersonId: row.id },
+          { insuredPersonId: row.id },
+        ],
+      },
+    }),
+    store.txRecord.count({ where: { counterpartyInstitutionId: row.id, deletedAt: null } }),
+    store.wealthProduct.count({ where: { institutionId: row.id } }),
+  ]);
+
+  return (
+    accountCount === 0 &&
+    linkedCounterpartyCount === 0 &&
+    insuranceProductMasterCount === 0 &&
+    insuranceProductCount === 0 &&
+    activeTxRecordCount === 0 &&
+    wealthProductCount === 0
+  );
+}
+
+async function partitionInstitutionNameRows(store: InstitutionNameStore, rows: InstitutionNameRow[]) {
+  const active: InstitutionNameRow[] = [];
+  const reusableOrphans: InstitutionNameRow[] = [];
+
+  for (const row of rows) {
+    if (await isUnusedCounterpartyMirrorInstitution(store, row)) {
+      reusableOrphans.push(row);
+    } else {
+      active.push(row);
+    }
+  }
+
+  return { active, reusableOrphans };
 }
 
 export async function findInstitutionDisplayNameConflict(
@@ -53,12 +123,49 @@ export async function findInstitutionDisplayNameConflict(
         { shortName: { in: candidates } },
       ],
     },
-    select: { id: true, name: true, shortName: true },
+    select: { id: true, householdId: true, name: true, shortName: true, type: true },
   });
+  const { active } = await partitionInstitutionNameRows(store, rows);
 
   return candidates
     .map((candidate) => {
-      const row = rows.find((item) =>
+      const row = active.find((item) =>
+        normalizeInstitutionDisplayName(item.name) === candidate ||
+        normalizeInstitutionDisplayName(item.shortName) === candidate,
+      );
+      return row ? { value: candidate, institution: row } : null;
+    })
+    .find(Boolean) ?? null;
+}
+
+export async function findReusableInstitutionDisplayNameOrphan(
+  store: InstitutionNameStore,
+  input: {
+    householdId: string;
+    name: unknown;
+    shortName?: unknown;
+    excludeId?: string | null;
+  },
+) {
+  const candidates = institutionNameCandidates(input.name, input.shortName);
+  if (candidates.length === 0) return null;
+
+  const rows = await store.institution.findMany({
+    where: {
+      householdId: input.householdId,
+      ...(input.excludeId ? { id: { not: input.excludeId } } : {}),
+      OR: [
+        { name: { in: candidates } },
+        { shortName: { in: candidates } },
+      ],
+    },
+    select: { id: true, householdId: true, name: true, shortName: true, type: true },
+  });
+  const { reusableOrphans } = await partitionInstitutionNameRows(store, rows);
+
+  return candidates
+    .map((candidate) => {
+      const row = reusableOrphans.find((item) =>
         normalizeInstitutionDisplayName(item.name) === candidate ||
         normalizeInstitutionDisplayName(item.shortName) === candidate,
       );
