@@ -27,7 +27,9 @@ function parsePositiveRate(value: unknown) {
  * Query:
  * - from?: comma-separated source currencies. Omit to use enabled account currencies.
  * - to?: target display currency. Defaults to current household baseCurrency.
- * - refresh=1: fetch missing rates from the external provider and cache them.
+ * - refresh=1: force-fetch latest rates from the external provider and cache them.
+ *   When not forcing refresh, cached FxRate rows are preferred; when absent,
+ *   local FxConversion history can provide the latest recorded conversion rate.
  *
  * Response: { ok:true, baseCurrency, rates:[{ fromCurrency, toCurrency, rate, rateDate, source, missing }] }
  */
@@ -36,7 +38,7 @@ export async function GET(req: NextRequest) {
     const { householdId } = await getHouseholdScope();
     const search = req.nextUrl.searchParams;
     const baseCurrency = normalizeCurrency(search.get("to") || await getHouseholdBaseCurrency(householdId));
-    const refreshMissing = search.get("refresh") === "1" || search.get("refresh") === "true";
+    const forceRefresh = search.get("refresh") === "1" || search.get("refresh") === "true";
     let sourceCurrencies = parseCurrencyList(search.get("from"));
     if (sourceCurrencies.length === 0) {
       const rows = await prisma.account.findMany({
@@ -47,7 +49,7 @@ export async function GET(req: NextRequest) {
     }
 
     const rates = await Promise.all(sourceCurrencies.map((fromCurrency) =>
-      getConversionRate({ householdId, fromCurrency, toCurrency: baseCurrency, refreshMissing }),
+      getConversionRate({ householdId, fromCurrency, toCurrency: baseCurrency, forceRefresh }),
     ));
     return NextResponse.json({ ok: true, baseCurrency, rates });
   } catch (error) {

@@ -11,6 +11,7 @@ type FxRateRow = {
   rate?: number | string | null;
   rateDate?: string | null;
   source?: string | null;
+  refreshed?: boolean | null;
 };
 
 type Props = {
@@ -149,6 +150,7 @@ export function AccountFxRateInline({
       );
       const nextRate = parseRate(row?.rate);
       if (!nextRate) throw new Error("未获取到可用汇率");
+      if (row?.refreshed !== true) throw new Error("未获取到最新汇率，已保留原汇率");
       setRate(nextRate);
       setRateDate(row?.rateDate ?? getTodayText());
       setSource(row?.source ?? "external");

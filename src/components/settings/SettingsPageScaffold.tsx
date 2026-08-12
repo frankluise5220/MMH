@@ -137,7 +137,7 @@ export function SettingsSection({
 
 export function SettingsTable({
   minWidth = 760,
-  maxWidth = 960,
+  maxWidth = "full",
   className,
   children,
 }: {

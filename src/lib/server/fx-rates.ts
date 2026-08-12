@@ -29,6 +29,7 @@ export type ConversionRate = {
   rateDate: string | null;
   source: string | null;
   missing: boolean;
+  refreshed?: boolean;
 };
 
 export async function getHouseholdBaseCurrency(householdId: string) {
@@ -62,6 +63,56 @@ async function fetchExternalRate(fromCurrency: string, toCurrency: string) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getLatestFxConversionRate(params: {
+  householdId: string;
+  fromCurrency: string;
+  toCurrency: string;
+}): Promise<ConversionRate | null> {
+  const fromCurrency = normalizeCurrency(params.fromCurrency);
+  const toCurrency = normalizeCurrency(params.toCurrency);
+  const row = await prisma.fxConversion.findFirst({
+    where: {
+      householdId: params.householdId,
+      OR: [
+        { fromCurrency, toCurrency },
+        { fromCurrency: toCurrency, toCurrency: fromCurrency },
+      ],
+    },
+    select: {
+      date: true,
+      fromCurrency: true,
+      toCurrency: true,
+      fromAmount: true,
+      toAmount: true,
+      exchangeRate: true,
+    },
+    orderBy: [{ date: "desc" }, { updatedAt: "desc" }],
+  });
+  if (!row) return null;
+
+  const rowFromCurrency = normalizeCurrency(row.fromCurrency);
+  const rowToCurrency = normalizeCurrency(row.toCurrency);
+  const directRate = toNumber(row.exchangeRate);
+  const fromAmount = toNumber(row.fromAmount);
+  const toAmount = toNumber(row.toAmount);
+  const rate = rowFromCurrency === fromCurrency && rowToCurrency === toCurrency
+    ? directRate
+    : fromAmount > 0 && toAmount > 0
+      ? fromAmount / toAmount
+      : directRate > 0
+        ? 1 / directRate
+        : null;
+  if (!rate || !Number.isFinite(rate) || rate <= 0) return null;
+  return {
+    fromCurrency,
+    toCurrency,
+    rate,
+    rateDate: ymd(row.date),
+    source: "fx_conversion",
+    missing: false,
+  };
 }
 
 export async function setFxRate(params: {
@@ -110,11 +161,35 @@ export async function getConversionRate(params: {
   fromCurrency: string;
   toCurrency: string;
   refreshMissing?: boolean;
+  forceRefresh?: boolean;
 }): Promise<ConversionRate> {
   const fromCurrency = normalizeCurrency(params.fromCurrency);
   const toCurrency = normalizeCurrency(params.toCurrency);
   if (fromCurrency === toCurrency) {
     return { fromCurrency, toCurrency, rate: 1, rateDate: ymd(dateOnlyUtc()), source: "same_currency", missing: false };
+  }
+
+  if (params.forceRefresh) {
+    const external = await fetchExternalRate(fromCurrency, toCurrency);
+    if (external) {
+      const row = await setFxRate({
+        householdId: params.householdId,
+        fromCurrency,
+        toCurrency,
+        rate: external.rate,
+        rateDate: external.rateDate,
+        source: external.source,
+      });
+      return {
+        fromCurrency,
+        toCurrency,
+        rate: toNumber(row.rate),
+        rateDate: ymd(row.rateDate),
+        source: row.source,
+        missing: false,
+        refreshed: true,
+      };
+    }
   }
 
   const cached = await prisma.fxRate.findFirst({
@@ -133,8 +208,16 @@ export async function getConversionRate(params: {
       rateDate: ymd(cached.rateDate),
       source: cached.source,
       missing: false,
+      refreshed: false,
     };
   }
+
+  const conversionRate = await getLatestFxConversionRate({
+    householdId: params.householdId,
+    fromCurrency,
+    toCurrency,
+  });
+  if (conversionRate) return conversionRate;
 
   if (params.refreshMissing) {
     const external = await fetchExternalRate(fromCurrency, toCurrency);

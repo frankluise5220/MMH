@@ -161,6 +161,9 @@ release-artifacts/
 mmh-doc-edit/
 .next-hotfix.tar.gz
 .ssh-mmh/
+.tmp_fnos_key*
+.tmp_known_hosts*
+.tmp-fnos-logo/
 backup-deleted-*.json
 tmp-backup-*.json
 nul

@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { formatCurrencyMoney } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 
 function pnlCls(value: number, isRedUp: boolean) {
@@ -35,14 +37,17 @@ export function LiveAccountBalance({
   baseCurrency?: string;
   accountDisplayMode?: "converted" | "original";
 }) {
+  const { t } = useI18n();
   const [value, setValue] = useState(initialValue);
   const [displayCurrency, setDisplayCurrency] = useState(baseCurrency);
+  const [missingFxRate, setMissingFxRate] = useState(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const refreshBusy = useRef(false);
 
   useEffect(() => {
     setValue(initialValue);
     setDisplayCurrency(baseCurrency);
+    setMissingFxRate(false);
   }, [accountId, baseCurrency, initialValue, mode]);
 
   useEffect(() => {
@@ -66,20 +71,21 @@ export function LiveAccountBalance({
           if (mode === "total") {
             const total = Number(data.totalConvertedBalance);
             setDisplayCurrency(String(data.baseCurrency || baseCurrency));
+            setMissingFxRate(false);
             setValue(Number.isFinite(total)
               ? total
-              : accounts.reduce((sum, account) => sum + Number(account.convertedBalance ?? account.balance ?? 0), 0));
+              : accounts.reduce((sum, account) => {
+                  const resolved = resolveAccountCurrencyDisplayValue(account, String(data.baseCurrency || baseCurrency), "converted");
+                  return sum + (resolved.value ?? 0);
+                }, 0));
             return;
           }
           const matched = accounts.find((account) => account.id === accountId);
           if (matched) {
-            if (accountDisplayMode === "original" || matched.fxRateMissing) {
-              setDisplayCurrency(String(matched.currency || baseCurrency));
-              setValue(Number(matched.balance ?? 0));
-            } else {
-              setDisplayCurrency(String(matched.baseCurrency || data.baseCurrency || baseCurrency));
-              setValue(Number(matched.convertedBalance ?? matched.balance ?? 0));
-            }
+            const resolved = resolveAccountCurrencyDisplayValue(matched, String(data.baseCurrency || baseCurrency), accountDisplayMode);
+            setDisplayCurrency(resolved.currency);
+            setMissingFxRate(resolved.value == null);
+            setValue(resolved.value ?? 0);
           }
         } catch {
         } finally {
@@ -98,6 +104,6 @@ export function LiveAccountBalance({
   }, [accountDisplayMode, accountId, baseCurrency, mode]);
 
   const displayValue = value * displayMultiplier;
-  const cls = semantic === "liability" ? liabilityCls(displayValue, isRedUp) : pnlCls(displayValue, isRedUp);
-  return <span className={`tabular-nums font-semibold ${cls}`}>{formatCurrencyMoney(displayValue, displayCurrency)}</span>;
+  const cls = missingFxRate ? "text-amber-700" : semantic === "liability" ? liabilityCls(displayValue, isRedUp) : pnlCls(displayValue, isRedUp);
+  return <span className={`tabular-nums font-semibold ${cls}`}>{missingFxRate ? t("sidebar.balance.missingFxRate") : formatCurrencyMoney(displayValue, displayCurrency)}</span>;
 }

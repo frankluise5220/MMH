@@ -29,6 +29,7 @@ import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
+import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
 import {
@@ -200,6 +201,10 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.shortLabel ?? "",
     item.hoverTitle ?? "",
     item.balance,
+    item.convertedBalance ?? "",
+    item.currency ?? "",
+    item.baseCurrency ?? "",
+    item.fxRateMissing ? "1" : "0",
     item.kind,
     item.groupName ?? "",
     item.institution ?? "",
@@ -212,6 +217,7 @@ function getSidebarItemSignature(item: AccountItem): string {
 }
 
 function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE): AccountItem {
+  const convertedBalance = a.convertedBalance == null ? null : Number(a.convertedBalance);
   const display = buildAccountDisplayOption({
     id: a.id,
     name: a.name,
@@ -229,6 +235,10 @@ function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_C
     shortLabel: display.selectorCoreLabel,
     hoverTitle: display.hoverTitle,
     balance: Number(a.balance ?? 0),
+    convertedBalance: convertedBalance != null && Number.isFinite(convertedBalance) ? convertedBalance : null,
+    currency: a.currency ?? null,
+    baseCurrency: a.baseCurrency ?? null,
+    fxRateMissing: !!a.fxRateMissing,
     kind: a.kind,
     groupName: display.groupName || "未设置所有人",
     institution: a.Institution?.name?.trim() || display.institutionName || undefined,
@@ -619,12 +629,26 @@ export function SidebarClient({
     return rounded > 0 ? (isRedUp ? "text-red-700" : "text-emerald-800") : rounded < 0 ? (isRedUp ? "text-emerald-800" : "text-red-700") : "text-foreground/40";
   };
   const baseCurrency = household?.baseCurrency || "CNY";
-  const displayBalance = (item: AccountItem) => {
-    const value = item.convertedBalance ?? item.balance;
-    return roundDisplayNumber(item.kind === "bank_credit" ? -value : value);
-  };
+  const resolveSidebarBalance = useCallback((item: AccountItem) => {
+    const resolved = resolveAccountCurrencyDisplayValue(item, baseCurrency, "converted");
+    return {
+      ...resolved,
+      value: resolved.value == null
+        ? null
+        : roundDisplayNumber(item.kind === "bank_credit" ? -resolved.value : resolved.value),
+    };
+  }, [baseCurrency]);
+  const displayBalanceValue = useCallback((item: AccountItem) => resolveSidebarBalance(item).value, [resolveSidebarBalance]);
+  const displayBalance = useCallback((item: AccountItem) => displayBalanceValue(item) ?? 0, [displayBalanceValue]);
+  const formatSidebarBalance = useCallback((item: AccountItem) => {
+    const resolved = resolveSidebarBalance(item);
+    return resolved.value == null ? t("sidebar.balance.missingFxRate") : formatCurrencyMoney(resolved.value, resolved.currency);
+  }, [resolveSidebarBalance, t]);
   const displaySectionTotal = (_kind: string, value: number) => roundDisplayNumber(value);
-  const itemBalanceCls = (item: AccountItem) => balCls(displayBalance(item));
+  const itemBalanceCls = (item: AccountItem) => {
+    const value = displayBalanceValue(item);
+    return value == null ? "text-amber-700" : balCls(value);
+  };
   const sectionBalanceCls = (kind: string, value: number) => balCls(displaySectionTotal(kind, value));
   const sectionLabel = (label: string) => {
     if (label === "资产") return t("sidebar.section.assets");
@@ -666,9 +690,9 @@ export function SidebarClient({
   // Restore and Refine Grouping logic
   const visibleItems = useMemo(() => {
     const passesCommonVisibility = (item: AccountItem) => {
-      const visibleBalance = displayBalance(item);
-      if (item.kind === "loan" && item.institutionType === "bank" && isDisplayZeroMoney(visibleBalance)) return false;
-      if (hideZero && isDisplayZeroMoney(visibleBalance)) return false;
+      const visibleBalance = displayBalanceValue(item);
+      if (visibleBalance != null && item.kind === "loan" && item.institutionType === "bank" && isDisplayZeroMoney(visibleBalance)) return false;
+      if (visibleBalance != null && hideZero && isDisplayZeroMoney(visibleBalance)) return false;
       if (selectedOwnerFilter && isOwnerScopedSidebarItem(item) && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
       return true;
     };
@@ -682,14 +706,17 @@ export function SidebarClient({
       }
       const children = item.children.filter(passesCommonVisibility);
       if (children.length === 0) return [];
+      const childrenTotal = children.reduce((sum, child) => sum + displayBalance(child), 0);
       return [{
         ...item,
         children,
-        balance: children.reduce((sum, child) => sum + child.balance, 0),
-        convertedBalance: children.reduce((sum, child) => sum + (child.convertedBalance ?? child.balance), 0),
+        balance: childrenTotal,
+        convertedBalance: childrenTotal,
+        currency: baseCurrency,
+        baseCurrency,
       }];
     });
-  }, [items, hideZero, selectedOwnerFilter]);
+  }, [items, hideZero, selectedOwnerFilter, baseCurrency, displayBalance, displayBalanceValue]);
 
   const sections = useMemo(() => {
     const sortAccountsByUsage = (accounts: AccountItem[]) =>
@@ -778,7 +805,7 @@ export function SidebarClient({
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
-  }, [visibleItems, sidebarGroupBy, accountUsage]);
+  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance]);
 
   const selectedDebtPerson = (searchParams.get("debtPerson") ?? "").trim();
   const debtPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";
@@ -1198,7 +1225,7 @@ export function SidebarClient({
                                       : it.label}
                                     </span>
                                   </span>
-                                  <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatCurrencyMoney(displayBalance(it), baseCurrency)}</span>
+                                  <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatSidebarBalance(it)}</span>
                                 </Link>
                               );
                             })}

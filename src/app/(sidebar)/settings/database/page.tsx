@@ -801,7 +801,7 @@ export default function DatabaseSettingsPage() {
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
             <input
-              type="password"
+              type="text"
               value={backupPassphrase}
               onChange={(event) => {
                 setBackupPassphrase(event.target.value);
@@ -811,10 +811,10 @@ export default function DatabaseSettingsPage() {
                 if (event.key === "Enter") void handleBackup();
               }}
               placeholder="备份加密口令（可选）"
-              autoComplete="new-password"
+              autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <div className="mt-1 text-[11px] text-slate-400">恢复时需要输入同一口令；留空则用创建备份时的用户密码解密。</div>
+            <div className="mt-1 text-[11px] text-slate-400">此口令会明文显示，便于核对；恢复时需要输入同一口令。留空则用当前用户密码加密。</div>
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
