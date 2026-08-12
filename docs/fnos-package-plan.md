@@ -19,6 +19,7 @@ appname=mmh
 - 飞牛包必须在 Linux/fnOS 构建环境生成，不能用 Windows 构建产物冒充正式包。
 - 数据目录必须持久化，升级不得删除用户的 SQLite 数据库文件；SQLite 数据库必须位于飞牛应用数据目录，不允许回退到应用安装目录。
 - 飞牛版正常更新必须是同一 `appname=mmh` 的覆盖升级，走 `cmd/upgrade_init` / `cmd/upgrade_callback`；不要把先卸载旧包再安装新版作为常规升级方案。
+- 飞牛版数据库升级不能依赖备份恢复来避免丢数据。新增字段必须通过幂等 SQLite 迁移补列；字段重命名、拆分、类型调整或表重组必须写显式迁移和数据回填，不能重建库、清空表或让旧库停留在不兼容结构。
 - 默认安全边界清楚：只暴露 Web 端口，不包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。
 
 ## 已落地
@@ -29,6 +30,7 @@ appname=mmh
 - `prisma/schema.native.prisma` 已能通过 `prisma validate`。
 - `scripts/build-fnos-app.cjs` 定义 Linux SQLite standalone 构建流程。
 - `scripts/build-fnos-package.cjs` 生成飞牛 FPK 工程，支持 `FNOS_TARGET_ARCH=x86|arm64`，写入对应 manifest 架构、`cmd/main`、图标、持久化数据目录解析、Prisma runtime 和 SQLite 启动链。
+- `cmd/main` 启动前会运行 `init-sqlite.cjs`。空库使用 `native-init.sql` 初始化；已有库跳过全量初始化，但继续运行 `_mmh_native_schema` 记录的运行时迁移，例如为旧库补新增列。
 - `scripts/verify-fnos-package.cjs` 校验飞牛包素材，防止 `.env` 泄露、Docker resource 混入和第二个 `.fpk` 包出现。
 - `.github/workflows/fnos-release.yml` 发布时用 x86/arm64 矩阵构建并上传正式 `release-artifacts/fnos/*.fpk`。
 - `.github/workflows/fnos-stage.yml` 生成 x86/arm64 调试用 FPK 工程归档；该归档不能作为用户安装包。
@@ -42,7 +44,7 @@ appname=mmh
 3. 设置 `DATABASE_URL=file:$DATA_DEST/mmh.db`。
 4. 设置 `PRISMA_SCHEMA_PATH=$SERVER_DIR/prisma/schema.native.prisma`。
 5. 读取持久环境文件 `mmh.env`，导出 `PORT` 和 `MMH_SYSTEM_PASSWORD`；如果未设置系统密码，首次启动随机生成一次并保存到 `mmh-system-password.txt`。
-6. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建。
+6. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`。
 7. 启动包内 Next standalone `server.js`，对外暴露 `7777`。
 
 ## 发布链

@@ -1142,12 +1142,69 @@ if (fs.existsSync(standaloneDir)) {
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
+const MIGRATIONS = [
+  {
+    version: "20260812_account_note",
+    description: "Add Account.note freeform remark",
+    apply(db) {
+      addColumnIfMissing(db, "Account", "note", "TEXT");
+    },
+  },
+];
+
 function databasePathFromUrl(value) {
   if (!value || !value.startsWith("file:")) {
     throw new Error("DATABASE_URL must be a SQLite file: URL.");
   }
   const rawPath = value.slice("file:".length);
   return path.resolve(decodeURIComponent(rawPath));
+}
+
+function quoteIdent(value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error("Unsafe SQLite identifier: " + value);
+  }
+  return '"' + value + '"';
+}
+
+function tableExists(db, tableName) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName));
+}
+
+function columnExists(db, tableName, columnName) {
+  return db.prepare("PRAGMA table_info(" + quoteIdent(tableName) + ")").all().some((column) => column.name === columnName);
+}
+
+function addColumnIfMissing(db, tableName, columnName, definition) {
+  if (!tableExists(db, tableName)) {
+    throw new Error("SQLite migration target table is missing: " + tableName);
+  }
+  if (columnExists(db, tableName, columnName)) return;
+  db.exec("ALTER TABLE " + quoteIdent(tableName) + " ADD COLUMN " + quoteIdent(columnName) + " " + definition);
+}
+
+function ensureMigrationTable(db) {
+  db.exec("CREATE TABLE IF NOT EXISTS _mmh_native_schema (version TEXT NOT NULL PRIMARY KEY, appliedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+}
+
+function migrationApplied(db, version) {
+  return Boolean(db.prepare("SELECT version FROM _mmh_native_schema WHERE version = ?").get(version));
+}
+
+function markMigrationApplied(db, version) {
+  db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run(version);
+}
+
+function applyRuntimeMigrations(db) {
+  ensureMigrationTable(db);
+  for (const migration of MIGRATIONS) {
+    if (migrationApplied(db, migration.version)) continue;
+    db.transaction(() => {
+      migration.apply(db);
+      markMigrationApplied(db, migration.version);
+    })();
+    console.log("SQLite migration applied: " + migration.version + " - " + migration.description);
+  }
 }
 
 const dbPath = databasePathFromUrl(process.env.DATABASE_URL);
@@ -1159,11 +1216,13 @@ try {
   const existing = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
   if (!existing) {
     db.exec(fs.readFileSync(sqlPath, "utf8"));
-    db.exec("CREATE TABLE IF NOT EXISTS _mmh_native_schema (version TEXT NOT NULL PRIMARY KEY, appliedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+    ensureMigrationTable(db);
     db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run("0.1.0");
+    applyRuntimeMigrations(db);
     console.log(\`SQLite database initialized at \${dbPath}\`);
   } else {
-    console.log(\`SQLite database already initialized at \${dbPath}\`);
+    applyRuntimeMigrations(db);
+    console.log(\`SQLite database already initialized and migrated at \${dbPath}\`);
   }
 } finally {
   db.close();
