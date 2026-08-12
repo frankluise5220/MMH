@@ -127,6 +127,7 @@ export async function GET(req: Request) {
         select: {
           id: true,
           name: true,
+          note: true,
           balance: true,
           kind: true,
           debtDirection: true,
@@ -466,6 +467,7 @@ export async function GET(req: Request) {
         accounts: accountBatch.map((account) => ({
           id: account.id,
           name: account.name,
+          note: account.note,
           balance: isPureInvestmentAccount(account)
             ? investBalByAccountId.get(account.id)?.marketValue ?? 0
             : account.kind === AccountKind.insurance

@@ -79,9 +79,11 @@ mmh-arm64.fpk
 ## 升级边界
 
 - FN 软仓测试源只能验证“源里有新版本、下载地址可用、版本号能比较”这条测试链路。它不能替代飞牛官方应用中心的升级发布。
-- 手动安装的 `.fpk` 在飞牛应用中心里会标记为 `manualInstall`。这类包不一定能通过第三方软仓完成覆盖升级，不能把“软仓按钮安装完成”当作真正升级成功。
-- FN 软仓会通过 `appcenter-cli uninstall` 再 `install-fpk` 模拟更新；`appcenter-cli` 在卸载/安装失败时可能仍返回退出码 0，因此必须在升级后验证 `/var/apps/mmh/manifest`、`/vol1/@appcenter/mmh/server/package.json` 和关键 API。
-- 包内不得包含 `wizard/uninstall`。卸载向导会要求 Web UI 输入，导致 FN 软仓非交互更新无法真正卸载旧包。
+- 正常更新必须是同一 `appname=mmh` 的覆盖升级：安装更高版本、同架构的 `.fpk` 时，飞牛应走 `cmd/upgrade_init` / `cmd/upgrade_callback`，不得把常规更新实现为先卸载再安装。
+- 手动安装的 `.fpk` 在飞牛应用中心里可能标记为 `manualInstall`。这会影响官方应用中心是否主动提示更新，但不应改变包自身的覆盖升级目标。
+- 覆盖升级后必须验证 `/var/apps/mmh/manifest`、`/vol1/@appcenter/mmh/server/package.json` 和关键 API，确认实际运行代码与 manifest 版本都已更新。
+- 包内不得包含 `wizard/uninstall`。卸载向导会要求 Web UI 输入，既不属于覆盖升级流程，也会阻塞自动化更新验证。
+- `uninstall_init` 只作为用户主动卸载或异常恢复时的数据兜底；正常升级验收不能依赖卸载重装。生命周期在检测到 `data/mmh.db` 时，会先把应用数据目录复制到同级的 `mmh-upgrade-backups` 目录。用户仍应优先在 MMH 里导出 `.mmh-backup` 后再做高风险操作。
 - 面向普通用户的正式升级必须走飞牛官方应用中心上架/审核后的版本发布链路。只有官方应用中心记录了同一个 `appname` 的新版本，后续用户才应在飞牛自身应用中心里看到并执行升级。
 
 ## 安全边界
@@ -89,5 +91,6 @@ mmh-arm64.fpk
 - 飞牛包默认只暴露 MMH Web 端口 `7777`。
 - 飞牛包使用 SQLite，没有 PostgreSQL 连接密码。页面中要求输入“数据库密码”的敏感操作，在飞牛版中验证的是安装向导设置或首次启动生成的 MMH 系统密码。
 - 数据保存在飞牛应用数据目录中的 SQLite 文件，升级包不得删除用户数据目录。
+- 升级/卸载前的生命周期备份也只复制飞牛应用数据目录，不会把数据库放回应用安装目录。
 - 系统密码保存在飞牛应用数据目录 `mmh-system-password.txt` 和运行环境文件 `mmh.env` 中，文件权限会尽量收紧为仅应用用户可读写。
 - 包内不得包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。

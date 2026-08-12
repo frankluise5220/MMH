@@ -175,6 +175,8 @@ const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settin
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
 const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
 const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
+const fnosReadme = read(path.join(root, "deploy", "fnos", "README.md"));
+const fnosPackagePlan = read(path.join(root, "docs", "fnos-package-plan.md"));
 const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
 const stageDir = path.join(root, "release-artifacts", "fnos", verifyTarget.stageDirName);
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
@@ -193,6 +195,13 @@ expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest mus
 expect(/changelog=\$\{changelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not include an uninstall wizard; FN soft-store updates cannot complete when uninstall requires UI input.");
+expect(/backupLifecycle\("upgrade"\)/.test(buildScript), "fnOS package must create cmd/upgrade_init to back up app data before upgrades.");
+expect(/backupLifecycle\("uninstall"\)/.test(buildScript), "fnOS package must create cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
+expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fnOS backup lifecycle must copy appdata to an upgrade backup directory and record the SQLite checksum when available.");
+expect(/upgrade_callback/.test(buildScript), "fnOS package must include upgrade_callback for overlay upgrades.");
+expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "fnOS README must document direct same-app overlay upgrades.");
+expect(!/appcenter-cli uninstall/.test(fnosReadme), "fnOS README must not describe uninstall/install as the normal update path.");
+expect(/覆盖升级/.test(fnosPackagePlan) && /appname=mmh/.test(fnosPackagePlan), "fnOS package plan must keep same-app overlay upgrade as the normal update path.");
 expect(/process\.platform === "linux"/.test(buildScript), "fnOS release builds must be guarded to Linux/fnOS.");
 expect(/resolve_data_dest/.test(buildScript), "fnOS start script must resolve a persistent fnOS data directory.");
 expect(/TRIM_PKGVAR\/data/.test(buildScript), "fnOS start script must prefer TRIM_PKGVAR/data when TRIM_DATADEST is unavailable.");
@@ -281,6 +290,13 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   expect(!tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; soft-store updates need non-interactive uninstall.");
+  expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
+  expect(tarHasEntry(builtFpk, "cmd/upgrade_callback"), "Built fnOS .fpk must include cmd/upgrade_callback for overlay upgrades.");
+  expect(tarHasEntry(builtFpk, "cmd/uninstall_init"), "Built fnOS .fpk must include cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
+  const upgradeInitScript = readTarEntry(builtFpk, "cmd/upgrade_init");
+  const uninstallInitScript = readTarEntry(builtFpk, "cmd/uninstall_init");
+  expect(/upgrade-backups/.test(upgradeInitScript) && /data\/mmh\.db/.test(upgradeInitScript), "Built fnOS upgrade_init must back up persistent app data when SQLite data exists.");
+  expect(/upgrade-backups/.test(uninstallInitScript) && /data\/mmh\.db/.test(uninstallInitScript), "Built fnOS uninstall_init must back up persistent app data when SQLite data exists.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");

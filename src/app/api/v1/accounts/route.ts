@@ -145,6 +145,7 @@ export async function POST(req: NextRequest) {
     const numberMasked = accountSupportsNumberMasked(kind)
       ? String(body.numberMasked ?? "").trim() || null
       : null;
+    const note = String(body.note ?? "").trim() || null;
 
     await assertAccountIdentityUnique(prisma, {
       householdId,
@@ -178,6 +179,7 @@ export async function POST(req: NextRequest) {
           creditLimit,
           creditBillMode,
           numberMasked,
+          note,
           investProductType: investProductType as any,
           costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
           ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
@@ -269,6 +271,7 @@ export async function PUT(req: NextRequest) {
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
     if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;
+    if (body.note !== undefined) data.note = String(body.note ?? "").trim() || null;
 
     if (body.fundUnitsDecimals !== undefined) {
       data.fundUnitsDecimals = normalizeFundUnitsDecimals(body.fundUnitsDecimals ?? existing.fundUnitsDecimals);
@@ -399,6 +402,7 @@ export async function PUT(req: NextRequest) {
         repaymentDay: updated.repaymentDay,
         creditBillMode: updated.creditBillMode,
         institutionId: updated.institutionId,
+        note: updated.note,
         brokerageCashAccountId: brokerageCashAccount?.id ?? null,
         affectedCreditAccountIds,
         creditCycleRuleChanged,
@@ -594,6 +598,7 @@ export async function GET(req: Request) {
       count: 0,
       kind: account.kind,
       debtDirection: account.debtDirection,
+      note: account.note,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",

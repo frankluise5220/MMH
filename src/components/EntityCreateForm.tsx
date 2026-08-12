@@ -214,6 +214,7 @@ const ENTITY_CONFIG = {
     bodyKey: { name: "name", kind: "kind" },
     fullFields: [
       { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
+      { key: "note", label: "备注", type: "text", placeholder: "可选" },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },

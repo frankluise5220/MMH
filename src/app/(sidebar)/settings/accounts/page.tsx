@@ -34,6 +34,7 @@ type Group = { id: string; name: string; sortOrder: number };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
+  note: string | null;
   isPlaceholder?: boolean;
   institutionId: string | null; groupId: string | null;
   Institution: { id: string; name: string; shortName?: string | null } | null;
@@ -124,6 +125,7 @@ export default function SettingsAccountsPage() {
     setEditError("");
     setEditForm({
       name: a.name,
+      note: a.note || "",
       kind: normalizedKind,
       groupId: a.groupId || "",
       institutionId: a.institutionId || "",
@@ -239,6 +241,7 @@ export default function SettingsAccountsPage() {
     const haystack = [
       account.name,
       accountDisplayName(account),
+      account.note,
       account.numberMasked,
       account.AccountGroup?.name,
       account.Institution?.name,
@@ -297,7 +300,7 @@ export default function SettingsAccountsPage() {
             <input
               value={accountNameQuery}
               onChange={(event) => setAccountNameQuery(event.target.value)}
-              placeholder="按账户名称/机构/尾号筛选"
+              placeholder="按账户名称/机构/尾号/备注筛选"
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
           </div>
@@ -513,6 +516,16 @@ export default function SettingsAccountsPage() {
                       </div>
                     )}
 
+                    <div className="mt-3">
+                      <label className="block text-xs text-slate-500 mb-1">备注</label>
+                      <input
+                        value={editForm.note || ""}
+                        onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400"
+                        placeholder="可选"
+                      />
+                    </div>
+
                     <div className="flex justify-end gap-2 mt-3">
                       {editError && <div className="text-xs text-red-600">{editError}</div>}
                       <button onClick={() => { setEditingId(null); setEditError(""); }}
@@ -531,6 +544,9 @@ export default function SettingsAccountsPage() {
                       <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                       {a.isPlaceholder && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
+                      )}
+                      {a.note && (
+                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>备注：{a.note}</span>
                       )}
                       {a.AccountGroup && (
                         <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>

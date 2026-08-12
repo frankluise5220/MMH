@@ -36,6 +36,7 @@ model Account {
   creditBillMode                                             CreditBillMode              @default(separate)
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
+  note                                                       String?
   householdId                                                String
   institutionId                                              String?
   counterpartyId                                             String?

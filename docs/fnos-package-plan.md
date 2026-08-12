@@ -18,6 +18,7 @@ appname=mmh
 - 普通 NAS 安装与更新仍保持 Docker 路线，不被飞牛 SQLite 包替代。
 - 飞牛包必须在 Linux/fnOS 构建环境生成，不能用 Windows 构建产物冒充正式包。
 - 数据目录必须持久化，升级不得删除用户的 SQLite 数据库文件；SQLite 数据库必须位于飞牛应用数据目录，不允许回退到应用安装目录。
+- 飞牛版正常更新必须是同一 `appname=mmh` 的覆盖升级，走 `cmd/upgrade_init` / `cmd/upgrade_callback`；不要把先卸载旧包再安装新版作为常规升级方案。
 - 默认安全边界清楚：只暴露 Web 端口，不包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。
 
 ## 已落地
@@ -61,11 +62,12 @@ appname=mmh
 - 当前包包含 Linux Node runtime、Next standalone、Prisma runtime 和必要依赖，体积会明显大于 miniBill；除非后续把服务端重写为更轻的单二进制运行时，否则不承诺几 MB 级。
 - 飞牛包安装/配置向导必须提供系统密码设置项；留空时由启动脚本生成随机密码并写入持久应用数据目录。
 - 飞牛包不使用独立 `-fnos` 版本号；正式发布前用 `npm run release:version` 递增一次 `package.json` 的 `0.1.x`，并保持 GitHub Release、GHCR 镜像和所有架构 `.fpk` 同号。
+- 用户通过应用中心或手动选择新版 `.fpk` 时，应在已安装 `mmh` 上直接覆盖升级。`uninstall_init` 仅用于用户主动卸载或异常恢复时备份 appdata，不作为升级路径。
 
 ## 待确认
 
 - 飞牛 `.fpk` 的正式 manifest 字段、签名方式和目录结构。
-- 飞牛安装/升级时的数据目录保留行为。
+- 飞牛手动 `.fpk` 覆盖升级在 `manualInstall` 状态下的应用中心提示行为。
 - 系统更新页在 `MMH_DEPLOY_TARGET=fnos` 时显示飞牛包更新方式，而不是 Docker updater。
 
 ## 下一步清单
@@ -77,7 +79,7 @@ appname=mmh
 - [x] 建立 `npm run check:fnos` 飞牛包素材校验。
 - [x] 增加 GitHub Release workflow，发布时自动下载对应架构的 Linux Node runtime、安装对应架构官方 `fnpack` 并构建正式 `.fpk`。
 - [ ] 执行 `.github/workflows/fnos-release.yml`，确认正式 x86/arm64 `.fpk` 产出并通过内置校验。
-- [ ] 在 x86 与 ARM64 飞牛测试机安装对应 `.fpk`，验证启动、SQLite 数据保留、升级覆盖和日志查看。
+- [ ] 在 x86 与 ARM64 飞牛测试机安装旧版 `.fpk` 后，直接安装同一 `appname=mmh` 的新版 `.fpk`，验证覆盖升级、SQLite 数据保留、版本号变化和日志查看。
 - [x] 给系统更新页增加飞牛环境提示。
 - [ ] 将大列表接口改成分页或游标，优先处理账单、明细、导入预览。
 - [ ] 补 API mutation 的 Origin/CSRF 与登录失败限流。

@@ -1371,6 +1371,7 @@ export async function restoreHouseholdBackup(
           creditBillMode: item.creditBillMode == null ? "separate" : (String(item.creditBillMode) as never),
           numberMasked: item.numberMasked == null ? null : String(item.numberMasked),
           routeKey: item.routeKey == null ? null : String(item.routeKey),
+          note: item.note == null ? null : String(item.note),
           householdId,
           institutionId:
             item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null,

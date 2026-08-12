@@ -8,7 +8,7 @@
 
 - `cmd/main` 仍把 SQLite 数据放到应用安装目录，未使用飞牛应用数据目录。
 - `better-sqlite3.node` 来自不兼容目标系统的构建环境，可能要求高于 fnOS 1.2 / Debian 12 的 GLIBC 版本。
-- `wizard/uninstall` 会让 FN 软仓的非交互式“先卸载再安装”更新链路失败；飞牛 CLI 输出错误但退出码仍为 0，软仓会误报安装成功。
+- `wizard/uninstall` 会阻塞自动化升级验证；常规更新必须按同一 `appname=mmh` 覆盖安装新版 `.fpk`，不能把卸载重装当作升级方案。
 
 下一次官方提交必须为 x86 和 ARM64 重新生成同一版本 `.fpk`，并通过 `npm run check:release-version` 与 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos` 验证后再上传 Release。
 
@@ -29,7 +29,7 @@
 - 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag `v0.1.x`、GHCR 镜像 tag 和文件名必须一致；不再使用 `v0.1.x-fnos`。
 - 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
 - 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
-- 包内不能包含 `wizard/uninstall`；卸载默认保留应用数据目录，避免阻塞第三方软仓更新链路。
+- 包内不能包含 `wizard/uninstall`；覆盖升级必须走 `cmd/upgrade_init` / `cmd/upgrade_callback`，卸载生命周期只作为用户主动卸载时的数据兜底。
 - 两个架构包必须保持同一个 `appname=mmh` 和同一个版本号；x86 manifest 使用 `arch=x86_64`、`platform=x86`，ARM64 manifest 使用 `arch=aarch64`、`platform=arm`。
 
 ## Manifest 摘要
@@ -46,7 +46,7 @@ source                = thirdparty
 service_port          = 7777
 checkport             = true
 os_min_version        = 0.9.0
-changelog             = 修复 FN 软仓更新链路：移除阻塞非交互升级的卸载向导，并继续包含首次使用向导、当前图标和 SQLite 数据目录修复。
+changelog             = 修复飞牛覆盖升级链路：使用同一 appname 的新版 FPK 直接覆盖安装，并继续包含首次使用向导、当前图标和 SQLite 数据目录修复。
 ```
 
 ARM64 包：
@@ -92,7 +92,7 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 - x86：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh-x86_64.fpk
 - ARM64：https://github.com/frankluise5220/MMH/releases/download/v0.1.10/mmh-arm64.fpk
 项目主页：https://github.com/frankluise5220/MMH
-说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，升级不删除用户账本数据。
+说明：本包为飞牛 SQLite 原生包，不依赖 Docker/PostgreSQL。数据保存在应用数据目录，同一 appname 的新版 FPK 支持覆盖升级，升级不删除用户账本数据。
 ```
 
 ## 已验证
@@ -101,7 +101,7 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 - Release 包 manifest 版本为 `0.1.10`。
 - 正式提交包由 fnOS 测试机上的 `fnpack build` 生成。
 - GitHub Release 只应包含 x86 `mmh-x86_64.fpk` 和 ARM64 `mmh-arm64.fpk` 两个 FPK。
-- FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级完成后不应继续提示更新。
+- FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级必须以同一 `appname=mmh` 覆盖安装新版 `.fpk`，完成后不应继续提示更新。
 
 ## 待人工补充
 
