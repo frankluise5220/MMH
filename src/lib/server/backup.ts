@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { prisma } from "@/lib/db/prisma";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import {
@@ -545,19 +547,306 @@ const SQLITE_STOCK_RESTORE_SCHEMA_SQL = [
   `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_isActive_idx" ON "stock_brokerage_catalog"("isActive")`,
 ] as const;
 
-async function ensureSqliteColumn(tableName: string, columnName: string, definition: string) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)) {
+function quoteSqliteIdent(value: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw new Error("Unsafe SQLite schema identifier");
   }
-  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("${tableName}")`);
+  return `"${value}"`;
+}
+
+async function ensureSqliteColumn(tableName: string, columnName: string, definition: string) {
+  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info(${quoteSqliteIdent(tableName)})`);
   if (columns.length === 0 || columns.some((column) => column.name === columnName)) return;
-  await prisma.$executeRawUnsafe(`ALTER TABLE "${tableName}" ADD COLUMN "${columnName}" ${definition}`);
+  await prisma.$executeRawUnsafe(`ALTER TABLE ${quoteSqliteIdent(tableName)} ADD COLUMN ${quoteSqliteIdent(columnName)} ${definition}`);
+}
+
+type SqliteSchemaBackfillResult = {
+  skippedColumns: string[];
+};
+
+function nativeInitSqlCandidates() {
+  const candidates = new Set<string>();
+  if (process.env.PRISMA_SCHEMA_PATH) {
+    candidates.add(path.join(path.dirname(process.env.PRISMA_SCHEMA_PATH), "native-init.sql"));
+  }
+  candidates.add(path.join(process.cwd(), "prisma", "native-init.sql"));
+  candidates.add(path.join(process.cwd(), "server", "prisma", "native-init.sql"));
+  if (process.argv[1]) {
+    candidates.add(path.join(path.dirname(process.argv[1]), "prisma", "native-init.sql"));
+  }
+  return [...candidates];
+}
+
+function findNativeInitSqlPath() {
+  return nativeInitSqlCandidates().find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function splitSqlStatements(sql: string) {
+  const statements: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+    const next = sql[i + 1];
+    current += char;
+    if (quote) {
+      if (char === quote) {
+        if (next === quote) {
+          current += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === ";") {
+      const statement = current.slice(0, -1).trim();
+      if (statement) statements.push(statement);
+      current = "";
+    }
+  }
+  const tail = current.trim();
+  if (tail) statements.push(tail);
+  return statements;
+}
+
+function splitSqlListItems(value: string) {
+  const items: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    const next = value[i + 1];
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        if (next === quote) {
+          current += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      const item = current.trim();
+      if (item) items.push(item);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  const tail = current.trim();
+  if (tail) items.push(tail);
+  return items;
+}
+
+function createTableNameFromStatement(statement: string) {
+  const match = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([^"\s(]+)"?/i.exec(statement.trim());
+  return match ? match[1] : "";
+}
+
+function createIndexTableNameFromStatement(statement: string) {
+  const match = /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"?[^"\s(]+"?\s+ON\s+"?([^"\s(]+)"?/i.exec(statement.trim());
+  return match ? match[1] : "";
+}
+
+function createIndexStatementIfMissing(statement: string) {
+  const trimmed = statement.trim();
+  if (/^CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+/i.test(trimmed)) return trimmed;
+  if (/^CREATE\s+UNIQUE\s+INDEX\s+/i.test(trimmed)) {
+    return trimmed.replace(/^CREATE\s+UNIQUE\s+INDEX\s+/i, "CREATE UNIQUE INDEX IF NOT EXISTS ");
+  }
+  return trimmed.replace(/^CREATE\s+INDEX\s+/i, "CREATE INDEX IF NOT EXISTS ");
+}
+
+function createTableBodyFromStatement(statement: string) {
+  const trimmed = statement.trim();
+  const start = trimmed.indexOf("(");
+  if (start < 0) return "";
+  let body = "";
+  let quote: string | null = null;
+  let depth = 1;
+  for (let i = start + 1; i < trimmed.length; i += 1) {
+    const char = trimmed[i];
+    const next = trimmed[i + 1];
+    if (quote) {
+      body += char;
+      if (char === quote) {
+        if (next === quote) {
+          body += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      body += char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      body += char;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return body;
+      body += char;
+      continue;
+    }
+    body += char;
+  }
+  return "";
+}
+
+function createTableColumnDefinitionsFromStatement(statement: string) {
+  const columns: Array<{ name: string; definition: string }> = [];
+  for (const item of splitSqlListItems(createTableBodyFromStatement(statement))) {
+    const trimmed = item.trim();
+    if (!trimmed || /^(?:CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK)\b/i.test(trimmed)) continue;
+    const quoted = /^"([^"]+)"\s+([\s\S]+)$/.exec(trimmed);
+    if (quoted) {
+      columns.push({ name: quoted[1], definition: quoted[2].trim() });
+      continue;
+    }
+    const bare = /^([A-Za-z_][A-Za-z0-9_]*)\s+([\s\S]+)$/.exec(trimmed);
+    if (bare) columns.push({ name: bare[1], definition: bare[2].trim() });
+  }
+  return columns;
+}
+
+function canAddColumnFromCreateTableDefinition(definition: string) {
+  const upper = definition.toUpperCase();
+  if (/\bPRIMARY\s+KEY\b|\bUNIQUE\b/.test(upper)) return false;
+  if (/\bGENERATED\b|\bAS\s*\(/.test(upper)) return false;
+  if (/\bNOT\s+NULL\b/.test(upper) && !/\bDEFAULT\b/.test(upper)) return false;
+  if (/\bDEFAULT\s+(?:CURRENT_TIME|CURRENT_DATE|CURRENT_TIMESTAMP)\b/.test(upper)) return false;
+  if (/\bDEFAULT\s*\(/.test(upper)) return false;
+  return true;
+}
+
+async function sqliteTableExists(tableName: string) {
+  const rows = await prisma.$queryRawUnsafe<Array<{ name: string }>>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    tableName,
+  );
+  return rows.length > 0;
+}
+
+async function sqliteColumnNames(tableName: string) {
+  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info(${quoteSqliteIdent(tableName)})`);
+  return new Set(columns.map((column) => column.name));
+}
+
+async function sqliteIndexColumnsExist(tableName: string, columnNames: string[]) {
+  if (!columnNames.length) return true;
+  const existing = await sqliteColumnNames(tableName);
+  return columnNames.every((columnName) => existing.has(columnName));
+}
+
+function createIndexColumnNamesFromStatement(statement: string) {
+  const match = /\(([^()]*)\)\s*(?:WHERE\s+.*)?$/i.exec(statement.trim());
+  if (!match) return [];
+  const names: string[] = [];
+  for (const item of splitSqlListItems(match[1])) {
+    const normalized = item.trim().replace(/\s+(?:ASC|DESC)\s*$/i, "");
+    const quoted = /^"([^"]+)"$/.exec(normalized);
+    if (quoted) {
+      names.push(quoted[1]);
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) {
+      names.push(normalized);
+      continue;
+    }
+    return [];
+  }
+  return names;
+}
+
+async function applyNativeInitSqlSchemaBackfillForRestore(): Promise<SqliteSchemaBackfillResult> {
+  const sqlPath = findNativeInitSqlPath();
+  const result: SqliteSchemaBackfillResult = { skippedColumns: [] };
+  if (!sqlPath) return result;
+
+  const statements = splitSqlStatements(fs.readFileSync(sqlPath, "utf8"));
+  for (const statement of statements) {
+    if (!/^CREATE\s+TABLE\s+/i.test(statement)) continue;
+    const tableName = createTableNameFromStatement(statement);
+    if (!tableName || await sqliteTableExists(tableName)) continue;
+    await prisma.$executeRawUnsafe(statement);
+  }
+
+  for (const statement of statements) {
+    if (!/^CREATE\s+TABLE\s+/i.test(statement)) continue;
+    const tableName = createTableNameFromStatement(statement);
+    if (!tableName || !(await sqliteTableExists(tableName))) continue;
+    const existingColumns = await sqliteColumnNames(tableName);
+    for (const column of createTableColumnDefinitionsFromStatement(statement)) {
+      if (existingColumns.has(column.name)) continue;
+      const label = `${tableName}.${column.name}`;
+      if (!canAddColumnFromCreateTableDefinition(column.definition)) {
+        result.skippedColumns.push(label);
+        continue;
+      }
+      try {
+        await ensureSqliteColumn(tableName, column.name, column.definition);
+        existingColumns.add(column.name);
+      } catch {
+        result.skippedColumns.push(label);
+      }
+    }
+  }
+
+  for (const statement of statements) {
+    if (!/^CREATE\s+(?:UNIQUE\s+)?INDEX\s+/i.test(statement)) continue;
+    const tableName = createIndexTableNameFromStatement(statement);
+    if (!tableName || !(await sqliteTableExists(tableName))) continue;
+    if (!(await sqliteIndexColumnsExist(tableName, createIndexColumnNamesFromStatement(statement)))) continue;
+    try {
+      await prisma.$executeRawUnsafe(createIndexStatementIfMissing(statement));
+    } catch {
+      // Compatible indexes are best-effort during restore preflight; data safety is guarded by table/column checks.
+    }
+  }
+
+  return result;
 }
 
 async function ensureSqliteRestoreCompatibilitySchema() {
   if (!isSqliteRuntime()) return;
   for (const statement of SQLITE_STOCK_RESTORE_SCHEMA_SQL) {
     await prisma.$executeRawUnsafe(statement);
+  }
+  const nativeSchemaBackfill = await applyNativeInitSqlSchemaBackfillForRestore();
+  if (nativeSchemaBackfill.skippedColumns.length > 0) {
+    restoreError(`当前 SQLite 数据库缺少无法自动补齐的字段：${nativeSchemaBackfill.skippedColumns.join("、")}。请先升级到包含显式数据库迁移的版本后再恢复。`);
   }
   await ensureSqliteColumn("UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
   await ensureSqliteColumn("entry_business_links", "stockTransactionId", "TEXT");

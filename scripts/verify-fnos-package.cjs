@@ -224,6 +224,8 @@ expect(/cp -a "\$data_root\/data"/.test(buildScript), "fnOS backup lifecycle mus
 expect(/upgrade_callback/.test(buildScript), "fnOS package must include upgrade_callback for overlay upgrades.");
 expect(/const MIGRATIONS = \[/.test(buildScript), "fnOS SQLite init must include an explicit runtime migration list for existing databases.");
 expect(/function splitSqlStatements\(sql\)/.test(buildScript) && /function applyMissingSchemaObjectsFromInitSql\(db, sqlPath\)/.test(buildScript), "fnOS SQLite init must parse native-init.sql to backfill newly added tables for existing databases.");
+expect(/createTableColumnDefinitionsFromStatement/.test(buildScript) && /SQLite schema column added from native-init.sql/.test(buildScript), "fnOS SQLite init must backfill safe newly added columns from native-init.sql for existing databases.");
+expect(/canAddColumnFromCreateTableDefinition/.test(buildScript) && /SQLite schema column skipped from native-init.sql because it cannot be safely added/.test(buildScript), "fnOS SQLite column backfill must skip unsafe column transforms instead of guessing destructive migrations.");
 expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
 expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped from native-init.sql/.test(buildScript), "fnOS SQLite schema backfill must skip incompatible indexes instead of failing existing databases.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");

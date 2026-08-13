@@ -1291,6 +1291,7 @@ function splitSqlListItems(value) {
   const items = [];
   let current = "";
   let quote = null;
+  let depth = 0;
   for (let i = 0; i < value.length; i += 1) {
     const char = value[i];
     const next = value[i + 1];
@@ -1311,7 +1312,17 @@ function splitSqlListItems(value) {
       current += char;
       continue;
     }
-    if (char === ",") {
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
       const item = current.trim();
       if (item) items.push(item);
       current = "";
@@ -1322,6 +1333,93 @@ function splitSqlListItems(value) {
   const tail = current.trim();
   if (tail) items.push(tail);
   return items;
+}
+
+function createTableBodyFromStatement(statement) {
+  const trimmed = statement.trim();
+  const start = trimmed.indexOf("(");
+  if (start < 0) return "";
+  let body = "";
+  let quote = null;
+  let depth = 1;
+  for (let i = start + 1; i < trimmed.length; i += 1) {
+    const char = trimmed[i];
+    const next = trimmed[i + 1];
+    if (quote) {
+      body += char;
+      if (char === quote) {
+        if (next === quote) {
+          body += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      body += char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      body += char;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return body;
+      body += char;
+      continue;
+    }
+    body += char;
+  }
+  return "";
+}
+
+function createTableColumnDefinitionsFromStatement(statement) {
+  const columns = [];
+  for (const item of splitSqlListItems(createTableBodyFromStatement(statement))) {
+    const trimmed = item.trim();
+    if (!trimmed || /^(?:CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK)\\b/i.test(trimmed)) continue;
+    const quoted = /^"([^"]+)"\\s+([\\s\\S]+)$/.exec(trimmed);
+    if (quoted) {
+      columns.push({ name: quoted[1], definition: quoted[2].trim() });
+      continue;
+    }
+    const bare = /^([A-Za-z_][A-Za-z0-9_]*)\\s+([\\s\\S]+)$/.exec(trimmed);
+    if (bare) columns.push({ name: bare[1], definition: bare[2].trim() });
+  }
+  return columns;
+}
+
+function canAddColumnFromCreateTableDefinition(definition) {
+  const upper = definition.toUpperCase();
+  if (/\\bPRIMARY\\s+KEY\\b|\\bUNIQUE\\b/.test(upper)) return false;
+  if (/\\bGENERATED\\b|\\bAS\\s*\\(/.test(upper)) return false;
+  if (/\\bNOT\\s+NULL\\b/.test(upper) && !/\\bDEFAULT\\b/.test(upper)) return false;
+  if (/\\bDEFAULT\\s+(?:CURRENT_TIME|CURRENT_DATE|CURRENT_TIMESTAMP)\\b/.test(upper)) return false;
+  if (/\\bDEFAULT\\s*\\(/.test(upper)) return false;
+  return true;
+}
+
+function applyMissingColumnsFromCreateTableStatement(db, statement) {
+  const tableName = createTableNameFromStatement(statement);
+  if (!tableName || !tableExists(db, tableName)) return;
+  for (const column of createTableColumnDefinitionsFromStatement(statement)) {
+    if (columnExists(db, tableName, column.name)) continue;
+    if (!canAddColumnFromCreateTableDefinition(column.definition)) {
+      console.warn("SQLite schema column skipped from native-init.sql because it cannot be safely added: " + tableName + "." + column.name);
+      continue;
+    }
+    try {
+      addColumnIfMissing(db, tableName, column.name, column.definition);
+      console.log("SQLite schema column added from native-init.sql: " + tableName + "." + column.name);
+    } catch (error) {
+      console.warn("SQLite schema column skipped from native-init.sql for " + tableName + "." + column.name + ": " + (error && error.message ? error.message : String(error)));
+    }
+  }
 }
 
 function createIndexColumnNamesFromStatement(statement) {
@@ -1358,6 +1456,10 @@ function applyMissingSchemaObjectsFromInitSql(db, sqlPath) {
     if (!tableName || tableExists(db, tableName)) continue;
     db.exec(statement);
     console.log("SQLite schema table added from native-init.sql: " + tableName);
+  }
+  for (const statement of statements) {
+    if (!/^CREATE\\s+TABLE\\s+/i.test(statement)) continue;
+    applyMissingColumnsFromCreateTableStatement(db, statement);
   }
   for (const statement of statements) {
     if (!/^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+/i.test(statement)) continue;

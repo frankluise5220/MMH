@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
-  "mmhReleaseNotes": "修复飞牛/SQLite 旧库恢复时因 UserSettings.sessionDays 字段缺失而中断的问题：启动迁移会为旧库补齐该登录保留天数字段，恢复入口也会在写入用户设置前自愈该字段。",
+  "mmhReleaseNotes": "强化飞牛/SQLite 备份恢复的 schema 兼容性：启动和恢复前会按 native-init.sql 自动补齐缺失的新表、可安全新增字段和兼容索引，并在遇到无法自动补齐的字段时一次性报出完整清单，避免逐个字段失败。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",
