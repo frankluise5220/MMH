@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
-  "mmhReleaseNotes": "修复局域网 IP 访问登录页无响应、同名 admin 账簿用户定位和用户列表显示问题；优化用户管理表格与登录保留时长；完善首次使用向导、访问白名单保护、股票表缺失兼容和多项设置页布局。",
+  "mmhReleaseNotes": "完善账单/邮件/Excel 导入预览与识别规则，补齐股票交易、券商资金账户和市场费率相关能力；优化外币汇率展示、表格筛选与股票交易弹窗小屏操作；修复迁移表名并补齐 fnOS SQLite 运行时迁移，提升覆盖升级兼容性。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

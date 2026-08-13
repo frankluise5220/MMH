@@ -4,7 +4,7 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.17",
+      "version": "0.1.18",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -12,16 +12,16 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.17/mmh-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.17",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.18",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "修复局域网 IP 访问登录页无响应、同名 admin 账簿用户定位和用户列表显示问题；优化用户管理表格与登录保留时长；完善首次使用向导、访问白名单保护、股票表缺失兼容和多项设置页布局。"
+      "changelog": "完善账单/邮件/Excel 导入预览与识别规则，补齐股票交易、券商资金账户和市场费率相关能力；优化外币汇率展示、表格筛选与股票交易弹窗小屏操作；修复迁移表名并补齐 fnOS SQLite 运行时迁移，提升覆盖升级兼容性。"
     }
   ]
 }

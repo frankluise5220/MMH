@@ -3,6 +3,7 @@ import { simpleParser } from "mailparser";
 import { createHash } from "node:crypto";
 import type { Readable } from "stream";
 import { extractPdfText } from "@/lib/mail/pdf";
+import { extractSpreadsheetText } from "@/lib/mail/spreadsheet";
 
 export type ImapConfig = {
   host: string;
@@ -24,6 +25,12 @@ export type MailListMeta = {
   hasKeyword: boolean;
   scanLimit: number;
   sinceDate: string;
+  searchMode?: "imap" | "scan";
+  timingMs?: {
+    connect?: number;
+    list?: number;
+    total?: number;
+  };
 };
 
 type MailClient = {
@@ -33,6 +40,13 @@ type MailClient = {
 
 type DownloadedMail = {
   content: Readable;
+};
+
+type SearchObject = {
+  subject?: string;
+  from?: string;
+  since?: Date | string;
+  or?: SearchObject[];
 };
 
 const IMAP_OPERATION_TIMEOUT_MS = 15000;
@@ -109,6 +123,136 @@ function buildRecentSequenceRange(total: number, limit: number, hasKeyword: bool
   return `${start}:${total}`;
 }
 
+type MailEnvelopeMessage = {
+  uid: number;
+  envelope?: {
+    subject?: string | null;
+    from?: Array<{ name?: string | null; address?: string | null }> | null;
+    date?: Date | string | null;
+  } | null;
+};
+
+function buildMailListItem(message: MailEnvelopeMessage) {
+  const subject = (message.envelope?.subject || "无主题").trim();
+  const from = formatAddress(message.envelope?.from?.map((item) => ({
+    name: item.name ?? undefined,
+    address: item.address ?? undefined,
+  })));
+  const date = toIso(message.envelope?.date ?? undefined);
+  return {
+    uid: message.uid,
+    subject,
+    from,
+    date,
+    hash: buildMailListHash({ subject, from, date }),
+  } satisfies MailListItem;
+}
+
+function mailListItemMatchesFilters(
+  item: MailListItem,
+  filters: {
+    keywords: string[];
+    subjectKeyword?: string;
+    fromKeyword?: string;
+    sinceValid?: Date | null;
+  },
+) {
+  if (filters.sinceValid) {
+    const date = item.date ? new Date(item.date) : null;
+    if (date && !Number.isNaN(date.getTime()) && date < filters.sinceValid) return false;
+  }
+  const normalizedSubject = item.subject.toLowerCase();
+  const normalizedFrom = item.from.toLowerCase();
+  const keywordOk = filters.keywords.length === 0 || filters.keywords.some((keyword) => normalizedSubject.includes(keyword) || normalizedFrom.includes(keyword));
+  const subjectOk = !filters.subjectKeyword || normalizedSubject.includes(filters.subjectKeyword);
+  const fromOk = !filters.fromKeyword || normalizedFrom.includes(filters.fromKeyword);
+  return keywordOk && subjectOk && fromOk;
+}
+
+function orSearchQueries(queries: SearchObject[]) {
+  if (queries.length === 0) return null;
+  if (queries.length === 1) return queries[0];
+  return { or: queries } satisfies SearchObject;
+}
+
+function hasNonAsciiSearchText(value: string | undefined) {
+  return Boolean(value && /[^\x00-\x7F]/.test(value));
+}
+
+function buildMailSearchQuery(input: {
+  keywords: string[];
+  subjectKeyword?: string;
+  fromKeyword?: string;
+  sinceValid?: Date | null;
+}) {
+  const query: SearchObject = {};
+  if (input.sinceValid) query.since = input.sinceValid;
+
+  if (input.keywords.length > 0) {
+    const keywordQuery = orSearchQueries(input.keywords.flatMap((keyword) => [
+      { subject: keyword } satisfies SearchObject,
+      { from: keyword } satisfies SearchObject,
+    ]));
+    if (keywordQuery?.or) query.or = keywordQuery.or;
+    else if (keywordQuery) Object.assign(query, keywordQuery);
+  }
+  if (input.subjectKeyword) query.subject = input.subjectKeyword;
+  if (input.fromKeyword) query.from = input.fromKeyword;
+
+  return Object.keys(query).length > 0 ? query : null;
+}
+
+async function trySearchMailListRows(
+  client: MailClient["client"],
+  filters: {
+    limit: number;
+    keywords: string[];
+    subjectKeyword?: string;
+    fromKeyword?: string;
+    sinceValid?: Date | null;
+  },
+  trace: string[],
+) {
+  const textTerms = [...filters.keywords, filters.subjectKeyword, filters.fromKeyword];
+  if (textTerms.some(hasNonAsciiSearchText)) {
+    trace.push("search skipped unicode text");
+    return null;
+  }
+
+  const query = buildMailSearchQuery(filters);
+  if (!query) return null;
+
+  try {
+    trace.push("search start");
+    const searched = await withTimeout(client.search(query, { uid: true }), "IMAP 搜索邮件列表超时");
+    if (searched === false) {
+      trace.push("search unavailable");
+      return null;
+    }
+    const uids = Array.isArray(searched)
+      ? Array.from(new Set(searched.filter((uid) => Number.isFinite(uid)))).sort((a, b) => b - a)
+      : [];
+    trace.push(`search ok ${uids.length}`);
+    if (uids.length === 0) return { items: [] as MailListItem[], matched: 0, searched: true };
+
+    const fetchUids = uids.slice(0, Math.max(filters.limit, 20));
+    const rows: MailListItem[] = [];
+    for await (const message of client.fetch(fetchUids, { envelope: true, uid: true }, { uid: true })) {
+      const item = buildMailListItem(message);
+      if (mailListItemMatchesFilters(item, filters)) rows.push(item);
+    }
+    return {
+      items: rows.sort((a, b) => b.uid - a.uid).slice(0, filters.limit),
+      matched: uids.length,
+      searched: true,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    trace.push(`search fallback: ${message}`);
+    return null;
+  }
+}
+
 export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
   const mailbox = (config.mailbox ?? "INBOX").trim() || "INBOX";
   const client = buildClient(config);
@@ -148,7 +292,7 @@ export async function listMails(
   const total = client.mailbox && typeof client.mailbox.exists === "number" ? client.mailbox.exists : 0;
   trace.push(`box total ${total}`);
   if (!total) {
-    return { items: [], meta: { total: 0, scanned: 0, matched: 0, limited: options.limit, hasKeyword: false, scanLimit: options.scanLimit ?? options.limit, sinceDate: options.sinceDate ?? "" } };
+    return { items: [], meta: { total: 0, scanned: 0, matched: 0, limited: options.limit, hasKeyword: false, scanLimit: options.scanLimit ?? options.limit, sinceDate: options.sinceDate ?? "", searchMode: "scan" } };
   }
 
   const keywords = Array.from(new Set([
@@ -162,6 +306,29 @@ export async function listMails(
   const hasKeyword = Boolean(keywords.length > 0 || subjectKeyword || fromKeyword);
   const since = options.sinceDate ? new Date(`${options.sinceDate}T00:00:00.000Z`) : null;
   const sinceValid = since && !Number.isNaN(since.getTime()) ? since : null;
+  const searchedRows = await trySearchMailListRows(client, {
+    limit: options.limit,
+    keywords,
+    subjectKeyword,
+    fromKeyword,
+    sinceValid,
+  }, trace);
+  if (searchedRows) {
+    return {
+      items: searchedRows.items,
+      meta: {
+        total,
+        scanned: searchedRows.matched,
+        matched: searchedRows.matched,
+        limited: options.limit,
+        hasKeyword,
+        scanLimit: searchedRows.matched,
+        sinceDate: options.sinceDate ?? "",
+        searchMode: "imap",
+      },
+    };
+  }
+
   const range = buildRecentSequenceRange(total, options.limit, hasKeyword || Boolean(sinceValid), options.scanLimit);
   let scanned = 0;
   trace.push(`fetch seq ${range}`);
@@ -169,32 +336,11 @@ export async function listMails(
   const rows: MailListItem[] = [];
   const task = (async () => {
     for await (const message of client.fetch(range, { envelope: true, uid: true })) {
-      const subject = (message.envelope?.subject || "无主题").trim();
-      const from = formatAddress(message.envelope?.from);
-      const date = message.envelope?.date instanceof Date ? message.envelope.date : null;
-      if (sinceValid && date && date < sinceValid) {
-        continue;
-      }
+      const item = buildMailListItem(message);
       scanned += 1;
-      const normalizedSubject = subject.toLowerCase();
-      const normalizedFrom = from.toLowerCase();
-      const keywordOk = keywords.length === 0 || keywords.some((keyword) => normalizedSubject.includes(keyword) || normalizedFrom.includes(keyword));
-      const subjectOk = !subjectKeyword || normalizedSubject.includes(subjectKeyword);
-      const fromOk = !fromKeyword || normalizedFrom.includes(fromKeyword);
-
-      if (!keywordOk || !subjectOk || !fromOk) {
-        trace.push(`filter uid=${message.uid} "${subject}" "${from}"`);
-        continue;
-      }
-
-      rows.push({
-        uid: message.uid,
-        subject,
-        from,
-        date: toIso(message.envelope?.date),
-        hash: buildMailListHash({ subject, from, date: toIso(message.envelope?.date) }),
-      });
-      trace.push(`row ok uid=${message.uid} "${subject}"`);
+      if (!mailListItemMatchesFilters(item, { keywords, subjectKeyword, fromKeyword, sinceValid })) continue;
+      rows.push(item);
+      trace.push(`row ok uid=${message.uid} "${item.subject}"`);
     }
   })();
 
@@ -210,6 +356,7 @@ export async function listMails(
       hasKeyword,
       scanLimit: options.scanLimit ?? scanned,
       sinceDate: options.sinceDate ?? "",
+      searchMode: "scan",
     },
   };
 }
@@ -242,19 +389,21 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
     const contentType = (attachment.contentType ?? "").toString();
     const content = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content ?? []);
     const isPdf = contentType.toLowerCase().includes("pdf") || filename.toLowerCase().endsWith(".pdf");
-    if (!isPdf) {
+    const isSpreadsheet = /\.(?:xls|xlsx)$/i.test(filename)
+      || /spreadsheet|excel|vnd\.ms-excel|officedocument\.spreadsheetml/i.test(contentType);
+    if (!isPdf && !isSpreadsheet) {
       return { id: String(index), filename, contentType, size: attachment.size ?? content.length };
     }
 
     try {
-      const text = await extractPdfText(content);
+      const text = isPdf ? await extractPdfText(content) : await extractSpreadsheetText(content);
       return {
         id: String(index),
         filename,
         contentType,
         size: attachment.size ?? content.length,
         text: text || undefined,
-        parseError: text ? undefined : "PDF 未提取到文字",
+        parseError: text ? undefined : isPdf ? "PDF 未提取到文字" : "Excel 未提取到表格文字",
       };
     } catch {
       return {
@@ -262,7 +411,7 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
         filename,
         contentType,
         size: attachment.size ?? content.length,
-        parseError: "PDF 文字提取失败，可能是扫描件或加密文件",
+        parseError: isPdf ? "PDF 文字提取失败，可能是扫描件或加密文件" : "Excel 表格读取失败，可能是加密文件或格式异常",
       };
     }
   }));

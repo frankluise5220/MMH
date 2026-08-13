@@ -27,7 +27,7 @@ WITH transfer_roots AS (
   SET type = EXCLUDED.type, "parentId" = EXCLUDED."parentId", "isSystem" = TRUE
   RETURNING id, name, "householdId"
 )
-UPDATE "TxRecord" AS tx
+UPDATE "transactions" AS tx
 SET "categoryId" = category.id,
     "categoryName" = category.name
 FROM settlement_categories AS category

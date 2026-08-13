@@ -14,7 +14,9 @@ type InstitutionWriter = typeof prisma | Prisma.TransactionClient;
 export const defaultInstitutionTemplates: DefaultInstitutionTemplate[] = [
   { name: "支付宝", type: "payment" },
   { name: "微信支付", type: "payment" },
+  { name: "银联", type: "payment" },
   { name: "云闪付", type: "payment" },
+  { name: "京东", type: "payment" },
   { name: "京东金融", type: "payment" },
   { name: "美团金融", type: "payment" },
   { name: "抖音支付", type: "payment" },

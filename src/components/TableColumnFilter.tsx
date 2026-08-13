@@ -13,6 +13,7 @@ type TableColumnFilterProps = {
   open: boolean;
   filtered?: boolean;
   showLabel?: boolean;
+  showTrigger?: boolean;
   labelClassName?: string;
   onToggleOpen: () => void;
   onClose: () => void;
@@ -25,6 +26,7 @@ type DateRangeColumnFilterProps = {
   to: string;
   open: boolean;
   labelClassName?: string;
+  showTrigger?: boolean;
   onToggleOpen: () => void;
   onClose: () => void;
   onChange: (next: { from: string; to: string }) => void;
@@ -40,6 +42,7 @@ export function TableColumnFilter({
   open,
   filtered = selectedValues.length > 0,
   showLabel = true,
+  showTrigger = true,
   labelClassName = "",
   onToggleOpen,
   onClose,
@@ -117,17 +120,19 @@ export function TableColumnFilter({
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
       {showLabel ? <span className={labelClassName}>{label}</span> : null}
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleOpen();
-        }}
-        className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={filterTitle}
-      >
-        ▼
-      </button>
+      {showTrigger ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleOpen();
+          }}
+          className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+          title={filterTitle}
+        >
+          ▼
+        </button>
+      ) : null}
       {open && (
         <div className="absolute left-0 top-6 z-30 h-96 min-h-52 w-64 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
@@ -238,6 +243,7 @@ export function DateRangeColumnFilter({
   to,
   open,
   labelClassName = "",
+  showTrigger = true,
   onToggleOpen,
   onClose,
   onChange,
@@ -276,17 +282,19 @@ export function DateRangeColumnFilter({
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
       <span className={labelClassName}>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleOpen();
-        }}
-        className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={filterTitle}
-      >
-        ▼
-      </button>
+      {showTrigger ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleOpen();
+          }}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+          title={filterTitle}
+        >
+          ▼
+        </button>
+      ) : null}
       {open ? (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
@@ -295,24 +303,25 @@ export function DateRangeColumnFilter({
               {t("table.close")}
             </button>
           </div>
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-            <div>
+          <div className="space-y-2">
+            <label className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+              <span className="text-right text-[11px] font-medium text-slate-500">{t("table.from")}</span>
               <input
                 type="date"
                 value={draftFrom}
                 onChange={(event) => setDraftFrom(event.target.value)}
-                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-right text-xs outline-none focus:border-blue-400"
               />
-            </div>
-            <span className="text-[11px] font-medium text-slate-400">to</span>
-            <div>
+            </label>
+            <label className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+              <span className="text-right text-[11px] font-medium text-slate-500">{t("table.to")}</span>
               <input
                 type="date"
                 value={draftTo}
                 onChange={(event) => setDraftTo(event.target.value)}
-                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
+                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-right text-xs outline-none focus:border-blue-400"
               />
-            </div>
+            </label>
           </div>
           <div className="mt-2 flex items-center justify-between gap-2">
             <button
@@ -350,6 +359,7 @@ export function NumberRangeColumnFilter({
   to,
   open,
   labelClassName = "",
+  showTrigger = true,
   onToggleOpen,
   onClose,
   onChange,
@@ -388,17 +398,19 @@ export function NumberRangeColumnFilter({
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
       <span className={labelClassName}>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleOpen();
-        }}
-        className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={filterTitle}
-      >
-        ▼
-      </button>
+      {showTrigger ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleOpen();
+          }}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+          title={filterTitle}
+        >
+          ▼
+        </button>
+      ) : null}
       {open ? (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
@@ -457,6 +469,7 @@ export function TextColumnFilter({
   value,
   open,
   labelClassName = "",
+  showTrigger = true,
   onToggleOpen,
   onClose,
   onChange,
@@ -465,6 +478,7 @@ export function TextColumnFilter({
   value: string;
   open: boolean;
   labelClassName?: string;
+  showTrigger?: boolean;
   onToggleOpen: () => void;
   onClose: () => void;
   onChange: (value: string) => void;
@@ -516,17 +530,19 @@ export function TextColumnFilter({
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
       <span className={labelClassName}>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleOpen();
-        }}
-        className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-        title={filterTitle}
-      >
-        ▼
-      </button>
+      {showTrigger ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleOpen();
+          }}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
+          title={filterTitle}
+        >
+          ▼
+        </button>
+      ) : null}
       {open ? (
         <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">

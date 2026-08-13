@@ -1,0 +1,230 @@
+import {
+  defaultStockCurrencyForMarket,
+  inferStockExchangeFromCode,
+  normalizeStockCode,
+  normalizeStockMarket,
+} from "@/lib/stock/market";
+
+export type StockIdentityResult = {
+  market: string;
+  stockCode: string;
+  stockName: string;
+  currency: string;
+  exchange?: string | null;
+  source: string;
+} | null;
+
+const headers = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  Referer: "https://quote.eastmoney.com/",
+};
+
+const EASTMONEY_SUGGEST_TOKEN = "D43BF722C8E33BD2A31608CF607B8F6D";
+
+function eastmoneyCnSecidCandidates(stockCode: string, exchange?: string | null) {
+  if (exchange === "SH") return [`1.${stockCode}`];
+  if (exchange === "SZ" || exchange === "BJ") return [`0.${stockCode}`];
+  return [`1.${stockCode}`, `0.${stockCode}`];
+}
+
+function normalizeStockName(value: unknown) {
+  const name = String(value ?? "").trim();
+  if (!name || name === "-" || name.length > 60) return null;
+  return name;
+}
+
+function exchangeFromSecid(secid: string, fallback?: string | null) {
+  if (secid.startsWith("1.")) return "SH";
+  if (secid.startsWith("0.")) return fallback ?? null;
+  return fallback ?? null;
+}
+
+function exchangeFromSuggestItem(item: Record<string, unknown>, fallback?: string | null) {
+  const quoteId = String(item.QuoteID ?? item.quoteId ?? item.QuoteId ?? item.secid ?? item.Secid ?? "").trim();
+  if (quoteId.startsWith("1.")) return "SH";
+  if (quoteId.startsWith("0.")) return fallback ?? null;
+
+  const marketText = String(item.SecurityTypeName ?? item.securityTypeName ?? item.JYS ?? item.jys ?? "").trim();
+  if (/沪|上海|SH/i.test(marketText)) return "SH";
+  if (/深|深圳|SZ/i.test(marketText)) return "SZ";
+  if (/北|北京|BJ/i.test(marketText)) return "BJ";
+  return fallback ?? null;
+}
+
+async function fetchJson(url: string) {
+  const response = await fetch(url, { headers, cache: "no-store" });
+  if (!response.ok) return null;
+  return response.json().catch(() => null);
+}
+
+async function fetchText(url: string) {
+  const response = await fetch(url, { headers, cache: "no-store" });
+  if (!response.ok) return null;
+  return response.text().catch(() => null);
+}
+
+function collectObjects(value: unknown, result: Record<string, unknown>[] = []) {
+  if (!value || typeof value !== "object") return result;
+  if (Array.isArray(value)) {
+    for (const item of value) collectObjects(item, result);
+    return result;
+  }
+  const record = value as Record<string, unknown>;
+  result.push(record);
+  for (const child of Object.values(record)) collectObjects(child, result);
+  return result;
+}
+
+function codeFromSuggestItem(item: Record<string, unknown>) {
+  return normalizeStockCode(
+    item.Code
+      ?? item.code
+      ?? item.SecurityCode
+      ?? item.securityCode
+      ?? item.SECURITY_CODE
+      ?? item.f12
+      ?? item.stockCode,
+  );
+}
+
+function nameFromSuggestItem(item: Record<string, unknown>) {
+  return normalizeStockName(
+    item.Name
+      ?? item.name
+      ?? item.SecurityName
+      ?? item.securityName
+      ?? item.SECURITY_NAME_ABBR
+      ?? item.SECURITY_NAME
+      ?? item.f14
+      ?? item.stockName,
+  );
+}
+
+function cnIdentity(params: {
+  stockCode: string;
+  stockName: string;
+  exchange?: string | null;
+  source: string;
+}): NonNullable<StockIdentityResult> {
+  return {
+    market: "CN",
+    stockCode: params.stockCode,
+    stockName: params.stockName,
+    currency: "CNY",
+    exchange: params.exchange ?? inferStockExchangeFromCode("CN", params.stockCode),
+    source: params.source,
+  };
+}
+
+async function queryEastmoneyCnPushIdentity(stockCode: string, exchange?: string | null): Promise<StockIdentityResult> {
+  for (const secid of eastmoneyCnSecidCandidates(stockCode, exchange)) {
+    try {
+      const data: any = await fetchJson(`https://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(secid)}&fields=f57,f58`)
+        ?? await fetchJson(`http://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(secid)}&fields=f57,f58`);
+      const item = data?.data;
+      if (normalizeStockCode(item?.f57) !== stockCode) continue;
+      const stockName = normalizeStockName(item?.f58);
+      if (!stockName) continue;
+      return cnIdentity({
+        stockCode,
+        stockName,
+        exchange: exchangeFromSecid(secid, exchange ?? inferStockExchangeFromCode("CN", stockCode)),
+        source: "eastmoney-push2",
+      });
+    } catch {
+      // Try the next secid candidate.
+    }
+  }
+  return null;
+}
+
+async function queryEastmoneyCnSuggestIdentity(stockCode: string, exchange?: string | null): Promise<StockIdentityResult> {
+  const query = encodeURIComponent(stockCode);
+  const urls = [
+    `https://searchapi.eastmoney.com/api/suggest/get?input=${query}&type=14&token=${EASTMONEY_SUGGEST_TOKEN}&count=10`,
+    `http://searchapi.eastmoney.com/api/suggest/get?input=${query}&type=14&token=${EASTMONEY_SUGGEST_TOKEN}&count=10`,
+  ];
+  for (const url of urls) {
+    try {
+      const data = await fetchJson(url);
+      for (const item of collectObjects(data)) {
+        if (codeFromSuggestItem(item) !== stockCode) continue;
+        const stockName = nameFromSuggestItem(item);
+        if (!stockName) continue;
+        return cnIdentity({
+          stockCode,
+          stockName,
+          exchange: exchangeFromSuggestItem(item, exchange ?? inferStockExchangeFromCode("CN", stockCode)),
+          source: "eastmoney-suggest",
+        });
+      }
+    } catch {
+      // Try the next Eastmoney suggest URL variant.
+    }
+  }
+  return null;
+}
+
+async function queryEastmoneyCnPageIdentity(stockCode: string, exchange?: string | null): Promise<StockIdentityResult> {
+  const inferredExchange = exchange ?? inferStockExchangeFromCode("CN", stockCode);
+  const prefixes = inferredExchange === "SH"
+    ? ["sh"]
+    : inferredExchange === "SZ"
+      ? ["sz"]
+      : inferredExchange === "BJ"
+        ? ["bj", "sz"]
+        : ["sh", "sz", "bj"];
+  for (const prefix of prefixes) {
+    for (const protocol of ["https", "http"]) {
+      try {
+        const html = await fetchText(`${protocol}://quote.eastmoney.com/${prefix}${stockCode}.html`);
+        if (!html) continue;
+        const escapedCode = stockCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const patterns = [
+          new RegExp(`<title[^>]*>\\s*([^<（(_\\-\\s]{2,30})\\s*[（(]\\s*${escapedCode}\\s*[）)]`, "i"),
+          new RegExp(`["']SecurityName["']\\s*:\\s*["']([^"']{2,30})["']`, "i"),
+          new RegExp(`["']f58["']\\s*:\\s*["']([^"']{2,30})["']`, "i"),
+        ];
+        for (const pattern of patterns) {
+          const match = html.match(pattern);
+          const stockName = normalizeStockName(match?.[1]);
+          if (!stockName) continue;
+          return cnIdentity({
+            stockCode,
+            stockName,
+            exchange: prefix === "sh" ? "SH" : prefix === "bj" ? "BJ" : "SZ",
+            source: "eastmoney-page",
+          });
+        }
+      } catch {
+        // Try the next quote page URL variant.
+      }
+    }
+  }
+  return null;
+}
+
+async function queryEastmoneyCnIdentity(stockCode: string, exchange?: string | null): Promise<StockIdentityResult> {
+  return await queryEastmoneyCnPushIdentity(stockCode, exchange)
+    ?? await queryEastmoneyCnSuggestIdentity(stockCode, exchange)
+    ?? await queryEastmoneyCnPageIdentity(stockCode, exchange);
+}
+
+export async function queryStockIdentity(marketRaw: unknown, stockCodeRaw: unknown): Promise<StockIdentityResult> {
+  const market = normalizeStockMarket(marketRaw);
+  const stockCode = normalizeStockCode(stockCodeRaw);
+  if (!stockCode) return null;
+
+  if (market === "CN") {
+    return queryEastmoneyCnIdentity(stockCode, inferStockExchangeFromCode(market, stockCode));
+  }
+
+  return {
+    market,
+    stockCode,
+    stockName: stockCode,
+    currency: defaultStockCurrencyForMarket(market),
+    exchange: null,
+    source: "manual-code-fallback",
+  };
+}

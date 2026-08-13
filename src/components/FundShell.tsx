@@ -16,7 +16,7 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
-import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
+import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getConfirmedBuyAmount, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -38,6 +38,7 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 import { AddNavButton } from "@/components/AddNavButton";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
 
 
@@ -1078,7 +1079,7 @@ export function FundShell(props: Props) {
 
 
 
-  function exportCSV(scope?: "current" | "all") {
+  async function exportXlsx(scope?: "current" | "all") {
 
     const rows = (scope === "current" ? filtered : (allEntries || [])) as any[];
 
@@ -1108,13 +1109,7 @@ export function FundShell(props: Props) {
 
     }
 
-    const parts: string[] = [];
-
-    parts.push(header.join(","));
-
-    parts.push("\n");
-
-
+    const exportRows: Array<Array<string | number>> = [header];
 
     for (const e of rows) {
 
@@ -1152,7 +1147,7 @@ export function FundShell(props: Props) {
 
 
 
-      parts.push([
+      exportRows.push([
 
         fundApplyDateOf(e),
 
@@ -1166,43 +1161,29 @@ export function FundShell(props: Props) {
 
         displayFundName(e),
 
-        String(nav),
+        nav === "" ? "" : Number(nav),
 
-        String(units),
+        units === "" ? "" : Number(units),
 
-        ...(isWealthAccount ? [e.wealthRemainingUnits != null ? String(e.wealthRemainingUnits) : ""] : []),
+        ...(isWealthAccount ? [e.wealthRemainingUnits != null ? Number(e.wealthRemainingUnits) : ""] : []),
 
         subtype,
 
-        String(amt),
+        amt === "" ? "" : Number(amt),
 
-        String(profit),
+        profit === "" ? "" : Number(profit),
 
         ...(isWealthAccount ? [] : [status]),
 
-      ].join(","));
-
-      parts.push("\n");
+      ]);
 
     }
 
-
-
-    const bom = "﻿";
-
-    const blob = new Blob([bom, ...parts], { type: "text/csv;charset=utf-8" });
-
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-
-    a.href = url;
-
-    a.download = `交易明细_${label}_${new Date().toISOString().slice(0, 10)}.csv`;
-
-    a.click();
-
-    URL.revokeObjectURL(url);
+    await exportRowsToXlsx(
+      exportRows,
+      `交易明细_${label}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      "交易明细",
+    );
 
   }
 
@@ -3472,11 +3453,25 @@ export function FundShell(props: Props) {
               </button>
             ) : null}
 
-            <Link href="/batch-import" className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入交易明细">
-
-              <Upload className="w-3 h-3" />导入
-
-            </Link>
+            {!isMetalAccount && !isWealthAccount ? (
+              <ViewExcelImportMenuButton
+                kind="fund"
+                accountId={accountId}
+                fundAccountName={selectedAccount?.name ?? "基金账户"}
+                fundCode={fundCode || undefined}
+                fundName={selectedFundNameForChart || undefined}
+                exportItems={[
+                  ...(fundCode ? [{
+                    label: "导出当前基金明细",
+                    onClick: () => void exportXlsx("current"),
+                  }] : []),
+                  {
+                    label: "导出账户全部基金",
+                    onClick: () => void exportXlsx("all"),
+                  },
+                ]}
+              />
+            ) : null}
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
 
@@ -3545,9 +3540,10 @@ export function FundShell(props: Props) {
 
             </div>
 
+            {isMetalAccount || isWealthAccount ? (
             <div className="relative" ref={exportRef}>
 
-              <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出 CSV">
+              <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出 EXCEL 表">
 
                 <Download className="w-3 h-3" />导出
 
@@ -3559,7 +3555,7 @@ export function FundShell(props: Props) {
 
                   {fundCode && (
 
-                    <button onClick={() => { setShowExportMenu(false); exportCSV("current"); }}
+                    <button onClick={() => { setShowExportMenu(false); void exportXlsx("current"); }}
 
                       className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
@@ -3569,7 +3565,7 @@ export function FundShell(props: Props) {
 
                   )}
 
-                  <button onClick={() => { setShowExportMenu(false); exportCSV("all"); }}
+                  <button onClick={() => { setShowExportMenu(false); void exportXlsx("all"); }}
 
                     className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
@@ -3582,6 +3578,7 @@ export function FundShell(props: Props) {
               )}
 
             </div>
+            ) : null}
 
             <div className="flex items-center gap-1">
 

@@ -7,6 +7,7 @@ import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
+import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
@@ -348,16 +349,6 @@ function toDateOnlyLocalOrNull(value: unknown) {
 function toYmdOrNull(value: unknown) {
   const date = toValidDate(value);
   return date ? ymdUtc(date) : null;
-}
-
-function escapeCsvCell(value: string) {
-  if (!/[",\r\n]/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function buildCsvDataUri(rows: string[][]) {
-  const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
-  return `data:text/csv;charset=utf-8,${encodeURIComponent(`\uFEFF${csv}`)}`;
 }
 
 function buildCategoryPathLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
@@ -3226,8 +3217,7 @@ export default async function Home({
     }
     return rows;
   })();
-  const normalExportHref = buildCsvDataUri(normalExportRows);
-  const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.csv`;
+  const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.xlsx`;
 
   const expenseCategories = categories
     .filter((c) => c.type === "expense")
@@ -5178,7 +5168,14 @@ export default async function Home({
                   <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <div className="text-xs text-slate-500">股票账户</div>
-                      <h2 className="mt-1 text-base font-semibold text-slate-900">{selectedAccountLabel}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-semibold text-slate-900">{selectedAccountLabel}</h2>
+                        <StockFeeRuleSettingsButton
+                          accountId={accountId}
+                          accountLabel={selectedAccountLabel}
+                          currency={selectedAccount?.currency ?? baseCurrency}
+                        />
+                      </div>
                     </div>
                     <div className="grid grid-cols-4 gap-6 text-right text-xs">
                       <div>
@@ -5302,8 +5299,8 @@ export default async function Home({
                   initialPage={safeDetailPage}
                   initialPageSize={pageSize}
                   initialDetailAll={detailAll}
-                  normalExportHref={normalExportHref}
                   normalExportFilename={normalExportFilename}
+                  normalExportRows={normalExportRows}
                   accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, fullLabel: a.fullLabel, title: a.hoverTitle }))}
                   categoryOptions={categoryBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
@@ -5313,6 +5310,8 @@ export default async function Home({
                     selectedAccount?.kind === AccountKind.bank_debit ||
                     selectedAccount?.kind === AccountKind.ewallet
                   }
+                  accountKind={selectedAccount?.kind ?? null}
+                  accountName={selectedAccount?.name ?? ""}
                   accountLabel={selectedAccountLabel}
                   currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}

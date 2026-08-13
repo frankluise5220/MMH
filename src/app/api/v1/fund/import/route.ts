@@ -316,7 +316,10 @@ async function enrichPreviewItem(
   else if (!fundAccountMeta) issues.push({ level: "error", message: `基金账户“${fundAccount}”未匹配` });
   else if (!isPureInvestmentAccount(fundAccountMeta)) issues.push({ level: "error", message: `基金账户“${fundAccount}”不是开放式基金账户` });
 
-  if (cashAccount && !cashAccountMeta) issues.push({ level: "warning", message: `资金账户“${cashAccount}”未匹配` });
+  if (cashAccount) {
+    if (!cashAccountMeta) issues.push({ level: "error", message: `资金账户“${cashAccount}”未匹配，无法建立资金流水关联` });
+    else if (isPureInvestmentAccount(cashAccountMeta)) issues.push({ level: "error", message: `资金账户“${cashAccount}”不是资金侧账户` });
+  }
   if (!fundCode) issues.push({ level: "error", message: "缺少基金代码" });
   if (!(amount > 0)) issues.push({ level: "error", message: "金额无效" });
 
@@ -402,6 +405,8 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
   const cashAccount = item.cashAccountId
     ? await tx.account.findUnique({ where: { id: item.cashAccountId }, select: { id: true, name: true } })
     : null;
+  if (item.cashAccount && !item.cashAccountId) throw new Error(`资金账户“${item.cashAccount}”未匹配，无法建立资金流水关联`);
+  if (item.cashAccountId && !cashAccount) throw new Error(`资金账户“${item.cashAccount || item.cashAccountId}”不存在，无法建立资金流水关联`);
 
   const subtype = normalizeSubtype(item.fundSubtype);
   const source = normalizeSource(item.source, subtype, item.fundSubtype);

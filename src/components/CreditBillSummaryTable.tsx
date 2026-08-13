@@ -8,7 +8,7 @@ import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/Ad
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import EditBillAmount from "@/components/EditBillAmount";
-import { CreditBillMailImportButton } from "@/components/CreditBillMailImportButton";
+import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { formatMoney } from "@/lib/format";
 import {
   buildCreditCardInstallmentSchedule,
@@ -79,6 +79,18 @@ function installmentAvailableAmount(row: CreditBillSummaryRow | null | undefined
   return row ? creditBillUnpaidAmount(row) : 0;
 }
 
+function safeFileNamePart(value: string) {
+  return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || "信用卡";
+}
+
+function creditBillStatusLabel(row: CreditBillSummaryRow) {
+  if (isCreditBillSettled(row)) return "已还款";
+  if (row.isCurrentCycle) return "未出账单";
+  if (row.effectiveBill < 0) return "溢缴";
+  if (row.effectiveBill > 0) return "待还款";
+  return "-";
+}
+
 export function CreditBillSummaryTable({
   accountId,
   accountName,
@@ -120,6 +132,11 @@ export function CreditBillSummaryTable({
   });
   const [installmentSaving, setInstallmentSaving] = useState(false);
   const [installmentError, setInstallmentError] = useState("");
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportStartMonth, setExportStartMonth] = useState("");
+  const [exportEndMonth, setExportEndMonth] = useState("");
+  const [exportError, setExportError] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const [page, setPage] = useState(() => clampPage(initialPage, totalPages));
   const safePage = clampPage(page, totalPages);
@@ -186,6 +203,10 @@ export function CreditBillSummaryTable({
   const pagedRows = useMemo(
     () => localRows.slice((safePage - 1) * pageSize, safePage * pageSize),
     [localRows, pageSize, safePage],
+  );
+  const exportBillOptions = useMemo(
+    () => [...localRows].sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
+    [localRows],
   );
 
   const selectedBillRow = useMemo(
@@ -366,6 +387,83 @@ export function CreditBillSummaryTable({
       q.set("billPage", String(safePage));
     });
     router.replace(href, { scroll: false });
+  }
+
+  function openExportDialog() {
+    const options = exportBillOptions;
+    const selectedExists = selectedBillMonth && options.some((row) => row.month === selectedBillMonth);
+    const defaultStart = selectedExists ? selectedBillMonth : options[0]?.month ?? "";
+    const defaultEnd = selectedExists ? selectedBillMonth : options[options.length - 1]?.month ?? "";
+    setExportStartMonth(defaultStart);
+    setExportEndMonth(defaultEnd);
+    setExportError("");
+    setExportOpen(true);
+  }
+
+  async function exportBillExcel() {
+    if (exportBusy) return;
+    const options = exportBillOptions;
+    const startIndex = options.findIndex((row) => row.month === exportStartMonth);
+    const endIndex = options.findIndex((row) => row.month === exportEndMonth);
+    if (startIndex < 0 || endIndex < 0) {
+      setExportError("请选择账单期起止范围。");
+      return;
+    }
+    const fromIndex = Math.min(startIndex, endIndex);
+    const toIndex = Math.max(startIndex, endIndex);
+    const selectedRows = options.slice(fromIndex, toIndex + 1);
+    if (selectedRows.length === 0) {
+      setExportError("所选账单期没有可导出的记录。");
+      return;
+    }
+
+    const exportRows: Array<Array<string | number>> = [[
+      "账单期",
+      "周期开始",
+      "周期结束",
+      "还款日",
+      "流出",
+      "流入",
+      "本期金额",
+      "账单金额",
+      "已还",
+      "未还",
+      "状态",
+      "人工调整",
+    ]];
+    for (const row of selectedRows) {
+      exportRows.push([
+        row.month,
+        row.periodStart,
+        row.periodEnd,
+        row.dueDate || "",
+        row.expenseAbs,
+        row.income,
+        row.expenseAbs - row.income,
+        row.effectiveBill,
+        row.paid,
+        creditBillUnpaidAmount(row),
+        creditBillStatusLabel(row),
+        row.hasOverride ? "是" : "",
+      ]);
+    }
+
+    setExportBusy(true);
+    setExportError("");
+    try {
+      const start = selectedRows[0]?.month ?? "开始";
+      const end = selectedRows[selectedRows.length - 1]?.month ?? "结束";
+      await exportRowsToXlsx(
+        exportRows,
+        `${safeFileNamePart(accountName)}-信用卡账单-${start}_${end}.xlsx`,
+        "信用卡账单",
+      );
+      setExportOpen(false);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportBusy(false);
+    }
   }
 
   const canPrev = safePage > 1;
@@ -558,9 +656,18 @@ export function CreditBillSummaryTable({
                 <CalendarClock className="h-3.5 w-3.5" />
                 账单分期
               </button>
-              <CreditBillMailImportButton
+              <ViewExcelImportMenuButton
+                kind="normal"
                 accountId={accountId}
                 accountName={accountName}
+                mailImport={{
+                  accountId,
+                  accountName,
+                }}
+                exportItems={[{
+                  label: "导出 EXCEL 表",
+                  onClick: openExportDialog,
+                }]}
               />
               <button
                 type="button"
@@ -627,6 +734,57 @@ export function CreditBillSummaryTable({
           emptyText="暂无账单"
         />
       </div>
+      {exportOpen ? (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+            <div className="border-b border-slate-100 px-4 py-3">
+              <div className="text-sm font-semibold text-slate-800">导出信用卡账单 EXCEL 表</div>
+              <div className="mt-1 text-xs text-slate-500">
+                按当前账单列表视图选择账单期起止范围，导出范围内全部账单期。
+              </div>
+            </div>
+            <div className="space-y-3 px-4 py-4">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600">起始账单期</span>
+                <select
+                  value={exportStartMonth}
+                  onChange={(event) => setExportStartMonth(event.target.value)}
+                  className="form-input"
+                >
+                  {exportBillOptions.map((row) => (
+                    <option key={row.month} value={row.month}>
+                      {row.month}（{row.periodStart} ~ {row.periodEnd}）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600">结束账单期</span>
+                <select
+                  value={exportEndMonth}
+                  onChange={(event) => setExportEndMonth(event.target.value)}
+                  className="form-input"
+                >
+                  {exportBillOptions.map((row) => (
+                    <option key={row.month} value={row.month}>
+                      {row.month}（{row.periodStart} ~ {row.periodEnd}）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {exportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{exportError}</div> : null}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
+              <button type="button" onClick={() => setExportOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={exportBusy}>
+                取消
+              </button>
+              <button type="button" onClick={() => void exportBillExcel()} className="primary-button h-8 px-3 text-xs" disabled={exportBusy || exportBillOptions.length === 0}>
+                {exportBusy ? "导出中..." : "导出"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {installmentOpen ? (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">

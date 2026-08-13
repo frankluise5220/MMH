@@ -15,6 +15,7 @@
 - `fundName` 只用于显示、补全和导入辅助，不参与持仓、成本、份额、收益计算。
 - 同一个基金改名、名称缺失或名称被导入备注污染时，不应影响持仓计算结果。
 - 基金账户的 `tradingCalendar` 是确认日期、到账日期、T+N 推导的账户级规则。核对净值日期/入账日期时，不能只看确认天数和到账天数，还要同时确认该账户使用的是哪一种交易日历。
+- 基金交易 Excel 如果填写了资金账户，导入预览必须把该值匹配成资金侧 `Account.id`；匹配不到应阻断导入。导入成功后，应能在资金侧看到对应 `TxRecord`，在 `FundTransactionCashFlow` 中看到现金流，并通过 `EntryBusinessLink` 关联到基金业务交易。
 
 ## 股票身份和持仓字段
 
@@ -24,7 +25,7 @@
 - 股票交易事实字段以 `StockTransaction` 为准，现金流水只在需要时创建普通 `TxRecord`，二者通过 `EntryBusinessLink.stockTransactionId` 和返回的 `linkId` 关联。
 - 股票买入、卖出、分红和税费调整使用 `cashAccountId` 指向的证券资金账户/券商可用资金账户；同一证券公司名下的股票和基金可以共用同一个现金/钱包类资金账户。检查余额时应把证券资金账户现金和 `StockHolding` 市值区分开。银证转账是银行/现金账户与证券资金账户之间的普通转账，不写入 `StockTransaction`。
 - 股票持仓以 `StockHolding` 为准，数量、成本、最新价、市值、浮盈和历史收益都由 `src/lib/stock/recalcPosition.ts` 重算；不要从 `FundHolding` 或基金净值缓存推断股票值。
-- 股票手续费规则以 `StockFeeRule` 为准，支持佣金、印花税、过户费、经手费、监管费、平台费、最低收费和买卖方向；不要复用 `fundFeeRate`。
+- 股票手续费规则先看账户级 `StockFeeRule`，未命中时使用市场默认 `StockMarketFeeRule`；证券公司公开名录和别名存入 `StockBrokerageCatalog`。这些规则支持佣金、印花税、过户费、经手费、监管费、平台费、最低收费和买卖方向；不要复用 `fundFeeRate`。
 - 券商导入或成交单去重使用 `externalLinkId` / `brokerTradeId`；它们不是基金买入退回 link，也不是 `fundSourceEntryId`。
 
 ## 最新净值刷新

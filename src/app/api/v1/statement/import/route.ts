@@ -7,7 +7,7 @@ import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
-import { expandImportBankName, isImportPaymentTailSourceHint, normalizeImportAccountMatchKey, resolveImportAccountFromList } from "@/lib/account-import-match";
+import { expandImportBankName, isImportPaymentTailSourceHint, normalizeImportAccountMatchKey, parseImportAccountId, resolveImportAccountFromList } from "@/lib/account-import-match";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-account";
@@ -18,6 +18,8 @@ import {
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   mergeCreditCardCycleLockSources,
 } from "@/lib/credit/billing";
+import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
+import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 
 export const runtime = "nodejs";
 
@@ -57,15 +59,20 @@ const ParsedItemSchema = z.object({
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
   category: z.string().optional(),
+  categoryUserEdited: z.boolean().optional(),
+  institutionUserEdited: z.boolean().optional(),
   remark: z.string().optional(),
   counterparty: z.string().optional(),
   institution: z.string().optional(),
   postedDate: z.string().optional(),
+  currency: z.string().optional(),
   transferDirection: z.enum(["in", "out"]).optional(),
   _meta: z.object({
     institutionName: z.string().optional(),
     ownerName: z.string().optional(),
     cardNumberMasked: z.string().optional(),
+    statementCurrency: z.string().optional(),
+    minimumPayment: z.number().finite().optional(),
     creditLimit: z.number().optional(),
     billingDay: z.number().int().min(1).max(31).optional(),
     repaymentDay: z.number().int().min(1).max(31).optional(),
@@ -460,6 +467,13 @@ async function findInstitution(tx: Db, householdId: string, institutionName?: st
     where: { householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
     select: { id: true, name: true, shortName: true, type: true },
   });
+  const exactKey = normalizeInstitutionKey(name);
+  const exact = institutions.find((item) => {
+    const nameKey = normalizeInstitutionKey(item.name);
+    const shortKey = normalizeInstitutionKey(item.shortName ?? "");
+    return nameKey === exactKey || (!!shortKey && shortKey === exactKey);
+  });
+  if (exact) return exact;
   return institutions.find((item) => {
     const itemKeys = [
       item.name,
@@ -535,6 +549,7 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
       institutionId: true,
       userId: true,
       numberMasked: true,
+      currency: true,
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
@@ -571,6 +586,7 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
         institutionId: true,
         userId: true,
         numberMasked: true,
+        currency: true,
         creditLimit: true,
         billingDay: true,
         repaymentDay: true,
@@ -661,6 +677,7 @@ async function findCreditAccount(tx: Db, householdId: string, accountName: strin
       institutionId: true,
       userId: true,
       numberMasked: true,
+      currency: true,
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
@@ -681,6 +698,7 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
       institutionId: true,
       userId: true,
       numberMasked: true,
+      currency: true,
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
@@ -700,6 +718,7 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
     data.userId = await resolveUserIdByName(tx, householdId, meta.ownerName);
   }
   if (!existing.numberMasked && meta.cardNumberMasked) data.numberMasked = meta.cardNumberMasked;
+  if (!existing.currency && meta.statementCurrency) data.currency = normalizeCurrency(meta.statementCurrency);
   if (meta.creditLimit != null && Number(existing.creditLimit ?? NaN) !== meta.creditLimit) data.creditLimit = String(meta.creditLimit);
   if (meta.billingDay && existing.billingDay !== meta.billingDay) data.billingDay = meta.billingDay;
   if (meta.repaymentDay && existing.repaymentDay !== meta.repaymentDay) data.repaymentDay = meta.repaymentDay;
@@ -713,6 +732,15 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
 async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
+  const directAccountId = parseImportAccountId(name);
+  if (directAccountId) {
+    const found = await tx.account.findFirst({
+      where: { id: directAccountId, householdId },
+      select: { id: true },
+    });
+    if (found?.id) return found.id;
+    throw new Error(`账户不存在：${name}`);
+  }
   if (isImportPaymentTailSourceHint(name)) {
     const matchedTailAccount = await findExistingImportAccount(tx, householdId, name);
     if (matchedTailAccount?.id) return matchedTailAccount.id;
@@ -757,6 +785,7 @@ async function ensureAccountId(tx: Db, householdId: string, accountName?: string
     accountData.institutionId = await ensureBankInstitutionId(tx, householdId, _meta?.institutionName);
     accountData.userId = await resolveUserIdByName(tx, householdId, _meta?.ownerName);
     accountData.numberMasked = inferredLast4 || null;
+    accountData.currency = normalizeCurrency(_meta?.statementCurrency);
     accountData.creditLimit = _meta?.creditLimit != null ? String(_meta.creditLimit) : null;
     accountData.billingDay = _meta?.billingDay ?? null;
     accountData.repaymentDay = _meta?.repaymentDay ?? null;
@@ -780,7 +809,11 @@ async function resolveInstitution(tx: Db, householdId: string, institutionName?:
   const name = String(institutionName ?? "").trim();
   if (!name) return { id: null as string | null, name: null as string | null };
   const found = await findInstitution(tx, householdId, name);
-  return { id: found?.id ?? null, name: found?.name ?? name };
+  return { id: found?.id ?? null, name: found?.name ?? null };
+}
+
+function sourceKeywordForInstitutionLearning(item: ParsedItem) {
+  return String(item.counterparty ?? item.remark ?? item.rawText ?? "").trim();
 }
 
 function buildNote(item: ParsedItem) {
@@ -817,11 +850,17 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
   if (shouldUseDoubleEntry) {
     const fromAccountName = normalizeAccountCell(item.fromAccount);
     const toAccountName = pickAccountName(item.toAccount, pickAccountName(item.account, defaultAccountName));
+    const transferAccountOptions = item.type === "transfer"
+      ? { ...options, autoCreateAccounts: false }
+      : options;
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, householdId, fromAccountName, undefined, options),
-      ensureAccountId(tx, householdId, toAccountName, undefined, options),
+      ensureAccountId(tx, householdId, fromAccountName, undefined, transferAccountOptions),
+      ensureAccountId(tx, householdId, toAccountName, undefined, transferAccountOptions),
     ]);
+    if (item.type === "transfer" && (!fromAccountId || !toAccountId)) {
+      throw new Error("转账账户未匹配，不能导入");
+    }
 
     const fromStatementMonth = await statementMonthForAccountId(tx, fromAccountId, confirmDate);
     const [fromCurrencyMeta, toCurrencyMeta] = await Promise.all([
@@ -935,6 +974,30 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     },
   });
 
+  if (item.categoryUserEdited && category?.id && category.name && (item.type === "income" || item.type === "expense")) {
+    await upsertStatementCategoryRuleFromTx(tx, {
+      householdId,
+      type: item.type,
+      categoryId: category.id,
+      categoryName: category.name,
+      counterpartyInstitutionName: counterpartyInstitution.name,
+      paymentChannelName: null,
+      source: "user_statement_preview_edit",
+      note,
+    });
+  }
+
+  if (item.institutionUserEdited && counterpartyInstitution.id && counterpartyInstitution.name) {
+    await upsertStatementInstitutionRuleFromUserEdit(tx, {
+      householdId,
+      institutionId: counterpartyInstitution.id,
+      institutionName: counterpartyInstitution.name,
+      keyword: sourceKeywordForInstitutionLearning(item),
+      transactionType: item.type === "income" || item.type === "expense" ? item.type : "any",
+      source: "user_statement_preview_institution_edit",
+    });
+  }
+
   return txRecord;
 }
 
@@ -952,7 +1015,15 @@ export async function OPTIONS() {
  * - item.inflow/item.outflow may carry account-side direction. For an original-spend
  *   refund, send { type: "expense", amount, inflow: amount } so the row offsets the
  *   original expense category while increasing the account balance.
+ * - item.categoryUserEdited=true means the user manually changed the preview
+ *   category; only these confirmed income/expense rows are learned into
+ *   statement category rules and mirrored into
+ *   statement_recognition_rules(targetType="category").
+ * - item.institutionUserEdited=true means the user manually filled/selected
+ *   a counterparty institution; only values that match the Institution table
+ *   are saved and learned. Unmatched institutions are left blank.
  * - transfer rows use fromAccount/toAccount and may carry transferDirection.
+ *   Both sides must match existing accounts; incomplete transfers are skipped.
  * - item._meta may carry statementAmount, statementPeriodStart,
  *   statementPeriodEnd, statementDueDate, and creditLimit from a bank statement.
  *

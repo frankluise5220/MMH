@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Download, Upload, X } from "lucide-react";
+import { X } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
+import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
   decodeDetailPaginationPreference,
@@ -29,13 +29,15 @@ type BasicDetailPanelProps = {
   initialPage: number;
   initialPageSize: number;
   initialDetailAll: boolean;
-  normalExportHref: string;
   normalExportFilename: string;
+  normalExportRows?: string[][];
   accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   showBalanceReconcile?: boolean;
+  accountKind?: string | null;
+  accountName?: string;
   accountLabel?: string;
   currentBalance?: number;
   focusEntryId?: string;
@@ -251,13 +253,15 @@ export function BasicDetailPanel({
   initialPage,
   initialPageSize,
   initialDetailAll,
-  normalExportHref,
   normalExportFilename,
+  normalExportRows = [],
   accountOptions,
   categoryOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
   showBalanceReconcile = false,
+  accountKind = null,
+  accountName = "",
   accountLabel = "",
   currentBalance = 0,
   focusEntryId,
@@ -285,6 +289,42 @@ export function BasicDetailPanel({
   const paginationFetchSeqRef = useRef(0);
   const lastClientPaginationKeyRef = useRef("");
   const clientPaginationEnabled = !hasDetailFilters && !focusEntryId;
+
+  const reloadDetailPage = useCallback((signal?: AbortSignal) => {
+    if (!clientPaginationEnabled) return;
+    const seq = ++paginationFetchSeqRef.current;
+    const params = new URLSearchParams({
+      accountId,
+      page: detailAll ? "1" : String(safePage),
+      pageSize: detailAll ? "5000" : String(pageSize),
+    });
+    setIsPageLoading(true);
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+      cache: "no-store",
+      signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error ?? "加载交易明细失败");
+        }
+        if (seq !== paginationFetchSeqRef.current) return;
+        const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
+        const nextTotalCount = Number(payload.data?.totalCount);
+        setLocalEntries(nextEntries);
+        if (Number.isFinite(nextTotalCount)) {
+          setLocalTotalCount(nextTotalCount);
+          setLocalOriginalCount(nextTotalCount);
+        }
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.error("Load transaction detail page failed:", error);
+      })
+      .finally(() => {
+        if (seq === paginationFetchSeqRef.current) setIsPageLoading(false);
+      });
+  }, [accountId, clientPaginationEnabled, detailAll, pageSize, safePage]);
 
   useEffect(() => {
     if (showGuideOverlay) setGuideOverlayOpen(true);
@@ -393,7 +433,19 @@ export function BasicDetailPanel({
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
-      const deletedEntryIds = (event as CustomEvent<{ deletedEntryIds?: string[] }>).detail?.deletedEntryIds ?? [];
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      const eventAccountIds = detail.accountIds ?? [];
+      const isCurrentAccountEvent = eventAccountIds.length === 0 || eventAccountIds.includes(accountId);
+      if (
+        event.type === FINANCE_DATA_CHANGED_EVENT &&
+        detail.reason === "view-normal-excel-import" &&
+        isCurrentAccountEvent
+      ) {
+        reloadDetailPage();
+        return;
+      }
+
+      const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) return;
       const deletedSet = new Set(deletedEntryIds);
       setLocalEntries((current) => {
@@ -412,7 +464,7 @@ export function BasicDetailPanel({
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
       window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
     };
-  }, []);
+  }, [accountId, reloadDetailPage]);
 
   useEffect(() => {
     if (detailAll || page === safePage) return;
@@ -453,41 +505,10 @@ export function BasicDetailPanel({
     lastClientPaginationKeyRef.current = key;
 
     const controller = new AbortController();
-    const seq = ++paginationFetchSeqRef.current;
-    const params = new URLSearchParams({
-      accountId,
-      page: detailAll ? "1" : String(safePage),
-      pageSize: detailAll ? "5000" : String(pageSize),
-    });
-    setIsPageLoading(true);
-    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error ?? "加载交易明细失败");
-        }
-        if (seq !== paginationFetchSeqRef.current) return;
-        const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
-        const nextTotalCount = Number(payload.data?.totalCount);
-        setLocalEntries(nextEntries);
-        if (Number.isFinite(nextTotalCount)) {
-          setLocalTotalCount(nextTotalCount);
-          setLocalOriginalCount(nextTotalCount);
-        }
-      })
-      .catch((error) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        console.error("Load transaction detail page failed:", error);
-      })
-      .finally(() => {
-        if (seq === paginationFetchSeqRef.current) setIsPageLoading(false);
-      });
+    reloadDetailPage(controller.signal);
 
     return () => controller.abort();
-  }, [accountId, clientPaginationEnabled, detailAll, pageSize, safePage]);
+  }, [accountId, clientPaginationEnabled, detailAll, pageSize, reloadDetailPage, safePage]);
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
 
@@ -558,9 +579,24 @@ export function BasicDetailPanel({
             <div className="flex items-center gap-2 text-xs">
               <span className="text-xs text-slate-600">共 {localTotalCount} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}{isPageLoading ? " · 加载中" : ""}</span>
               <span className="text-slate-400">|</span>
-              <Link href="/batch-import" data-basic-detail-import className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导入账单记录">
-                <Upload className="w-3 h-3" />导入
-              </Link>
+              <ViewExcelImportMenuButton
+                kind="normal"
+                accountId={accountId}
+                accountName={accountName || accountLabel || "当前账户"}
+                mailImport={{
+                  accountId,
+                  accountName: accountName || accountLabel || "当前账户",
+                }}
+                excelExport={{
+                  rows: normalExportRows,
+                  filename: normalExportFilename,
+                  sheetName: "资金明细",
+                  title: "导出资金明细 EXCEL 表",
+                  description: accountKind === "bank_credit" ? "按当前信用卡/筛选视图选择交易日期范围。" : "按当前账户/筛选视图选择交易日期范围。",
+                  dateColumnIndex: 0,
+                }}
+                dataBasicDetailImport
+              />
               {showBalanceReconcile ? (
                 <DebitBalanceReconcileButton
                   accountId={accountId}
@@ -568,9 +604,6 @@ export function BasicDetailPanel({
                   currentBalance={currentBalance}
                 />
               ) : null}
-              <a href={normalExportHref} data-basic-detail-export download={normalExportFilename} className="h-7 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出当前资金明细 CSV">
-                <Download className="w-3 h-3" />导出
-              </a>
               <span className="text-slate-400">|</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}

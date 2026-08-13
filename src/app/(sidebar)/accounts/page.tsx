@@ -243,9 +243,6 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <TopEntryLauncher defaultAction="transaction" />
-            <Link href="/batch-import" className="secondary-button h-8 px-3 text-xs">
-              导入账单
-            </Link>
           </div>
         </div>
       </header>

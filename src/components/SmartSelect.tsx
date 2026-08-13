@@ -86,6 +86,8 @@ type SmartSelectSharedBehavior = {
   expandedGroupColumns?: number;
   resizableDropdown?: boolean;
   autoOpen?: boolean;
+  showGroupCounts?: boolean;
+  onDropdownClose?: () => void;
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
@@ -349,6 +351,8 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     expandedGroupColumns: behavior?.expandedGroupColumns,
     resizableDropdown: behavior?.resizableDropdown ?? false,
     autoOpen: behavior?.autoOpen ?? false,
+    showGroupCounts: behavior?.showGroupCounts ?? true,
+    onDropdownClose: behavior?.onDropdownClose,
     create: behavior?.create ?? (props.onCreateClick
       ? {
           type: "button" as const,
@@ -384,6 +388,8 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     expandedGroupColumns: behavior?.expandedGroupColumns,
     resizableDropdown: behavior?.resizableDropdown ?? false,
     autoOpen: behavior?.autoOpen ?? false,
+    showGroupCounts: behavior?.showGroupCounts ?? true,
+    onDropdownClose: behavior?.onDropdownClose,
     create: behavior?.create ?? (props.onInlineCreate
       ? {
           type: "inline" as const,
@@ -433,6 +439,8 @@ export function SmartSelect(props: SmartSelectProps) {
     expandedGroupColumns,
     resizableDropdown,
     autoOpen,
+    showGroupCounts,
+    onDropdownClose,
     create,
   } = normalizedBehavior;
   const micro = density === "micro";
@@ -471,6 +479,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const triggerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const autoOpenedRef = useRef(false);
 
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
@@ -512,7 +521,8 @@ export function SmartSelect(props: SmartSelectProps) {
     setSearch("");
     setShowNew(false);
     setFocusedIndex(-1);
-  }, []);
+    onDropdownClose?.();
+  }, [onDropdownClose]);
 
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -566,7 +576,12 @@ export function SmartSelect(props: SmartSelectProps) {
   }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, initialCollapsedAll, mode, searchable, value]);
 
   useEffect(() => {
-    if (!autoOpen || open) return;
+    if (!autoOpen) {
+      autoOpenedRef.current = false;
+      return;
+    }
+    if (open || autoOpenedRef.current) return;
+    autoOpenedRef.current = true;
     openDropdown("first");
   }, [autoOpen, open, openDropdown]);
 
@@ -880,11 +895,11 @@ export function SmartSelect(props: SmartSelectProps) {
         onMouseEnter={() => setFocusedIndex(index)}
         className={
           insidePanel
-            ? `relative flex h-8 min-w-0 items-center justify-center rounded-md border px-2 text-center text-xs transition-colors ${
+            ? `relative flex h-8 min-w-0 items-center justify-center rounded-md border pl-1.5 pr-6 text-center text-xs transition-colors ${
                 index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-transparent bg-white hover:border-slate-200 hover:bg-white"
               } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
             : singleGridColumns
-              ? `relative flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+              ? `relative flex h-8 min-w-0 items-center justify-center rounded-md pl-1.5 pr-6 text-center text-xs transition-colors ${
                   index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
                 } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
               : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
@@ -898,7 +913,7 @@ export function SmartSelect(props: SmartSelectProps) {
             if (hierarchy && collapsibleGroups) toggleGroup(option.id);
           }}
           className={(singleGridColumns || insidePanel)
-            ? "absolute right-1 top-1 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+            ? "absolute right-1 top-1 z-10 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
             : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
         >
           {hierarchy && collapsibleGroups ? (
@@ -910,7 +925,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   <ChevronDown className="h-4 w-4" />
                 )}
               </span>
-              <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span>
+              {showGroupCounts ? <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span> : null}
             </>
           ) : null}
         </span>
@@ -1024,7 +1039,7 @@ export function SmartSelect(props: SmartSelectProps) {
               </span>
               <span className="truncate">{option.label}</span>
             </button>
-            {!search.trim() && hierarchy ? (
+            {!search.trim() && hierarchy && showGroupCounts ? (
               <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400">
                 {groupChildCounts.get(option.id) ?? 0}
               </span>
@@ -1135,7 +1150,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       </span>
                       <span className="truncate">{option.label}</span>
                     </button>
-                    {!search.trim() && hierarchy ? (
+                    {!search.trim() && hierarchy && showGroupCounts ? (
                       <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400">
                         {groupChildCounts.get(option.id) ?? 0}
                       </span>
@@ -1164,7 +1179,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     }}
                     onMouseEnter={() => setFocusedIndex(index)}
                     className={singleGridColumns
-                      ? `relative flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                      ? `relative flex h-8 min-w-0 items-center justify-center rounded-md pl-1.5 pr-6 text-center text-xs transition-colors ${
                           index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
                         } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
                       : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
@@ -1177,7 +1192,7 @@ export function SmartSelect(props: SmartSelectProps) {
                         if (hierarchy && collapsibleGroups) toggleGroup(option.id);
                       }}
                       className={singleGridColumns
-                        ? "absolute right-1 top-1 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+                        ? "absolute right-1 top-1 z-10 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
                         : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
                     >
                       {hierarchy && collapsibleGroups ? (
@@ -1189,7 +1204,7 @@ export function SmartSelect(props: SmartSelectProps) {
                               <ChevronDown className="h-4 w-4" />
                             )}
                           </span>
-                          <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span>
+                          {showGroupCounts ? <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span> : null}
                         </>
                       ) : null}
                     </span>

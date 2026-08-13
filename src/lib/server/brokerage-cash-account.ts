@@ -14,6 +14,11 @@ type StockAccountLike = {
 
 export const BROKERAGE_CASH_ACCOUNT_NAME = "证券资金账户";
 
+function buildBrokerageCashAccountName(institution?: { name?: string | null; shortName?: string | null } | null) {
+  const institutionName = institution?.shortName?.trim() || institution?.name?.trim() || "";
+  return institutionName ? `${institutionName}的资金账户` : BROKERAGE_CASH_ACCOUNT_NAME;
+}
+
 export function isCashLikeBrokerageFundingKind(kind: string | null | undefined) {
   return kind === AccountKind.cash || kind === AccountKind.bank_debit || kind === AccountKind.ewallet;
 }
@@ -32,6 +37,10 @@ export async function ensureBrokerageCashAccountForStockAccount(
   if (!stockAccount.institutionId) return null;
 
   const currency = stockAccount.currency?.trim() || "CNY";
+  const institution = await client.institution.findUnique({
+    where: { id: stockAccount.institutionId },
+    select: { name: true, shortName: true },
+  });
   const existing = await client.account.findFirst({
     where: {
       householdId: stockAccount.householdId,
@@ -60,7 +69,7 @@ export async function ensureBrokerageCashAccountForStockAccount(
 
   return client.account.create({
     data: {
-      name: BROKERAGE_CASH_ACCOUNT_NAME,
+      name: buildBrokerageCashAccountName(institution),
       kind: AccountKind.ewallet,
       currency,
       groupId: stockAccount.groupId,

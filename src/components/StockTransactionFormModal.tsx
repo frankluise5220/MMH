@@ -6,21 +6,22 @@ import { X } from "lucide-react";
 
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
+import { EntityCreateForm } from "./EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 
-type StockAction =
+type StockTransactionAction =
   | "buy"
   | "sell"
   | "dividend"
   | "bonus_share"
   | "split_share"
-  | "merge_share"
-  | "fee_adjustment"
-  | "tax_adjustment";
+  | "merge_share";
+
+type StockModalAction = "buy" | "sell" | "dividend" | "share_change";
 
 type AccountOption = {
   id: string;
@@ -57,6 +58,17 @@ type CreatedAccountResponse = {
   brokerageCashAccount?: CreatedAccountPayload | null;
 };
 
+type StockAccountCreatedExtra = {
+  kind?: string;
+  groupId?: string;
+  groupName?: string;
+  institutionId?: string;
+  institutionName?: string;
+  institutionShortName?: string;
+  currency?: string;
+  brokerageCashAccount?: CreatedAccountPayload | null;
+};
+
 type InvestmentAccountsResponse = {
   ok?: boolean;
   accounts?: Array<{
@@ -72,6 +84,21 @@ type InvestmentAccountsResponse = {
   }>;
 };
 
+type StockSecurityLookupResponse = {
+  ok?: boolean;
+  error?: string;
+  data?: {
+    security?: {
+      id: string;
+      market: string;
+      stockCode: string;
+      stockName?: string | null;
+      currency?: string | null;
+      exchange?: string | null;
+    } | null;
+  };
+};
+
 type StockCreateEventDetail = {
   requestId?: string;
   defaultStockAccountId?: string;
@@ -80,51 +107,18 @@ type StockCreateEventDetail = {
   defaultAmount?: number;
 };
 
-type FeeRule = {
-  feeType: string;
-  rate?: number | null;
-  amount?: number | null;
-  minAmount?: number | null;
-};
-
-const STOCK_ACTIONS: Array<{ key: StockAction; label: string; tone: string }> = [
+const STOCK_ACTIONS: Array<{ key: StockModalAction; label: string; tone: string }> = [
   { key: "buy", label: "买入", tone: "bg-blue-600 text-white border-blue-600" },
   { key: "sell", label: "卖出", tone: "bg-orange-600 text-white border-orange-600" },
   { key: "dividend", label: "分红", tone: "bg-emerald-600 text-white border-emerald-600" },
-  { key: "bonus_share", label: "送股", tone: "bg-slate-700 text-white border-slate-700" },
-  { key: "split_share", label: "拆股", tone: "bg-slate-700 text-white border-slate-700" },
-  { key: "merge_share", label: "并股", tone: "bg-slate-700 text-white border-slate-700" },
-  { key: "fee_adjustment", label: "费用调整", tone: "bg-rose-600 text-white border-rose-600" },
-  { key: "tax_adjustment", label: "税费调整", tone: "bg-rose-600 text-white border-rose-600" },
+  { key: "share_change", label: "股本变动", tone: "bg-slate-700 text-white border-slate-700" },
 ];
 
-const ACTION_HELP: Record<StockAction, string> = {
-  buy: "记录证券买入，影响股票持仓，并从所选证券资金账户扣款。",
-  sell: "记录证券卖出，影响股票持仓、所选证券资金账户和已实现收益。",
-  dividend: "记录现金股息，只影响所选证券资金账户和历史收益，不改变持仓股数。",
-  bonus_share: "记录送股或红股，只增加持仓数量，不生成现金流水。",
-  split_share: "记录拆股带来的新增股数，只调整持仓数量。",
-  merge_share: "记录并股带来的减少股数，只调整持仓数量。",
-  fee_adjustment: "记录券商费用、平台费等资金账户扣款，不改变持仓数量。",
-  tax_adjustment: "记录税费资金账户扣款，不改变持仓数量。",
-};
-
-const MARKET_OPTIONS = [
-  { value: "CN", label: "A 股" },
-  { value: "HK", label: "港股" },
-  { value: "US", label: "美股" },
-  { value: "OTHER", label: "其他" },
-] as const;
-
-const FEE_TYPES = [
-  { feeType: "commission", stateKey: "commission" },
-  { feeType: "stamp_tax", stateKey: "stampTax" },
-  { feeType: "transfer_fee", stateKey: "transferFee" },
-  { feeType: "exchange_fee", stateKey: "exchangeFee" },
-  { feeType: "regulatory_fee", stateKey: "regulatoryFee" },
-  { feeType: "platform_fee", stateKey: "otherFee" },
-  { feeType: "other", stateKey: "otherFee" },
-] as const;
+const SHARE_CHANGE_ACTIONS: Array<{ key: Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">; label: string }> = [
+  { key: "bonus_share", label: "送股" },
+  { key: "split_share", label: "拆股" },
+  { key: "merge_share", label: "并股" },
+];
 
 function todayDateInputValue() {
   const date = new Date();
@@ -139,13 +133,23 @@ function parseNumber(value: string) {
   return Number.isFinite(num) && num >= 0 ? num : 0;
 }
 
-function formatDraft(value: number, decimals = 2) {
-  if (!Number.isFinite(value) || value <= 0) return "";
-  return value.toFixed(decimals);
-}
-
 function normalizeStockCode(value: string) {
   return value.trim().toUpperCase();
+}
+
+function inferStockMarketFromCode(value: string) {
+  const code = normalizeStockCode(value);
+  if (/^\d{6}$/.test(code)) return "CN";
+  if (/^\d{5}$/.test(code)) return "HK";
+  if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(code)) return "US";
+  return "CN";
+}
+
+function sameBrokerageFundingAccount(stockAccount: AccountOption | null, cashAccount: AccountOption) {
+  if (!stockAccount?.institutionId || cashAccount.institutionId !== stockAccount.institutionId) return false;
+  if (stockAccount.groupId && cashAccount.groupId && cashAccount.groupId !== stockAccount.groupId) return false;
+  if (stockAccount.currency && cashAccount.currency && cashAccount.currency !== stockAccount.currency) return false;
+  return true;
 }
 
 function mergeAccounts(primary: AccountOption[], secondary: AccountOption[]) {
@@ -193,7 +197,11 @@ function createdAccountToOption(account: NonNullable<CreatedAccountResponse["acc
 
 function createdCashAccountToOption(account: CreatedAccountPayload): AccountOption {
   const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim() || "";
-  const label = [institutionName, account.name].filter(Boolean).join("·") || account.name;
+  const groupName = account.AccountGroup?.name?.trim() || "";
+  const labelParts = account.name.includes(institutionName)
+    ? [groupName, account.name]
+    : [groupName, institutionName, account.name];
+  const label = labelParts.filter(Boolean).join("·") || account.name;
   return {
     id: account.id,
     name: account.name,
@@ -210,6 +218,18 @@ function createdCashAccountToOption(account: CreatedAccountPayload): AccountOpti
     investProductType: account.investProductType ?? null,
     currency: account.currency ?? "CNY",
   };
+}
+
+function inferBrokerageNameFromStockAccount(account: AccountOption | null) {
+  if (!account) return "";
+  const accountName = account.name?.trim() || "";
+  const groupName = account.groupName?.trim() || "";
+  for (const label of [account.label, account.title, account.hoverTitle]) {
+    const parts = (label ?? "").split("·").map((part) => part.trim()).filter(Boolean);
+    const candidate = parts.find((part) => part !== accountName && part !== groupName && part !== "股票账户");
+    if (candidate) return candidate;
+  }
+  return "";
 }
 
 function investmentAccountToOption(account: NonNullable<InvestmentAccountsResponse["accounts"]>[number]): AccountOption {
@@ -269,47 +289,23 @@ function resolveDefaultCashAccountId(params: {
   const explicit = params.explicitCashAccountId?.trim();
   if (explicit && (cashIds.has(explicit) || explicit === params.stockAccountId)) return explicit;
 
-  const sameInstitutionCash = stockAccount?.institutionId
-    ? params.cashAccounts.find((account) => account.institutionId === stockAccount.institutionId && (!stockAccount.currency || !account.currency || account.currency === stockAccount.currency))
-      ?? params.cashAccounts.find((account) => account.institutionId === stockAccount.institutionId)
-    : null;
+  const sameInstitutionCash = params.cashAccounts.find((account) => sameBrokerageFundingAccount(stockAccount, account)) ?? null;
   if (sameInstitutionCash?.id) return sameInstitutionCash.id;
 
   const fallback = params.fallbackCashAccountId?.trim();
   if (fallback && cashIds.has(fallback)) return fallback;
-  return params.cashAccounts[0]?.id ?? params.stockAccountId ?? "";
+  return "";
 }
 
-function calculateFee(rule: FeeRule | null, grossAmount: number) {
-  if (!rule || grossAmount <= 0) return 0;
-  const base = rule.amount != null
-    ? Number(rule.amount)
-    : rule.rate != null
-      ? grossAmount * Number(rule.rate)
-      : 0;
-  const withMin = rule.minAmount != null ? Math.max(base, Number(rule.minAmount)) : base;
-  return Number.isFinite(withMin) ? Math.max(0, withMin) : 0;
-}
-
-function actionDirection(action: StockAction) {
-  return action === "sell" ? "sell" : "buy";
-}
-
-function isShareOnlyAction(action: StockAction) {
-  return action === "bonus_share" || action === "split_share" || action === "merge_share";
-}
-
-function quantityLabelForAction(action: StockAction) {
+function quantityLabelForAction(action: StockTransactionAction) {
   if (action === "bonus_share") return "送股数量";
   if (action === "split_share") return "新增股数";
   if (action === "merge_share") return "减少股数";
   return "数量";
 }
 
-function amountLabelForAction(action: StockAction) {
+function amountLabelForAction(action: StockModalAction) {
   if (action === "dividend") return "分红金额";
-  if (action === "fee_adjustment") return "费用金额";
-  if (action === "tax_adjustment") return "税费金额";
   return "成交金额";
 }
 
@@ -341,10 +337,13 @@ export function StockTransactionFormModal({
   const [localCashSSOptions, setLocalCashSSOptions] = useState<SmartSelectOption[] | undefined>(cashAccountSSOptions);
   const [autoCreatingAccount, setAutoCreatingAccount] = useState(false);
   const [autoCreateError, setAutoCreateError] = useState("");
+  const [nestedAccountOpen, setNestedAccountOpen] = useState(false);
+  const [nestedCashAccountOpen, setNestedCashAccountOpen] = useState(false);
   const autoCreateAttemptedRef = useRef(false);
   const cashAccountTouchedRef = useRef(false);
 
-  const [action, setAction] = useState<StockAction>("buy");
+  const [action, setAction] = useState<StockModalAction>("buy");
+  const [shareChangeAction, setShareChangeAction] = useState<Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">>("bonus_share");
   const [market, setMarket] = useState("CN");
   const [stockCode, setStockCode] = useState("");
   const [stockName, setStockName] = useState("");
@@ -353,17 +352,11 @@ export function StockTransactionFormModal({
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [grossAmount, setGrossAmount] = useState("");
-  const [commission, setCommission] = useState("");
-  const [stampTax, setStampTax] = useState("");
-  const [transferFee, setTransferFee] = useState("");
-  const [exchangeFee, setExchangeFee] = useState("");
-  const [regulatoryFee, setRegulatoryFee] = useState("");
-  const [otherFee, setOtherFee] = useState("");
   const [netAmount, setNetAmount] = useState("");
+  const [stockLookupLoading, setStockLookupLoading] = useState(false);
   const [brokerTradeId, setBrokerTradeId] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [feeLoading, setFeeLoading] = useState(false);
 
   useEffect(() => {
     setLocalStockAccounts((prev) => mergeAccounts(stockAccounts, prev));
@@ -389,56 +382,77 @@ export function StockTransactionFormModal({
     },
     [localStockAccounts, localStockSSOptions],
   );
-  const cashAccountOptions = useMemo<SmartSelectOption[]>(
-    () => {
-      const fallback = localCashAccounts.map(cashAccountToSmartOption);
-      const scoped = (localCashSSOptions ?? []).filter((option) => option.isHeader || localCashAccounts.some((account) => account.id === option.id));
-      return mergeOptions(scoped.length > 0 ? scoped : fallback, fallback);
-    },
-    [localCashAccounts, localCashSSOptions],
-  );
   const { ownerFilterLabel, cycleOwnerFilter, filteredOptions } = useAccountSSFilter(stockAccountOptions);
-  const {
-    ownerFilterLabel: cashOwnerFilterLabel,
-    cycleOwnerFilter: cycleCashOwnerFilter,
-    filteredOptions: filteredCashOptions,
-  } = useAccountSSFilter(cashAccountOptions);
   const selectedAccount = localStockAccounts.find((account) => account.id === stockAccountId) ?? null;
-  const selectedCashAccount = localCashAccounts.find((account) => account.id === cashAccountId)
-    ?? (cashAccountId === stockAccountId ? selectedAccount : null);
-  const selectedAction = STOCK_ACTIONS.find((item) => item.key === action) ?? STOCK_ACTIONS[0];
+  const eligibleCashAccounts = useMemo(
+    () => localCashAccounts.filter((account) => sameBrokerageFundingAccount(selectedAccount, account)),
+    [localCashAccounts, selectedAccount],
+  );
+  const eligibleCashAccountOptions = useMemo<SmartSelectOption[]>(() => {
+    const fallback = eligibleCashAccounts.map(cashAccountToSmartOption);
+    const eligibleIds = new Set(eligibleCashAccounts.map((account) => account.id));
+    const scoped = (localCashSSOptions ?? []).filter((option) => option.isHeader || eligibleIds.has(option.id));
+    return mergeOptions(scoped.length > 0 ? scoped : fallback, fallback);
+  }, [eligibleCashAccounts, localCashSSOptions]);
+  const selectedCashAccount = eligibleCashAccounts.find((account) => account.id === cashAccountId)
+    ?? eligibleCashAccounts[0]
+    ?? null;
+  const transactionAction: StockTransactionAction = action === "share_change" ? shareChangeAction : action;
   const isBuySell = action === "buy" || action === "sell";
   const isDividendAction = action === "dividend";
-  const isAdjustmentAction = action === "fee_adjustment" || action === "tax_adjustment";
-  const isShareAction = isShareOnlyAction(action);
-  const isCashAmountAction = action === "buy" || action === "sell" || action === "dividend" || action === "fee_adjustment" || action === "tax_adjustment";
+  const isShareAction = action === "share_change";
+  const isCashAmountAction = action === "buy" || action === "sell" || action === "dividend";
   const showQuantityField = isBuySell || isShareAction;
   const showPriceField = isBuySell;
   const showAmountField = isCashAmountAction;
   const showSettleDate = isBuySell || isDividendAction;
-  const showNetAmount = isBuySell || isDividendAction;
-  const showDetailedFeePanel = isBuySell;
-  const showDividendDeductionPanel = isDividendAction;
+  const showNetAmount = isDividendAction;
   const grossFromQuantity = parseNumber(quantity) * parseNumber(price);
-  const effectiveGrossAmount = parseNumber(grossAmount) || grossFromQuantity;
-  const detailedFeeTotal =
-    parseNumber(commission) +
-    parseNumber(stampTax) +
-    parseNumber(transferFee) +
-    parseNumber(exchangeFee) +
-    parseNumber(regulatoryFee) +
-    parseNumber(otherFee);
-  const totalFee = showDetailedFeePanel ? detailedFeeTotal : showDividendDeductionPanel ? parseNumber(otherFee) : 0;
+  const effectiveGrossAmount = isBuySell ? grossFromQuantity : parseNumber(grossAmount);
   const previewCashAmount = action === "sell" || action === "dividend"
-    ? Math.max(0, effectiveGrossAmount - totalFee)
-    : action === "buy" || action === "fee_adjustment" || action === "tax_adjustment"
-      ? effectiveGrossAmount + totalFee
+    ? Math.max(0, parseNumber(netAmount) || effectiveGrossAmount)
+    : action === "buy"
+      ? effectiveGrossAmount
       : 0;
-  const footerHint = previewCashAmount > 0
-    ? `${selectedAction.label}预计${action === "sell" || action === "dividend" ? "流入" : "扣款"} ${previewCashAmount.toFixed(2)}`
-    : isShareAction
-      ? "保存后只写入 StockTransaction 并重算 StockHolding，不生成现金流水。"
-      : "保存后会写入 StockTransaction、现金流水和 LinkId。";
+  const accountCreateFieldData = useMemo(() => {
+    const accounts = mergeAccounts(localStockAccounts, localCashAccounts);
+    const groups = new Map<string, { id: string; name: string }>();
+    const institutions = new Map<string, { id: string; name: string; type?: string }>();
+    for (const account of accounts) {
+      if (account.groupId) groups.set(account.groupId, { id: account.groupId, name: account.groupName || "所有人" });
+      if (account.institutionId) {
+        const label = account.label.split("·")[0] || account.institutionId;
+        institutions.set(account.institutionId, {
+          id: account.institutionId,
+          name: label,
+          type: account.institutionType ?? "brokerage",
+        });
+      }
+    }
+    return {
+      groupId: Array.from(groups.values()),
+      institutionId: Array.from(institutions.values()),
+    };
+  }, [localCashAccounts, localStockAccounts]);
+  const existingStockAccountNames = useMemo(
+    () => localStockAccounts.map((account) => account.name || account.label),
+    [localStockAccounts],
+  );
+  const existingCashAccountNames = useMemo(
+    () => localCashAccounts.map((account) => account.name || account.label),
+    [localCashAccounts],
+  );
+  const cashAccountCreateExtraFields = useMemo(() => ({
+    kind: "ewallet",
+    ...(selectedAccount?.groupId ? { groupId: selectedAccount.groupId } : {}),
+    ...(selectedAccount?.institutionId ? { institutionId: selectedAccount.institutionId } : {}),
+    ...(selectedAccount?.currency ? { currency: selectedAccount.currency } : {}),
+  }), [selectedAccount]);
+  const cashAccountCreateReadOnlyFields = useMemo(() => [
+    ...(selectedAccount?.groupId ? ["groupId"] : []),
+    ...(selectedAccount?.institutionId ? ["institutionId"] : []),
+    ...(selectedAccount?.currency ? ["currency"] : []),
+  ], [selectedAccount]);
 
   const resetDraft = useCallback((detail?: StockCreateEventDetail) => {
     const nextStockAccountId =
@@ -463,13 +477,8 @@ export function StockTransactionFormModal({
     setQuantity("");
     setPrice("");
     setGrossAmount(detail?.defaultAmount ? String(detail.defaultAmount) : "");
-    setCommission("");
-    setStampTax("");
-    setTransferFee("");
-    setExchangeFee("");
-    setRegulatoryFee("");
-    setOtherFee("");
     setNetAmount("");
+    setStockLookupLoading(false);
     setBrokerTradeId("");
     setNote("");
     setAutoCreateError("");
@@ -526,6 +535,7 @@ export function StockTransactionFormModal({
       const seedCashAccount = localCashAccounts.find((account) => account.id === cashAccountId)
         ?? localCashAccounts.find((account) => account.id === defaultCashAccountId)
         ?? null;
+      if (!seedCashAccount?.institutionId) return;
       const res = await fetch("/api/v1/accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -570,6 +580,86 @@ export function StockTransactionFormModal({
     }
   }, [autoCreatingAccount, cashAccountId, defaultCashAccountId, localCashAccounts, localStockAccounts.length]);
 
+  function handleStockAccountCreated(id: string, name: string, extra?: StockAccountCreatedExtra) {
+    const institutionName = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
+    const option: AccountOption = {
+      id,
+      name,
+      label: [institutionName, name].filter(Boolean).join("·") || name,
+      subLabel: [extra?.groupName ?? "", "股票账户"].filter(Boolean).join(" · "),
+      kind: "investment",
+      investProductType: "stock",
+      groupId: extra?.groupId ?? null,
+      groupName: extra?.groupName ?? null,
+      institutionId: extra?.institutionId ?? null,
+      institutionType: "brokerage",
+      currency: extra?.currency ?? "CNY",
+    };
+    const brokerageCashOption = extra?.brokerageCashAccount ? createdCashAccountToOption(extra.brokerageCashAccount) : null;
+    setLocalStockAccounts((prev) => mergeAccounts([option], prev));
+    setLocalStockSSOptions((prev) => mergeOptions(prev, [accountToSmartOption(option)]));
+    if (brokerageCashOption) {
+      setLocalCashAccounts((prev) => mergeAccounts([brokerageCashOption], prev));
+      setLocalCashSSOptions((prev) => mergeOptions(prev, [cashAccountToSmartOption(brokerageCashOption)]));
+    }
+    cashAccountTouchedRef.current = false;
+    setStockAccountId(id);
+    setCashAccountId(brokerageCashOption?.id ?? "");
+    setNestedAccountOpen(false);
+    requestAnimationFrame(() => {
+      dispatchFinanceDataChanged({
+        reason: "stock-account:create",
+        accountIds: [id, brokerageCashOption?.id ?? ""].filter((item): item is string => Boolean(item)),
+      });
+    });
+  }
+
+  function openNestedCashAccountCreate() {
+    if (!selectedAccount?.id) {
+      window.alert("请先选择股票账户");
+      return;
+    }
+    if (!selectedAccount.institutionId) {
+      window.alert("请先选择带证券机构的股票账户");
+      return;
+    }
+    setNestedCashAccountOpen(true);
+  }
+
+  function handleCashAccountCreated(id: string, name: string, extra?: StockAccountCreatedExtra) {
+    const institutionName = extra?.institutionShortName?.trim()
+      || extra?.institutionName?.trim()
+      || inferBrokerageNameFromStockAccount(selectedAccount);
+    const groupName = extra?.groupName ?? selectedAccount?.groupName ?? "";
+    const labelParts = name.includes(institutionName)
+      ? [groupName, name]
+      : [groupName, institutionName, name];
+    const option: AccountOption = {
+      id,
+      name,
+      label: labelParts.filter(Boolean).join("·") || name,
+      subLabel: [groupName, "证券资金账户"].filter(Boolean).join(" · "),
+      kind: extra?.kind ?? "ewallet",
+      groupId: extra?.groupId ?? selectedAccount?.groupId ?? null,
+      groupName: groupName || null,
+      institutionId: extra?.institutionId ?? selectedAccount?.institutionId ?? null,
+      institutionType: "brokerage",
+      investProductType: null,
+      currency: extra?.currency ?? selectedAccount?.currency ?? "CNY",
+    };
+    setLocalCashAccounts((prev) => mergeAccounts([option], prev));
+    setLocalCashSSOptions((prev) => mergeOptions(prev, [cashAccountToSmartOption(option)]));
+    cashAccountTouchedRef.current = true;
+    setCashAccountId(id);
+    setNestedCashAccountOpen(false);
+    requestAnimationFrame(() => {
+      dispatchFinanceDataChanged({
+        reason: "stock-funding-account:create",
+        accountIds: [id, stockAccountId].filter((item): item is string => Boolean(item)),
+      });
+    });
+  }
+
   useEffect(() => {
     if (!open) return;
     if (localStockAccounts.length > 0) return;
@@ -593,59 +683,47 @@ export function StockTransactionFormModal({
     setCashAccountId((prev) => (prev === nextCashAccountId ? prev : nextCashAccountId));
   }, [defaultCashAccountId, localCashAccounts, localStockAccounts, open, stockAccountId]);
 
-  async function applyFeeRules() {
-    if (!stockAccountId) {
-      window.alert("请先选择股票账户");
+  useEffect(() => {
+    if (!open) return;
+    const code = normalizeStockCode(stockCode);
+    if (!code) {
+      setStockName("");
+      setStockLookupLoading(false);
       return;
     }
-    if (!isBuySell) {
-      window.alert("账户费率暂只自动套用买入/卖出");
-      return;
-    }
-    if (effectiveGrossAmount <= 0) {
-      window.alert("请先填写成交金额，或填写数量和价格");
-      return;
-    }
-    setFeeLoading(true);
-    try {
-      const paramsBase = new URLSearchParams({
-        accountId: stockAccountId,
-        direction: actionDirection(action),
-        tradeDate,
-        market,
-        stockCode: normalizeStockCode(stockCode),
-      });
-      const results = await Promise.all(
-        FEE_TYPES.map(async (item) => {
-          const params = new URLSearchParams(paramsBase);
-          params.set("feeType", item.feeType);
-          const res = await fetch(`/api/v1/stocks/fee-rules?${params.toString()}`);
-          const data = await res.json().catch(() => null) as { ok?: boolean; data?: { rule?: FeeRule | null }; error?: string } | null;
-          if (!res.ok || !data?.ok) throw new Error(data?.error ?? "读取费率失败");
-          return { stateKey: item.stateKey, fee: calculateFee(data.data?.rule ?? null, effectiveGrossAmount), hasRule: Boolean(data.data?.rule) };
-        }),
-      );
-      let applied = 0;
-      let nextOtherFee = parseNumber(otherFee);
-      for (const item of results) {
-        if (!item.hasRule) continue;
-        applied += 1;
-        const value = formatDraft(item.fee);
-        if (item.stateKey === "commission") setCommission(value);
-        if (item.stateKey === "stampTax") setStampTax(value);
-        if (item.stateKey === "transferFee") setTransferFee(value);
-        if (item.stateKey === "exchangeFee") setExchangeFee(value);
-        if (item.stateKey === "regulatoryFee") setRegulatoryFee(value);
-        if (item.stateKey === "otherFee") nextOtherFee += item.fee;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setStockLookupLoading(true);
+      try {
+        const lookupMarket = inferStockMarketFromCode(code);
+        const params = new URLSearchParams({ market: lookupMarket, code, lookup: "1" });
+        const res = await fetch(`/api/v1/stocks/securities?${params.toString()}`, {
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => null) as StockSecurityLookupResponse | null;
+        if (!res.ok || !data?.ok) throw new Error(data?.error ?? "股票名称查询失败");
+        const security = data.data?.security ?? null;
+        const nextName = security?.stockName?.trim() ?? "";
+        if (nextName && nextName !== code) {
+          setStockName(nextName);
+          if (security?.market) setMarket(security.market);
+        } else {
+          setStockName("");
+        }
+      } catch (error) {
+        if ((error as Error)?.name !== "AbortError") setStockName("");
+      } finally {
+        if (!controller.signal.aborted) setStockLookupLoading(false);
       }
-      if (nextOtherFee > parseNumber(otherFee)) setOtherFee(formatDraft(nextOtherFee));
-      if (applied === 0) window.alert("当前股票账户还没有可套用的手续费规则");
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "读取费率失败");
-    } finally {
-      setFeeLoading(false);
-    }
-  }
+    }, 600);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, stockCode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -659,8 +737,8 @@ export function StockTransactionFormModal({
       window.alert("请填写股票代码");
       return;
     }
-    if (isBuySell && (!parseNumber(quantity) || effectiveGrossAmount <= 0)) {
-      window.alert("买卖股票需要填写数量和成交金额");
+    if (isBuySell && (!parseNumber(quantity) || !parseNumber(price) || effectiveGrossAmount <= 0)) {
+      window.alert("买卖股票需要填写数量和成交价格");
       return;
     }
     if (isShareAction && !parseNumber(quantity)) {
@@ -671,31 +749,21 @@ export function StockTransactionFormModal({
       window.alert("请填写交易金额");
       return;
     }
-    if (isCashAmountAction && !cashAccountId) {
-      window.alert("请选择证券资金账户");
-      return;
-    }
     setSubmitting(true);
     try {
       const payload = {
         stockAccountId,
-        cashAccountId: cashAccountId || stockAccountId,
+        cashAccountId: selectedCashAccount?.id || undefined,
         market,
         stockCode: normalizedCode,
         stockName: stockName.trim() || normalizedCode,
-        action,
+        action: transactionAction,
         tradeDate,
         settleDate: showSettleDate ? settleDate || undefined : undefined,
         quantity: showQuantityField ? quantity || undefined : undefined,
         price: showPriceField ? price || undefined : undefined,
         grossAmount: showAmountField ? effectiveGrossAmount || undefined : undefined,
         netAmount: showNetAmount ? netAmount || undefined : undefined,
-        commission: showDetailedFeePanel ? commission || undefined : undefined,
-        stampTax: showDetailedFeePanel ? stampTax || undefined : undefined,
-        transferFee: showDetailedFeePanel ? transferFee || undefined : undefined,
-        exchangeFee: showDetailedFeePanel ? exchangeFee || undefined : undefined,
-        regulatoryFee: showDetailedFeePanel ? regulatoryFee || undefined : undefined,
-        otherFee: showDetailedFeePanel || showDividendDeductionPanel ? otherFee || undefined : undefined,
         brokerTradeId: brokerTradeId.trim() || undefined,
         note: note.trim() || undefined,
         source: "manual",
@@ -715,7 +783,7 @@ export function StockTransactionFormModal({
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({
           reason: "stock-transaction-save",
-          accountIds: Array.from(new Set([stockAccountId, cashAccountId].filter((id): id is string => Boolean(id)))),
+          accountIds: Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id)))),
           entryIds: [data.data?.transaction?.cashEntryId ?? "", data.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
@@ -731,237 +799,210 @@ export function StockTransactionFormModal({
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <div className="app-modal-backdrop z-[1000]">
-      <div className="app-modal-panel max-w-[min(46rem,calc(100vw-1rem))]">
-        <form onSubmit={submit} className="flex max-h-[90vh] flex-col">
-          <div className="modal-header">
-            <div>
+    <>
+      <div className="app-modal-backdrop z-[1000]">
+        <div className="app-modal-panel max-w-[min(38rem,calc(100vw-1rem))]">
+          <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+            <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">股票交易</div>
-              <div className="mt-0.5 text-xs text-slate-500">
-                {selectedAccount ? `${selectedAccount.label} · 资金走证券资金账户` : autoCreatingAccount ? "正在自动建立股票账户" : "选择或自动建立股票账户"}
-              </div>
-            </div>
-            <button type="button" onClick={close} className="secondary-button h-8 px-2" title="关闭">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
-            <div className="grid grid-cols-4 gap-2">
-              {STOCK_ACTIONS.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setAction(item.key)}
-                  className={`h-8 rounded-[10px] border px-2 text-xs ${action === item.key ? item.tone : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <div className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">
-              {ACTION_HELP[action]}
+              <button type="button" onClick={close} className="secondary-button h-8 px-2" title="关闭">
+                <X className="h-4 w-4" />
+              </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">股票账户</div>
-                <SmartSelect
-                  mode="single"
-                  value={stockAccountId}
-                  onChange={setStockAccountId}
-                  options={sortOptionsByRecent(filteredOptions ?? stockAccountOptions, recentAccountIds)}
-                  placeholder={autoCreatingAccount ? "正在自动建立股票账户" : "选择股票账户"}
-                  onCycleOwnerFilter={cycleOwnerFilter}
-                  ownerFilterLabel={ownerFilterLabel}
-                  behavior={{ search: true, density: "compact", minDropdownWidth: 280 }}
-                />
-                {autoCreateError ? <div className="text-[11px] text-rose-600">{autoCreateError}</div> : null}
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:px-5 sm:py-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {STOCK_ACTIONS.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setAction(item.key)}
+                    className={`h-8 rounded-[10px] border px-2 text-xs ${action === item.key ? item.tone : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
-              <div className="space-y-1">
-                <div className="form-label">证券资金账户</div>
-                {cashAccountOptions.length > 0 ? (
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <div className="form-label">股票账户</div>
                   <SmartSelect
                     mode="single"
-                    value={cashAccountId}
+                    value={stockAccountId}
+                    onChange={(id) => {
+                      cashAccountTouchedRef.current = false;
+                      setStockAccountId(id);
+                    }}
+                    options={sortOptionsByRecent(filteredOptions ?? stockAccountOptions, recentAccountIds)}
+                    placeholder={autoCreatingAccount ? "正在自动建立股票账户" : "选择股票账户"}
+                    onCreateClick={() => setNestedAccountOpen(true)}
+                    createLabel="新增股票账户"
+                    onCycleOwnerFilter={cycleOwnerFilter}
+                    ownerFilterLabel={ownerFilterLabel}
+                    behavior={{ search: true, density: "compact", minDropdownWidth: 280 }}
+                  />
+                  {autoCreateError ? <div className="text-[11px] text-rose-600">{autoCreateError}</div> : null}
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">资金账户</div>
+                  <SmartSelect
+                    mode="single"
+                    value={selectedCashAccount?.id ?? cashAccountId}
                     onChange={(value) => {
                       cashAccountTouchedRef.current = true;
                       setCashAccountId(value);
                     }}
-                    options={sortOptionsByRecent(filteredCashOptions ?? cashAccountOptions, recentAccountIds)}
-                    placeholder="选择券商可用资金账户"
-                    onCycleOwnerFilter={cycleCashOwnerFilter}
-                    ownerFilterLabel={cashOwnerFilterLabel}
-                    behavior={{ search: true, density: "compact", minDropdownWidth: 280 }}
+                    options={sortOptionsByRecent(eligibleCashAccountOptions, recentAccountIds)}
+                    placeholder={eligibleCashAccountOptions.length > 0 ? "选择资金账户" : "新增资金账户"}
+                    onCreateClick={openNestedCashAccountCreate}
+                    createLabel="新增资金账户"
+                    behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
                   />
-                ) : (
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <div className="form-label">股票代码</div>
+                  <input
+                    value={stockCode}
+                    onChange={(event) => {
+                      const nextCode = event.target.value.toUpperCase();
+                      setStockCode(nextCode);
+                      setMarket(inferStockMarketFromCode(nextCode));
+                    }}
+                    className="form-input"
+                    placeholder="600519 / 00700 / AAPL"
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <div className="form-label">股票名称</div>
                   <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-                    {selectedCashAccount?.label || "暂用股票账户现金"}
+                    {stockLookupLoading ? "查询中..." : stockName || ""}
                   </div>
-                )}
-                <div className="text-[11px] text-slate-400">
-                  银证转账进这里；同一券商下的股票和基金可以共用。
                 </div>
               </div>
-            </div>
 
-            <div className="grid grid-cols-4 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">市场</div>
-                <select value={market} onChange={(event) => setMarket(event.target.value)} className="form-input">
-                  {MARKET_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">股票代码</div>
-                <input value={stockCode} onChange={(event) => setStockCode(event.target.value.toUpperCase())} className="form-input" placeholder="例如：600519" />
-              </div>
-              <div className="col-span-2 space-y-1">
-                <div className="form-label">股票名称</div>
-                <input value={stockName} onChange={(event) => setStockName(event.target.value)} className="form-input" placeholder="可选，留空时使用代码" />
-              </div>
-            </div>
-
-            <div className={`grid gap-3 ${showSettleDate ? "grid-cols-2" : "grid-cols-1"}`}>
-              <div className="space-y-1">
-                <div className="form-label">交易日期</div>
-                <DateStepper value={tradeDate} onChange={setTradeDate} />
-              </div>
-              {showSettleDate ? (
+              <div className={`grid gap-3 ${showSettleDate ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
                 <div className="space-y-1">
-                  <div className="form-label">交割日期</div>
-                  <DateStepper value={settleDate || tradeDate} onChange={(value) => setSettleDate(value === tradeDate ? "" : value)} />
+                  <div className="form-label">交易日期</div>
+                  <DateStepper value={tradeDate} onChange={setTradeDate} />
                 </div>
-              ) : null}
-            </div>
-
-            <div className="grid grid-cols-4 gap-3">
-              {showQuantityField ? (
-                <div className="space-y-1">
-                  <div className="form-label">{quantityLabelForAction(action)}</div>
-                  <CalcInput value={quantity} onChange={setQuantity} placeholder="股数" label={quantityLabelForAction(action)} precision={4} />
-                </div>
-              ) : null}
-              {showPriceField ? (
-                <div className="space-y-1">
-                  <div className="form-label">成交价格</div>
-                  <CalcInput value={price} onChange={setPrice} placeholder="成交价" label="成交价格" precision={4} />
-                </div>
-              ) : null}
-              {showAmountField ? (
-                <div className="space-y-1">
-                  <div className="form-label">{amountLabelForAction(action)}</div>
-                  <CalcInput
-                    value={grossAmount}
-                    onChange={setGrossAmount}
-                    placeholder={grossFromQuantity > 0 ? grossFromQuantity.toFixed(2) : "金额"}
-                    label={amountLabelForAction(action)}
-                    precision={2}
-                  />
-                </div>
-              ) : null}
-              {showNetAmount ? (
-                <div className="space-y-1">
-                  <div className="form-label">{action === "sell" || action === "dividend" ? "净到账" : "净扣款"}</div>
-                  <CalcInput value={netAmount} onChange={setNetAmount} placeholder={previewCashAmount > 0 ? previewCashAmount.toFixed(2) : "可选"} label="净金额" precision={2} />
-                </div>
-              ) : null}
-              {isShareAction ? (
-                <div className="col-span-3 flex items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-xs leading-5 text-slate-500">
-                  {action === "merge_share" ? "并股会按填写数量减少持仓股数，不影响证券资金账户。" : "送股/拆股会按填写数量增加持仓股数，不影响证券资金账户。"}
-                </div>
-              ) : null}
-              {isAdjustmentAction ? (
-                <div className="col-span-3 flex items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-xs leading-5 text-slate-500">
-                  {action === "tax_adjustment" ? "税费调整会从证券资金账户扣款，不改变持仓股数。" : "费用调整会从证券资金账户扣款，不改变持仓股数。"}
-                </div>
-              ) : null}
-            </div>
-
-            {showDetailedFeePanel ? (
-            <div className="rounded-[12px] border border-slate-200 bg-slate-50/70 p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-xs font-medium text-slate-700">手续费</div>
-                  <div className="text-[11px] text-slate-400">可手填，也可套用当前股票账户的费率规则。</div>
-                </div>
-                <button type="button" onClick={applyFeeRules} disabled={feeLoading || submitting} className="secondary-button h-8 px-3 text-xs disabled:opacity-50">
-                  {feeLoading ? "读取中…" : "套用账户费率"}
-                </button>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <div className="form-label">佣金</div>
-                  <CalcInput value={commission} onChange={setCommission} placeholder="0.00" label="佣金" />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">印花税</div>
-                  <CalcInput value={stampTax} onChange={setStampTax} placeholder="0.00" label="印花税" />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">过户费</div>
-                  <CalcInput value={transferFee} onChange={setTransferFee} placeholder="0.00" label="过户费" />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">交易所费用</div>
-                  <CalcInput value={exchangeFee} onChange={setExchangeFee} placeholder="0.00" label="交易所费用" />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">监管费</div>
-                  <CalcInput value={regulatoryFee} onChange={setRegulatoryFee} placeholder="0.00" label="监管费" />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">其他费用</div>
-                  <CalcInput value={otherFee} onChange={setOtherFee} placeholder="0.00" label="其他费用" />
-                </div>
-              </div>
-            </div>
-            ) : null}
-
-            {showDividendDeductionPanel ? (
-              <div className="rounded-[12px] border border-slate-200 bg-slate-50/70 p-3">
-                <div className="mb-2">
-                  <div className="text-xs font-medium text-slate-700">分红扣税/费用</div>
-                  <div className="text-[11px] text-slate-400">现金股息不改变持仓股数；如有预扣税或费用，填在这里。</div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
+                {showSettleDate ? (
                   <div className="space-y-1">
-                    <div className="form-label">扣税/费用</div>
-                    <CalcInput value={otherFee} onChange={setOtherFee} placeholder="0.00" label="扣税/费用" />
+                    <div className="form-label">交割日期</div>
+                    <DateStepper value={settleDate || tradeDate} onChange={(value) => setSettleDate(value === tradeDate ? "" : value)} />
                   </div>
-                  <div className="flex items-center rounded-[10px] border border-slate-200 bg-white px-3 text-xs text-slate-500">
-                    预计净到账 {previewCashAmount > 0 ? previewCashAmount.toFixed(2) : "0.00"}
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {isShareAction ? (
+                  <div className="space-y-1">
+                    <div className="form-label">变动类型</div>
+                    <select
+                      value={shareChangeAction}
+                      onChange={(event) => setShareChangeAction(event.target.value as typeof shareChangeAction)}
+                      className="form-input"
+                    >
+                      {SHARE_CHANGE_ACTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+                    </select>
                   </div>
+                ) : null}
+                {showQuantityField ? (
+                  <div className="space-y-1">
+                    <div className="form-label">{quantityLabelForAction(transactionAction)}</div>
+                    <CalcInput value={quantity} onChange={setQuantity} placeholder="股数" label={quantityLabelForAction(transactionAction)} precision={4} />
+                  </div>
+                ) : null}
+                {showPriceField ? (
+                  <div className="space-y-1">
+                    <div className="form-label">成交价格</div>
+                    <CalcInput value={price} onChange={setPrice} placeholder="成交价" label="成交价格" precision={4} />
+                  </div>
+                ) : null}
+                {showAmountField ? (
+                  <div className="space-y-1">
+                    <div className="form-label">{amountLabelForAction(action)}</div>
+                    {isBuySell ? (
+                      <input
+                        value={grossFromQuantity > 0 ? grossFromQuantity.toFixed(2) : ""}
+                        readOnly
+                        className="form-input bg-slate-50 text-right tabular-nums text-slate-700"
+                        placeholder="自动计算"
+                      />
+                    ) : (
+                      <CalcInput
+                        value={grossAmount}
+                        onChange={setGrossAmount}
+                        placeholder="金额"
+                        label={amountLabelForAction(action)}
+                        precision={2}
+                      />
+                    )}
+                  </div>
+                ) : null}
+                {showNetAmount ? (
+                  <div className="space-y-1">
+                    <div className="form-label">净到账</div>
+                    <CalcInput value={netAmount} onChange={setNetAmount} placeholder={previewCashAmount > 0 ? previewCashAmount.toFixed(2) : "可选"} label="净金额" precision={2} />
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <div className="form-label">券商成交号</div>
+                  <input value={brokerTradeId} onChange={(event) => setBrokerTradeId(event.target.value)} className="form-input" placeholder="可选" />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">备注</div>
+                  <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder="可选" />
                 </div>
               </div>
-            ) : null}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <div className="form-label">券商成交号</div>
-                <input value={brokerTradeId} onChange={(event) => setBrokerTradeId(event.target.value)} className="form-input" placeholder="可选" />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">备注</div>
-                <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder="可选" />
-              </div>
             </div>
-          </div>
 
-          <div className="modal-footer">
-            <div className="text-xs text-slate-500">
-              {footerHint}
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <button type="button" onClick={close} disabled={submitting} className="secondary-button h-9 px-4 text-sm disabled:opacity-50">取消</button>
+            <div className="modal-footer flex shrink-0 justify-end">
               <button type="submit" disabled={submitting || autoCreatingAccount} className="primary-button h-9 px-4 text-sm disabled:opacity-50">
-                {submitting ? "保存中…" : "保存股票交易"}
+                {submitting ? "保存中..." : "保存"}
               </button>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       </div>
-    </div>,
+      <EntityCreateForm
+        mode="compact"
+        entityType="account"
+        open={nestedAccountOpen}
+        onClose={() => setNestedAccountOpen(false)}
+        onCreated={(id, name, extra) => handleStockAccountCreated(id, name, extra as StockAccountCreatedExtra)}
+        title="新增股票账户"
+        nameLabel="股票账户名称"
+        namePlaceholder="例如：中信建投股票账户"
+        defaultType="investment"
+        extraFields={{ kind: "investment", investProductType: "stock" }}
+        hiddenFields={["kind", "investProductType", "fundUnitsDecimals", "tradingCalendar"]}
+        nestedFieldData={accountCreateFieldData}
+        existingNames={existingStockAccountNames}
+      />
+      <EntityCreateForm
+        mode="compact"
+        entityType="account"
+        open={nestedCashAccountOpen}
+        onClose={() => setNestedCashAccountOpen(false)}
+        onCreated={(id, name, extra) => handleCashAccountCreated(id, name, extra as StockAccountCreatedExtra)}
+        title="新增资金账户"
+        nameLabel="资金账户名称"
+        namePlaceholder="例如：资金账户21003344"
+        defaultType="ewallet"
+        extraFields={cashAccountCreateExtraFields}
+        hiddenFields={["kind"]}
+        readOnlyFields={cashAccountCreateReadOnlyFields}
+        nestedFieldData={accountCreateFieldData}
+        existingNames={existingCashAccountNames}
+      />
+    </>,
     document.body,
   );
 }

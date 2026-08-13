@@ -23,9 +23,49 @@ type CreditBillMailImportButtonProps = {
   accountName: string;
 };
 
-export function CreditBillMailImportButton(props: CreditBillMailImportButtonProps) {
-  void props;
+type CreditBillMailImportDialogProps = {
+  open: boolean;
+  onClose: () => void;
+  accountId?: string;
+  accountName?: string;
+};
 
+export function CreditBillMailImportDialog({ open, onClose, accountId, accountName }: CreditBillMailImportDialogProps) {
+  void accountId;
+  void accountName;
+  const { t } = useI18n();
+
+  if (!open || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[90] flex items-start justify-center bg-slate-900/30 px-4 py-[4vh]">
+      <div className="flex h-[90vh] min-h-[560px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-2xl">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">{t("creditBill.fetchMailTitle")}</div>
+            <div className="mt-0.5 truncate text-xs text-slate-500">
+              使用系统设置里的同一套邮箱账单读取、HTML 预览、识别和导入流程。
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            title={t("creditBill.close")}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
+          <EmailSettingsPage />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function CreditBillMailImportButton(props: CreditBillMailImportButtonProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
 
@@ -41,32 +81,12 @@ export function CreditBillMailImportButton(props: CreditBillMailImportButtonProp
         {t("creditBill.fetch")}
       </button>
 
-      {open && typeof document !== "undefined" ? createPortal(
-        <div className="fixed inset-0 z-[90] flex items-start justify-center bg-slate-900/30 px-4 py-[4vh]">
-          <div className="flex h-[90vh] min-h-[560px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-2xl">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-800">{t("creditBill.fetchMailTitle")}</div>
-                <div className="mt-0.5 truncate text-xs text-slate-500">
-                  使用系统设置里的同一套邮箱账单读取、HTML 预览、识别和导入流程。
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                title={t("creditBill.close")}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-              <EmailSettingsPage />
-            </div>
-          </div>
-        </div>,
-        document.body,
-      ) : null}
+      <CreditBillMailImportDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        accountId={props.accountId}
+        accountName={props.accountName}
+      />
     </>
   );
 }

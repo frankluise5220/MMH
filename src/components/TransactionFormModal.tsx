@@ -158,6 +158,10 @@ function dialogAmountToStoredAmount(type: TxType, value: string) {
   return type === "expense" ? -parsed : parsed;
 }
 
+function compactIds(ids: Array<string | null | undefined>) {
+  return Array.from(new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean)));
+}
+
 function inferDebtTransferMode(
   sourceAccount: AccountOption | SmartSelectOption | undefined,
   targetAccount: AccountOption | SmartSelectOption | undefined,
@@ -1316,6 +1320,19 @@ export function TransactionFormModal({
       .catch(() => {});
   }, [accountMetaById, open, isCreditCardAccount, txType, toAccountId, fromAccountIdEdited]);
 
+  function currentFinanceRefreshDetail() {
+    const accountIds = txType === "transfer" || txType === "fx"
+      ? compactIds([fromAccountId, toAccountId])
+      : txType === "investment"
+        ? compactIds([accountId, fromAccountId, toAccountId, defaultAccountId])
+        : compactIds([accountId, toAccountId, defaultAccountId]);
+    return {
+      reason: "transaction-save",
+      accountIds: accountIds.length > 0 ? accountIds : undefined,
+      entryIds: editEntryId ? [editEntryId] : undefined,
+    };
+  }
+
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitting) return;
@@ -1342,7 +1359,7 @@ export function TransactionFormModal({
             return;
           }
           requestAnimationFrame(() => {
-            dispatchFinanceDataChanged({ reason: "transaction-save" });
+            dispatchFinanceDataChanged(currentFinanceRefreshDetail());
           });
           resetDraft();
         } catch (err) {
@@ -1418,7 +1435,7 @@ export function TransactionFormModal({
         }
         void notifySettingsDataChanged({ scope: "accounts", reason: "fx:auto-account", prefetch: true });
         requestAnimationFrame(() => {
-          dispatchFinanceDataChanged({ reason: "transaction-save" });
+          dispatchFinanceDataChanged(currentFinanceRefreshDetail());
         });
         if (submitModeRef.current === "repeat" && !editEntryId) {
           repeatDraft();
@@ -1493,7 +1510,7 @@ export function TransactionFormModal({
         );
       }
       requestAnimationFrame(() => {
-        dispatchFinanceDataChanged({ reason: "transaction-save" });
+        dispatchFinanceDataChanged(currentFinanceRefreshDetail());
       });
       if (submitModeRef.current === "repeat" && !editEntryId) {
         repeatDraft();

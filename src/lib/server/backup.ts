@@ -2,9 +2,10 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
+import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import type { CurrentUser } from "@/lib/server/auth";
 
-export const BACKUP_FORMAT_VERSION = 3;
+export const BACKUP_FORMAT_VERSION = 4;
 const ENCRYPTED_BACKUP_PACKAGE_VERSION = 3;
 const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";
 const BACKUP_PACKAGE_KEY_SETTING = "backup_package_encryption_key";
@@ -71,6 +72,7 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "users", value: payload.counts.users },
     { field: "accounts", value: payload.counts.accounts },
     { field: "transactions", value: payload.counts.transactions },
+    { field: "statementRecognitionRules", value: payload.counts.statementRecognitionRules },
     { field: "categories", value: payload.counts.categories },
     { field: "tags", value: payload.counts.tags },
     { field: "institutions", value: payload.counts.institutions },
@@ -114,6 +116,105 @@ function withGeneratedAccountNames(
     }
     return next;
   });
+}
+
+function backupText(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null;
+}
+
+function backupDate(value: unknown) {
+  return value ? new Date(String(value)) : new Date();
+}
+
+function cleanedRestoredKeyword(value: unknown, source: string) {
+  const raw = backupText(value).trim();
+  if (!raw || source === "system_default") return raw;
+  return extractStatementLearningKeyword(raw) || raw;
+}
+
+function restoredStatementRecognitionRule(
+  item: Record<string, unknown>,
+  householdId: string,
+  importedCategories: Set<string>,
+  importedInstitutions: Set<string>,
+) {
+  const targetType = backupText(item.targetType, "category");
+  if (targetType !== "category" && targetType !== "institution" && targetType !== "field") return null;
+
+  const source = backupText(item.source, "system_default");
+  const transactionType = backupText(item.transactionType ?? item.type, "any");
+  const keyword = cleanedRestoredKeyword(item.keyword ?? item.matchText, source);
+  if (!keyword) return null;
+
+  const normalizedKeyword = cleanedRestoredKeyword(item.normalizedKeyword ?? item.normalizedText ?? keyword, source)
+    || normalizeStatementKeywordText(keyword);
+  if (!normalizedKeyword) return null;
+
+  const categoryId = item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null;
+  const institutionId = item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null;
+  if (targetType === "category" && !backupText(item.categoryName) && !categoryId) return null;
+  if (targetType === "institution" && !backupText(item.institutionName) && !institutionId) return null;
+  if (targetType === "field" && !backupText(item.fieldName)) return null;
+
+  return {
+    id: backupText(item.id, crypto.randomUUID()),
+    householdId,
+    targetType,
+    transactionType,
+    keyword,
+    normalizedKeyword,
+    categoryId,
+    categoryName: item.categoryName == null ? null : String(item.categoryName),
+    institutionId,
+    institutionName: item.institutionName == null ? null : String(item.institutionName),
+    fieldName: item.fieldName == null ? null : String(item.fieldName),
+    source,
+    priority: Number(item.priority ?? (targetType === "category" ? 230 : 100)),
+    isActive: item.isActive == null ? true : Boolean(item.isActive),
+    hitCount: Number(item.hitCount ?? 0),
+    lastSeenAt: item.lastSeenAt ? new Date(String(item.lastSeenAt)) : null,
+    createdAt: backupDate(item.createdAt),
+    updatedAt: backupDate(item.updatedAt),
+  };
+}
+
+function restoredLegacyStatementCategoryRule(
+  item: Record<string, unknown>,
+  householdId: string,
+  importedCategories: Set<string>,
+) {
+  const source = backupText(item.source, "user_category_edit");
+  const keyword = cleanedRestoredKeyword(item.matchText, source);
+  if (!keyword) return null;
+  const normalizedKeyword = cleanedRestoredKeyword(item.normalizedText ?? keyword, source) || normalizeStatementKeywordText(keyword);
+  if (!normalizedKeyword) return null;
+  const categoryId = item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null;
+  if (!backupText(item.categoryName) && !categoryId) return null;
+
+  return {
+    id: `recog_legacy_${backupText(item.id, crypto.randomUUID())}`,
+    householdId,
+    targetType: "category",
+    transactionType: backupText(item.type, "expense"),
+    keyword,
+    normalizedKeyword,
+    categoryId,
+    categoryName: backupText(item.categoryName),
+    institutionId: null,
+    institutionName: null,
+    fieldName: null,
+    source,
+    priority: source === "system_default" ? 100 : 230,
+    isActive: true,
+    hitCount: Number(item.hitCount ?? 1),
+    lastSeenAt: item.lastSeenAt ? new Date(String(item.lastSeenAt)) : null,
+    createdAt: backupDate(item.createdAt),
+    updatedAt: backupDate(item.updatedAt),
+  };
 }
 
 const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
@@ -509,6 +610,7 @@ export async function buildHouseholdBackupPayload(
     creditCardInstallmentPlans,
     loanRateAdjustments,
     fundQueryApis,
+    statementRecognitionRules,
     importBatches,
     transactions,
     emailAccounts,
@@ -528,6 +630,7 @@ export async function buildHouseholdBackupPayload(
     stockTransactions,
     stockPriceCache,
     stockFeeRules,
+    stockMarketFeeRules,
     entryBusinessLinks,
     systemSettings,
     accessKeys,
@@ -547,6 +650,7 @@ export async function buildHouseholdBackupPayload(
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
     prisma.fundQueryApi.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.statementRecognitionRule.findMany({ where: { householdId }, orderBy: [{ priority: "desc" }, { hitCount: "desc" }, { updatedAt: "desc" }] }),
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.emailAccount.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -569,6 +673,7 @@ export async function buildHouseholdBackupPayload(
     prisma.stockTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.stockPriceCache.findMany({ where: { StockSecurity: { is: { householdId } } }, orderBy: [{ priceDate: "asc" }, { market: "asc" }, { stockCode: "asc" }] }),
     prisma.stockFeeRule.findMany({ where: { Account: { householdId } }, orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }] }),
+    prisma.stockMarketFeeRule.findMany({ where: { householdId }, orderBy: [{ market: "asc" }, { effectiveDate: "asc" }] }),
     prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
     prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
@@ -641,6 +746,7 @@ export async function buildHouseholdBackupPayload(
       users: users.length,
       accounts: accounts.length,
       transactions: transactions.length,
+      statementRecognitionRules: statementRecognitionRules.length,
       categories: categories.length,
       tags: tags.length,
       institutions: institutions.length,
@@ -687,6 +793,7 @@ export async function buildHouseholdBackupPayload(
       preciousMetalHoldings,
       loanRateAdjustments,
       fundQueryApis,
+      statementRecognitionRules,
       fundSnapshots,
       regularInvestPlans,
       importBatches,
@@ -705,6 +812,7 @@ export async function buildHouseholdBackupPayload(
       stockTransactions,
       stockPriceCache,
       stockFeeRules,
+      stockMarketFeeRules,
       entryBusinessLinks,
       attachments,
       entryTags,
@@ -742,6 +850,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
+    ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
@@ -760,6 +869,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["StockTransactions", sheetRows(payload.data.stockTransactions)],
     ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
+    ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -818,6 +928,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
+    ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
@@ -836,6 +947,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["StockTransactions", sheetRows(payload.data.stockTransactions)],
     ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
+    ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -895,6 +1007,8 @@ export function parseBackupPayload(raw: unknown) {
       preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
       loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
+      statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
+      statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
       fundSnapshots: ensureArray(data.fundSnapshots ?? [], "data.fundSnapshots"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
       importBatches: ensureArray(data.importBatches ?? [], "data.importBatches"),
@@ -913,6 +1027,7 @@ export function parseBackupPayload(raw: unknown) {
       stockTransactions: ensureArray(data.stockTransactions ?? [], "data.stockTransactions"),
       stockPriceCache: ensureArray(data.stockPriceCache ?? [], "data.stockPriceCache"),
       stockFeeRules: ensureArray(data.stockFeeRules ?? [], "data.stockFeeRules"),
+      stockMarketFeeRules: ensureArray(data.stockMarketFeeRules ?? [], "data.stockMarketFeeRules"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
@@ -1028,6 +1143,7 @@ export async function restoreHouseholdBackup(
     await tx.stockTransaction.deleteMany({ where: { householdId } });
     await tx.stockPriceCache.deleteMany({ where: { StockSecurity: { is: { householdId } } } });
     await tx.stockFeeRule.deleteMany({ where: { Account: { householdId } } });
+    await tx.stockMarketFeeRule.deleteMany({ where: { householdId } });
     await tx.stockHolding.deleteMany({ where: { householdId } });
     await tx.stockSecurity.deleteMany({ where: { householdId } });
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
@@ -1064,6 +1180,7 @@ export async function restoreHouseholdBackup(
     await tx.fxRate.deleteMany({ where: { householdId } });
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });
+    await tx.statementRecognitionRule.deleteMany({ where: { householdId } });
     await tx.category.deleteMany({ where: { householdId } });
     await tx.counterparty.deleteMany({ where: { householdId } });
     await tx.institution.deleteMany({ where: { householdId } });
@@ -1274,6 +1391,18 @@ export async function restoreHouseholdBackup(
           householdId,
         })),
       });
+    }
+
+    const statementRecognitionRules = [
+      ...data.statementRecognitionRules
+        .map((item) => restoredStatementRecognitionRule(item, householdId, importedCategories, importedInstitutions))
+        .filter(isPresent),
+      ...data.statementCategoryRules
+        .map((item) => restoredLegacyStatementCategoryRule(item, householdId, importedCategories))
+        .filter(isPresent),
+    ];
+    if (statementRecognitionRules.length > 0) {
+      await createManySkipDuplicatesCompat(tx.statementRecognitionRule, statementRecognitionRules);
     }
 
     if (data.insuranceProductMasters.length > 0) {
@@ -1594,6 +1723,30 @@ export async function restoreHouseholdBackup(
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
+      );
+    }
+
+    if (data.stockMarketFeeRules.length > 0) {
+      await createManySkipDuplicatesCompat(
+        tx.stockMarketFeeRule,
+        data.stockMarketFeeRules.map((item) => ({
+          id: String(item.id),
+          householdId,
+          market: String(item.market ?? "CN"),
+          stockCode: item.stockCode == null ? null : String(item.stockCode),
+          feeType: String(item.feeType ?? "commission") as never,
+          direction: String(item.direction ?? "both") as never,
+          rate: item.rate == null ? null : String(item.rate),
+          amount: item.amount == null ? null : String(item.amount),
+          minAmount: item.minAmount == null ? null : String(item.minAmount),
+          currency: item.currency == null ? "CNY" : String(item.currency),
+          effectiveDate: item.effectiveDate ? new Date(String(item.effectiveDate)) : new Date(),
+          source: item.source == null ? "manual" : String(item.source),
+          sourceUrl: item.sourceUrl == null ? null : String(item.sourceUrl),
+          note: item.note == null ? null : String(item.note),
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
       );
     }
 
@@ -2285,6 +2438,7 @@ export async function restoreHouseholdBackup(
       users: data.users.length,
       accounts: data.accounts.length,
       transactions: data.transactions.length,
+      statementRecognitionRules: data.statementRecognitionRules.length + data.statementCategoryRules.length,
       categories: data.categories.length,
       tags: data.tags.length,
       institutions: data.institutions.length,

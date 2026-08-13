@@ -171,20 +171,52 @@ model BillOverride {
 }
 
 model Category {
-  id             String     @id @default(cuid())
-  name           String
-  type           String
-  icon           String?
-  parentId       String?
-  householdId    String?
-  isSystem       Boolean    @default(false)
-  Household      Household? @relation(fields: [householdId], references: [id])
-  Category       Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
-  other_Category Category[] @relation("CategoryToCategory")
-  transactions   TxRecord[]
+  id                       String                     @id @default(cuid())
+  name                     String
+  type                     String
+  icon                     String?
+  parentId                 String?
+  householdId              String?
+  isSystem                 Boolean                    @default(false)
+  Household                Household?                 @relation(fields: [householdId], references: [id])
+  Category                 Category?                  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  other_Category           Category[]                 @relation("CategoryToCategory")
+  transactions             TxRecord[]
+  StatementRecognitionRule StatementRecognitionRule[]
 
   @@unique([householdId, name])
   @@index([householdId, type, name])
+}
+
+model StatementRecognitionRule {
+  id                String       @id @default(cuid())
+  householdId       String
+  targetType        String
+  transactionType   String       @default("any")
+  keyword           String
+  normalizedKeyword String
+  categoryId        String?
+  categoryName      String?
+  institutionId     String?
+  institutionName   String?
+  fieldName         String?
+  source            String       @default("system_default")
+  priority          Int          @default(100)
+  isActive          Boolean      @default(true)
+  hitCount          Int          @default(0)
+  lastSeenAt        DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @default(now()) @updatedAt
+  Household         Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Category          Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  Institution       Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+
+  @@unique([householdId, targetType, transactionType, normalizedKeyword])
+  @@index([householdId, targetType])
+  @@index([categoryId])
+  @@index([institutionId])
+  @@index([isActive])
+  @@map("statement_recognition_rules")
 }
 
 model CreditCardCycle {
@@ -721,6 +753,52 @@ model StockFeeRule {
   @@map("stock_fee_rules")
 }
 
+model StockMarketFeeRule {
+  id            String              @id @default(cuid())
+  householdId   String?
+  market        String
+  stockCode     String?
+  feeType       StockFeeType
+  direction     StockTradeDirection @default(both)
+  rate          Decimal?            @db.Decimal(12, 8)
+  amount        Decimal?            @db.Decimal(18, 2)
+  minAmount     Decimal?            @db.Decimal(18, 2)
+  currency      String              @default("CNY")
+  effectiveDate DateTime            @default(now())
+  source        String              @default("system")
+  sourceUrl     String?
+  note          String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @default(now()) @updatedAt
+  Household     Household?          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, market, stockCode, feeType, direction])
+  @@index([market, stockCode, feeType, direction])
+  @@index([effectiveDate])
+  @@map("stock_market_fee_rules")
+}
+
+model StockBrokerageCatalog {
+  id              String    @id @default(cuid())
+  name            String
+  shortName       String?
+  aliases         Json?
+  registryCode    String?
+  officialWebsite String?
+  source          String    @default("manual")
+  sourceUrl       String?
+  sourceUpdatedAt DateTime?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+
+  @@unique([name])
+  @@index([shortName])
+  @@index([registryCode])
+  @@index([isActive])
+  @@map("stock_brokerage_catalog")
+}
+
 model EntryBusinessLink {
   id                         String                    @id @default(cuid())
   householdId                String
@@ -784,6 +862,7 @@ model Household {
   PreciousMetalTransaction  PreciousMetalTransaction[]
   StockSecurity             StockSecurity[]
   StockTransaction          StockTransaction[]
+  StockMarketFeeRule        StockMarketFeeRule[]
   EntryBusinessLink         EntryBusinessLink[]
   ImportBatch               ImportBatch[]
   InsuranceProductMaster    InsuranceProductMaster[]
@@ -794,6 +873,7 @@ model Household {
   PreciousMetalUnit         PreciousMetalUnit[]
   PreciousMetalHolding      PreciousMetalHolding[]
   StockHolding              StockHolding[]
+  StatementRecognitionRule  StatementRecognitionRule[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
   FxConversion              FxConversion[]
@@ -851,19 +931,20 @@ model ImportBatch {
 }
 
 model Institution {
-  id                             String                   @id @default(cuid())
+  id                             String                     @id @default(cuid())
   name                           String
   shortName                      String?
   type                           String?
   householdId                    String?
   Account                        Account[]
   InsuranceProductMaster         InsuranceProductMaster[]
-  InsuranceProductAsInsurer      InsuranceProduct[]       @relation("InsuranceProductInsurer")
-  InsuranceProductAsPolicyholder InsuranceProduct[]       @relation("InsuranceProductPolicyholder")
-  InsuranceProductAsInsured      InsuranceProduct[]       @relation("InsuranceProductInsured")
+  InsuranceProductAsInsurer      InsuranceProduct[]         @relation("InsuranceProductInsurer")
+  InsuranceProductAsPolicyholder InsuranceProduct[]         @relation("InsuranceProductPolicyholder")
+  InsuranceProductAsInsured      InsuranceProduct[]         @relation("InsuranceProductInsured")
   CounterpartyAsSource           Counterparty[]
   WealthProduct                  WealthProduct[]
-  Household                      Household?               @relation(fields: [householdId], references: [id])
+  StatementRecognitionRule       StatementRecognitionRule[]
+  Household                      Household?                 @relation(fields: [householdId], references: [id])
 
   @@index([householdId, name])
 }

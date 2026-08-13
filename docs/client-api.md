@@ -238,13 +238,18 @@
 - `POST /api/v1/fx-conversions` 创建换汇/购汇交易。Body: `{ date:"YYYY-MM-DD", fromAccountId, toAccountId?, toCurrency?, fromAmount, toAmount, exchangeRate?, feeAmount?, note? }`。`fromAccountId` 必须是借记卡账户；`toAccountId` 可省略，省略时必须传 `toCurrency`，服务端会在换出账户同账簿、同所有人/分组、同机构下复用或自动创建该币种账户。服务端要求两个账户属于同一账簿、账户不同、币种不同、金额为正数；成功后生成两条 `source="fx_conversion"` 的单边 `TxRecord` 并用 `FxConversion` 绑定，返回 `{ ok:true, conversion, entries:{ fromEntry, toEntry } }`。`exchangeRate` 表示 `toCurrency / fromCurrency`，例如 `1000 CNY -> 21500 JPY` 的汇率为 `21.5`。`feeAmount` 仅用于记录手续费信息；实际现金扣减应包含在 `fromAmount` 中。
 - 现金、借记卡或电子钱包账户转入信用卡账户时，存储和显示类型均为 `type = "transfer"`，分类为“信用卡还款”；客户端可用 `accountKind` + `toAccountKind` 校验和补充该分类，不得计入收入或支出。
 - 信用卡与借记卡都支持 `expense | income | advance | transfer` 四种业务输入。`advance` 保存为内部 `transfer`，并写入 `source = "advance"`、往来对象快照和信用卡账期；`amount > 0` 表示资金账户流出并增加应收往来，`amount < 0` 表示往来对象返还、资金账户流入并减少应收往来。普通还款仍按上一条的“信用卡还款”转账规则处理。
+- `/api/v1/record/ingest` 的普通 `transfer` 导入必须同时提供并匹配 `fromAccount` 和 `toAccount`。任一侧缺失或未匹配时，客户端应在预览阶段阻断，服务端也会拒绝整批写入；不得把转账对向账户按空值落库。
 - `/api/v1/record/ingest` 的导入项可传 `businessType = "credit_card_repayment"`。此时 `type` 必须为 `transfer`，`fromAccount` 必须匹配借记卡/电子钱包账户，`toAccount` 必须匹配信用卡账户；服务端以转账记录落库并写入“信用卡还款”分类。
 - `/api/v1/record/ingest` 批量导入失败时返回 `{ ok:false, error, failedRow?, trace? }`。`failedRow` 包含 0 基 rowIndex、类型、账户、转出/转入、分类和错误原因，客户端应在预览界面直接显示到用户，而不是只提示整批回滚。
 - `/api/v1/record/ingest/progress?traceId=...` 返回 `{ ok:true, progress }`，用于长时间批量导入的写库进度。`progress.phase` 包含 `preparing | writing | recalculating | done | failed`，`processed/total` 表示服务端写库进度。事务超时导致的行号表示执行到该行附近，不代表预览校验漏掉了该行脏数据。
 - `/api/v1/record/ingest` 同一账簿同一时间只允许一批批量导入写库。已有导入未完成时，新的导入请求返回 409 和 `{ ok:false, error }`，客户端应提示用户等待当前导入完成，不能叠加第二批写入。
 - `/api/v1/record/ingest` 写入交易成功后，账户余额重算失败不应把导入结果改成失败；接口会返回 `recalcFailedAccountCount` 供客户端提示后续刷新。
+- `/api/v1/record/ingest` 和 `/api/v1/statement/import` 的导入项可传 `categoryUserEdited: true`，表示用户在普通 Excel 导入预览或邮箱/信用卡账单预览中手动改过分类。服务端只在该标记存在、且类型为收入/支出并能匹配到分类树节点时写入 `statement_recognition_rules(targetType="category")`，语义为“关键字 -> 分类树节点内容”；自动识别、AI 猜测、模板原始分类和未确认预览行不得设置该标记。导入项也可传 `institutionUserEdited: true`，表示用户手动填过收支机构；服务端只在该机构能匹配到机构表时保存并写入 `statement_recognition_rules(targetType="institution")`，匹配不到时留空，因为收支机构是可选项。
 - 批量导入前端区分普通账单和信用卡账单：普通账单逐行解析账户；信用卡账单先统一确定整份文件的信用卡账户，还款行再单独提供 `fromAccount`。
+- `GET /api/v1/statement/recognition-rules` 返回当前账簿的表化识别样本 `{ ok:true, samples }`，供邮箱账单和 Excel 预览匹配“备注/收支机构/支付渠道 -> 分类或机构”，也供导入表头匹配“源表头 -> MMH 字段名”。通用关键词规则统一写入 `statement_recognition_rules`，支持 `targetType="category"`、`targetType="institution"` 和 `targetType="field"`；字段规则使用 `fieldName` 表示 `transactionDate | postedAt | amount | sourceAccount | creditAccount | institution | remark` 等内部字段。`targetType="category"` 的语义是“关键字 -> 分类树节点内容”，例如关键字“供电”命中后填入分类“电费”；`targetType="institution"` 的语义是“关键字 -> 机构表内容”，例如关键字“云闪付”命中后填入机构表里的“银联”。不能用“教育、药店、医疗、快递、会员”这类分类或抽象标签充当机构。用户保存单笔或批量分类修改时也直接写入 `statement_recognition_rules(targetType="category")`，不再维护第二张分类学习表。
+- `GET /api/v1/statement/category-rules` 保留为分类学习样本兼容接口，但返回来源也是 `statement_recognition_rules(targetType="category")`。
 - 账单导入项可用 `inflow` / `outflow` 表达账户侧方向。原支出的退款、退货、退回或冲正应提交为 `type="expense"`，并把金额放在 `inflow` 中，服务端保存为账户侧流入以抵减原支出分类，而不是保存为收入。
+- `inflow` / `outflow` 是推荐的明确方向字段，不是导入必填字段。客户端预览只拿到单列 `amount` / `金额` 时，应按金额正负、收支大类和还款/退款关键词推断流向，不得仅因缺少 `inflow` / `outflow` 阻断导入。
 - 导入账户名称只有“机构 + 账户类型”而没有后四位时，只在该机构下恰好存在一个启用的对应类型账户时自动匹配；存在多个候选时不自动选择。
 - 交易接口保留 `accountName`、`toAccountName` 字段用于显示和旧客户端兼容，但服务端返回时应优先按 `accountId`、`toAccountId` 关联 `Account.name` 生成；筛选、统计、余额和移动同步都不能依赖 `TxRecord.accountName` / `toAccountName` 快照参与计算。
 - `/api/v1/transactions` 与 `/api/v1/transactions/detail` 的交易项会返回 `accountKind` 和 `toAccountKind`，用于跨客户端判断转账、还款、以及特殊账户目标语义。
@@ -446,7 +451,7 @@ Request body:
 - 基金买入和定投的现金侧发生日按申请日期 `date` 展示和排序；只有赎回、现金分红、买入退回等现金入账记录在现金/借记账户明细中按 `arrivalDate` 展示和排序。
 - 买入退回记录会通过 `fundSourceEntryId` 显式关联到源买入记录；借记卡/现金账户明细展示这类退回入账时，按实际到账日期显示和排序。基金交易明细按源买入申请日期归集展示，退回到账日期保留在到账日期字段。
 - 预览阶段会按基金账户已有配置或本次 `overrides` 自动补全确认天数、净值日期、入账日期、手续费；不会为了预览额外查询净值。
-- `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户。
+- `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户；如果导入行提供了 `cashAccount`，资金账户也必须匹配到资金侧账户，否则作为阻断错误返回，不能导入成未关联的基金交易。成功导入时，服务端会用匹配到的 `cashAccountId` 建立资金侧 `TxRecord`、`FundTransactionCashFlow` 和 `EntryBusinessLink`。
 
 Preview success:
 
@@ -523,28 +528,28 @@ Notes:
 - 股票账户、股票标的、股票交易、股票持仓、股票手续费规则。
 - 股票归在 `Account.kind = "investment"` + `investProductType = "stock"` 下，但业务表、API、字段和 UI 语义都使用独立 `stock` 域。
 - 股票资金流水只表示现金侧，股票身份、数量、价格、手续费和券商成交号保存在 `StockTransaction`；二者通过 `EntryBusinessLink.stockTransactionId` 关联，返回给客户端的 `linkId` 可直接用于 UI 高亮、删除预检和后续补链。
-- 创建或更新股票账户时，如果请求带有证券机构，服务端会确保同账簿、同所有人、同证券机构、同币种下存在一个现金/钱包类“证券资金账户”；不存在时自动创建，`POST /api/v1/accounts` 会在响应中返回 `brokerageCashAccount`。
-- 股票交易的 `cashAccountId` 表示买入、卖出、分红、费用或税费调整使用的证券资金账户/券商可用资金账户；它可以和同一证券公司名下的基金交易共用同一个现金/钱包类账户。`cashAccountId` 可省略，服务端仅为兼容旧路径默认使用 `stockAccountId`。银行卡与证券资金账户之间的资金移动应作为普通转账/银证转账创建，不应伪装成股票买入或卖出。
+- 创建或更新股票账户时，`institutionId` 必须指向当前账簿内类型为证券/`brokerage` 的机构；缺失或选择银行、支付、保险等非证券机构时返回 `{ ok:false, error }`。校验通过后，服务端会确保同账簿、同所有人、同证券机构、同币种下存在一个现金/钱包类“证券资金账户”；不存在时自动创建，`POST /api/v1/accounts` 会在响应中返回 `brokerageCashAccount`。
+- 股票交易的 `cashAccountId` 表示买入、卖出、分红、费用或税费调整使用的证券资金账户/券商可用资金账户；它可以和同一证券公司名下的基金交易共用同一个现金/钱包类账户。`cashAccountId` 可省略，服务端会按股票账户的所有人、证券机构和币种自动确保并使用同券商资金账户；只有股票账户缺少证券机构或找不到资金账户时才兼容退回股票账户自身现金。银行卡与证券资金账户之间的资金移动应作为普通转账/银证转账创建，不应伪装成股票买入或卖出。
 - 股票不得复用 `fundCode`、`fundUnits`、`fundNav`、`fundFeeRate`、基金净值、确认天数或到账天数模块；外部券商流水号使用 `externalLinkId` / `brokerTradeId`，不能混同为基金 refund link。
 
 相关路径：
 
-- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`。
-- `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market, stockCode, stockName?, currency?, exchange? }`。
+- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 先查本地股票主数据，未命中时按股票查询 API 获取名称并缓存，返回 `{ ok:true, data:{ security } }`。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
+- `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market?, stockCode, stockName?, currency?, exchange? }`；`market` 省略时按 `stockCode` 推断。
 - `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
-- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。
+- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端先按股票账户下当前生效的 `StockFeeRule` 计算；账户规则未命中时再使用 `StockMarketFeeRule` 的市场默认规则。导入或特殊手工路径仍可传入费用字段作为覆盖值。
 - `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
 - `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值。
 - `POST /api/v1/stocks/holdings` 使用 `{ accountId, securityIds? }` 触发股票持仓重算。
-- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票费用规则；`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。
+- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
 
 股票动作：
 
 - `buy`：买入，通常产生现金流出。
 - `sell`：卖出，通常产生现金流入并由 `recalcStockPositions` 计算已实现收益。
 - `dividend`：现金股息，产生现金流入并计入历史收益。
-- `bonus_share` / `split_share` / `merge_share`：股数变动，不创建资金侧流水。
-- `fee_adjustment` / `tax_adjustment`：费用或税费调整，通常产生现金流出。
+- `bonus_share` / `split_share` / `merge_share`：股数变动，不创建资金侧流水；Web 交易弹窗应合并为一个“股本变动”入口，再在表单内选择具体类型。
+- `fee_adjustment` / `tax_adjustment`：费用或税费调整，通常产生现金流出；用于导入/账户调整路径，不作为普通股票交易弹窗动作展示。
 
 ### Insurance
 

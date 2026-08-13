@@ -9,6 +9,11 @@ import { DateStepper } from "@/components/DateStepper";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  STOCK_ACCOUNT_INSTITUTION_ERROR,
+  isStockAccountInstitutionType,
+  isStockInvestmentAccount,
+} from "@/lib/account-institution-rules";
 
 /* ---- Types ---- */
 
@@ -26,6 +31,17 @@ type EntityCreatedExtra = {
   counterpartyId?: string;
   counterpartyName?: string;
   currency?: string;
+  brokerageCashAccount?: {
+    id: string;
+    name: string;
+    kind?: string | null;
+    currency?: string | null;
+    investProductType?: string | null;
+    groupId?: string | null;
+    institutionId?: string | null;
+    AccountGroup?: { id?: string; name?: string | null } | null;
+    Institution?: { id?: string; name?: string | null; shortName?: string | null; type?: string | null } | null;
+  } | null;
 };
 
 type FieldDef = {
@@ -33,6 +49,10 @@ type FieldDef = {
   label: string;
   type: "text" | "select";
   placeholder?: string;
+  /** Render text fields as a taller multiline textarea. */
+  multiline?: boolean;
+  /** Preferred textarea row count for multiline fields. */
+  rows?: number;
   /** Static options (for selects whose values are fixed) */
   options?: Array<{ value: string; label: string }>;
   /** Dynamic option key - maps to fieldData prop for runtime-populated selects */
@@ -60,12 +80,16 @@ type CompactModeProps = {
   nameLabel?: string;
   /** Optional name field placeholder override */
   namePlaceholder?: string;
+  /** Optional default name for compact create flows where the domain has a clear generated label */
+  defaultName?: string;
   /** For institution creation: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI (e.g. ["kind"] when extraFields already specifies it) */
   hiddenFields?: string[];
+  /** Extra fields that should remain visible for confirmation but not editable. */
+  readOnlyFields?: string[];
   /** Existing entity names for client-side duplicate check */
   existingNames?: string[];
   /** For category type: available parent categories to create subcategories under */
@@ -104,12 +128,16 @@ type FullModeProps = {
   nameLabel?: string;
   /** Optional name field placeholder override */
   namePlaceholder?: string;
+  /** Optional default name for create flows where the domain has a clear generated label */
+  defaultName?: string;
   /** For institution pages: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
   /** Extra fields to merge into POST body */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI */
   hiddenFields?: string[];
+  /** Extra fields that should remain visible for confirmation but not editable. */
+  readOnlyFields?: string[];
   /** When creating a non-investment account, also collect initial balance anchor data. */
   includeInitialBalanceFields?: boolean;
 };
@@ -214,7 +242,7 @@ const ENTITY_CONFIG = {
     bodyKey: { name: "name", kind: "kind" },
     fullFields: [
       { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
-      { key: "note", label: "备注", type: "text", placeholder: "可选" },
+      { key: "note", label: "备注", type: "text", placeholder: "可选，支持多行备注", multiline: true, rows: 4 },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
@@ -313,6 +341,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const displayTitle = props.title ?? config.title;
   const displayNameLabel = props.nameLabel ?? config.nameLabel;
   const displayNamePlaceholder = props.namePlaceholder ?? config.namePlaceholder;
+  const defaultName = props.defaultName ?? "";
   const includeInitialBalanceFields = entityType === "account" && Boolean(props.includeInitialBalanceFields);
 
   // Unpack mode-specific props
@@ -324,6 +353,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const fieldData = mode === "full" ? props.fieldData : undefined;
   const compactNestedFieldData = mode === "compact" ? props.nestedFieldData : undefined;
   const hiddenFields = mode === "compact" ? props.hiddenFields : props.hiddenFields ?? [];
+  const readOnlyFields = mode === "compact" ? props.readOnlyFields ?? [] : props.readOnlyFields ?? [];
   const allowedInstitutionTypes =
     entityType === "institution" ? props.allowedInstitutionTypes : undefined;
 
@@ -392,7 +422,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const initial: Record<string, string> = {};
 
     if (mode === "compact") {
-      initial.name = "";
+      initial.name = defaultName;
       if (typeKey) initial[typeKey] = getDefaultTypeCompact();
       if (defaultParentId) initial.parentId = defaultParentId ?? "";
       if (extraFields) {
@@ -416,6 +446,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }
     } else {
       // Full mode: set parentId first so type condition can evaluate correctly
+      if (defaultName) initial.name = defaultName;
       if (defaultParentId) initial.parentId = defaultParentId;
       // All fields from fullFields
       for (const field of config.fullFields) {
@@ -459,7 +490,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields]);
+  }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -486,7 +517,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (field.key === "name" || field.key === typeKey || field.key === "parentId") return false;
     if (field.condition && !field.condition(form)) return false;
     if (hiddenFields?.includes(field.key)) return false;
-    if (extraFields && field.key in extraFields) return false;
+    if (extraFields && field.key in extraFields && !readOnlyFields.includes(field.key)) return false;
     return true;
   });
 
@@ -503,7 +534,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
   function filterInstitutionDataForAccount(dataList: Array<{ id: string; name: string; type?: string }>) {
     if (entityType !== "account") return dataList;
-    const accountKind = form.kind || form.type;
+    const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
+    const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+    if (isStockInvestmentAccount(accountKind, investProductType)) {
+      return dataList.filter((item) => isStockAccountInstitutionType(item.type));
+    }
     if (accountKind === "loan") {
       return dataList.filter((item) => ["person", "organization"].includes(item.type ?? ""));
     }
@@ -512,11 +547,33 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
   function institutionTypeMatchesCurrentAccount(type?: string) {
     if (entityType !== "account") return true;
-    const accountKind = form.kind || form.type;
+    const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
+    const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+    if (isStockInvestmentAccount(accountKind, investProductType)) {
+      return isStockAccountInstitutionType(type);
+    }
     if (accountKind === "loan") {
       return ["person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"].includes(type ?? "");
     }
     return ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(type ?? "");
+  }
+
+  function nestedInstitutionDefaultType() {
+    if (entityType !== "account" || nestedEntityType !== "institution") return undefined;
+    const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
+    const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+    if (isStockInvestmentAccount(accountKind, investProductType)) return "brokerage";
+    if (accountKind === "loan") return "person";
+    return undefined;
+  }
+
+  function nestedInstitutionAllowedTypes() {
+    if (entityType !== "account" || nestedEntityType !== "institution") return undefined;
+    const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
+    const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+    if (isStockInvestmentAccount(accountKind, investProductType)) return ["brokerage"];
+    if (accountKind === "loan") return ["person", "organization"];
+    return undefined;
   }
 
   const shouldShowInitialBalanceFields =
@@ -549,6 +606,93 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     );
   }
 
+  function textFieldPlaceholder(field: FieldDef) {
+    return field.key === "name" ? displayNamePlaceholder : field.placeholder ?? "";
+  }
+
+  function textFieldInputMode(field: FieldDef) {
+    return field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined;
+  }
+
+  function textFieldClassName(field: FieldDef, className = "", readOnly = false) {
+    return [
+      "form-input",
+      field.multiline ? "min-h-[96px] resize-y leading-5" : "",
+      readOnly ? "bg-slate-50 text-slate-500" : "",
+      className,
+    ].filter(Boolean).join(" ");
+  }
+
+  function textFieldWrapperClassName(field: FieldDef, className = "") {
+    return [
+      field.multiline ? "col-span-2 md:col-span-4" : "",
+      className,
+    ].filter(Boolean).join(" ");
+  }
+
+  function renderTextControl(
+    field: FieldDef,
+    options?: {
+      className?: string;
+      readOnly?: boolean;
+      required?: boolean;
+      placeholder?: string;
+    },
+  ) {
+    const readOnly = options?.readOnly ?? false;
+    const value = form[field.key] ?? field.defaultValue ?? "";
+    const placeholder = options?.placeholder ?? textFieldPlaceholder(field);
+    const onChange = (value: string) => {
+      if (readOnly) return;
+      setForm((prev) => ({ ...prev, [field.key]: value }));
+    };
+
+    if (field.multiline) {
+      return (
+        <textarea
+          key={field.key}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className={textFieldClassName(field, options?.className, readOnly)}
+          rows={field.rows ?? 4}
+          readOnly={readOnly}
+          required={options?.required}
+        />
+      );
+    }
+
+    return (
+      <input
+        key={field.key}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className={textFieldClassName(field, options?.className, readOnly)}
+        inputMode={textFieldInputMode(field)}
+        readOnly={readOnly}
+        required={options?.required}
+      />
+    );
+  }
+
+  function selectFieldPatch(field: FieldDef, value: string, current: Record<string, string>) {
+    const patch: Record<string, string> = { [field.key]: value };
+    if (field.key === "kind") {
+      patch.institutionId = "";
+    }
+    if (field.key === "investProductType") {
+      const accountKind = current.kind || current.type || extraFields?.kind || defaultType;
+      if (isStockInvestmentAccount(accountKind, value)) {
+        const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === current.institutionId);
+        if (!selectedInstitution || !isStockAccountInstitutionType(selectedInstitution.type)) {
+          patch.institutionId = "";
+        }
+      }
+    }
+    return patch;
+  }
+
   /** Build the POST body and submit */
   async function onSubmit(e?: FormEvent<HTMLFormElement>) {
     e?.preventDefault();
@@ -558,6 +702,13 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (mode === "compact" && entityType === "category" && parentCategories && parentCategories.length > 0 && !form.parentId) {
       setError("请选择上级分类");
       return;
+    }
+    if (entityType === "account" && isStockInvestmentAccount(form.kind || extraFields?.kind || defaultType, form.investProductType || extraFields?.investProductType || "fund")) {
+      const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === form.institutionId);
+      if (!form.institutionId || (selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type))) {
+        setError(STOCK_ACCOUNT_INSTITUTION_ERROR);
+        return;
+      }
     }
     if (shouldShowInitialBalanceFields && form.initialBalance?.trim()) {
       const initialBalance = Number(form.initialBalance);
@@ -627,6 +778,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           counterpartyId: entityType === "account" ? created.counterpartyId ?? form.counterpartyId ?? undefined : undefined,
           counterpartyName: entityType === "account" ? created.Counterparty?.name : undefined,
           currency: entityType === "account" ? created.currency ?? form.currency ?? undefined : undefined,
+          brokerageCashAccount: entityType === "account" ? data.brokerageCashAccount ?? null : undefined,
           type: entityType === "institution" || entityType === "counterparty" || entityType === "category" ? selectedTypeValue : undefined,
         });
         // Reset form
@@ -713,17 +865,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 </div>
               )}
               {compactVisibleFields.map((field) => {
+                const isReadOnlyField = readOnlyFields.includes(field.key);
                 if (field.type === "text") {
                   return (
                     <div key={field.key} className="space-y-1">
                       <div className="form-label">{field.label}</div>
-                      <input
-                        value={form[field.key] ?? field.defaultValue ?? ""}
-                        onChange={(e) => setForm((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                        placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
-                        className="form-input"
-                        inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
-                      />
+                      {renderTextControl(field, { readOnly: isReadOnlyField })}
                     </div>
                   );
                 }
@@ -747,6 +894,18 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         label: item.name,
                       }));
                   const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                  if (isReadOnlyField) {
+                    const label = ssOptions.find((option) => option.id === (form[field.key] ?? ""))?.label
+                      || (form[field.key] ? "已指定" : selectPlaceholder);
+                    return (
+                      <div key={field.key} className="space-y-1">
+                        <div className="form-label">{field.label}</div>
+                        <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">
+                          {label}
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div key={field.key} className="space-y-1">
@@ -772,10 +931,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       value={form[field.key] ?? field.defaultValue ?? ""}
                       onChange={(e) => setForm((prev) => ({
                         ...prev,
-                        [field.key]: e.target.value,
-                        ...(field.key === "kind" ? { institutionId: "" } : {}),
+                        ...selectFieldPatch(field, e.target.value, prev),
                       }))}
-                      className="form-input"
+                      className={`form-input ${isReadOnlyField ? "bg-slate-50 text-slate-500" : ""}`}
+                      disabled={isReadOnlyField}
                     >
                       {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
                         ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
@@ -844,7 +1003,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             open={nestedOpen}
             onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
             onCreated={handleNestedCreated}
-            defaultType={entityType === "account" && nestedEntityType === "institution" && (form.kind || form.type) === "loan" ? "person" : undefined}
+            defaultType={nestedInstitutionDefaultType()}
+            allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
           />
         )}
       </>
@@ -867,16 +1027,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         <form className="flex items-center gap-2" onSubmit={onSubmit}>
           {visibleFields.map(field => {
             if (field.type === "text") {
-              return (
-                <input
-                  key={field.key}
-                  value={form[field.key] ?? field.defaultValue ?? ""}
-                  onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                  placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? field.label}
-                  className="form-input flex-1 min-w-[120px]"
-                  required={field.key === "name"}
-                />
-              );
+              return renderTextControl(field, {
+                className: field.multiline ? "min-w-[240px]" : "flex-1 min-w-[120px]",
+                placeholder: field.key === "name" ? displayNamePlaceholder : field.placeholder ?? field.label,
+                required: field.key === "name",
+              });
             }
             // Select field
             const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
@@ -885,7 +1040,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               <select
                 key={field.key}
                 value={form[field.key] ?? field.defaultValue ?? ""}
-                onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
                 className="form-input"
               >
                 {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
@@ -930,6 +1085,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             open={nestedOpen}
             onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
             onCreated={handleNestedCreated}
+            defaultType={nestedInstitutionDefaultType()}
+            allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
           />
         )}
       </>
@@ -959,16 +1116,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 {visibleFields.map(field => {
                   if (field.type === "text") {
                     return (
-                      <div key={field.key}>
+                      <div key={field.key} className={textFieldWrapperClassName(field)}>
                         <label className="form-label mb-1 block">{field.label}</label>
-                        <input
-                          value={form[field.key] ?? field.defaultValue ?? ""}
-                          onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                          placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
-                          className="form-input"
-                          inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
-                          required={field.key === "name"}
-                        />
+                        {renderTextControl(field, { required: field.key === "name" })}
                       </div>
                     );
                   }
@@ -1015,7 +1165,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <label className="form-label mb-1 block">{field.label}</label>
                       <select
                         value={form[field.key] ?? field.defaultValue ?? ""}
-                        onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                        onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
                         className="form-input"
                       >
                         {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
@@ -1056,6 +1206,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             open={nestedOpen}
             onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
             onCreated={handleNestedCreated}
+            defaultType={nestedInstitutionDefaultType()}
+            allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
           />
         )}
       </>
@@ -1084,16 +1236,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               {visibleFields.map(field => {
                 if (field.type === "text") {
                   return (
-                    <div key={field.key}>
+                    <div key={field.key} className={textFieldWrapperClassName(field)}>
                       <label className="form-label mb-1 block">{field.label}</label>
-                      <input
-                        value={form[field.key] ?? field.defaultValue ?? ""}
-                        onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                        placeholder={field.key === "name" ? displayNamePlaceholder : field.placeholder ?? ""}
-                        className="form-input"
-                        inputMode={field.key === "billingDay" || field.key === "repaymentDay" ? "numeric" : undefined}
-                        required={field.key === "name"}
-                      />
+                      {renderTextControl(field, { required: field.key === "name" })}
                     </div>
                   );
                 }
@@ -1151,8 +1296,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       value={form[field.key] ?? field.defaultValue ?? ""}
                       onChange={e => setForm(prev => ({
                         ...prev,
-                        [field.key]: e.target.value,
-                        ...(field.key === "kind" ? { institutionId: "" } : {}),
+                        ...selectFieldPatch(field, e.target.value, prev),
                       }))}
                       className="form-input"
                     >
@@ -1195,7 +1339,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           open={nestedOpen}
           onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
           onCreated={handleNestedCreated}
-          defaultType={entityType === "account" && nestedEntityType === "institution" && (form.kind || form.type) === "loan" ? "person" : undefined}
+          defaultType={nestedInstitutionDefaultType()}
+          allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
         />
       )}
     </>

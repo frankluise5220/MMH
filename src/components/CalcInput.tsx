@@ -4,6 +4,23 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
 
+export function sanitizeCalcInputValue(raw: string) {
+  return raw.replace(/[^\d+\-*/().\s]/g, "");
+}
+
+export function evaluateCalcInputExpression(expression: string, currentValue = 0) {
+  let full = sanitizeCalcInputValue(expression).trim();
+  if (!full) return null;
+  if (/^[+\-*/]/.test(full)) full = `${Number(currentValue) || 0}${full}`;
+  if (!/^[\d+\-*/().\s]+$/.test(full)) return null;
+  try {
+    const computed = eval(full.replace(/\s+/g, ""));
+    return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function CalcInput({
   value,
   onChange,
@@ -29,22 +46,10 @@ export function CalcInput({
   const numVal = parseFloat(value) || 0;
 
   const formatValue = useCallback((num: number) => num.toFixed(precision), [precision]);
-  const sanitizeValue = useCallback((raw: string) => raw.replace(/[^\d+\-*/().]/g, ""), []);
 
   const doEval = useCallback((expression: string) => {
-    let full = expression;
-    if (/^[+\-*/]/.test(full)) full = `${numVal}${full}`;
-    if (!full) return;
-    try {
-      if (!/^[\d+\-*/().\s]+$/.test(full)) throw new Error("invalid");
-      const safe = full.replace(/\s+/g, "");
-      const computed = eval(safe);
-      if (typeof computed === "number" && !Number.isNaN(computed) && Number.isFinite(computed)) {
-        onChange(formatValue(computed));
-      }
-    } catch {
-      // ignore invalid expressions
-    }
+    const computed = evaluateCalcInputExpression(expression, numVal);
+    if (computed != null) onChange(formatValue(computed));
   }, [formatValue, numVal, onChange]);
 
   useEffect(() => {
@@ -128,15 +133,15 @@ export function CalcInput({
 
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const raw = sanitizeValue(value).trim();
-    if (!/^[\d.]+[+\-*/\d.()\s]+$/.test(raw)) return;
+    const raw = sanitizeCalcInputValue(value).trim();
+    if (!/[+\-*/()]/.test(raw)) return;
     e.preventDefault();
     e.stopPropagation();
     doEval(raw);
   }
 
   function handleInputBlur() {
-    const raw = sanitizeValue(value).trim();
+    const raw = sanitizeCalcInputValue(value).trim();
     if (raw && !/[+\-*/()]/.test(raw)) {
       const parsed = Number(raw);
       if (Number.isFinite(parsed)) {
@@ -164,7 +169,7 @@ export function CalcInput({
       <input
         inputMode="decimal"
         value={value}
-        onChange={(e) => onChange(sanitizeValue(e.target.value))}
+        onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value))}
         onKeyDown={handleInputKeyDown}
         onBlur={handleInputBlur}
         placeholder={placeholder}

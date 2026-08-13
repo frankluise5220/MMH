@@ -17,6 +17,7 @@ import { useI18n } from "@/lib/i18n";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
+const HEADER_SORT_CLICK_DELAY_MS = 220;
 
 function isInteractiveRowTarget(target: EventTarget | null) {
   return target instanceof Element && !!target.closest(
@@ -332,6 +333,7 @@ export function AdvancedDataTable<T>({
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
   const suppressNextClickRef = useRef(false);
+  const headerSortClickTimerRef = useRef<number | null>(null);
   const lastResetKeyRef = useRef(resetKey);
   const tableDisplayStateHydratedRef = useRef(false);
   const skipNextFiltersWriteRef = useRef(false);
@@ -340,6 +342,12 @@ export function AdvancedDataTable<T>({
   const paginationPageSize = pagination?.pageSize;
   const paginationOnPageChange = pagination?.onPageChange;
   const paginationOnRowCountChange = pagination?.onRowCountChange;
+
+  const clearPendingHeaderSortClick = useCallback(() => {
+    if (headerSortClickTimerRef.current == null) return;
+    window.clearTimeout(headerSortClickTimerRef.current);
+    headerSortClickTimerRef.current = null;
+  }, []);
 
   const effectiveSelectedKeys = selectedKeys ?? internalSelectedKeys;
   const tableColumns = useMemo<AdvancedDataTableColumn<T>[]>(() => {
@@ -434,6 +442,10 @@ export function AdvancedDataTable<T>({
   }, [sortState, sortStorageKey]);
 
   useEffect(() => {
+    return () => clearPendingHeaderSortClick();
+  }, [clearPendingHeaderSortClick]);
+
+  useEffect(() => {
     if (resetKey == null) return;
     if (lastResetKeyRef.current === resetKey) return;
     lastResetKeyRef.current = resetKey;
@@ -442,9 +454,10 @@ export function AdvancedDataTable<T>({
     setFilters({});
     setSortState(null);
     setActiveFilterColumn(null);
+    clearPendingHeaderSortClick();
     writeJson(filtersStorageKey, {});
     writeJson(sortStorageKey, null);
-  }, [filtersStorageKey, resetKey, sortStorageKey]);
+  }, [clearPendingHeaderSortClick, filtersStorageKey, resetKey, sortStorageKey]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -771,6 +784,30 @@ export function AdvancedDataTable<T>({
       if (current.direction === "asc") return { key, direction: "desc" };
       return null;
     });
+  }
+
+  function handleHeaderSortClick(event: ReactMouseEvent<HTMLElement>, key: string, canOpenFilter: boolean) {
+    if (!canOpenFilter) {
+      toggleSort(key);
+      return;
+    }
+    if (event.detail > 1) {
+      clearPendingHeaderSortClick();
+      return;
+    }
+    clearPendingHeaderSortClick();
+    headerSortClickTimerRef.current = window.setTimeout(() => {
+      headerSortClickTimerRef.current = null;
+      toggleSort(key);
+    }, HEADER_SORT_CLICK_DELAY_MS);
+  }
+
+  function handleHeaderLabelDoubleClick(event: ReactMouseEvent<HTMLElement>, key: string, canOpenFilter: boolean) {
+    if (!canOpenFilter) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearPendingHeaderSortClick();
+    setActiveFilterColumn(key);
   }
 
   function handleRowDragStart(event: ReactDragEvent<HTMLElement>, key: string, dragDisabled: boolean) {
@@ -1115,14 +1152,21 @@ export function AdvancedDataTable<T>({
                   <div className="flex min-w-0 items-center justify-center gap-1">
                     {(column.sortValue || column.filterText) && sortable ? (
                       <span
-                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
-                        onClick={() => toggleSort(column.key)}
-                        title={sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序" : "降序排列，点击取消") : "点击排序"}
+                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key || (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                        onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
+                        onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                        title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序；双击筛选" : "降序排列，点击取消；双击筛选") : "点击排序；双击筛选") : (sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序" : "降序排列，点击取消") : "点击排序")}
                       >
                         {labelText(column.label, column.key)}
                       </span>
                     ) : (
-                      <span className="block min-w-0 truncate text-xs font-semibold text-slate-600" title={labelText(column.label, column.key)}>{labelText(column.label, column.key)}</span>
+                      <span
+                        className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-blue-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-blue-600" : ""}`}
+                        onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                        title={showFilters && column.filterText ? `${labelText(column.label, column.key)}；双击筛选` : labelText(column.label, column.key)}
+                      >
+                        {labelText(column.label, column.key)}
+                      </span>
                     )}
                     {showFilters && column.filterText ? (
                       column.filterKind === "dateRange" ? (
@@ -1132,6 +1176,7 @@ export function AdvancedDataTable<T>({
                           to={filters[column.key]?.[1] ?? ""}
                           open={activeFilterColumn === column.key}
                           labelClassName="hidden"
+                          showTrigger={false}
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={({ from, to }) =>
@@ -1152,6 +1197,7 @@ export function AdvancedDataTable<T>({
                           to={filters[column.key]?.[1] ?? ""}
                           open={activeFilterColumn === column.key}
                           labelClassName="hidden"
+                          showTrigger={false}
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={({ from, to }) =>
@@ -1171,6 +1217,7 @@ export function AdvancedDataTable<T>({
                           value={filters[column.key]?.[0] ?? ""}
                           open={activeFilterColumn === column.key}
                           labelClassName="hidden"
+                          showTrigger={false}
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={(value) =>
@@ -1192,6 +1239,7 @@ export function AdvancedDataTable<T>({
                           selectedValues={filters[column.key] ?? []}
                           open={activeFilterColumn === column.key}
                           showLabel={false}
+                          showTrigger={false}
                           onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
                           onClose={() => setActiveFilterColumn(null)}
                           onChange={(values) =>

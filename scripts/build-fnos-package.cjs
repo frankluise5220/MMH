@@ -1150,6 +1150,27 @@ const MIGRATIONS = [
       addColumnIfMissing(db, "Account", "note", "TEXT");
     },
   },
+  {
+    version: "20260812_stock_reference_tables",
+    description: "Add stock market fee rules and brokerage catalog",
+    apply(db) {
+      createStockReferenceTables(db);
+    },
+  },
+  {
+    version: "20260812_statement_recognition_rules",
+    description: "Add unified statement recognition rules",
+    apply(db) {
+      createStatementRecognitionRulesTable(db);
+    },
+  },
+  {
+    version: "20260813_zz_unify_statement_learning_rules",
+    description: "Move legacy statement category rules into recognition rules",
+    apply(db) {
+      migrateLegacyStatementCategoryRules(db);
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
@@ -1181,6 +1202,108 @@ function addColumnIfMissing(db, tableName, columnName, definition) {
   }
   if (columnExists(db, tableName, columnName)) return;
   db.exec("ALTER TABLE " + quoteIdent(tableName) + " ADD COLUMN " + quoteIdent(columnName) + " " + definition);
+}
+
+function createStockReferenceTables(db) {
+  db.exec([
+    "CREATE TABLE IF NOT EXISTS \\"stock_market_fee_rules\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"householdId\\" TEXT, \\"market\\" TEXT NOT NULL, \\"stockCode\\" TEXT, \\"feeType\\" TEXT NOT NULL, \\"direction\\" TEXT NOT NULL DEFAULT 'both', \\"rate\\" DECIMAL, \\"amount\\" DECIMAL, \\"minAmount\\" DECIMAL, \\"currency\\" TEXT NOT NULL DEFAULT 'CNY', \\"effectiveDate\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"source\\" TEXT NOT NULL DEFAULT 'system', \\"sourceUrl\\" TEXT, \\"note\\" TEXT, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_market_fee_rules_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS \\"stock_brokerage_catalog\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"name\\" TEXT NOT NULL, \\"shortName\\" TEXT, \\"aliases\\" TEXT, \\"registryCode\\" TEXT, \\"officialWebsite\\" TEXT, \\"source\\" TEXT NOT NULL DEFAULT 'manual', \\"sourceUrl\\" TEXT, \\"sourceUpdatedAt\\" DATETIME, \\"isActive\\" BOOLEAN NOT NULL DEFAULT true, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE INDEX IF NOT EXISTS \\"stock_market_fee_rules_householdId_market_stockCode_feeType_direction_idx\\" ON \\"stock_market_fee_rules\\"(\\"householdId\\", \\"market\\", \\"stockCode\\", \\"feeType\\", \\"direction\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_market_fee_rules_market_stockCode_feeType_direction_idx\\" ON \\"stock_market_fee_rules\\"(\\"market\\", \\"stockCode\\", \\"feeType\\", \\"direction\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_market_fee_rules_effectiveDate_idx\\" ON \\"stock_market_fee_rules\\"(\\"effectiveDate\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_name_key\\" ON \\"stock_brokerage_catalog\\"(\\"name\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_shortName_idx\\" ON \\"stock_brokerage_catalog\\"(\\"shortName\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_registryCode_idx\\" ON \\"stock_brokerage_catalog\\"(\\"registryCode\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_isActive_idx\\" ON \\"stock_brokerage_catalog\\"(\\"isActive\\")",
+  ].join(";"));
+}
+
+function createStatementRecognitionRulesTable(db) {
+  db.exec([
+    "CREATE TABLE IF NOT EXISTS \\"statement_recognition_rules\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"householdId\\" TEXT NOT NULL, \\"targetType\\" TEXT NOT NULL, \\"transactionType\\" TEXT NOT NULL DEFAULT 'any', \\"keyword\\" TEXT NOT NULL, \\"normalizedKeyword\\" TEXT NOT NULL, \\"categoryId\\" TEXT, \\"categoryName\\" TEXT, \\"institutionId\\" TEXT, \\"institutionName\\" TEXT, \\"fieldName\\" TEXT, \\"source\\" TEXT NOT NULL DEFAULT 'system_default', \\"priority\\" INTEGER NOT NULL DEFAULT 100, \\"isActive\\" BOOLEAN NOT NULL DEFAULT true, \\"hitCount\\" INTEGER NOT NULL DEFAULT 0, \\"lastSeenAt\\" DATETIME, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"statement_recognition_rules_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"statement_recognition_rules_categoryId_fkey\\" FOREIGN KEY (\\"categoryId\\") REFERENCES \\"Category\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE, CONSTRAINT \\"statement_recognition_rules_institutionId_fkey\\" FOREIGN KEY (\\"institutionId\\") REFERENCES \\"Institution\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"statement_recognition_rules_householdId_targetType_transactionType_normalizedKeyword_key\\" ON \\"statement_recognition_rules\\"(\\"householdId\\", \\"targetType\\", \\"transactionType\\", \\"normalizedKeyword\\")",
+    "CREATE INDEX IF NOT EXISTS \\"statement_recognition_rules_householdId_targetType_idx\\" ON \\"statement_recognition_rules\\"(\\"householdId\\", \\"targetType\\")",
+    "CREATE INDEX IF NOT EXISTS \\"statement_recognition_rules_categoryId_idx\\" ON \\"statement_recognition_rules\\"(\\"categoryId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"statement_recognition_rules_institutionId_idx\\" ON \\"statement_recognition_rules\\"(\\"institutionId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"statement_recognition_rules_isActive_idx\\" ON \\"statement_recognition_rules\\"(\\"isActive\\")",
+  ].join(";"));
+  addColumnIfMissing(db, "statement_recognition_rules", "fieldName", "TEXT");
+}
+
+function stripCompanySuffixValue(value) {
+  const text = String(value || "").trim();
+  for (const suffix of ["有限责任公司", "股份有限公司", "集团有限公司", "有限公司"]) {
+    const index = text.indexOf(suffix);
+    if (index > 0) return text.slice(0, index).trim();
+  }
+  return text;
+}
+
+function migrateLegacyStatementCategoryRules(db) {
+  createStatementRecognitionRulesTable(db);
+  if (tableExists(db, "statement_category_rules")) {
+    const rows = db.prepare("SELECT * FROM \\"statement_category_rules\\" WHERE \\"type\\" IN ('income', 'expense') AND \\"categoryName\\" IS NOT NULL AND \\"matchText\\" IS NOT NULL AND \\"normalizedText\\" IS NOT NULL").all();
+    const upsert = db.prepare(
+      "INSERT INTO \\"statement_recognition_rules\\" (" +
+        "\\"id\\", \\"householdId\\", \\"targetType\\", \\"transactionType\\", \\"keyword\\", \\"normalizedKeyword\\", " +
+        "\\"categoryId\\", \\"categoryName\\", \\"institutionId\\", \\"institutionName\\", \\"fieldName\\", \\"source\\", \\"priority\\", " +
+        "\\"isActive\\", \\"hitCount\\", \\"lastSeenAt\\", \\"createdAt\\", \\"updatedAt\\") " +
+      "VALUES (@id, @householdId, 'category', @transactionType, @keyword, @normalizedKeyword, @categoryId, @categoryName, NULL, NULL, NULL, @source, @priority, true, @hitCount, @lastSeenAt, @createdAt, @updatedAt) " +
+      "ON CONFLICT(\\"householdId\\", \\"targetType\\", \\"transactionType\\", \\"normalizedKeyword\\") DO UPDATE SET " +
+        "\\"categoryId\\" = excluded.\\"categoryId\\", " +
+        "\\"categoryName\\" = excluded.\\"categoryName\\", " +
+        "\\"source\\" = excluded.\\"source\\", " +
+        "\\"priority\\" = CASE WHEN \\"statement_recognition_rules\\".\\"priority\\" > excluded.\\"priority\\" THEN \\"statement_recognition_rules\\".\\"priority\\" ELSE excluded.\\"priority\\" END, " +
+        "\\"isActive\\" = true, " +
+        "\\"hitCount\\" = \\"statement_recognition_rules\\".\\"hitCount\\" + excluded.\\"hitCount\\", " +
+        "\\"lastSeenAt\\" = COALESCE(excluded.\\"lastSeenAt\\", \\"statement_recognition_rules\\".\\"lastSeenAt\\"), " +
+        "\\"updatedAt\\" = CURRENT_TIMESTAMP, " +
+        "\\"keyword\\" = excluded.\\"keyword\\""
+    );
+    for (const row of rows) {
+      const keyword = stripCompanySuffixValue(row.matchText);
+      const normalizedKeyword = stripCompanySuffixValue(row.normalizedText);
+      if (!keyword || !normalizedKeyword) continue;
+      upsert.run({
+        id: "recog_legacy_" + row.id,
+        householdId: row.householdId,
+        transactionType: row.type,
+        keyword,
+        normalizedKeyword,
+        categoryId: row.categoryId,
+        categoryName: row.categoryName,
+        source: row.source,
+        priority: row.source === "system_default" ? 100 : 230,
+        hitCount: Number(row.hitCount || 0),
+        lastSeenAt: row.lastSeenAt,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
+    }
+    db.exec("DROP TABLE IF EXISTS \\"statement_category_rules\\"");
+  }
+  cleanupStatementRecognitionRuleKeywords(db);
+}
+
+function cleanupStatementRecognitionRuleKeywords(db) {
+  if (!tableExists(db, "statement_recognition_rules")) return;
+  const rows = db.prepare("SELECT \\"id\\", \\"householdId\\", \\"targetType\\", \\"transactionType\\", \\"keyword\\", \\"normalizedKeyword\\", \\"hitCount\\" FROM \\"statement_recognition_rules\\" WHERE \\"keyword\\" LIKE '%有限公司%' OR \\"normalizedKeyword\\" LIKE '%有限公司%'").all();
+  const findDuplicate = db.prepare("SELECT \\"id\\" FROM \\"statement_recognition_rules\\" WHERE \\"householdId\\" = ? AND \\"targetType\\" = ? AND \\"transactionType\\" = ? AND \\"normalizedKeyword\\" = ? AND \\"id\\" <> ? LIMIT 1");
+  const mergeDuplicate = db.prepare("UPDATE \\"statement_recognition_rules\\" SET \\"hitCount\\" = \\"hitCount\\" + ?, \\"updatedAt\\" = CURRENT_TIMESTAMP WHERE \\"id\\" = ?");
+  const deleteRule = db.prepare("DELETE FROM \\"statement_recognition_rules\\" WHERE \\"id\\" = ?");
+  const updateRule = db.prepare("UPDATE \\"statement_recognition_rules\\" SET \\"keyword\\" = ?, \\"normalizedKeyword\\" = ?, \\"updatedAt\\" = CURRENT_TIMESTAMP WHERE \\"id\\" = ?");
+  for (const row of rows) {
+    const keyword = stripCompanySuffixValue(row.keyword);
+    const normalizedKeyword = stripCompanySuffixValue(row.normalizedKeyword);
+    if (!keyword || !normalizedKeyword) continue;
+    const duplicate = findDuplicate.get(row.householdId, row.targetType, row.transactionType, normalizedKeyword, row.id);
+    if (duplicate) {
+      mergeDuplicate.run(Number(row.hitCount || 0), duplicate.id);
+      deleteRule.run(row.id);
+    } else {
+      updateRule.run(keyword, normalizedKeyword, row.id);
+    }
+  }
 }
 
 function ensureMigrationTable(db) {

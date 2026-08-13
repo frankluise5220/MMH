@@ -49,12 +49,28 @@ export async function POST(req: NextRequest) {
 
   const trace: string[] = [];
   let client: Awaited<ReturnType<typeof connectAndOpenBox>>["client"] | null = null;
+  const startedAt = Date.now();
 
   try {
     const opened = await connectAndOpenBox({ host, port, secure, user, password, mailbox }, trace);
+    const openedAt = Date.now();
     client = opened.client;
     const result = await listMails(client, { limit, scanLimit, sinceDate, keyword, keywords, subjectIncludes, fromIncludes }, trace);
-    return NextResponse.json({ ok: true, items: result.items, meta: result.meta, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, `list ok ${result.items.length}`] } : {}) });
+    const listedAt = Date.now();
+    return NextResponse.json({
+      ok: true,
+      items: result.items,
+      meta: {
+        ...result.meta,
+        timingMs: {
+          connect: openedAt - startedAt,
+          list: listedAt - openedAt,
+          total: listedAt - startedAt,
+        },
+      },
+      mailbox: opened.mailbox,
+      ...(debug ? { trace: [...trace, `list ok ${result.items.length}`] } : {}),
+    });
   } catch (e) {
     const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";
     return NextResponse.json({ ok: false, error: formatImapError(rawMsg), ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });

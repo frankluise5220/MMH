@@ -30,6 +30,11 @@ import {
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
+import {
+  STOCK_ACCOUNT_INSTITUTION_ERROR,
+  isStockAccountInstitutionType,
+  isStockInvestmentAccount,
+} from "@/lib/account-institution-rules";
 
 export const runtime = "nodejs";
 
@@ -113,6 +118,9 @@ export async function POST(req: NextRequest) {
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
+      return NextResponse.json({ ok: false, error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
+    }
     const counterparty = requestedCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
       : null;
@@ -327,6 +335,9 @@ export async function PUT(req: NextRequest) {
       data.tradingCalendar = null;
       data.defaultFundQueryApiId = null;
     }
+    const nextInvestProductTypeForInstitution = nextKind === "investment"
+      ? String(data.investProductType ?? existing.investProductType ?? "fund")
+      : null;
 
     const hasNextName = Object.prototype.hasOwnProperty.call(data, "name");
     const hasNextNumberMasked = Object.prototype.hasOwnProperty.call(data, "numberMasked");
@@ -341,9 +352,14 @@ export async function PUT(req: NextRequest) {
       const group = await prisma.accountGroup.findFirst({ where: { id: nextGroupId, householdId } });
       if (!group) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
     }
+    const nextInstitution = nextInstitutionId
+      ? await prisma.institution.findFirst({ where: { id: nextInstitutionId, householdId } })
+      : null;
     if (nextInstitutionId) {
-      const institution = await prisma.institution.findFirst({ where: { id: nextInstitutionId, householdId } });
-      if (!institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+      if (!nextInstitution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    }
+    if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
+      return NextResponse.json({ ok: false, error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
     await assertAccountIdentityUnique(prisma, {
       householdId,

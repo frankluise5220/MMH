@@ -14,6 +14,7 @@ import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
+import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 
 /**
  * 批量更新交易记录
@@ -22,16 +23,20 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
  *   updates: Array<{
  *     id: string;              // TxRecord.id
  *     date?: string;           // YYYY-MM-DD
+ *     postedAt?: string;       // YYYY-MM-DD，可传空字符串清空
  *     type?: "expense" | "income" | "transfer" | "investment";
+ *     amount?: string | number;// 金额（绝对值），会保持原记录方向
+ *     inflow?: string | number;// 流入金额，按当前账户视角改为正向流入
+ *     outflow?: string | number;// 流出金额，按当前账户视角改为负向流出
  *     account?: string;        // 来源账户 Account.id
  *     toAccount?: string;      // 去向账户 Account.id
  *     categoryId?: string;     // 收支分类 Category.id，可传空字符串清空
+ *     institution?: string;    // 收支机构名称/简称，可传空字符串清空
  *     remark?: string;         // 备注，可传空字符串清空
  *     fundConfirmDate?: string;// 确认日期 YYYY-MM-DD，可传空字符串清空
  *     fundArrivalDate?: string;// 到账日期 YYYY-MM-DD，可传空字符串清空
  *     cashAccountId?: string;  // 资金账户 Account.id（按 fundSubtype 自动落到 accountId/toAccountId）
  *     fundAccountId?: string;  // 基金账户 Account.id（按 fundSubtype 自动落到 accountId/toAccountId）
- *     amount?: string | number;// 金额（绝对值），会保持原记录的正负号
  *     accountName?: string;    // 兼容旧调用：来源账户名称
  *   }>;
  *   contextAccountId?: string; // 当前明细页账户。批量改“对向账户”时用于保留收入/支出的资金方向。
@@ -43,16 +48,20 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 type BatchUpdateItem = {
   id: string;
   date?: string;
+  postedAt?: string;
   type?: string;
+  amount?: string | number;
+  inflow?: string | number;
+  outflow?: string | number;
   account?: string;
   toAccount?: string;
   categoryId?: string;
+  institution?: string;
   remark?: string;
   fundConfirmDate?: string;
   fundArrivalDate?: string;
   cashAccountId?: string;
   fundAccountId?: string;
-  amount?: string | number;
   accountName?: string;
 };
 
@@ -104,6 +113,7 @@ export async function POST(req: NextRequest) {
       select: {
         id: true,
         date: true,
+        postedAt: true,
         type: true,
         amount: true,
         fundSubtype: true,
@@ -117,6 +127,8 @@ export async function POST(req: NextRequest) {
         categoryId: true,
         categoryName: true,
         note: true,
+        counterpartyInstitutionName: true,
+        paymentChannelName: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
       },
@@ -142,6 +154,24 @@ export async function POST(req: NextRequest) {
       ? await prisma.category.findMany({ where: { id: { in: categoryIds }, ...hidFilter }, select: { id: true, name: true } })
       : [];
     const categoryById = new Map(categories.map((category) => [category.id, category]));
+    const institutionNames = Array.from(new Set(updates.map((item) => String(item.institution ?? "").trim()).filter(Boolean)));
+    const institutions = institutionNames.length > 0
+      ? await prisma.institution.findMany({
+          where: {
+            householdId: ctx.householdId,
+            OR: [
+              { name: { in: institutionNames } },
+              { shortName: { in: institutionNames } },
+            ],
+          },
+          select: { id: true, name: true, shortName: true },
+        })
+      : [];
+    const institutionByName = new Map<string, (typeof institutions)[number]>();
+    for (const institution of institutions) {
+      institutionByName.set(institution.name, institution);
+      if (institution.shortName) institutionByName.set(institution.shortName, institution);
+    }
     const repaymentCategory = await resolveCreditCardRepaymentCategory(prisma, ctx.householdId);
 
     let updatedCount = 0;
@@ -165,6 +195,13 @@ export async function POST(req: NextRequest) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return NextResponse.json({ ok: false, error: "日期格式必须是 YYYY-MM-DD" }, { status: 400 });
         data.date = new Date(`${dateValue}T00:00:00.000Z`);
         changed.push({ id, date: ymd(existing.date), oldValue: ymd(existing.date), newValue: dateValue, field: "date" });
+      }
+
+      if (item.postedAt !== undefined) {
+        const postedAtValue = String(item.postedAt).trim();
+        if (postedAtValue && !/^\d{4}-\d{2}-\d{2}$/.test(postedAtValue)) return NextResponse.json({ ok: false, error: "入账日期格式必须是 YYYY-MM-DD" }, { status: 400 });
+        data.postedAt = postedAtValue ? new Date(`${postedAtValue}T00:00:00.000Z`) : null;
+        changed.push({ id, date: ymd(existing.date), oldValue: existing.postedAt ? ymd(existing.postedAt) : "", newValue: postedAtValue, field: "postedAt" });
       }
 
       if (item.type !== undefined) {
@@ -256,6 +293,20 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      if (item.institution !== undefined) {
+        const institutionName = String(item.institution).trim();
+        const institution = institutionName ? institutionByName.get(institutionName) ?? null : null;
+        data.counterpartyInstitutionId = institution?.id ?? null;
+        data.counterpartyInstitutionName = institution?.name ?? (institutionName || null);
+        changed.push({
+          id,
+          date: ymd(existing.date),
+          oldValue: existing.counterpartyInstitutionName ?? "",
+          newValue: institution?.name ?? institutionName,
+          field: "institution",
+        });
+      }
+
       if (item.remark !== undefined) {
         const remark = String(item.remark);
         data.note = remark || null;
@@ -324,17 +375,66 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      if (item.amount !== undefined) {
-        const raw = typeof item.amount === "number" ? String(item.amount) : String(item.amount ?? "");
+      const amountField = item.inflow !== undefined
+        ? "inflow"
+        : item.outflow !== undefined
+          ? "outflow"
+          : item.amount !== undefined
+            ? "amount"
+            : null;
+      if (amountField) {
+        const rawValue = amountField === "inflow"
+          ? item.inflow
+          : amountField === "outflow"
+            ? item.outflow
+            : item.amount;
+        const raw = typeof rawValue === "number" ? String(rawValue) : String(rawValue ?? "");
         const v = raw.trim();
         const oldN = Number(existing.amount);
-        const absNew = parseAmountUpdate(v, Math.abs(oldN));
+        const contextIsSource = !!existing.accountId && contextAccountIdSet.has(existing.accountId);
+        const contextIsTarget = !!existing.toAccountId && contextAccountIdSet.has(existing.toAccountId);
+        const effectiveOldN = contextIsTarget ? Math.abs(oldN) : oldN;
+        const baseAmount = amountField === "inflow"
+          ? Math.max(effectiveOldN, 0)
+          : amountField === "outflow"
+            ? Math.max(-effectiveOldN, 0)
+            : Math.abs(oldN);
+        const absNew = parseAmountUpdate(v, baseAmount);
         if (absNew == null) return NextResponse.json({ ok: false, error: "金额必须是数字或运算式，如 100、*2、+10、-5、/2" }, { status: 400 });
-        const signed = String(data.type ?? existing.type) === TransactionType.transfer
-          ? -absNew
-          : oldN < 0 ? -absNew : absNew;
-        data.amount = signed;
-        changed.push({ id, date: ymd(existing.date), oldValue: String(Math.abs(oldN)), newValue: String(absNew), field: "amount" });
+        const finalTypeForAmount = String(data.type ?? existing.type);
+        if (amountField === "amount") {
+          const signed = finalTypeForAmount === TransactionType.transfer
+            ? -absNew
+            : oldN < 0 ? -absNew : absNew;
+          data.amount = signed;
+        } else if (finalTypeForAmount === TransactionType.transfer) {
+          const wantsInflow = amountField === "inflow";
+          const sourceAccountId = existing.accountId;
+          const targetAccountId = existing.toAccountId;
+          if (wantsInflow && contextIsSource && !contextIsTarget && sourceAccountId && targetAccountId) {
+            data.accountId = targetAccountId;
+            data.accountName = existing.toAccountName ?? null;
+            data.toAccountId = sourceAccountId;
+            data.toAccountName = existing.accountName ?? null;
+            balanceAccountIds.add(sourceAccountId);
+            balanceAccountIds.add(targetAccountId);
+          } else if (!wantsInflow && contextIsTarget && !contextIsSource && sourceAccountId && targetAccountId) {
+            data.accountId = targetAccountId;
+            data.accountName = existing.toAccountName ?? null;
+            data.toAccountId = sourceAccountId;
+            data.toAccountName = existing.accountName ?? null;
+            balanceAccountIds.add(sourceAccountId);
+            balanceAccountIds.add(targetAccountId);
+          }
+          data.amount = -absNew;
+        } else {
+          const wantsInflow = amountField === "inflow";
+          if (finalTypeForAmount === TransactionType.income || finalTypeForAmount === TransactionType.expense) {
+            data.type = wantsInflow ? TransactionType.income : TransactionType.expense;
+          }
+          data.amount = wantsInflow ? absNew : -absNew;
+        }
+        changed.push({ id, date: ymd(existing.date), oldValue: String(baseAmount), newValue: String(absNew), field: amountField });
         amountTouchedIds.add(id);
       }
 
@@ -388,6 +488,20 @@ export async function POST(req: NextRequest) {
       if (result.count > 0) {
         updatedCount += result.count;
         touchedRecordIds.add(id);
+        const learnedCategoryId = typeof data.categoryId === "string" ? data.categoryId : "";
+        const learnedCategoryName = typeof data.categoryName === "string" ? data.categoryName : "";
+        if (item.categoryId !== undefined && learnedCategoryId && learnedCategoryName && (finalType === "income" || finalType === "expense")) {
+          await upsertStatementCategoryRuleFromTx(prisma, {
+            householdId: ctx.householdId,
+            type: finalType,
+            categoryId: learnedCategoryId,
+            categoryName: learnedCategoryName,
+            counterpartyInstitutionName: existing.counterpartyInstitutionName,
+            paymentChannelName: existing.paymentChannelName,
+            source: "user_category_edit",
+            note: typeof data.note === "string" ? data.note : existing.note,
+          });
+        }
       }
     }
 

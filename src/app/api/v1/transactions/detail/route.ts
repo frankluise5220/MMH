@@ -91,6 +91,8 @@ import {
 } from "@/lib/server/entry-business-link";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
+import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
+import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 
 export const runtime = "nodejs";
 
@@ -1630,6 +1632,7 @@ export async function POST(req: Request) {
     if (type === "advance") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const categoryName = String(body.categoryName ?? "").trim();
       if (!accountId || !counterpartyInstitutionId) {
         return NextResponse.json({ ok: false, error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
       }
@@ -1637,7 +1640,7 @@ export async function POST(req: Request) {
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId } }),
-          resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
+          resolveCategorySnapshot(tx, householdId, { categoryId, categoryName, type: "advance" }),
         ]);
         if (!acc) throw new Error("账户不存在");
         if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
@@ -1816,6 +1819,16 @@ export async function POST(req: Request) {
         });
         createdId = created.id;
 
+        if (counterpartyInstitution && note) {
+          await upsertStatementInstitutionRuleFromUserEdit(tx, {
+            householdId,
+            institutionId: counterpartyInstitution.id,
+            institutionName: counterpartyInstitution.name,
+            keyword: note,
+            transactionType: "expense",
+            source: "user_transaction_institution_edit",
+          });
+        }
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
@@ -1876,6 +1889,16 @@ export async function POST(req: Request) {
         });
         createdId = created.id;
 
+        if (counterpartyInstitution && note) {
+          await upsertStatementInstitutionRuleFromUserEdit(tx, {
+            householdId,
+            institutionId: counterpartyInstitution.id,
+            institutionName: counterpartyInstitution.name,
+            keyword: note,
+            transactionType: "income",
+            source: "user_transaction_institution_edit",
+          });
+        }
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
@@ -2713,6 +2736,24 @@ export async function PUT(req: Request) {
     let investmentAccId: string | undefined;
     let advanceAccountId: string | undefined;
     let changedInvestment = false;
+    let pendingStatementCategoryRuleInput: {
+      householdId: string;
+      type: string;
+      categoryId: string;
+      categoryName: string;
+      counterpartyInstitutionName?: string | null;
+      paymentChannelName?: string | null;
+      source: string;
+      note?: string | null;
+    } | null = null;
+    let pendingStatementInstitutionRuleInput: {
+      householdId: string;
+      institutionId: string;
+      institutionName: string;
+      keyword: string;
+      transactionType: string;
+      source: string;
+    } | null = null;
 
     if (type === "investment" && String(body.fundProductType ?? body.productType ?? "").trim() === "wealth") {
       const updated = await editSplitWealthTransactionFromBody(body, householdId, tagIds);
@@ -3288,6 +3329,7 @@ return;
 
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const categoryName = String(body.categoryName ?? "").trim();
       const counterpartyInstitution = counterpartyInstitutionId
         ? await tx.institution.findFirst({
             where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
@@ -3302,6 +3344,7 @@ return;
         accountId ? tx.account.findUnique({ where: { id: accountId } }) : Promise.resolve(null),
         resolveCategorySnapshot(tx, householdId, {
           categoryId,
+          categoryName,
           type: type === "income" ? "income" : "expense",
         }),
       ]);
@@ -3399,7 +3442,39 @@ return;
           note: note || null,
         },
       });
+      if ((body.categoryId !== undefined || body.categoryName !== undefined) && cat && (type === "income" || type === "expense")) {
+        pendingStatementCategoryRuleInput = {
+          householdId,
+          type,
+          categoryId: cat.id,
+          categoryName: cat.name,
+          counterpartyInstitutionName: counterpartyInstitution?.name ?? entry.counterpartyInstitutionName,
+          paymentChannelName: entry.paymentChannelName,
+          source: "user_category_edit",
+          note: note || entry.note,
+        };
+      }
+      if (body.counterpartyInstitutionId !== undefined && counterpartyInstitution && (type === "income" || type === "expense")) {
+        const keyword = note || entry.note || "";
+        if (keyword) {
+          pendingStatementInstitutionRuleInput = {
+            householdId,
+            institutionId: counterpartyInstitution.id,
+            institutionName: counterpartyInstitution.name,
+            keyword,
+            transactionType: type,
+            source: "user_transaction_institution_edit",
+          };
+        }
+      }
     }, TX_EDIT_TRANSACTION_OPTIONS);
+
+    if (pendingStatementCategoryRuleInput) {
+      await upsertStatementCategoryRuleFromTx(prisma, pendingStatementCategoryRuleInput);
+    }
+    if (pendingStatementInstitutionRuleInput) {
+      await upsertStatementInstitutionRuleFromUserEdit(prisma, pendingStatementInstitutionRuleInput);
+    }
 
     if (changedInvestment) {
       await upsertLegacyCombinedEntryBusinessLinks([entryId]).catch(logger.catchLog("sync entry business link", "route.ts"));

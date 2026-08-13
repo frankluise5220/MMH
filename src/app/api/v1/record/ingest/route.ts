@@ -36,12 +36,23 @@ import {
   isCreditCardRepaymentTransfer,
 } from "@/lib/transaction-semantics";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
+import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
+import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 
 /**
  * POST /api/v1/record/ingest
  * Body: { items?: ParsedItem[], text?: string, import?: boolean, defaultAccountName?: string, traceId?: string }
  * Import items may carry `inflow`/`outflow` for account-side direction; an
  * expense refund should use `{ type: "expense", inflow: amount }`.
+ * Import preview rows may carry `categoryUserEdited: true` only after the
+ * user manually changes the category; confirmed income/expense edits are
+ * learned into statement category rules and mirrored into
+ * statement_recognition_rules(targetType="category") for future imports.
+ * Import preview rows may carry `institutionUserEdited: true` only after the
+ * user manually fills/selects a counterparty institution; unmatched
+ * institutions are stored as blank because the field is optional.
+ * Transfer items must carry matched `fromAccount` and `toAccount`; the server
+ * rejects incomplete transfers instead of writing an empty counter account.
  * `businessType="credit_card_repayment"` stores a transfer categorized as
  * "信用卡还款" while requiring a debit-card/e-wallet source and credit-card target.
  * Response: { ok: true, items, imported, createdCount?, ids? } or { ok: false, error }.
@@ -72,6 +83,7 @@ type ImportContext = {
   categorySnapshotByKey: Map<string, CategorySnapshot>;
   tagIdByName: Map<string, string>;
   institutionIdByName: Map<string, string>;
+  institutionNameById: Map<string, string>;
   defaultAccountGroupId: string | null;
 };
 
@@ -179,7 +191,9 @@ const ParsedItemSchema = z.object({
   importSourceToAccount: z.string().optional(),
   importSourceStatementAccount: z.string().optional(),
   category: z.string().optional(),
+  categoryUserEdited: z.boolean().optional(),
   institution: z.string().optional(),
+  institutionUserEdited: z.boolean().optional(),
   tags: z.string().optional(),
   remark: z.string().optional(),
   secondRemark: z.string().optional(),
@@ -365,6 +379,10 @@ function resolveInstitutionId(ctx: ImportContext, institutionName?: string) {
   return ctx.institutionIdByName.get(normalizeInstitutionMatchKey(raw)) ?? null;
 }
 
+function sourceKeywordForInstitutionLearning(item: ParsedItem) {
+  return String(item.counterparty ?? item.remark ?? item.rawText ?? "").trim();
+}
+
 function categorySnapshotKey(name: string, type: string | null) {
   return `${type ?? ""}\u0000${name.trim()}`;
 }
@@ -386,6 +404,46 @@ function resolveCategorySnapshotFromContext(
     if (typed) return typed;
   }
   return ctx.categorySnapshotByKey.get(categorySnapshotKey(categoryName, null)) ?? null;
+}
+
+async function learnUserEditedImportCategory(ctx: ImportContext, item: ParsedItem) {
+  if (!item.categoryUserEdited) return false;
+  if (item.type !== "income" && item.type !== "expense") return false;
+  const category = resolveCategorySnapshotFromContext(ctx, {
+    categoryName: item.category,
+    type: item.type,
+  });
+  if (!category?.id || !category.name) return false;
+
+  const counterpartyInstitutionId = resolveInstitutionId(ctx, item.institution);
+  const counterpartyInstitutionName = counterpartyInstitutionId ? String(item.institution ?? "").trim() || null : null;
+  return upsertStatementCategoryRuleFromTx(prisma, {
+    householdId: ctx.householdId,
+    type: item.type,
+    categoryId: category.id,
+    categoryName: category.name,
+    counterpartyInstitutionName,
+    paymentChannelName: null,
+    source: "user_import_preview_edit",
+    note: String(item.remark ?? item.rawText ?? "").trim(),
+  });
+}
+
+async function learnUserEditedImportInstitution(ctx: ImportContext, item: ParsedItem) {
+  if (!item.institutionUserEdited) return false;
+  const institutionId = resolveInstitutionId(ctx, item.institution);
+  if (!institutionId) return false;
+  const institutionName = ctx.institutionNameById.get(institutionId) ?? String(item.institution ?? "").trim();
+  const keyword = sourceKeywordForInstitutionLearning(item);
+  if (!keyword) return false;
+  return upsertStatementInstitutionRuleFromUserEdit(prisma, {
+    householdId: ctx.householdId,
+    institutionId,
+    institutionName,
+    keyword,
+    transactionType: item.type === "income" || item.type === "expense" ? item.type : "any",
+    source: "user_import_preview_institution_edit",
+  });
 }
 
 async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: string) {
@@ -491,6 +549,7 @@ async function buildImportContext(): Promise<ImportContext> {
     categorySnapshotByKey: new Map(),
     tagIdByName: new Map(),
     institutionIdByName: new Map(),
+    institutionNameById: new Map(),
     defaultAccountGroupId: defaultGroup?.id ?? null,
   };
 
@@ -513,6 +572,7 @@ async function buildImportContext(): Promise<ImportContext> {
     const shortName = String(institution.shortName ?? "").trim();
     if (fullName) ctx.institutionIdByName.set(normalizeInstitutionMatchKey(fullName), institution.id);
     if (shortName) ctx.institutionIdByName.set(normalizeInstitutionMatchKey(shortName), institution.id);
+    if (fullName) ctx.institutionNameById.set(institution.id, fullName);
   }
 
   return ctx;
@@ -530,9 +590,15 @@ async function buildTransactionRow(ctx: ImportContext, item: ParsedItem, default
   if (shouldUseDoubleEntry) {
     const fromAccountName = normalizeAccountCell(item.fromAccount);
     const toAccountName = normalizeAccountCell(item.toAccount);
+    if (item.type === "transfer" && (!fromAccountName || !toAccountName)) {
+      throw new Error("转账缺少转出/转入账户");
+    }
     const fromAccountId = await resolveAccountId(ctx, prisma, fromAccountName) ?? await ensureAccountId(ctx, prisma, fromAccountName);
     const toAccountId = await resolveAccountId(ctx, prisma, toAccountName) ?? await ensureAccountId(ctx, prisma, toAccountName);
-    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(ctx, prisma, "未指定账户") : null);
+    if (item.type === "transfer" && (!fromAccountId || !toAccountId)) {
+      throw new Error("转账账户未匹配，不能导入");
+    }
+    const sourceAccountId = fromAccountId ?? null;
     const fromAccountMeta = sourceAccountId ? ctx.accountMetaById.get(sourceAccountId) ?? null : null;
     const toAccountMeta = toAccountId ? ctx.accountMetaById.get(toAccountId) ?? null : null;
     const sourceAccountName = fromAccountName && parseImportAccountId(fromAccountName) ? fromAccountMeta?.name ?? fromAccountName : fromAccountName;
@@ -579,6 +645,9 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
   if (shouldUseDoubleEntry) {
     const fromAccountName = normalizeAccountCell(item.fromAccount);
     const toAccountName = normalizeAccountCell(item.toAccount);
+    if (item.type === "transfer" && (!fromAccountName || !toAccountName)) {
+      throw new Error("转账缺少转出/转入账户");
+    }
 
     const requiresExistingAccounts = isCreditCardRepaymentBusinessType(item.businessType);
     const [fromAccountId, toAccountId] = await Promise.all([
@@ -590,7 +659,10 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
         : ensureAccountId(ctx, tx, toAccountName),
     ]);
 
-    const sourceAccountId = fromAccountId ?? (toAccountId ? await ensureAccountId(ctx, tx, "未指定账户") : null);
+    if (item.type === "transfer" && (!fromAccountId || !toAccountId)) {
+      throw new Error("转账账户未匹配，不能导入");
+    }
+    const sourceAccountId = fromAccountId ?? null;
     const fromStatementMonth = statementMonthForAccountMeta(ctx, sourceAccountId, date);
     const fromAccountMeta = await accountMetaFor(ctx, tx, sourceAccountId);
     const toAccountMeta = await accountMetaFor(ctx, tx, toAccountId);
@@ -1018,9 +1090,17 @@ export async function POST(req: Request) {
         const note = item.remark ?? item.rawText ?? "";
 
         if (item.type === "transfer" || (item.type === "investment" && item.fromAccount && item.toAccount)) {
+          const fromAccountName = normalizeAccountCell(item.fromAccount);
+          const toAccountName = normalizeAccountCell(item.toAccount);
+          if (item.type === "transfer" && (!fromAccountName || !toAccountName)) {
+            throw new ImportItemError(buildImportFailureDetail(i, item, new Error("转账缺少转出/转入账户")));
+          }
           const fromId = lookupAccount(ctx, item.fromAccount, defaultAccountName);
           const toId = lookupAccount(ctx, item.toAccount, defaultAccountName);
-          const sourceId = fromId || (toId ? getOrCreateDefaultAccount(ctx, defaultAccountName) : "");
+          if (item.type === "transfer" && (!fromId || !toId)) {
+            throw new ImportItemError(buildImportFailureDetail(i, item, new Error("转账账户未匹配，不能导入")));
+          }
+          const sourceId = fromId || (item.type === "investment" && toId ? getOrCreateDefaultAccount(ctx, defaultAccountName) : "");
           const fromMeta = ctx.accountMetaById.get(sourceId ?? "") ?? null;
           const toMeta = ctx.accountMetaById.get(toId ?? "") ?? null;
           const fromName = fromId && fromMeta ? fromMeta.name : normalizeAccountCell(item.fromAccount);
@@ -1057,6 +1137,23 @@ export async function POST(req: Request) {
         }
       }
       await prisma.txRecord.createMany({ data: batchData });
+      let learnedCategoryRuleCount = 0;
+      for (let i = batchStart; i < batchEnd; i++) {
+        if (await learnUserEditedImportCategory(ctx, items[i])) learnedCategoryRuleCount += 1;
+        await learnUserEditedImportInstitution(ctx, items[i]);
+      }
+      if (traceId && learnedCategoryRuleCount > 0) {
+        await writeImportDebugLog({
+          traceId,
+          event: "category_rules_learned",
+          householdId: ctx.householdId,
+          details: {
+            batchStart,
+            batchEnd,
+            learnedCategoryRuleCount,
+          },
+        });
+      }
       updateImportProgress(traceId, { phase: "writing", processed: batchEnd, created: created.length, currentRow: batchEnd });
     }
 

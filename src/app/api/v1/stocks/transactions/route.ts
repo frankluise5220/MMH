@@ -6,11 +6,13 @@ import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
+import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
-import { normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
+import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
 
 export const runtime = "nodejs";
 
@@ -62,7 +64,7 @@ function normalizeStockAction(value: unknown) {
 async function assertStockAccount(accountId: string, householdId: string) {
   const account = await prisma.account.findFirst({
     where: { id: accountId, householdId, kind: "investment", investProductType: "stock" },
-    select: { id: true, name: true, currency: true },
+    select: { id: true, householdId: true, groupId: true, institutionId: true, name: true, currency: true },
   });
   if (!account) throw new Error("股票账户不存在或不属于当前账簿");
   return account;
@@ -218,9 +220,9 @@ export async function GET(req: NextRequest) {
  *
  * Body:
  * - accountId | stockAccountId: stock account id
- * - cashAccountId?: brokerage cash/funding account id used for buy/sell/dividend/fee/tax cash flow; defaults to the stock account only for backward compatibility
+ * - cashAccountId?: brokerage cash/funding account id used for buy/sell/dividend/fee/tax cash flow; omitted values auto-use the stock account's brokerage funding account
  * - securityId?: existing StockSecurity id
- * - market?: stock market, default CN
+ * - market?: stock market; omitted values are inferred from stockCode where possible
  * - stockCode: stock code when securityId is not supplied
  * - stockName?: display name
  * - action: buy | sell | dividend | bonus_share | split_share | merge_share | fee_adjustment | tax_adjustment
@@ -228,7 +230,8 @@ export async function GET(req: NextRequest) {
  * - settleDate?: YYYY-MM-DD
  * - grossAmount?: amount before fees; defaults to quantity * price when possible
  * - netAmount?: settled cash amount
- * - quantity?, price?, fee?, commission?, stampTax?, transferFee?, exchangeFee?, regulatoryFee?, otherFee?
+ * - quantity?, price?
+ * - fee?, commission?, stampTax?, transferFee?, exchangeFee?, regulatoryFee?, otherFee? optional import/manual overrides; omitted values are calculated from account stock fee rules for buy/sell
  * - externalLinkId?: broker/import source id for dedupe
  * - brokerTradeId?: broker trade id
  *
@@ -244,9 +247,11 @@ export async function POST(req: NextRequest) {
     const stockAccountId = String(body.stockAccountId ?? body.accountId ?? "").trim();
     if (!stockAccountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     const stockAccount = await assertStockAccount(stockAccountId, householdId);
-    const cashAccountId = String(body.cashAccountId ?? stockAccountId).trim() || stockAccountId;
-    const cashAccount = await findCashAccount(cashAccountId, householdId, stockAccountId);
     const action = normalizeStockAction(body.action);
+    const cashAccountIdRaw = String(body.cashAccountId ?? "").trim();
+    const ensuredCashAccount = cashAccountIdRaw ? null : await ensureBrokerageCashAccountForStockAccount(prisma, stockAccount);
+    const cashAccountId = cashAccountIdRaw || ensuredCashAccount?.id || "";
+    const cashAccount = await findCashAccount(cashAccountId || null, householdId);
     const tradeDate = parseDateOnly(body.tradeDate);
     const settleDate = parseDateOnly(body.settleDate);
     if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
@@ -275,6 +280,9 @@ export async function POST(req: NextRequest) {
     }
     if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
       return NextResponse.json({ ok: false, error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
+    }
+    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
+      return NextResponse.json({ ok: false, error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
     }
 
     if (externalLinkId) {
@@ -305,7 +313,7 @@ export async function POST(req: NextRequest) {
         })
       : await resolveOrCreateStockSecurity(prisma, {
           householdId,
-          market: normalizeStockMarket(body.market),
+          market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(body.stockCode),
           stockCode: normalizeStockCode(body.stockCode),
           stockName: String(body.stockName ?? "").trim() || undefined,
           currency: normalizeCurrency(body.currency ?? stockAccount.currency),
@@ -313,12 +321,41 @@ export async function POST(req: NextRequest) {
         });
     if (!security) return NextResponse.json({ ok: false, error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
+    const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
+      ? await calculateStockTransactionFeesByDate({
+          accountId: stockAccountId,
+          tradeDate,
+          grossAmount,
+          direction: action,
+          securityId: security.id,
+          market: security.market,
+          stockCode: security.stockCode,
+          overrides: {
+            fee,
+            commission,
+            stampTax,
+            transferFee,
+            exchangeFee,
+            regulatoryFee,
+            otherFee,
+          },
+        })
+      : {
+          fee,
+          commission,
+          stampTax,
+          transferFee,
+          exchangeFee,
+          regulatoryFee,
+          otherFee,
+        };
+
     const created = await prisma.$transaction(async (tx) => {
       const row = await tx.stockTransaction.create({
         data: {
           householdId,
           stockAccountId,
-          cashAccountId,
+          cashAccountId: cashAccount?.id ?? null,
           securityId: security.id,
           market: security.market,
           stockCode: security.stockCode,
@@ -331,13 +368,13 @@ export async function POST(req: NextRequest) {
           netAmount: decimalString(netAmount),
           quantity: decimalString(quantity),
           price: decimalString(price),
-          fee: decimalString(fee),
-          commission: decimalString(commission),
-          stampTax: decimalString(stampTax),
-          transferFee: decimalString(transferFee),
-          exchangeFee: decimalString(exchangeFee),
-          regulatoryFee: decimalString(regulatoryFee),
-          otherFee: decimalString(otherFee),
+          fee: decimalString(fees.fee),
+          commission: decimalString(fees.commission),
+          stampTax: decimalString(fees.stampTax),
+          transferFee: decimalString(fees.transferFee),
+          exchangeFee: decimalString(fees.exchangeFee),
+          regulatoryFee: decimalString(fees.regulatoryFee),
+          otherFee: decimalString(fees.otherFee),
           externalLinkId,
           brokerTradeId,
           note: String(body.note ?? "").trim() || null,

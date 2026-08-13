@@ -22,10 +22,15 @@ export type BasicDetailBatchCategoryOption = BatchReplaceOption;
 
 const fieldLabels: Record<BatchReplaceField, string> = {
   date: "日期",
+  postedAt: "入账日期",
   type: "类型",
+  amount: "金额",
+  inflow: "流入",
+  outflow: "流出",
   account: "来源账户",
   toAccount: "对向账户",
   categoryId: "分类",
+  institution: "收支机构",
   remark: "备注",
 };
 
@@ -36,7 +41,7 @@ const typeOptions = [
   { value: "transfer", label: "转账" },
   { value: "investment", label: "投资" },
 ];
-const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "type", "account", "toAccount", "categoryId", "remark"];
+const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "account", "toAccount", "categoryId", "institution", "remark"];
 
 function stripLeadingIndent(label: string) {
   return label.replace(/^[\u3000\s]+/, "");
@@ -210,7 +215,11 @@ export function BasicDetailBatchReplaceButton({
     ];
     const configByField: Record<BatchReplaceField, BatchReplaceFieldConfig<BatchReplaceField>> = {
       date: { value: "date", label: fieldLabels.date, kind: "date" },
+      postedAt: { value: "postedAt", label: fieldLabels.postedAt, kind: "date", allowEmpty: true },
       type: { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
+      amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
+      inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: "输入流入金额或运算式" },
+      outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: "输入流出金额或运算式" },
       account: {
         value: "account",
         label: fieldLabels.account,
@@ -243,6 +252,7 @@ export function BasicDetailBatchReplaceButton({
           expandedGroupColumns: 4,
         },
       },
+      institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: "输入收支机构，可留空清除", allowEmpty: true },
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
     };
     return fields.map((field) => configByField[field]).filter(Boolean);

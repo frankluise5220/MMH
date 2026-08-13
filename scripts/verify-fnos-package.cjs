@@ -201,6 +201,9 @@ expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fn
 expect(/upgrade_callback/.test(buildScript), "fnOS package must include upgrade_callback for overlay upgrades.");
 expect(/const MIGRATIONS = \[/.test(buildScript), "fnOS SQLite init must include an explicit runtime migration list for existing databases.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
+expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockReferenceTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock reference tables for existing databases.");
+expect(/stock_market_fee_rules/.test(buildScript) && /stock_brokerage_catalog/.test(buildScript), "fnOS SQLite migrations must include stock market fee rules and brokerage catalog tables.");
+expect(/20260813_zz_unify_statement_learning_rules/.test(buildScript), "fnOS SQLite statement-rule migration version must match the finalized Prisma migration directory.");
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
 expect(/SQLite database already initialized and migrated/.test(buildScript), "fnOS SQLite init must report that existing databases were migrated.");
 expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "fnOS README must document direct same-app overlay upgrades.");

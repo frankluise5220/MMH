@@ -932,7 +932,10 @@ export function DetailViewClient({
   useEffect(() => {
     if (!refreshOnGlobalEvent) return;
     const handler = (event: Event) => {
-      const deletedEntryIds = (event as CustomEvent<{ deletedEntryIds?: string[] }>).detail?.deletedEntryIds ?? [];
+      const detail = (event as CustomEvent<{ accountIds?: string[]; deletedEntryIds?: string[] }>).detail ?? {};
+      const eventAccountIds = detail.accountIds ?? [];
+      if (eventAccountIds.length > 0 && !eventAccountIds.includes(accountId)) return;
+      const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length > 0) {
         const deletedSet = new Set(deletedEntryIds);
         detailRefreshSeqRef.current += 1;

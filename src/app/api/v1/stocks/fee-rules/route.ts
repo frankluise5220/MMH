@@ -25,6 +25,40 @@ function utcDate(raw: string | null) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
+function serializeRule(rule: {
+  id: string;
+  accountId: string;
+  securityId?: string | null;
+  market?: string | null;
+  stockCode?: string | null;
+  feeType: string;
+  direction: string;
+  rate?: { toString(): string } | number | null;
+  amount?: { toString(): string } | number | null;
+  minAmount?: { toString(): string } | number | null;
+  currency: string;
+  effectiveDate: Date;
+  source: string;
+  note?: string | null;
+}) {
+  return {
+    id: rule.id,
+    accountId: rule.accountId,
+    securityId: rule.securityId,
+    market: rule.market,
+    stockCode: rule.stockCode,
+    feeType: rule.feeType,
+    direction: rule.direction,
+    rate: rule.rate == null ? null : Number(rule.rate),
+    amount: rule.amount == null ? null : Number(rule.amount),
+    minAmount: rule.minAmount == null ? null : Number(rule.minAmount),
+    currency: rule.currency,
+    effectiveDate: rule.effectiveDate.toISOString().slice(0, 10),
+    source: rule.source,
+    note: rule.note,
+  };
+}
+
 async function assertStockAccount(accountId: string, householdId: string) {
   const account = await prisma.account.findFirst({
     where: { id: accountId, householdId, kind: "investment", investProductType: "stock" },
@@ -39,6 +73,7 @@ async function assertStockAccount(accountId: string, householdId: string) {
  *
  * Query:
  * - accountId: string
+ * - list?: "1" | "true" to list recent rules for the account
  * - feeType: "commission" | "stamp_tax" | "transfer_fee" | "exchange_fee" | "regulatory_fee" | "platform_fee" | "other"
  * - direction?: "buy" | "sell" | "both"
  * - tradeDate?: YYYY-MM-DD
@@ -48,6 +83,7 @@ async function assertStockAccount(accountId: string, householdId: string) {
  *
  * Response:
  * - { ok: true, data: { rule } }
+ * - list mode: { ok: true, data: { rules } }
  */
 export async function GET(req: NextRequest) {
   try {
@@ -55,6 +91,21 @@ export async function GET(req: NextRequest) {
     const accountId = req.nextUrl.searchParams.get("accountId")?.trim() || "";
     if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     await assertStockAccount(accountId, householdId);
+
+    const list = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("list")?.trim() ?? "");
+    if (list) {
+      const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? 60);
+      const take = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 200) : 60;
+      const rules = await prisma.stockFeeRule.findMany({
+        where: { accountId },
+        orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+        take,
+      });
+      return NextResponse.json({
+        ok: true,
+        data: { rules: rules.map(serializeRule) },
+      }, { headers: corsHeaders() });
+    }
 
     const feeType = normalizeStockFeeType(req.nextUrl.searchParams.get("feeType"));
     const direction = normalizeStockTradeDirection(req.nextUrl.searchParams.get("direction"));
@@ -75,24 +126,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       data: {
-        rule: rule
-          ? {
-              id: rule.id,
-              accountId: rule.accountId,
-              securityId: rule.securityId,
-              market: rule.market,
-              stockCode: rule.stockCode,
-              feeType: rule.feeType,
-              direction: rule.direction,
-              rate: rule.rate == null ? null : Number(rule.rate),
-              amount: rule.amount == null ? null : Number(rule.amount),
-              minAmount: rule.minAmount == null ? null : Number(rule.minAmount),
-              currency: rule.currency,
-              effectiveDate: rule.effectiveDate.toISOString().slice(0, 10),
-              source: rule.source,
-              note: rule.note,
-            }
-          : null,
+        rule: rule ? serializeRule(rule) : null,
       },
     }, { headers: corsHeaders() });
   } catch (error) {
@@ -149,22 +183,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       data: {
-        rule: {
-          id: rule.id,
-          accountId: rule.accountId,
-          securityId: rule.securityId,
-          market: rule.market,
-          stockCode: rule.stockCode,
-          feeType: rule.feeType,
-          direction: rule.direction,
-          rate: rule.rate == null ? null : Number(rule.rate),
-          amount: rule.amount == null ? null : Number(rule.amount),
-          minAmount: rule.minAmount == null ? null : Number(rule.minAmount),
-          currency: rule.currency,
-          effectiveDate: rule.effectiveDate.toISOString().slice(0, 10),
-          source: rule.source,
-          note: rule.note,
-        },
+        rule: serializeRule(rule),
       },
     }, { headers: corsHeaders() });
   } catch (error) {

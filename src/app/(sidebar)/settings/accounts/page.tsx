@@ -16,6 +16,11 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isDepositAccount } from "@/lib/account-kind-utils";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
+import {
+  STOCK_ACCOUNT_INSTITUTION_ERROR,
+  isStockAccountInstitutionType,
+  isStockInvestmentAccount,
+} from "@/lib/account-institution-rules";
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -51,6 +56,12 @@ const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType
 
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
   return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;
+}
+
+function accountInstitutionTypeMatches(kind: string, investProductType: string | null | undefined, type: string | null | undefined) {
+  if (isStockInvestmentAccount(kind, investProductType)) return isStockAccountInstitutionType(type);
+  if (kind === "loan") return type === "debt";
+  return type !== "debt";
 }
 
 export default function SettingsAccountsPage() {
@@ -146,6 +157,13 @@ export default function SettingsAccountsPage() {
     setEditError("");
     const savedId = editingId;
     const previousAccount = accounts.find((account) => account.id === savedId) ?? null;
+    const nextKind = editForm.kind;
+    const nextInvestProductType = editForm.investProductType || "fund";
+    const nextInstitution = institutions.find((institution) => institution.id === editForm.institutionId);
+    if (isStockInvestmentAccount(nextKind, nextInvestProductType) && (!editForm.institutionId || !isStockAccountInstitutionType(nextInstitution?.type))) {
+      setEditError(STOCK_ACCOUNT_INSTITUTION_ERROR);
+      return;
+    }
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -167,7 +185,6 @@ export default function SettingsAccountsPage() {
     const affectedCreditAccountIds = Array.isArray(data?.data?.affectedCreditAccountIds)
       ? data.data.affectedCreditAccountIds.filter((id): id is string => Boolean(id))
       : [];
-    const nextKind = editForm.kind;
     const creditRuleChanged = Boolean(data?.data?.creditCycleRuleChanged) || Boolean(
       previousAccount &&
       (
@@ -369,7 +386,7 @@ export default function SettingsAccountsPage() {
                       const isBillLikeKind = editKind === "bank_credit";
                       const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
                       const filteredInstitutions = institutions.filter((institution) =>
-                        editKind === "loan" ? institution.type === "debt" : institution.type !== "debt",
+                        accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
                       );
                       return (
                         <>
@@ -424,7 +441,15 @@ export default function SettingsAccountsPage() {
                       {isInvestmentKind && (
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
-                          <select value={editInvestProductType} onChange={e => setEditForm(f => ({ ...f, investProductType: e.target.value }))}
+                          <select value={editInvestProductType} onChange={e => setEditForm(f => {
+                            const nextInvestProductType = e.target.value;
+                            const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
+                            return {
+                              ...f,
+                              investProductType: nextInvestProductType,
+                              ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
+                            };
+                          })}
                             className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
                             {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
                           </select>
@@ -518,11 +543,12 @@ export default function SettingsAccountsPage() {
 
                     <div className="mt-3">
                       <label className="block text-xs text-slate-500 mb-1">备注</label>
-                      <input
+                      <textarea
                         value={editForm.note || ""}
                         onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
-                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400"
-                        placeholder="可选"
+                        className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
+                        placeholder="可选，支持多行备注"
+                        rows={4}
                       />
                     </div>
 
@@ -657,7 +683,7 @@ export default function SettingsAccountsPage() {
           onCreated={(id, name, extra) => {
             if (nestedEntityType === "institution") {
               setInstitutions(prev => [...prev, { id, name, shortName: extra?.institutionShortName ?? null, type: extra?.type }]);
-              setEditForm(f => ({ ...f, institutionId: id }));
+              setEditForm(f => accountInstitutionTypeMatches(f.kind || "other", f.investProductType || "fund", extra?.type) ? { ...f, institutionId: id } : f);
             } else if (nestedEntityType === "group") {
               setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);
               setEditForm(f => ({ ...f, groupId: id }));
@@ -665,6 +691,18 @@ export default function SettingsAccountsPage() {
             void refreshSettingsAccounts(nestedEntityType === "institution" ? "institution:create-nested" : "account-group:create-nested");
             setNestedEntityType(null);
           }}
+          defaultType={
+            nestedEntityType !== "institution" ? undefined
+              : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
+              : editForm.kind === "loan" ? "debt"
+              : undefined
+          }
+          allowedInstitutionTypes={
+            nestedEntityType !== "institution" ? undefined
+              : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? ["brokerage"]
+              : editForm.kind === "loan" ? ["debt"]
+              : undefined
+          }
         />
       )}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { EntityCreateForm } from "./EntityCreateForm";
 import { institutionTypeLabel } from "@/lib/account-kinds";
@@ -12,6 +12,7 @@ import {
   TRADING_CALENDAR_LABELS,
   type TradingCalendarValue,
 } from "@/lib/fund/trading-calendar";
+import { isStockAccountInstitutionType, isStockInvestmentAccount } from "@/lib/account-institution-rules";
 
 type GroupOption = { id: string; name: string };
 type InstitutionOption = { id: string; name: string; type?: string };
@@ -43,6 +44,12 @@ const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
   fifo: "先进先出 FIFO",
   lifo: "后进先出 LIFO",
 };
+
+function accountInstitutionTypeMatches(kind: AccountKindValue, investProductType: string | null | undefined, type: string | null | undefined) {
+  if (isStockInvestmentAccount(kind, investProductType)) return isStockAccountInstitutionType(type);
+  if (kind === "loan") return COUNTERPARTY_TYPES.has(type ?? "");
+  return ACCOUNT_INSTITUTION_TYPES.has(type ?? "");
+}
 
 export function AccountEditModalButton({
   label,
@@ -106,10 +113,17 @@ export function AccountEditModalButton({
 
   const initialCreditLimit = useMemo(() => account.creditLimit ?? "", [account.creditLimit]);
 
+  useEffect(() => {
+    if (!institutionId) return;
+    const selected = institutionList.find((institution) => institution.id === institutionId);
+    if (selected && !accountInstitutionTypeMatches(kind, investProductType, selected.type)) {
+      setInstitutionId("");
+    }
+  }, [institutionId, institutionList, investProductType, kind]);
+
   function handleInstitutionCreated(id: string, name: string, extra?: { type?: string }) {
     setInstitutionList((prev) => [...prev, { id, name, type: extra?.type }]);
-    const createdType = extra?.type ?? "";
-    if (kind === "loan" ? COUNTERPARTY_TYPES.has(createdType) : ACCOUNT_INSTITUTION_TYPES.has(createdType)) {
+    if (accountInstitutionTypeMatches(kind, investProductType, extra?.type)) {
       setInstitutionId(id);
     }
     setNestedEntityType(null);
@@ -121,9 +135,7 @@ export function AccountEditModalButton({
     setNestedEntityType(null);
   }
 
-  const filteredInstitutionList = institutionList.filter((it) =>
-    kind === "loan" ? COUNTERPARTY_TYPES.has(it.type ?? "") : ACCOUNT_INSTITUTION_TYPES.has(it.type ?? ""),
-  );
+  const filteredInstitutionList = institutionList.filter((it) => accountInstitutionTypeMatches(kind, investProductType, it.type));
   const supportsLastFour = kind === "bank_credit" || kind === "bank_debit";
 
   const institutionOptions: SmartSelectOption[] = filteredInstitutionList.map((it) => ({
@@ -390,8 +402,18 @@ export function AccountEditModalButton({
           open
           onClose={() => setNestedEntityType(null)}
           onCreated={nestedEntityType === "institution" ? handleInstitutionCreated : handleGroupCreated}
-          defaultType={kind === "loan" && nestedEntityType === "institution" ? "person" : undefined}
-          allowedInstitutionTypes={kind === "loan" && nestedEntityType === "institution" ? ["person", "organization"] : undefined}
+          defaultType={
+            nestedEntityType !== "institution" ? undefined
+              : isStockInvestmentAccount(kind, investProductType) ? "brokerage"
+              : kind === "loan" ? "person"
+              : undefined
+          }
+          allowedInstitutionTypes={
+            nestedEntityType !== "institution" ? undefined
+              : isStockInvestmentAccount(kind, investProductType) ? ["brokerage"]
+              : kind === "loan" ? ["person", "organization"]
+              : undefined
+          }
         />
       ) : null}
     </>
