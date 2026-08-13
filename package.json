@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "private": true,
-  "mmhReleaseNotes": "修复飞牛/SQLite 同版备份恢复时因目标库缺少股票新表而中断的问题：恢复入口会先幂等补建 stock_transactions 等股票表及关联列，再执行清空和写回；启动迁移也会为旧数据库补齐股票核心表。",
+  "mmhReleaseNotes": "修复飞牛/SQLite 旧库恢复时因 UserSettings.sessionDays 字段缺失而中断的问题：启动迁移会为旧库补齐该登录保留天数字段，恢复入口也会在写入用户设置前自愈该字段。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

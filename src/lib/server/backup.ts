@@ -9,6 +9,7 @@ import {
 } from "@/lib/server/optional-prisma-delegate";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
+import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import type { CurrentUser } from "@/lib/server/auth";
 
 export const BACKUP_FORMAT_VERSION = 4;
@@ -558,6 +559,7 @@ async function ensureSqliteRestoreCompatibilitySchema() {
   for (const statement of SQLITE_STOCK_RESTORE_SCHEMA_SQL) {
     await prisma.$executeRawUnsafe(statement);
   }
+  await ensureSqliteColumn("UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
   await ensureSqliteColumn("entry_business_links", "stockTransactionId", "TEXT");
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS "entry_business_links_stockTransactionId_idx" ON "entry_business_links"("stockTransactionId")`,
@@ -1684,6 +1686,7 @@ export async function restoreHouseholdBackup(
             smtpFrom: item.smtpFrom == null ? null : String(item.smtpFrom),
             resendApiKey: item.resendApiKey == null ? null : String(item.resendApiKey),
             resendFrom: item.resendFrom == null ? null : String(item.resendFrom),
+            sessionDays: normalizeSessionDays(item.sessionDays, DEFAULT_SESSION_DAYS),
             colorScheme: item.colorScheme == null ? "red_up_green_down" : String(item.colorScheme),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),

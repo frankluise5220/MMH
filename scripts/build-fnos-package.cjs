@@ -1167,6 +1167,13 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260812_user_session_days",
+    description: "Add UserSettings.sessionDays login retention setting",
+    apply(db) {
+      addColumnIfMissing(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
+    },
+  },
+  {
     version: "20260811_stock_domain",
     description: "Add stock core tables",
     apply(db) {
