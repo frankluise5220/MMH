@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "private": true,
-  "mmhReleaseNotes": "强化飞牛/SQLite 备份恢复的 schema 兼容性：启动和恢复前会按 native-init.sql 自动补齐缺失的新表、可安全新增字段和兼容索引，并在遇到无法自动补齐的字段时一次性报出完整清单，避免逐个字段失败。",
+  "mmhReleaseNotes": "修复备份恢复分类外键兼容：恢复前会清理分类父级的缺失、自引用和循环引用，按父子层级分批写入，并保持流水和账单识别规则的分类名称一致，避免 category.createMany 外键失败。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

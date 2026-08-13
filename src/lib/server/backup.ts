@@ -150,6 +150,7 @@ function restoredStatementRecognitionRule(
   householdId: string,
   importedCategories: Set<string>,
   importedInstitutions: Set<string>,
+  categoryNameById = new Map<string, string>(),
 ) {
   const targetType = backupText(item.targetType, "category");
   if (targetType !== "category" && targetType !== "institution" && targetType !== "field") return null;
@@ -164,6 +165,9 @@ function restoredStatementRecognitionRule(
   if (!normalizedKeyword) return null;
 
   const categoryId = item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null;
+  const categoryName = categoryId
+    ? categoryNameById.get(categoryId) ?? backupText(item.categoryName)
+    : item.categoryName == null ? null : String(item.categoryName);
   const institutionId = item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null;
   if (targetType === "category" && !backupText(item.categoryName) && !categoryId) return null;
   if (targetType === "institution" && !backupText(item.institutionName) && !institutionId) return null;
@@ -177,7 +181,7 @@ function restoredStatementRecognitionRule(
     keyword,
     normalizedKeyword,
     categoryId,
-    categoryName: item.categoryName == null ? null : String(item.categoryName),
+    categoryName,
     institutionId,
     institutionName: item.institutionName == null ? null : String(item.institutionName),
     fieldName: item.fieldName == null ? null : String(item.fieldName),
@@ -195,6 +199,7 @@ function restoredLegacyStatementCategoryRule(
   item: Record<string, unknown>,
   householdId: string,
   importedCategories: Set<string>,
+  categoryNameById = new Map<string, string>(),
 ) {
   const source = backupText(item.source, "user_category_edit");
   const keyword = cleanedRestoredKeyword(item.matchText, source);
@@ -202,6 +207,9 @@ function restoredLegacyStatementCategoryRule(
   const normalizedKeyword = cleanedRestoredKeyword(item.normalizedText ?? keyword, source) || normalizeStatementKeywordText(keyword);
   if (!normalizedKeyword) return null;
   const categoryId = item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null;
+  const categoryName = categoryId
+    ? categoryNameById.get(categoryId) ?? backupText(item.categoryName)
+    : backupText(item.categoryName);
   if (!backupText(item.categoryName) && !categoryId) return null;
 
   return {
@@ -212,7 +220,7 @@ function restoredLegacyStatementCategoryRule(
     keyword,
     normalizedKeyword,
     categoryId,
-    categoryName: backupText(item.categoryName),
+    categoryName,
     institutionId: null,
     institutionName: null,
     fieldName: null,
@@ -372,6 +380,91 @@ async function createManyRecords(
   if (records.length === 0) return;
   const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
   await target.createMany({ data: records.map((record) => normalizeRecordDates(record, nullDateKeys)) });
+}
+
+type RestoredCategoryRecord = {
+  id: string;
+  name: string;
+  type: string;
+  icon: string | null;
+  parentId: string | null;
+  householdId: string;
+  isSystem: boolean;
+};
+
+function buildRestoredCategoryBatches(items: Record<string, unknown>[], householdId: string) {
+  const records: RestoredCategoryRecord[] = [];
+  const seenIds = new Set<string>();
+
+  for (const item of items) {
+    const id = backupText(item.id).trim();
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const parentId = backupText(item.parentId).trim();
+    records.push({
+      id,
+      name: backupText(item.name).trim() || "未命名分类",
+      type: backupText(item.type, "expense"),
+      icon: item.icon == null ? null : String(item.icon),
+      parentId: parentId || null,
+      householdId,
+      isSystem: Boolean(item.isSystem),
+    });
+  }
+
+  const recordIds = new Set(records.map((record) => record.id));
+  for (const record of records) {
+    if (record.parentId === record.id || !recordIds.has(record.parentId ?? "")) {
+      record.parentId = null;
+    }
+  }
+
+  const recordById = new Map(records.map((record) => [record.id, record]));
+  const usedNames = new Set<string>();
+  for (const record of records) {
+    let candidateName = record.name;
+    if (usedNames.has(candidateName)) {
+      const parentName = record.parentId ? recordById.get(record.parentId)?.name.trim() : "";
+      const baseName = `${parentName || "分类"}·${record.name}`;
+      let suffix = 2;
+      candidateName = baseName;
+      while (usedNames.has(candidateName)) {
+        candidateName = `${baseName}（${suffix}）`;
+        suffix += 1;
+      }
+    }
+    record.name = candidateName;
+    usedNames.add(candidateName);
+  }
+
+  const pending = new Map(records.map((record) => [record.id, record]));
+  const inserted = new Set<string>();
+  const batches: RestoredCategoryRecord[][] = [];
+
+  while (pending.size > 0) {
+    const batch: RestoredCategoryRecord[] = [];
+    for (const record of pending.values()) {
+      if (!record.parentId || inserted.has(record.parentId)) {
+        batch.push(record);
+      }
+    }
+
+    if (batch.length === 0) {
+      const firstPending = pending.values().next().value;
+      if (!firstPending) break;
+      firstPending.parentId = null;
+      continue;
+    }
+
+    batches.push(batch);
+    for (const record of batch) {
+      pending.delete(record.id);
+      inserted.add(record.id);
+    }
+  }
+
+  return batches;
 }
 
 function isSqliteRuntime() {
@@ -1607,7 +1700,10 @@ export async function restoreHouseholdBackup(
   const importedCounterparties = new Set(data.counterparties.map((item) => String(item.id)));
   const importedFundQueryApis = new Set(data.fundQueryApis.map((item) => String(item.id)));
   const importedAccounts = new Set(data.accounts.map((item) => String(item.id)));
-  const importedCategories = new Set(data.categories.map((item) => String(item.id)));
+  const restoredCategoryBatches = buildRestoredCategoryBatches(data.categories, householdId);
+  const restoredCategories = restoredCategoryBatches.flat();
+  const importedCategories = new Set(restoredCategories.map((item) => item.id));
+  const restoredCategoryNameById = new Map(restoredCategories.map((item) => [item.id, item.name]));
   const importedImportBatches = new Set(data.importBatches.map((item) => String(item.id)));
   const importedTransactions = new Set(data.transactions.map((item) => String(item.id)));
   const importedTags = new Set(data.tags.map((item) => String(item.id)));
@@ -2022,18 +2118,8 @@ export async function restoreHouseholdBackup(
       );
     }
 
-    if (data.categories.length > 0) {
-      await tx.category.createMany({
-        data: data.categories.map((item) => ({
-          id: String(item.id),
-          name: String(item.name ?? ""),
-          type: String(item.type ?? "expense"),
-          icon: item.icon == null ? null : String(item.icon),
-          parentId: item.parentId == null ? null : String(item.parentId),
-          householdId,
-          isSystem: Boolean(item.isSystem),
-        })),
-      });
+    for (const categoryBatch of restoredCategoryBatches) {
+      await tx.category.createMany({ data: categoryBatch });
     }
 
     if (data.tags.length > 0) {
@@ -2049,10 +2135,18 @@ export async function restoreHouseholdBackup(
 
     const statementRecognitionRules = [
       ...data.statementRecognitionRules
-        .map((item) => restoredStatementRecognitionRule(item, householdId, importedCategories, importedInstitutions))
+        .map((item) =>
+          restoredStatementRecognitionRule(
+            item,
+            householdId,
+            importedCategories,
+            importedInstitutions,
+            restoredCategoryNameById,
+          )
+        )
         .filter(isPresent),
       ...data.statementCategoryRules
-        .map((item) => restoredLegacyStatementCategoryRule(item, householdId, importedCategories))
+        .map((item) => restoredLegacyStatementCategoryRule(item, householdId, importedCategories, restoredCategoryNameById))
         .filter(isPresent),
     ];
     if (statementRecognitionRules.length > 0) {
@@ -2530,98 +2624,105 @@ export async function restoreHouseholdBackup(
       await tx.txRecord.createMany({
         data: data.transactions
           .filter((item) => importedAccounts.has(String(item.accountId)))
-          .map((item) => ({
-            id: String(item.id),
-            date: new Date(String(item.date)),
-            postedAt: item.postedAt == null ? null : new Date(String(item.postedAt)),
-            type: String(item.type ?? "expense") as never,
-            amount: item.amount == null ? "0" : String(item.amount),
-            accountId: String(item.accountId),
-            accountName: String(item.accountName ?? ""),
-            toAccountId: item.toAccountId && importedAccounts.has(String(item.toAccountId)) ? String(item.toAccountId) : null,
-            toAccountName: item.toAccountName == null ? null : String(item.toAccountName),
-            categoryId: item.categoryId && importedCategories.has(String(item.categoryId)) ? String(item.categoryId) : null,
-            categoryName: item.categoryName == null ? null : String(item.categoryName),
-            fundCode: null,
-            fundProductType: isSplitFundProjection(item) || item.fundProductType == null ? null : (String(item.fundProductType) as never),
-            metalTypeId:
-              item.metalTypeId && importedPreciousMetalTypes.has(String(item.metalTypeId))
-                ? String(item.metalTypeId)
-                : null,
-            metalTypeName: item.metalTypeName == null ? null : String(item.metalTypeName),
-            metalUnitId:
-              item.metalUnitId && importedPreciousMetalUnits.has(String(item.metalUnitId))
-                ? String(item.metalUnitId)
-                : null,
-            metalUnitName: item.metalUnitName == null ? null : String(item.metalUnitName),
-            metalQuantity: item.metalQuantity == null ? null : String(item.metalQuantity),
-            metalUnitPrice: item.metalUnitPrice == null ? null : String(item.metalUnitPrice),
-            metalFee: item.metalFee == null ? null : String(item.metalFee),
-            confirmDate: item.confirmDate == null ? null : new Date(String(item.confirmDate)),
-            statementMonth: item.statementMonth == null ? null : String(item.statementMonth),
-            note: item.note == null ? null : String(item.note),
-            toNote: item.toNote == null ? null : String(item.toNote),
-            deletedAt: item.deletedAt == null ? null : new Date(String(item.deletedAt)),
-            importBatchId:
-              item.importBatchId && importedImportBatches.has(String(item.importBatchId)) ? String(item.importBatchId) : null,
-            householdId,
-            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
-            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-            dayOrder: Number(item.dayOrder ?? 0),
-            currency: item.currency == null ? "CNY" : String(item.currency),
-            paymentChannelId: item.paymentChannelId == null ? null : String(item.paymentChannelId),
-            paymentChannelName: item.paymentChannelName == null ? null : String(item.paymentChannelName),
-            counterpartyInstitutionId:
-              item.counterpartyInstitutionId && importedInstitutions.has(String(item.counterpartyInstitutionId))
-                ? String(item.counterpartyInstitutionId)
-                : null,
-            counterpartyInstitutionName:
-              item.counterpartyInstitutionName == null ? null : String(item.counterpartyInstitutionName),
-            status: String(item.status ?? "posted") as never,
-            fundArrivalAmount: isSplitFundProjection(item) || item.fundArrivalAmount == null ? null : String(item.fundArrivalAmount),
-            fundArrivalDate: isSplitFundProjection(item) || item.fundArrivalDate == null ? null : new Date(String(item.fundArrivalDate)),
-            depositAnnualRate: item.depositAnnualRate == null ? null : String(item.depositAnnualRate),
-            depositInterest: item.depositInterest == null ? null : String(item.depositInterest),
-            depositSourceEntryId:
-              item.depositSourceEntryId && importedTransactions.has(String(item.depositSourceEntryId))
-                ? String(item.depositSourceEntryId)
-                : null,
-            fundSourceEntryId:
-              item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
-                ? String(item.fundSourceEntryId)
-                : null,
-            debtPrincipalAmount: item.debtPrincipalAmount == null ? null : String(item.debtPrincipalAmount),
-            debtInterestAmount: item.debtInterestAmount == null ? null : String(item.debtInterestAmount),
-            debtFeeAmount: item.debtFeeAmount == null ? null : String(item.debtFeeAmount),
-            fundConfirmDate: isSplitFundProjection(item) || item.fundConfirmDate == null ? null : new Date(String(item.fundConfirmDate)),
-            fundFee: isSplitFundProjection(item) || item.fundFee == null ? null : String(item.fundFee),
-            fundNav: isSplitFundProjection(item) || item.fundNav == null ? null : String(item.fundNav),
-            fundSubtype: isSplitFundProjection(item) || item.fundSubtype == null ? null : (String(item.fundSubtype) as never),
-            fundUnits: isSplitFundProjection(item) || item.fundUnits == null ? null : String(item.fundUnits),
-            realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
-            regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
-            creditCardInstallmentPlanId:
-              item.creditCardInstallmentPlanId && importedCreditCardInstallmentPlans.has(String(item.creditCardInstallmentPlanId))
-                ? String(item.creditCardInstallmentPlanId)
-                : null,
-            installmentNo: item.installmentNo == null ? null : Number(item.installmentNo),
-            installmentTotal: item.installmentTotal == null ? null : Number(item.installmentTotal),
-            installmentPrincipal: item.installmentPrincipal == null ? null : String(item.installmentPrincipal),
-            installmentInterest: item.installmentInterest == null ? null : String(item.installmentInterest),
-            installmentRole: item.installmentRole == null ? null : String(item.installmentRole),
-            fundName: isSplitFundProjection(item) || item.fundName == null ? null : String(item.fundName),
-            wealthProductId:
-              item.wealthProductId && importedWealthProducts.has(String(item.wealthProductId))
-                ? String(item.wealthProductId)
-                : null,
-            insuranceProductId:
-              item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
-                ? String(item.insuranceProductId)
-                : null,
-            insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
-            insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
-            source: item.source == null ? null : String(item.source),
-          })),
+          .map((item) => {
+            const categoryId = item.categoryId && importedCategories.has(String(item.categoryId))
+              ? String(item.categoryId)
+              : null;
+            return {
+              id: String(item.id),
+              date: new Date(String(item.date)),
+              postedAt: item.postedAt == null ? null : new Date(String(item.postedAt)),
+              type: String(item.type ?? "expense") as never,
+              amount: item.amount == null ? "0" : String(item.amount),
+              accountId: String(item.accountId),
+              accountName: String(item.accountName ?? ""),
+              toAccountId: item.toAccountId && importedAccounts.has(String(item.toAccountId)) ? String(item.toAccountId) : null,
+              toAccountName: item.toAccountName == null ? null : String(item.toAccountName),
+              categoryId,
+              categoryName: categoryId
+                ? restoredCategoryNameById.get(categoryId) ?? (item.categoryName == null ? null : String(item.categoryName))
+                : item.categoryName == null ? null : String(item.categoryName),
+              fundCode: null,
+              fundProductType: isSplitFundProjection(item) || item.fundProductType == null ? null : (String(item.fundProductType) as never),
+              metalTypeId:
+                item.metalTypeId && importedPreciousMetalTypes.has(String(item.metalTypeId))
+                  ? String(item.metalTypeId)
+                  : null,
+              metalTypeName: item.metalTypeName == null ? null : String(item.metalTypeName),
+              metalUnitId:
+                item.metalUnitId && importedPreciousMetalUnits.has(String(item.metalUnitId))
+                  ? String(item.metalUnitId)
+                  : null,
+              metalUnitName: item.metalUnitName == null ? null : String(item.metalUnitName),
+              metalQuantity: item.metalQuantity == null ? null : String(item.metalQuantity),
+              metalUnitPrice: item.metalUnitPrice == null ? null : String(item.metalUnitPrice),
+              metalFee: item.metalFee == null ? null : String(item.metalFee),
+              confirmDate: item.confirmDate == null ? null : new Date(String(item.confirmDate)),
+              statementMonth: item.statementMonth == null ? null : String(item.statementMonth),
+              note: item.note == null ? null : String(item.note),
+              toNote: item.toNote == null ? null : String(item.toNote),
+              deletedAt: item.deletedAt == null ? null : new Date(String(item.deletedAt)),
+              importBatchId:
+                item.importBatchId && importedImportBatches.has(String(item.importBatchId)) ? String(item.importBatchId) : null,
+              householdId,
+              createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+              updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+              dayOrder: Number(item.dayOrder ?? 0),
+              currency: item.currency == null ? "CNY" : String(item.currency),
+              paymentChannelId: item.paymentChannelId == null ? null : String(item.paymentChannelId),
+              paymentChannelName: item.paymentChannelName == null ? null : String(item.paymentChannelName),
+              counterpartyInstitutionId:
+                item.counterpartyInstitutionId && importedInstitutions.has(String(item.counterpartyInstitutionId))
+                  ? String(item.counterpartyInstitutionId)
+                  : null,
+              counterpartyInstitutionName:
+                item.counterpartyInstitutionName == null ? null : String(item.counterpartyInstitutionName),
+              status: String(item.status ?? "posted") as never,
+              fundArrivalAmount: isSplitFundProjection(item) || item.fundArrivalAmount == null ? null : String(item.fundArrivalAmount),
+              fundArrivalDate: isSplitFundProjection(item) || item.fundArrivalDate == null ? null : new Date(String(item.fundArrivalDate)),
+              depositAnnualRate: item.depositAnnualRate == null ? null : String(item.depositAnnualRate),
+              depositInterest: item.depositInterest == null ? null : String(item.depositInterest),
+              depositSourceEntryId:
+                item.depositSourceEntryId && importedTransactions.has(String(item.depositSourceEntryId))
+                  ? String(item.depositSourceEntryId)
+                  : null,
+              fundSourceEntryId:
+                item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
+                  ? String(item.fundSourceEntryId)
+                  : null,
+              debtPrincipalAmount: item.debtPrincipalAmount == null ? null : String(item.debtPrincipalAmount),
+              debtInterestAmount: item.debtInterestAmount == null ? null : String(item.debtInterestAmount),
+              debtFeeAmount: item.debtFeeAmount == null ? null : String(item.debtFeeAmount),
+              fundConfirmDate: isSplitFundProjection(item) || item.fundConfirmDate == null ? null : new Date(String(item.fundConfirmDate)),
+              fundFee: isSplitFundProjection(item) || item.fundFee == null ? null : String(item.fundFee),
+              fundNav: isSplitFundProjection(item) || item.fundNav == null ? null : String(item.fundNav),
+              fundSubtype: isSplitFundProjection(item) || item.fundSubtype == null ? null : (String(item.fundSubtype) as never),
+              fundUnits: isSplitFundProjection(item) || item.fundUnits == null ? null : String(item.fundUnits),
+              realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
+              regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
+              creditCardInstallmentPlanId:
+                item.creditCardInstallmentPlanId && importedCreditCardInstallmentPlans.has(String(item.creditCardInstallmentPlanId))
+                  ? String(item.creditCardInstallmentPlanId)
+                  : null,
+              installmentNo: item.installmentNo == null ? null : Number(item.installmentNo),
+              installmentTotal: item.installmentTotal == null ? null : Number(item.installmentTotal),
+              installmentPrincipal: item.installmentPrincipal == null ? null : String(item.installmentPrincipal),
+              installmentInterest: item.installmentInterest == null ? null : String(item.installmentInterest),
+              installmentRole: item.installmentRole == null ? null : String(item.installmentRole),
+              fundName: isSplitFundProjection(item) || item.fundName == null ? null : String(item.fundName),
+              wealthProductId:
+                item.wealthProductId && importedWealthProducts.has(String(item.wealthProductId))
+                  ? String(item.wealthProductId)
+                  : null,
+              insuranceProductId:
+                item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
+                  ? String(item.insuranceProductId)
+                  : null,
+              insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
+              insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
+              source: item.source == null ? null : String(item.source),
+            };
+          }),
       });
     }
 
@@ -3144,7 +3245,7 @@ export async function restoreHouseholdBackup(
       accounts: data.accounts.length,
       transactions: data.transactions.length,
       statementRecognitionRules: data.statementRecognitionRules.length + data.statementCategoryRules.length,
-      categories: data.categories.length,
+      categories: importedCategories.size,
       tags: data.tags.length,
       institutions: data.institutions.length,
       emailAccounts: data.emailAccounts.length,

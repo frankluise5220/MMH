@@ -193,6 +193,7 @@ const dbClient = read(path.join(root, "src", "lib", "db", "prisma.ts"));
 const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"));
 const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"));
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
+const backupSource = read(path.join(root, "src", "lib", "server", "backup.ts"));
 const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
 const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
 const fnosReadme = read(path.join(root, "deploy", "fnos", "README.md"));
@@ -239,6 +240,9 @@ expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must 
 expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");
 expect(/applyRuntimeMigrations\(db\);\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/.test(buildScript), "fnOS SQLite init must run schema-object backfill after explicit runtime migrations.");
 expect(/SQLite database already initialized and migrated/.test(buildScript), "fnOS SQLite init must report that existing databases were migrated.");
+expect(/buildRestoredCategoryBatches/.test(backupSource), "Backup restore must normalize category rows before writing them.");
+expect(/record\.parentId === record\.id/.test(backupSource) && /!recordIds\.has\(record\.parentId \?\? ""\)/.test(backupSource), "Backup restore must drop self or missing category parent links before createMany.");
+expect(/restoredCategoryNameById/.test(backupSource) && /categoryNameById/.test(backupSource), "Backup restore must keep restored category names aligned for transactions and statement rules.");
 expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "fnOS README must document direct same-app overlay upgrades.");
 expect(!/appcenter-cli uninstall/.test(fnosReadme), "fnOS README must not describe uninstall/install as the normal update path.");
 expect(/覆盖升级/.test(fnosPackagePlan) && /appname=mmh/.test(fnosPackagePlan), "fnOS package plan must keep same-app overlay upgrade as the normal update path.");
