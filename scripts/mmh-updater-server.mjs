@@ -417,22 +417,43 @@ async function chooseImageSource() {
 
   const candidates = autoImageSourceOrder.map((key) => imageSources[key]);
 
+  task.currentStep = "检测镜像源";
   pushLog("检测镜像源");
   for (const source of candidates) {
-    const ok = await new Promise((resolve) => {
-      const child = spawn("sh", ["-lc", `timeout 8 docker manifest inspect ${source.app} >/dev/null 2>&1`], { cwd: workdir });
-      child.on("close", (code) => resolve(code === 0));
-      child.on("error", () => resolve(false));
-    });
+    pushLog(`检测 ${source.name} 镜像源`);
+    const ok = await inspectImageSource(source);
     if (ok) {
       pushLog(`使用 ${source.name} 镜像源`);
       await updateEnvImageSource(source.app, source.updater);
       return { appImage: source.app, updaterImage: source.updater };
     }
+    pushLog(`${source.name} 镜像源不可用，尝试下一个`);
   }
 
   pushLog("镜像源检测失败，保留当前 .env 配置");
   return { appImage: config.appImage, updaterImage: config.updaterImage };
+}
+
+function inspectImageSource(source, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const child = spawn("docker", ["manifest", "inspect", source.app], { cwd: workdir, stdio: "ignore" });
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      finish(false);
+    }, timeoutMs);
+
+    child.on("close", (code) => finish(code === 0));
+    child.on("error", () => finish(false));
+  });
 }
 
 async function scheduleUpdaterRecreate(updaterImage) {
@@ -506,7 +527,7 @@ async function startUpdate() {
     try {
       await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
       const selectedImages = await chooseImageSource();
-      await run(composeCommand("pull updater app"), "拉取应用与更新执行器镜像");
+      await run(composeCommand("pull updater app"), "拉取应用镜像");
       task.status = "restarting";
       task.currentStep = "重启服务";
       pushLog("即将重启服务");

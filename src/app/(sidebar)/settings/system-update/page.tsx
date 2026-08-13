@@ -83,7 +83,7 @@ type ImageSpeedResult = {
 };
 
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
-const DOCKER_UPDATE_STEPS = ["同步部署文件", "拉取应用镜像", "重启服务"];
+const DOCKER_UPDATE_STEPS = ["同步部署文件", "检测镜像源", "拉取应用镜像", "重启服务"];
 const FIXED_IMAGE_SOURCE_OPTIONS = [
   { value: "auto", label: "自动选择", appImage: "", updaterImage: "" },
   { value: "ghcr", label: "GHCR", appImage: "ghcr.io/frankluise5220/mmh:latest", updaterImage: "ghcr.io/frankluise5220/mmh-updater:latest" },
@@ -336,10 +336,11 @@ export default function SystemUpdatePage() {
         const current = task.currentStep || "";
         lastCurrentStep = current || lastCurrentStep;
         const logs = (task.logs ?? []).slice(-8).join("\n");
+        const currentIndex = DOCKER_UPDATE_STEPS.indexOf(current);
         setSteps((prev) =>
           prev.map((step) => {
             if (step.label === current) return { ...step, status: "running", output: logs };
-            if (DOCKER_UPDATE_STEPS.indexOf(step.label) < DOCKER_UPDATE_STEPS.indexOf(current)) return { ...step, status: "completed", output: step.output || logs };
+            if (currentIndex >= 0 && DOCKER_UPDATE_STEPS.indexOf(step.label) < currentIndex) return { ...step, status: "completed", output: step.output || logs };
             return step;
           }),
         );
