@@ -3,7 +3,7 @@
     "id": "mmh",
     "_manual": {
       "name": "MMH 家庭财务工作台",
-      "version": "0.1.22",
+      "version": "0.1.23",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -11,18 +11,18 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.22",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.22/mmh-fnos-v0.1.22-x86_64.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.23",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.23/mmh-fnos-v0.1.23-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.22/mmh-fnos-v0.1.22-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.22/mmh-fnos-v0.1.22-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.23/mmh-fnos-v0.1.23-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.23/mmh-fnos-v0.1.23-arm64.fpk"
       },
       "screenshots": [],
       "tags": [
         "财务",
         "记账"
       ],
-      "changelog": "修复 Docker/PostgreSQL 升级时因旧 statement_category_rules 表未迁移而启动失败的问题：容器启动会先把旧分类学习规则安全迁移到 statement_recognition_rules，再执行 Prisma schema sync，避免使用 --accept-data-loss 或删除用户已有学习规则。"
+      "changelog": "修复飞牛/SQLite 旧账簿备份恢复时因缺少股票新表而中断的问题：删除账簿和恢复清理会兼容缺失的 stock_transactions 等可选表，新包启动迁移仍会为旧数据库补建股票相关表。"
     }
   }
 ]

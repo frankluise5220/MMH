@@ -4,6 +4,7 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
+import { optionalPrismaDeleteMany } from "@/lib/server/optional-prisma-delegate";
 import { logger } from "@/lib/logger";
 
 export async function GET() {
@@ -160,10 +161,36 @@ export async function DELETE(req: NextRequest) {
       // 删除该账簿下的基金查询API
       await tx.fundQueryApi.deleteMany({ where: { householdId: id } });
       await tx.entryBusinessLink.deleteMany({ where: { householdId: id } });
-      await tx.stockPriceCache.deleteMany({ where: { StockSecurity: { is: { householdId: id } } } });
-      await tx.stockTransaction.deleteMany({ where: { householdId: id } });
-      await tx.stockHolding.deleteMany({ where: { householdId: id } });
-      await tx.stockSecurity.deleteMany({ where: { householdId: id } });
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockPriceCache",
+        { where: { StockSecurity: { is: { householdId: id } } } },
+        { tableNames: ["stock_price_cache", "stock_securities"] },
+      );
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockTransaction",
+        { where: { householdId: id } },
+        { tableNames: ["stock_transactions"] },
+      );
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockMarketFeeRule",
+        { where: { householdId: id } },
+        { tableNames: ["stock_market_fee_rules"] },
+      );
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockHolding",
+        { where: { householdId: id } },
+        { tableNames: ["stock_holdings"] },
+      );
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockSecurity",
+        { where: { householdId: id } },
+        { tableNames: ["stock_securities"] },
+      );
       // 级联删除账户关联数据
       if (accountIds.length > 0) {
         // 先删除持仓快照（依赖 fundHolding）
@@ -171,7 +198,12 @@ export async function DELETE(req: NextRequest) {
         // 删除持仓
         await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
-        await tx.stockFeeRule.deleteMany({ where: { accountId: { in: accountIds } } });
+        await optionalPrismaDeleteMany(
+          tx,
+          "stockFeeRule",
+          { where: { accountId: { in: accountIds } } },
+          { tableNames: ["stock_fee_rules"] },
+        );
         // 删除确认天数、费率、账单覆盖、信用卡周期
         await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.fundFeeRate.deleteMany({ where: { accountId: { in: accountIds } } });
