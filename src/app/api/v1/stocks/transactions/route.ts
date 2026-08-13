@@ -10,7 +10,7 @@ import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerag
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
-import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
+import { calculateStockTransactionFeesByDate, upsertStockMarketFeeDefaultRules } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
 
@@ -322,24 +322,27 @@ export async function POST(req: NextRequest) {
     if (!security) return NextResponse.json({ ok: false, error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
     const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
-      ? await calculateStockTransactionFeesByDate({
-          accountId: stockAccountId,
-          tradeDate,
-          grossAmount,
-          direction: action,
-          securityId: security.id,
-          market: security.market,
-          stockCode: security.stockCode,
-          overrides: {
-            fee,
-            commission,
-            stampTax,
-            transferFee,
-            exchangeFee,
-            regulatoryFee,
-            otherFee,
-          },
-        })
+      ? await (async () => {
+          await upsertStockMarketFeeDefaultRules();
+          return calculateStockTransactionFeesByDate({
+            accountId: stockAccountId,
+            tradeDate,
+            grossAmount,
+            direction: action,
+            securityId: security.id,
+            market: security.market,
+            stockCode: security.stockCode,
+            overrides: {
+              fee,
+              commission,
+              stampTax,
+              transferFee,
+              exchangeFee,
+              regulatoryFee,
+              otherFee,
+            },
+          });
+        })()
       : {
           fee,
           commission,

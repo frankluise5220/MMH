@@ -38,7 +38,7 @@ import {
 
 export const runtime = "nodejs";
 
-const fundProductTypes = ["fund", "money", "wealth", "metal", "stock"] as const;
+const fundProductTypes = ["fund", "money", "wealth", "metal", "stock", "property"] as const;
 const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
@@ -531,10 +531,9 @@ export async function DELETE(req: NextRequest) {
     await prisma.regularInvestPlan.updateMany({ where: { accountId: id }, data: { accountId: placeholderId } });
     await prisma.regularInvestPlan.updateMany({ where: { cashAccountId: id }, data: { cashAccountId: placeholderId } });
 
-    // Snapshots & other related data are no longer meaningful → delete them
+    // Related derived data is no longer meaningful → delete it
     await prisma.accountAlias.deleteMany({ where: { accountId: id } });
     await prisma.creditCardCycle.deleteMany({ where: { accountId: id } });
-    await prisma.fundSnapshot.deleteMany({ where: { accountId: id } });
     await prisma.fundHolding.deleteMany({ where: { accountId: id } });
     await prisma.preciousMetalHolding.deleteMany({ where: { accountId: id } });
 

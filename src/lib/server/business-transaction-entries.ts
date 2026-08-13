@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isWealthHoldingCleared, resetWealthHoldingBucket } from "@/lib/invest-balance";
 import { entryBusinessTypeLabel } from "@/lib/server/entry-business-link";
+import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { calculateWealthCashDividendProfit, calculateWealthPositionsFromEntries, inferWealthUnitNav } from "@/lib/wealth-position";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 
@@ -401,6 +402,74 @@ export async function loadPreciousMetalTransactionEntryLike(params: {
       metalUnitPrice: row.unitPrice,
       metalFee: row.fee,
       fundFee: row.fee,
+      ...linkSummary(row.EntryBusinessLink),
+    };
+  });
+}
+
+export async function loadPropertyTransactionEntryLike(params: {
+  householdId: string;
+  accountIds: string[];
+}) {
+  const accountIds = Array.from(new Set(params.accountIds.filter(Boolean)));
+  if (accountIds.length === 0) return [];
+
+  const rows = await optionalPrismaFindMany<any>(
+    prisma,
+    "propertyTransaction",
+    {
+      where: {
+        householdId: params.householdId,
+        accountId: { in: accountIds },
+        deletedAt: null,
+      },
+      include: {
+        Account: true,
+        CashAccount: true,
+        PropertyAsset: true,
+        EntryBusinessLink: {
+          where: { deletedAt: null },
+          select: {
+            businessType: true,
+            cashEntryId: true,
+            CashEntry: { select: { id: true, deletedAt: true } },
+          },
+        },
+      },
+      orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
+    },
+    { tableNames: ["property_transactions"] },
+  );
+
+  return rows.map((row) => {
+    const isCashIn = row.action === "sale";
+    const amount = Math.abs(toNumber(row.amount));
+    const fee = row.fee == null ? null : toNumber(row.fee);
+    const tax = row.tax == null ? null : toNumber(row.tax);
+    return {
+      id: row.cashEntryId ?? row.id,
+      cashEntryId: row.cashEntryId,
+      businessTransactionId: row.id,
+      date: row.tradeDate,
+      createdAt: row.createdAt,
+      deletedAt: row.deletedAt,
+      accountId: isCashIn ? row.accountId : row.cashAccountId,
+      accountName: isCashIn ? row.Account.name : row.CashAccount?.name ?? "",
+      toAccountId: isCashIn ? row.cashAccountId : row.accountId,
+      toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
+      amount: isCashIn ? amount : -amount,
+      fundCode: row.propertyAssetId,
+      fundName: row.PropertyAsset?.name ?? "房产",
+      fundProductType: "property",
+      fundSubtype: row.action,
+      fundFee: fee,
+      realizedProfit: row.realizedProfit,
+      propertyAssetId: row.propertyAssetId,
+      propertyAction: row.action,
+      propertySettlementDate: ymd(row.settlementDate),
+      propertyTax: tax,
+      source: row.source,
+      note: row.note,
       ...linkSummary(row.EntryBusinessLink),
     };
   });

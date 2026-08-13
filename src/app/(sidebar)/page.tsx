@@ -7,7 +7,9 @@ import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal, type InvestmentEntry, type InvestmentDefaults } from "@/components/InvestmentFormModal";
 import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
-import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
+import { StockHoldingsPanel } from "@/components/StockHoldingsPanel";
+import { PropertyFormModal } from "@/components/PropertyFormModal";
+import { PropertyShell } from "@/components/PropertyShell";
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
@@ -2795,13 +2797,15 @@ export default async function Home({
             ? "investwealth"
             : params?.view === "investstock"
               ? "investstock"
-              : params?.view === "regularinvest"
-                ? "regularinvest"
-                : params?.view === "debt"
-                  ? "debt"
-                  : params?.view === "deposit"
-                    ? "deposit"
-                    : "";
+              : params?.view === "investproperty"
+                ? "investproperty"
+                : params?.view === "regularinvest"
+                  ? "regularinvest"
+                  : params?.view === "debt"
+                    ? "debt"
+                    : params?.view === "deposit"
+                      ? "deposit"
+                      : "";
   const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
@@ -2920,7 +2924,7 @@ export default async function Home({
     !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "investstock" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
+  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
       : viewParam
@@ -3566,6 +3570,11 @@ export default async function Home({
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "stock"
       ? selectedAccount.id
       : stockAccountOptions[0]?.id ?? "";
+  const propertyAccountOptions = investmentAccountOptions.filter((account) => account.investProductType === "property");
+  const defaultPropertyInvestmentAccountId =
+    selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "property"
+      ? selectedAccount.id
+      : propertyAccountOptions[0]?.id ?? "";
   const defaultInvestmentCreateAccountId =
     selectedAccount && isPureInvestmentAccount(selectedAccount)
       ? selectedAccount.id
@@ -3575,6 +3584,7 @@ export default async function Home({
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
+  const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   const debtCounterpartyOptions = counterparties;
   const debtSourceInstitutions = institutions.filter((institution) => institution.type === "bank");
@@ -3873,6 +3883,9 @@ export default async function Home({
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
   const investstockData = view === "investstock" && accountId
+    ? await computePositionDisplay(ctx, accountId)
+    : null;
+  const investpropertyData = view === "investproperty" && accountId
     ? await computePositionDisplay(ctx, accountId)
     : null;
   const investfundData = view === "investfund" && accountId
@@ -4696,6 +4709,8 @@ export default async function Home({
                     ? "deposit"
                     : view === "investstock"
                       ? "stock"
+                    : view === "investproperty"
+                      ? "property"
                     : currentInvestData
                       ? (
                           selectedAccount?.investProductType === "metal"
@@ -4723,6 +4738,7 @@ export default async function Home({
                   defaultStockAccountId: defaultStockInvestmentAccountId,
                   defaultStockCashAccountId,
                   defaultStockTransferFromAccountId,
+                  defaultPropertyAccountId: defaultPropertyInvestmentAccountId,
                   defaultMetalAccountId: defaultMetalInvestmentAccountId,
                   defaultWealthAccountId: defaultWealthAccountForSelectedInstitution,
                   defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
@@ -4747,6 +4763,7 @@ export default async function Home({
                   { key: "investment", label: "基金" },
                   { key: "stock", label: "股票" },
                   { key: "stock-transfer", label: "银证转账" },
+                  { key: "property", label: "房产" },
                   { key: "metal", label: "贵金属" },
                   { key: "wealth", label: "银行理财" },
                   { key: "deposit", label: "存款" },
@@ -4776,6 +4793,19 @@ export default async function Home({
                 stockAccountSSOptions={stockAccountSSOptions}
                 cashAccounts={cashAccountList}
                 cashAccountSSOptions={cashAccountSSOptions}
+              />
+              <PropertyFormModal
+                defaultPropertyAccountId={defaultPropertyInvestmentAccountId}
+                defaultCashAccountId={defaultCashAccountForSelectedInstitution}
+                propertyAccounts={propertyAccountOptions}
+                propertyAccountSSOptions={propertyAccountSSOptions}
+                cashAccounts={cashAccountList}
+                cashAccountSSOptions={cashAccountSSOptions}
+                propertyAssets={investpropertyData?.positions.map((position) => ({
+                  id: position.propertyAssetId ?? position.fundCode,
+                  name: position.name,
+                  marketValue: position.marketValue,
+                })) ?? []}
               />
               <InvestmentFormModal
                 mode="create"
@@ -5161,97 +5191,31 @@ export default async function Home({
               isRedUp={isRedUp}
               fundUnitsDecimals={fundUnitsDecimals}
             />
+          ) : view === "investproperty" && investpropertyData ? (
+            <PropertyShell
+              key={`investproperty-${accountId}`}
+              accountId={accountId}
+              accountLabel={selectedAccountLabel}
+              currency={selectedAccount?.currency ?? baseCurrency}
+              baseCurrency={baseCurrency}
+              positions={JSON.parse(JSON.stringify(investpropertyData.positions))}
+              totalMarketValue={investpropertyData.totalMarketValue}
+              totalCost={investpropertyData.totalCost}
+              isRedUp={isRedUp}
+            />
           ) : view === "investstock" && investstockData ? (
-            <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
-              <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="border-b border-slate-200 px-4 py-3">
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <div className="text-xs text-slate-500">股票账户</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <h2 className="text-base font-semibold text-slate-900">{selectedAccountLabel}</h2>
-                        <StockFeeRuleSettingsButton
-                          accountId={accountId}
-                          accountLabel={selectedAccountLabel}
-                          currency={selectedAccount?.currency ?? baseCurrency}
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-4 gap-6 text-right text-xs">
-                      <div>
-                        <div className="text-slate-500">证券现金</div>
-                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
-                          {formatCurrencyMoney(investstockData.cashBalance ?? 0, selectedAccount?.currency ?? baseCurrency)}
-                        </div>
-                        {investstockData.cashAccountName ? (
-                          <div className="mt-0.5 max-w-[9rem] truncate text-[11px] text-slate-400">{investstockData.cashAccountName}</div>
-                        ) : null}
-                      </div>
-                      <div>
-                        <div className="text-slate-500">持仓市值</div>
-                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
-                          {formatCurrencyMoney(investstockData.totalMarketValue, selectedAccount?.currency ?? baseCurrency)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-slate-500">总资产</div>
-                        <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
-                          {formatCurrencyMoney(investstockData.totalAssetValue ?? investstockData.totalMarketValue, selectedAccount?.currency ?? baseCurrency)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-slate-500">浮动盈亏</div>
-                        <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlCls(investstockData.totalMarketValue - investstockData.totalCost)}`}>
-                          {formatCurrencyMoney(investstockData.totalMarketValue - investstockData.totalCost, selectedAccount?.currency ?? baseCurrency)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 overflow-auto">
-                  {investstockData.positions.length > 0 ? (
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 z-10 bg-slate-50 text-xs text-slate-500">
-                        <tr className="border-b border-slate-200">
-                          <th className="px-4 py-2 text-left font-medium">股票</th>
-                          <th className="px-3 py-2 text-right font-medium">数量</th>
-                          <th className="px-3 py-2 text-right font-medium">成本价</th>
-                          <th className="px-3 py-2 text-right font-medium">成本</th>
-                          <th className="px-3 py-2 text-right font-medium">最新价</th>
-                          <th className="px-3 py-2 text-right font-medium">市值</th>
-                          <th className="px-4 py-2 text-right font-medium">浮动盈亏</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {investstockData.positions.map((position) => (
-                          <tr key={position.fundCode} className="border-b border-slate-100 hover:bg-slate-50">
-                            <td className="px-4 py-2">
-                              <div className="font-medium text-slate-900">{position.name}</div>
-                              <div className="text-xs text-slate-500">{position.fundCode}</div>
-                            </td>
-                            <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.units)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.avgCost)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.cost, selectedAccount?.currency ?? baseCurrency)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{position.nav == null ? "-" : formatMoney(position.nav)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.marketValue, selectedAccount?.currency ?? baseCurrency)}</td>
-                            <td className={`px-4 py-2 text-right tabular-nums ${pnlCls(position.floatingPnL)}`}>
-                              {formatCurrencyMoney(position.floatingPnL, selectedAccount?.currency ?? baseCurrency)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
-                      <div className="text-sm font-medium text-slate-900">暂无股票持仓</div>
-                      <div className="mt-2 max-w-md text-xs leading-5 text-slate-500">
-                        股票账户已使用独立 stock 数据域；交易录入、券商流水导入和行情同步会写入 StockTransaction / StockHolding，不会复用基金字段。
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <StockHoldingsPanel
+              key={`investstock-${accountId}`}
+              accountId={accountId}
+              accountLabel={selectedAccountLabel}
+              currency={selectedAccount?.currency ?? baseCurrency}
+              positions={JSON.parse(JSON.stringify(investstockData.positions))}
+              cashBalance={investstockData.cashBalance ?? 0}
+              cashAccountName={investstockData.cashAccountName ?? null}
+              totalMarketValue={investstockData.totalMarketValue}
+              totalCost={investstockData.totalCost}
+              isRedUp={isRedUp}
+            />
           ) : view === "investfund" && investfundData ? (
             <FundShell
               key={`investfund-${accountId}`}

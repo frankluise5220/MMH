@@ -15,6 +15,89 @@ const STOCK_FEE_TYPES = [
   StockFeeType.other,
 ] as const;
 
+const OFFICIAL_CN_A_SHARE_FEE_DEFAULTS: Array<{
+  market: string;
+  feeType: StockFeeType;
+  direction: StockTradeDirection;
+  rate: number;
+  effectiveDate: string;
+  sourceUrl: string;
+  note: string;
+}> = [
+  {
+    market: "CN_SH",
+    feeType: StockFeeType.stamp_tax,
+    direction: StockTradeDirection.sell,
+    rate: 0.0005,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://one.sse.com.cn/onething/gptz/",
+    note: "沪市A股印花税，向出让方单边征收。",
+  },
+  {
+    market: "CN_SH",
+    feeType: StockFeeType.regulatory_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.00002,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://one.sse.com.cn/onething/gptz/",
+    note: "沪市A股证管费，双向收取。",
+  },
+  {
+    market: "CN_SH",
+    feeType: StockFeeType.exchange_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.0000341,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://one.sse.com.cn/onething/gptz/",
+    note: "沪市A股证券交易经手费，双向收取。",
+  },
+  {
+    market: "CN_SH",
+    feeType: StockFeeType.transfer_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.00001,
+    effectiveDate: "2022-04-29",
+    sourceUrl: "https://one.sse.com.cn/onething/gptz/",
+    note: "沪市A股过户费，双向收取。",
+  },
+  {
+    market: "CN_SZ",
+    feeType: StockFeeType.stamp_tax,
+    direction: StockTradeDirection.sell,
+    rate: 0.0005,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5211343/content.html",
+    note: "深市A股印花税，向出让方单边征收。",
+  },
+  {
+    market: "CN_SZ",
+    feeType: StockFeeType.regulatory_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.00002,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://www.szse.cn/marketServices/deal/payFees/",
+    note: "深市A股证券交易监管费，双向收取。",
+  },
+  {
+    market: "CN_SZ",
+    feeType: StockFeeType.exchange_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.0000341,
+    effectiveDate: "2023-08-28",
+    sourceUrl: "https://www.szse.cn/marketServices/deal/payFees/",
+    note: "深市A股证券交易经手费，双向收取。",
+  },
+  {
+    market: "CN_SZ",
+    feeType: StockFeeType.transfer_fee,
+    direction: StockTradeDirection.both,
+    rate: 0.00001,
+    effectiveDate: "2022-04-29",
+    sourceUrl: "https://one.sse.com.cn/onething/gptz/",
+    note: "A股过户费，双向收取。",
+  },
+];
+
 export type StockFeeDraft = {
   fee: number | null;
   commission: number | null;
@@ -76,6 +159,10 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function dateUtc(raw: string) {
+  return new Date(`${raw}T00:00:00.000Z`);
+}
+
 function calculateFeeFromRule(rule: {
   rate?: Prisma.Decimal | number | null;
   amount?: Prisma.Decimal | number | null;
@@ -92,6 +179,57 @@ function calculateFeeFromRule(rule: {
       : 0;
   const value = minAmount != null ? Math.max(base, minAmount) : base;
   return Number.isFinite(value) ? roundMoney(Math.max(0, value)) : null;
+}
+
+export function totalStockFeeDraft(fees: Partial<StockFeeDraft>) {
+  return roundMoney(
+    Math.max(0, Number(fees.fee ?? 0)) +
+    Math.max(0, Number(fees.commission ?? 0)) +
+    Math.max(0, Number(fees.stampTax ?? 0)) +
+    Math.max(0, Number(fees.transferFee ?? 0)) +
+    Math.max(0, Number(fees.exchangeFee ?? 0)) +
+    Math.max(0, Number(fees.regulatoryFee ?? 0)) +
+    Math.max(0, Number(fees.otherFee ?? 0)),
+  );
+}
+
+export async function upsertStockMarketFeeDefaultRules(client: TxClient = prisma) {
+  let updatedCount = 0;
+  for (const item of OFFICIAL_CN_A_SHARE_FEE_DEFAULTS) {
+    const existing = await client.stockMarketFeeRule.findFirst({
+      where: {
+        householdId: null,
+        market: item.market,
+        stockCode: null,
+        feeType: item.feeType,
+        direction: item.direction,
+        source: "official_default",
+      },
+      orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }],
+    });
+    const data = {
+      householdId: null,
+      market: item.market,
+      stockCode: null,
+      feeType: item.feeType,
+      direction: item.direction,
+      rate: item.rate,
+      amount: null,
+      minAmount: null,
+      currency: "CNY",
+      effectiveDate: dateUtc(item.effectiveDate),
+      source: "official_default",
+      sourceUrl: item.sourceUrl,
+      note: item.note,
+    };
+    if (existing) {
+      await client.stockMarketFeeRule.update({ where: { id: existing.id }, data });
+    } else {
+      await client.stockMarketFeeRule.create({ data });
+    }
+    updatedCount += 1;
+  }
+  return updatedCount;
 }
 
 export async function getStockFeeRuleByDate(

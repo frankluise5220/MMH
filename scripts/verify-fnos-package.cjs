@@ -200,6 +200,7 @@ const fnosPackagePlan = read(path.join(root, "docs", "fnos-package-plan.md"));
 const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
 const stageDir = path.join(root, "release-artifacts", "fnos", verifyTarget.stageDirName);
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
+const nativeSchemaBackfillCalls = buildScript.match(/\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/g) || [];
 
 expect(/provider = "sqlite"/.test(schemaScript), "Native schema generator must switch datasource provider to sqlite.");
 expect(/@db\\\./.test(schemaScript), "Native schema generator must strip PostgreSQL native column annotations.");
@@ -222,11 +223,18 @@ expect(/data_root\/upgrade-backups/.test(buildScript), "fnOS backup lifecycle mu
 expect(/cp -a "\$data_root\/data"/.test(buildScript), "fnOS backup lifecycle must avoid recursively copying appdata into itself when using the app-owned backup fallback.");
 expect(/upgrade_callback/.test(buildScript), "fnOS package must include upgrade_callback for overlay upgrades.");
 expect(/const MIGRATIONS = \[/.test(buildScript), "fnOS SQLite init must include an explicit runtime migration list for existing databases.");
+expect(/function splitSqlStatements\(sql\)/.test(buildScript) && /function applyMissingSchemaObjectsFromInitSql\(db, sqlPath\)/.test(buildScript), "fnOS SQLite init must parse native-init.sql to backfill newly added tables for existing databases.");
+expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
+expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped from native-init.sql/.test(buildScript), "fnOS SQLite schema backfill must skip incompatible indexes instead of failing existing databases.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
+expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
+expect(/stock_transactions/.test(buildScript) && /entry_business_links_stockTransactionId_idx/.test(buildScript), "fnOS SQLite stock migration must include stock transactions and business-link stock relation.");
 expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockReferenceTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock reference tables for existing databases.");
 expect(/stock_market_fee_rules/.test(buildScript) && /stock_brokerage_catalog/.test(buildScript), "fnOS SQLite migrations must include stock market fee rules and brokerage catalog tables.");
 expect(/20260813_zz_unify_statement_learning_rules/.test(buildScript), "fnOS SQLite statement-rule migration version must match the finalized Prisma migration directory.");
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
+expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");
+expect(/applyRuntimeMigrations\(db\);\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/.test(buildScript), "fnOS SQLite init must run schema-object backfill after explicit runtime migrations.");
 expect(/SQLite database already initialized and migrated/.test(buildScript), "fnOS SQLite init must report that existing databases were migrated.");
 expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "fnOS README must document direct same-app overlay upgrades.");
 expect(!/appcenter-cli uninstall/.test(fnosReadme), "fnOS README must not describe uninstall/install as the normal update path.");

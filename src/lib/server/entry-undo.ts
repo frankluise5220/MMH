@@ -13,11 +13,16 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 
 type DbWriter = PrismaClient | Prisma.TransactionClient;
 type UndoSnapshot = Record<string, unknown>;
+export const ENTRY_UNDO_HISTORY_LIMIT = 5;
 
 export type PreparedEntryUndo = {
   snapshots: UndoSnapshot[];
   entryIds: string[];
 } | null;
+
+function undoScope(ctx: HouseholdContext) {
+  return { householdId: ctx.householdId, userId: ctx.user?.id ?? null };
+}
 
 function serializeRecords(records: TxRecord[], tagIdsByEntryId: Map<string, string[]>): UndoSnapshot[] {
   return JSON.parse(JSON.stringify(records.map((record) => ({
@@ -107,11 +112,8 @@ export async function saveEntryUndo(
   action: "edit" | "batch_edit" | "delete" | "batch_delete",
   label: string,
 ) {
-  await db.undoOperation.deleteMany({
-    where: { householdId: ctx.householdId, userId: ctx.user?.id ?? null },
-  });
   if (!input || input.snapshots.length === 0) return null;
-  return db.undoOperation.create({
+  const created = await db.undoOperation.create({
     data: {
       householdId: ctx.householdId,
       userId: ctx.user?.id ?? null,
@@ -122,13 +124,31 @@ export async function saveEntryUndo(
     },
     select: { id: true },
   });
+  const older = await db.undoOperation.findMany({
+    where: undoScope(ctx),
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    skip: ENTRY_UNDO_HISTORY_LIMIT,
+    select: { id: true },
+  });
+  if (older.length > 0) {
+    await db.undoOperation.deleteMany({
+      where: { id: { in: older.map((operation) => operation.id) } },
+    });
+  }
+  return created;
 }
 
 export async function getLatestEntryUndo(ctx: HouseholdContext) {
   return prisma.undoOperation.findFirst({
-    where: { householdId: ctx.householdId, userId: ctx.user?.id ?? null },
+    where: { ...undoScope(ctx), undoneAt: null },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: { id: true, label: true, action: true, createdAt: true, undoneAt: true, entryIds: true },
+  });
+}
+
+export async function getAvailableEntryUndoCount(ctx: HouseholdContext) {
+  return prisma.undoOperation.count({
+    where: { ...undoScope(ctx), undoneAt: null },
   });
 }
 
@@ -262,5 +282,6 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
     },
   });
   await recalculateRestoredEntries(restored);
-  return { operationId: operation.id, label: operation.label, restoredCount: restored.length };
+  const remainingCount = await getAvailableEntryUndoCount(ctx);
+  return { operationId: operation.id, label: operation.label, restoredCount: restored.length, remainingCount, historyLimit: ENTRY_UNDO_HISTORY_LIMIT };
 }

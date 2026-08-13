@@ -2,7 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
-import { getStockFeeRuleByDate, normalizeStockFeeType, normalizeStockTradeDirection, setStockFeeRule } from "@/lib/stock/feeRule";
+import {
+  calculateStockTransactionFeesByDate,
+  getStockFeeRuleByDate,
+  normalizeStockFeeType,
+  normalizeStockTradeDirection,
+  setStockFeeRule,
+  totalStockFeeDraft,
+  upsertStockMarketFeeDefaultRules,
+} from "@/lib/stock/feeRule";
 import { normalizeStockCode, normalizeStockMarket } from "@/lib/stock/securities";
 
 export const runtime = "nodejs";
@@ -23,6 +31,12 @@ function utcDate(raw: string | null) {
   if (!raw) return new Date();
   const [y, m, d] = raw.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d));
+}
+
+function parseNonNegativeNumber(value: string | null) {
+  if (value == null || value === "") return 0;
+  const num = Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(num) && num >= 0 ? num : 0;
 }
 
 function serializeRule(rule: {
@@ -74,16 +88,20 @@ async function assertStockAccount(accountId: string, householdId: string) {
  * Query:
  * - accountId: string
  * - list?: "1" | "true" to list recent rules for the account
+ * - estimate?: "1" | "true" to calculate estimated fees for a stock trade
+ * - refresh?: "1" | "true" to refresh bundled public A-share market fee defaults before estimating
  * - feeType: "commission" | "stamp_tax" | "transfer_fee" | "exchange_fee" | "regulatory_fee" | "platform_fee" | "other"
  * - direction?: "buy" | "sell" | "both"
  * - tradeDate?: YYYY-MM-DD
  * - securityId?: string
  * - market?: string
  * - stockCode?: string
+ * - grossAmount?: number, required for estimate mode
  *
  * Response:
  * - { ok: true, data: { rule } }
  * - list mode: { ok: true, data: { rules } }
+ * - estimate mode: { ok: true, data: { fees, totalFee, cashAmount, updatedMarketDefaultCount } }
  */
 export async function GET(req: NextRequest) {
   try {
@@ -91,6 +109,43 @@ export async function GET(req: NextRequest) {
     const accountId = req.nextUrl.searchParams.get("accountId")?.trim() || "";
     if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     await assertStockAccount(accountId, householdId);
+
+    const estimate = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("estimate")?.trim() ?? "");
+    if (estimate) {
+      const refresh = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("refresh")?.trim() ?? "");
+      const tradeDate = utcDate(req.nextUrl.searchParams.get("tradeDate"));
+      const direction = normalizeStockTradeDirection(req.nextUrl.searchParams.get("direction") ?? "buy");
+      const marketRaw = req.nextUrl.searchParams.get("market")?.trim() || "";
+      const stockCodeRaw = req.nextUrl.searchParams.get("stockCode")?.trim() || "";
+      const grossAmount = parseNonNegativeNumber(req.nextUrl.searchParams.get("grossAmount"));
+      if (grossAmount <= 0) {
+        return NextResponse.json({ ok: false, error: "缺少成交金额" }, { status: 400, headers: corsHeaders() });
+      }
+      const updatedMarketDefaultCount = await upsertStockMarketFeeDefaultRules();
+      const fees = await calculateStockTransactionFeesByDate({
+        accountId,
+        tradeDate,
+        grossAmount,
+        direction,
+        securityId: req.nextUrl.searchParams.get("securityId")?.trim() || null,
+        market: marketRaw ? normalizeStockMarket(marketRaw) : null,
+        stockCode: stockCodeRaw ? normalizeStockCode(stockCodeRaw) : null,
+      });
+      const totalFee = totalStockFeeDraft(fees);
+      const cashAmount = direction === "sell"
+        ? Math.max(0, grossAmount - totalFee)
+        : grossAmount + totalFee;
+      return NextResponse.json({
+        ok: true,
+        data: {
+          grossAmount,
+          fees,
+          totalFee,
+          cashAmount,
+          updatedMarketDefaultCount: refresh ? updatedMarketDefaultCount : 0,
+        },
+      }, { headers: corsHeaders() });
+    }
 
     const list = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("list")?.trim() ?? "");
     if (list) {

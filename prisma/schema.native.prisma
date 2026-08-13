@@ -81,6 +81,9 @@ model Account {
   StockFeeRule                                               StockFeeRule[]
   StockTransaction                                           StockTransaction[]          @relation("StockTransaction_stockAccount")
   StockTransactionCashAccount                                StockTransaction[]          @relation("StockTransaction_cashAccount")
+  PropertyAsset                                              PropertyAsset[]
+  PropertyTransaction                                        PropertyTransaction[]       @relation("PropertyTransaction_propertyAccount")
+  PropertyTransactionCashAccount                             PropertyTransaction[]       @relation("PropertyTransaction_cashAccount")
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[]         @relation("RegularInvestPlan_accountIdToAccount")
   RegularInvestPlan_RegularInvestPlan_cashAccountIdToAccount RegularInvestPlan[]         @relation("RegularInvestPlan_cashAccountIdToAccount")
   FxConversionFromAccount                                    FxConversion[]              @relation("FxConversion_fromAccount")
@@ -802,6 +805,86 @@ model StockBrokerageCatalog {
   @@map("stock_brokerage_catalog")
 }
 
+model PropertyAsset {
+  id                  String                @id @default(cuid())
+  householdId         String
+  accountId           String
+  name                String
+  propertyType        String?
+  address             String?
+  currency            String                @default("CNY")
+  purchaseDate        DateTime?
+  purchasePrice       Decimal?
+  cost                Decimal               @default(0)
+  marketValue         Decimal               @default(0)
+  latestValuationDate DateTime?
+  status              String                @default("active")
+  note                String?
+  deletedAt           DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @default(now()) @updatedAt
+  Household           Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Valuations          PropertyValuation[]
+  Transactions        PropertyTransaction[]
+
+  @@index([householdId, accountId])
+  @@index([householdId, status])
+  @@index([accountId])
+  @@index([deletedAt])
+  @@map("property_assets")
+}
+
+model PropertyValuation {
+  id              String        @id @default(cuid())
+  householdId     String
+  propertyAssetId String
+  valuationDate   DateTime
+  marketValue     Decimal
+  source          String        @default("manual")
+  note            String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @default(now()) @updatedAt
+  Household       Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  PropertyAsset   PropertyAsset @relation(fields: [propertyAssetId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, valuationDate])
+  @@index([propertyAssetId, valuationDate])
+  @@map("property_valuations")
+}
+
+model PropertyTransaction {
+  id                String                    @id @default(cuid())
+  householdId       String
+  accountId         String
+  cashAccountId     String?
+  cashEntryId       String?                   @unique
+  propertyAssetId   String
+  action            PropertyTransactionAction @default(purchase)
+  source            String?                   @default("manual")
+  tradeDate         DateTime
+  settlementDate    DateTime?
+  amount            Decimal
+  fee               Decimal?
+  tax               Decimal?
+  realizedProfit    Decimal?
+  note              String?
+  deletedAt         DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @default(now()) @updatedAt
+  Household         Household                 @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Account           Account                   @relation("PropertyTransaction_propertyAccount", fields: [accountId], references: [id], onDelete: Cascade)
+  CashAccount       Account?                  @relation("PropertyTransaction_cashAccount", fields: [cashAccountId], references: [id], onDelete: SetNull)
+  PropertyAsset     PropertyAsset             @relation(fields: [propertyAssetId], references: [id], onDelete: Cascade)
+  EntryBusinessLink EntryBusinessLink[]
+
+  @@index([householdId, accountId, tradeDate])
+  @@index([cashAccountId, tradeDate])
+  @@index([propertyAssetId, tradeDate])
+  @@index([deletedAt])
+  @@map("property_transactions")
+}
+
 model EntryBusinessLink {
   id                         String                    @id @default(cuid())
   householdId                String
@@ -813,6 +896,7 @@ model EntryBusinessLink {
   depositTransactionId       String?
   preciousMetalTransactionId String?
   stockTransactionId         String?
+  propertyTransactionId      String?
   businessType               EntryBusinessType
   linkType                   EntryBusinessLinkType     @default(cash_flow)
   cashFlowDirection          EntryCashFlowDirection?
@@ -831,6 +915,7 @@ model EntryBusinessLink {
   DepositTransaction         DepositTransaction?       @relation(fields: [depositTransactionId], references: [id], onDelete: SetNull)
   PreciousMetalTransaction   PreciousMetalTransaction? @relation(fields: [preciousMetalTransactionId], references: [id], onDelete: SetNull)
   StockTransaction           StockTransaction?         @relation(fields: [stockTransactionId], references: [id], onDelete: SetNull)
+  PropertyTransaction        PropertyTransaction?      @relation(fields: [propertyTransactionId], references: [id], onDelete: SetNull)
 
   @@unique([cashEntryId, businessEntryId, linkType])
   @@index([householdId, businessType])
@@ -842,6 +927,7 @@ model EntryBusinessLink {
   @@index([depositTransactionId])
   @@index([preciousMetalTransactionId])
   @@index([stockTransactionId])
+  @@index([propertyTransactionId])
   @@index([deletedAt])
   @@map("entry_business_links")
 }
@@ -866,6 +952,9 @@ model Household {
   StockSecurity             StockSecurity[]
   StockTransaction          StockTransaction[]
   StockMarketFeeRule        StockMarketFeeRule[]
+  PropertyAsset             PropertyAsset[]
+  PropertyValuation         PropertyValuation[]
+  PropertyTransaction       PropertyTransaction[]
   EntryBusinessLink         EntryBusinessLink[]
   ImportBatch               ImportBatch[]
   InsuranceProductMaster    InsuranceProductMaster[]
@@ -1500,6 +1589,7 @@ enum FundProductType {
   deposit
   metal
   stock
+  property
 }
 
 enum TradingCalendar {
@@ -1538,7 +1628,14 @@ enum EntryBusinessType {
   deposit
   insurance
   metal
+  property
   other_investment
+}
+
+enum PropertyTransactionAction {
+  purchase
+  improvement
+  sale
 }
 
 enum StockTransactionAction {

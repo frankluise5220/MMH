@@ -36,6 +36,7 @@ async function softDeleteIndependentBusinessProjection(client: TxClient, entryId
     client.depositTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.preciousMetalTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.stockTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
+    client.propertyTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.entryBusinessLink.updateMany({
       where: {
         deletedAt: null,
@@ -46,6 +47,7 @@ async function softDeleteIndependentBusinessProjection(client: TxClient, entryId
           { depositTransactionId: entryId },
           { preciousMetalTransactionId: entryId },
           { stockTransactionId: entryId },
+          { propertyTransactionId: entryId },
         ],
       },
       data: { deletedAt },
@@ -294,6 +296,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
     depositTransactionId: targetType === "deposit" ? targetId : null,
     preciousMetalTransactionId: targetType === "metal" ? targetId : null,
     stockTransactionId: targetType === "stock" ? targetId : null,
+    propertyTransactionId: targetType === "property" ? targetId : null,
     businessType: targetType,
     cashFlowDirection: cashEntry ? (toNumber(cashEntry.amount) < 0 ? "outflow" : "inflow") : "none",
     source: entry.source,

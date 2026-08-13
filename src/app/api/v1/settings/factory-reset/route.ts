@@ -38,7 +38,6 @@ export async function POST(_req: NextRequest) {
     await tx.fundQueryApi.deleteMany({ where: { householdId } });
     // 级联删除账户关联数据
     if (accountIds.length > 0) {
-      await tx.fundSnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });

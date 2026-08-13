@@ -1,18 +1,26 @@
 /**
- * GET /api/v1/undo: returns the latest user entry operation and whether it can be undone.
+ * GET /api/v1/undo: returns the latest undoable user entry operation and remaining undo count.
  * POST /api/v1/undo: restores the latest edit/delete operation as one atomic group.
  */
 import { NextResponse } from "next/server";
 
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { getLatestEntryUndo, undoLatestEntryOperation } from "@/lib/server/entry-undo";
+import {
+  ENTRY_UNDO_HISTORY_LIMIT,
+  getAvailableEntryUndoCount,
+  getLatestEntryUndo,
+  undoLatestEntryOperation,
+} from "@/lib/server/entry-undo";
 
 export async function GET() {
   const ctx = await getHouseholdScope();
   if (!ctx.user) {
     return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
   }
-  const operation = await getLatestEntryUndo(ctx);
+  const [operation, undoCount] = await Promise.all([
+    getLatestEntryUndo(ctx),
+    getAvailableEntryUndoCount(ctx),
+  ]);
   return NextResponse.json({
     ok: true,
     data: operation ? {
@@ -20,7 +28,9 @@ export async function GET() {
       label: operation.label,
       action: operation.action,
       createdAt: operation.createdAt.toISOString(),
-      canUndo: !operation.undoneAt,
+      canUndo: true,
+      undoCount,
+      historyLimit: ENTRY_UNDO_HISTORY_LIMIT,
     } : null,
   });
 }

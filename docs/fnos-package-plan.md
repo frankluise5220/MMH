@@ -30,7 +30,7 @@ appname=mmh
 - `prisma/schema.native.prisma` 已能通过 `prisma validate`。
 - `scripts/build-fnos-app.cjs` 定义 Linux SQLite standalone 构建流程。
 - `scripts/build-fnos-package.cjs` 生成飞牛 FPK 工程，支持 `FNOS_TARGET_ARCH=x86|arm64`，写入对应 manifest 架构、`cmd/main`、图标、持久化数据目录解析、Prisma runtime 和 SQLite 启动链。
-- `cmd/main` 启动前会运行 `init-sqlite.cjs`。空库使用 `native-init.sql` 初始化；已有库跳过全量初始化，但继续运行 `_mmh_native_schema` 记录的运行时迁移，例如为旧库补新增列。
+- `cmd/main` 启动前会运行 `init-sqlite.cjs`。空库使用 `native-init.sql` 初始化；已有库跳过全量初始化，但继续运行 `_mmh_native_schema` 记录的运行时迁移，并从 `native-init.sql` 自动补齐缺失的新表和可兼容索引。字段改名、字段类型变化、拆表合表、数据回填和破坏性调整仍需写显式运行时迁移。
 - `scripts/verify-fnos-package.cjs` 校验飞牛包素材，防止 `.env` 泄露、Docker resource 混入和第二个 `.fpk` 包出现。
 - `.github/workflows/fnos-release.yml` 发布时用 x86/arm64 矩阵构建并上传正式 `release-artifacts/fnos/*.fpk`。
 - `.github/workflows/fnos-stage.yml` 生成 x86/arm64 调试用 FPK 工程归档；该归档不能作为用户安装包。
@@ -44,7 +44,7 @@ appname=mmh
 3. 设置 `DATABASE_URL=file:$DATA_DEST/mmh.db`。
 4. 设置 `PRISMA_SCHEMA_PATH=$SERVER_DIR/prisma/schema.native.prisma`。
 5. 读取持久环境文件 `mmh.env`，导出 `PORT` 和 `MMH_SYSTEM_PASSWORD`；如果未设置系统密码，首次启动随机生成一次并保存到 `mmh-system-password.txt`。
-6. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`。
+6. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`，随后按 `native-init.sql` 补齐缺失的新表和可兼容索引。
 7. 启动包内 Next standalone `server.js`，对外暴露 `7777`。
 
 ## 发布链

@@ -11,6 +11,8 @@ import {
   SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_METAL_INVESTMENT_CATEGORY,
   SYSTEM_OTHER_INVESTMENT_CATEGORY,
+  SYSTEM_PROPERTY_INVESTMENT_ACTION_CATEGORIES,
+  SYSTEM_PROPERTY_INVESTMENT_CATEGORY,
   SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_STOCK_INVESTMENT_CATEGORY,
   SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES,
@@ -29,7 +31,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-11-stock-investment-category-v1";
+const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-13-property-investment-category-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -364,6 +366,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
       { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_METAL_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_STOCK_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES] },
+      { name: SYSTEM_PROPERTY_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_PROPERTY_INVESTMENT_ACTION_CATEGORIES] },
       SYSTEM_OTHER_INVESTMENT_CATEGORY,
     ],
   },
@@ -473,6 +476,8 @@ async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, 
     { name: getInvestmentCategoryName({ fundProductType: "deposit", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "deposit", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
     { name: getInvestmentCategoryName({ fundProductType: "metal", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "metal", fundSubtype: { in: ["redeem", "switch_out"] } } },
     { name: getInvestmentCategoryName({ fundProductType: "metal", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "metal", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "property", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "property", fundSubtype: { in: ["redeem", "switch_out"] } } },
+    { name: getInvestmentCategoryName({ fundProductType: "property", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "property", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
   ];
 
   for (const assignment of assignments) {

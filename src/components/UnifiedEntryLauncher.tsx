@@ -12,6 +12,7 @@ type EntryKind =
   | "investment"
   | "stock"
   | "stock-transfer"
+  | "property"
   | "metal"
   | "wealth"
   | "deposit"
@@ -40,6 +41,7 @@ type Props = {
     defaultStockAccountId?: string;
     defaultStockCashAccountId?: string;
     defaultStockTransferFromAccountId?: string;
+    defaultPropertyAccountId?: string;
     defaultMetalAccountId?: string;
     defaultWealthAccountId?: string;
     defaultDepositAccountId?: string;
@@ -175,6 +177,17 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
             defaultAccountId: context?.defaultStockTransferFromAccountId ?? context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
             defaultFromAccountId: context?.defaultStockTransferFromAccountId ?? context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
             defaultToAccountId: context?.defaultStockCashAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "property":
+      window.dispatchEvent(
+        new CustomEvent("mmh:property:create", {
+          detail: {
+            requestId,
+            defaultPropertyAccountId: context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
           },
         }),
       );

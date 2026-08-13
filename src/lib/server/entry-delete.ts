@@ -274,6 +274,27 @@ async function softDeleteIndependentBusinessRecordsByIds(
     targets.stockAccountsToRecalc.add(row.stockAccountId);
   }
 
+  const propertyRows = await prisma.propertyTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+  });
+  for (const row of propertyRows) {
+    const updated = await prisma.propertyTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+  }
+
   const independentBusinessIds = result.deletedEntryIds;
   const removedCashEntryIds = result.removedEntryIds.filter((id) => !independentBusinessIds.includes(id));
   if (independentBusinessIds.length > 0 || removedCashEntryIds.length > 0) {
@@ -290,6 +311,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
           { depositTransactionId: { in: independentBusinessIds } },
           { preciousMetalTransactionId: { in: independentBusinessIds } },
           { stockTransactionId: { in: independentBusinessIds } },
+          { propertyTransactionId: { in: independentBusinessIds } },
         ],
       },
       data: { deletedAt },
@@ -370,6 +392,7 @@ async function detachBusinessSideBusinessLinks(txRecord: TxRecord) {
         depositTransactionId: null,
         preciousMetalTransactionId: null,
         stockTransactionId: null,
+        propertyTransactionId: null,
         note: "Business side detached; cash detail kept",
         metadata: mergeEntryBusinessLinkMetadata(link.metadata, {
           businessDetached: true,

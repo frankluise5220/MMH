@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "private": true,
-  "mmhReleaseNotes": "修复飞牛/SQLite 旧账簿备份恢复时因缺少股票新表而中断的问题：删除账簿和恢复清理会兼容缺失的 stock_transactions 等可选表，新包启动迁移仍会为旧数据库补建股票相关表。",
+  "mmhReleaseNotes": "修复飞牛/SQLite 同版备份恢复时因目标库缺少股票新表而中断的问题：恢复入口会先幂等补建 stock_transactions 等股票表及关联列，再执行清空和写回；启动迁移也会为旧数据库补齐股票核心表。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

@@ -24,9 +24,18 @@
 - 股票标的身份使用 `StockSecurity.id` / `securityId`，展示和导入辅助字段是 `market`、`stockCode`、`stockName`；不要把股票代码写入或核对到 `fundCode`。
 - 股票交易事实字段以 `StockTransaction` 为准，现金流水只在需要时创建普通 `TxRecord`，二者通过 `EntryBusinessLink.stockTransactionId` 和返回的 `linkId` 关联。
 - 股票买入、卖出、分红和税费调整使用 `cashAccountId` 指向的证券资金账户/券商可用资金账户；同一证券公司名下的股票和基金可以共用同一个现金/钱包类资金账户。检查余额时应把证券资金账户现金和 `StockHolding` 市值区分开。银证转账是银行/现金账户与证券资金账户之间的普通转账，不写入 `StockTransaction`。
-- 股票持仓以 `StockHolding` 为准，数量、成本、最新价、市值、浮盈和历史收益都由 `src/lib/stock/recalcPosition.ts` 重算；不要从 `FundHolding` 或基金净值缓存推断股票值。
+- 股票持仓以 `StockHolding` 为准，数量、成本、最新价、市值、浮盈和历史收益都由 `src/lib/stock/recalcPosition.ts` 重算；最新收盘价写入 `StockPriceCache`，刷新后必须再次重算 `StockHolding`。不要从 `FundHolding` 或基金净值缓存推断股票值。
 - 股票手续费规则先看账户级 `StockFeeRule`，未命中时使用市场默认 `StockMarketFeeRule`；证券公司公开名录和别名存入 `StockBrokerageCatalog`。这些规则支持佣金、印花税、过户费、经手费、监管费、平台费、最低收费和买卖方向；不要复用 `fundFeeRate`。
+- 股票买入/卖出窗口只直接展示费用合计、成交金额和预计应付/到账，佣金、印花税、过户费、经手费、证管费、其他费用只在费用合计 hover 明细中展示；这些值只是同一套 `src/lib/stock/feeRule.ts` 计算结果的只读预估。保存交易时服务端再次按该规则计算并写入 `StockTransaction`，买入现金侧 `TxRecord` 金额应等于成交金额 + 费用合计，卖出现金侧 `TxRecord` 金额应等于成交金额 - 费用合计。
 - 券商导入或成交单去重使用 `externalLinkId` / `brokerTradeId`；它们不是基金买入退回 link，也不是 `fundSourceEntryId`。
+
+## 房产资产字段
+
+- 房产账户使用 `Account.kind = "investment"` + `investProductType = "property"`；同一账簿可有多个房产账户，账户 ID 是归属来源。
+- 房产资产以 `PropertyAsset` 为准，字段包括名称、地址、币种、购入日期、购入价、累计成本、当前市值、最近估值日期和状态；不要把房产身份或市值写入基金字段。
+- 房产购入、装修投入和出售以 `PropertyTransaction` 为业务事实，现金侧只在传入资金账户时创建 `TxRecord`，并通过 `EntryBusinessLink.propertyTransactionId` 关联。
+- 成本口径为交易金额 + 手续费 + 税费；装修投入增加累计成本。手动估值只写 `PropertyValuation` 并更新市值，不产生收入/支出/转账现金流水。
+- 房贷或按揭仍应作为贷款/负债账户核对；房产持仓市值和贷款余额不能混在同一房产资产表里计算。
 
 ## 最新净值刷新
 

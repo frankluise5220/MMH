@@ -3,6 +3,7 @@ export const SYSTEM_WEALTH_INVESTMENT_CATEGORY = "理财投资";
 export const SYSTEM_DEPOSIT_INVESTMENT_CATEGORY = "存款投资";
 export const SYSTEM_METAL_INVESTMENT_CATEGORY = "贵金属投资";
 export const SYSTEM_STOCK_INVESTMENT_CATEGORY = "股票投资";
+export const SYSTEM_PROPERTY_INVESTMENT_CATEGORY = "房产投资";
 export const SYSTEM_FUND_BUY_CATEGORY = "基金买入";
 export const SYSTEM_FUND_REGULAR_INVEST_CATEGORY = "基金定投";
 export const SYSTEM_FUND_REDEEM_CATEGORY = "基金赎回";
@@ -21,6 +22,9 @@ export const SYSTEM_STOCK_BUY_CATEGORY = "股票买入";
 export const SYSTEM_STOCK_SELL_CATEGORY = "股票卖出";
 export const SYSTEM_STOCK_DIVIDEND_CATEGORY = "股票分红";
 export const SYSTEM_STOCK_FEE_CATEGORY = "股票税费";
+export const SYSTEM_PROPERTY_PURCHASE_CATEGORY = "房产购入";
+export const SYSTEM_PROPERTY_IMPROVEMENT_CATEGORY = "装修投入";
+export const SYSTEM_PROPERTY_SALE_CATEGORY = "房产出售";
 export const SYSTEM_OTHER_INVESTMENT_CATEGORY = "其他投资";
 
 export const SYSTEM_INVESTMENT_CATEGORIES = [
@@ -29,6 +33,7 @@ export const SYSTEM_INVESTMENT_CATEGORIES = [
   SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
   SYSTEM_METAL_INVESTMENT_CATEGORY,
   SYSTEM_STOCK_INVESTMENT_CATEGORY,
+  SYSTEM_PROPERTY_INVESTMENT_CATEGORY,
   SYSTEM_OTHER_INVESTMENT_CATEGORY,
 ] as const;
 
@@ -65,12 +70,19 @@ export const SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES = [
   SYSTEM_STOCK_FEE_CATEGORY,
 ] as const;
 
+export const SYSTEM_PROPERTY_INVESTMENT_ACTION_CATEGORIES = [
+  SYSTEM_PROPERTY_PURCHASE_CATEGORY,
+  SYSTEM_PROPERTY_IMPROVEMENT_CATEGORY,
+  SYSTEM_PROPERTY_SALE_CATEGORY,
+] as const;
+
 export const SYSTEM_INVESTMENT_ACTION_CATEGORIES = [
   ...SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES,
   ...SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES,
+  ...SYSTEM_PROPERTY_INVESTMENT_ACTION_CATEGORIES,
 ] as const;
 
 export function getStockInvestmentCategoryName(action?: string | null) {
@@ -78,6 +90,12 @@ export function getStockInvestmentCategoryName(action?: string | null) {
   if (action === "dividend" || action === "bonus_share") return SYSTEM_STOCK_DIVIDEND_CATEGORY;
   if (action === "fee_adjustment" || action === "tax_adjustment") return SYSTEM_STOCK_FEE_CATEGORY;
   return SYSTEM_STOCK_BUY_CATEGORY;
+}
+
+export function getPropertyInvestmentCategoryName(action?: string | null) {
+  if (action === "sale") return SYSTEM_PROPERTY_SALE_CATEGORY;
+  if (action === "improvement") return SYSTEM_PROPERTY_IMPROVEMENT_CATEGORY;
+  return SYSTEM_PROPERTY_PURCHASE_CATEGORY;
 }
 
 export function getInvestmentCategoryName(entry: {
@@ -108,6 +126,11 @@ export function getInvestmentCategoryName(entry: {
   if (productType === "metal") {
     if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_METAL_REDEEM_CATEGORY;
     return SYSTEM_METAL_BUY_CATEGORY;
+  }
+
+  if (productType === "property") {
+    if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_PROPERTY_SALE_CATEGORY;
+    return SYSTEM_PROPERTY_PURCHASE_CATEGORY;
   }
 
   if (productType === "fund" || productType === "money" || !productType) {

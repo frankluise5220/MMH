@@ -14,6 +14,16 @@ export type StockIdentityResult = {
   source: string;
 } | null;
 
+export type StockClosePriceResult = {
+  market: string;
+  stockCode: string;
+  closePrice: number;
+  priceDate: string;
+  currency: string;
+  exchange?: string | null;
+  source: string;
+} | null;
+
 const headers = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   Referer: "https://quote.eastmoney.com/",
@@ -210,6 +220,48 @@ async function queryEastmoneyCnIdentity(stockCode: string, exchange?: string | n
     ?? await queryEastmoneyCnPageIdentity(stockCode, exchange);
 }
 
+function parseEastmoneyKlineClose(row: unknown) {
+  const parts = String(row ?? "").split(",");
+  const priceDate = String(parts[0] ?? "").trim();
+  const closePrice = Number(parts[2]);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(priceDate)) return null;
+  if (!Number.isFinite(closePrice) || closePrice <= 0) return null;
+  return { priceDate, closePrice };
+}
+
+async function queryEastmoneyCnLatestClose(stockCode: string, exchange?: string | null): Promise<StockClosePriceResult> {
+  for (const secid of eastmoneyCnSecidCandidates(stockCode, exchange)) {
+    const params = new URLSearchParams({
+      secid,
+      fields1: "f1,f2,f3,f4,f5,f6",
+      fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+      klt: "101",
+      fqt: "1",
+      end: "20500101",
+      lmt: "1",
+    });
+    try {
+      const data: any = await fetchJson(`https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`)
+        ?? await fetchJson(`http://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`);
+      const latest = Array.isArray(data?.data?.klines) ? data.data.klines[0] : null;
+      const parsed = parseEastmoneyKlineClose(latest);
+      if (!parsed) continue;
+      return {
+        market: "CN",
+        stockCode,
+        closePrice: parsed.closePrice,
+        priceDate: parsed.priceDate,
+        currency: "CNY",
+        exchange: exchangeFromSecid(secid, exchange ?? inferStockExchangeFromCode("CN", stockCode)),
+        source: "eastmoney-kline",
+      };
+    } catch {
+      // Try the next secid candidate.
+    }
+  }
+  return null;
+}
+
 export async function queryStockIdentity(marketRaw: unknown, stockCodeRaw: unknown): Promise<StockIdentityResult> {
   const market = normalizeStockMarket(marketRaw);
   const stockCode = normalizeStockCode(stockCodeRaw);
@@ -227,4 +279,17 @@ export async function queryStockIdentity(marketRaw: unknown, stockCodeRaw: unkno
     exchange: null,
     source: "manual-code-fallback",
   };
+}
+
+export async function queryStockLatestClosePrice(marketRaw: unknown, stockCodeRaw: unknown, exchangeRaw?: unknown): Promise<StockClosePriceResult> {
+  const market = normalizeStockMarket(marketRaw);
+  const stockCode = normalizeStockCode(stockCodeRaw);
+  const exchange = String(exchangeRaw ?? "").trim() || inferStockExchangeFromCode(market, stockCode);
+  if (!stockCode) return null;
+
+  if (market === "CN") {
+    return queryEastmoneyCnLatestClose(stockCode, exchange);
+  }
+
+  return null;
 }

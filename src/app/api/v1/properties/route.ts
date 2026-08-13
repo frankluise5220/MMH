@@ -1,0 +1,366 @@
+/**
+ * API: /api/v1/properties
+ *
+ * GET
+ *   Query: accountId?: property investment account id
+ *   Response: { ok: true, data: { assets, transactions } }
+ *
+ * POST
+ *   Body: {
+ *     accountId, cashAccountId?, propertyAssetId?,
+ *     action: "purchase" | "improvement" | "sale",
+ *     name?, propertyType?, address?, tradeDate, settlementDate?,
+ *     amount, fee?, tax?, marketValue?, note?
+ *   }
+ *   Creates/updates the property asset, writes a PropertyTransaction, and
+ *   creates the linked cash-side TxRecord when cashAccountId is supplied.
+ */
+import { NextRequest, NextResponse } from "next/server";
+import { AccountKind, PropertyTransactionAction } from "@prisma/client";
+
+import { normalizeCurrency } from "@/lib/currency";
+import { formatDateUtc, toNumber } from "@/lib/date-utils";
+import { prisma } from "@/lib/db/prisma";
+import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+
+export const runtime = "nodejs";
+
+const PROPERTY_ACTIONS = new Set(Object.values(PropertyTransactionAction));
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
+  } as const;
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+function parseDateOnly(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T00:00:00.000Z`)
+    : new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function parseNonNegativeNumber(value: unknown) {
+  if (value == null || value === "") return 0;
+  const num = Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(num) && num >= 0 ? num : 0;
+}
+
+function parseOptionalNonNegativeNumber(value: unknown) {
+  if (value == null || value === "") return null;
+  return parseNonNegativeNumber(value);
+}
+
+function decimalString(value: number | null) {
+  return value == null ? null : String(value);
+}
+
+function normalizePropertyAction(value: unknown) {
+  const action = String(value ?? PropertyTransactionAction.purchase).trim();
+  return PROPERTY_ACTIONS.has(action as PropertyTransactionAction)
+    ? (action as PropertyTransactionAction)
+    : PropertyTransactionAction.purchase;
+}
+
+async function assertPropertyAccount(accountId: string, householdId: string) {
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, householdId, kind: AccountKind.investment, investProductType: "property" },
+    select: { id: true, householdId: true, name: true, currency: true },
+  });
+  if (!account) throw new Error("房产账户不存在或不属于当前账簿");
+  return account;
+}
+
+async function findCashAccount(accountId: string | null, householdId: string) {
+  if (!accountId) return null;
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, householdId, isPlaceholder: { not: true } },
+    select: { id: true, name: true, kind: true, currency: true },
+  });
+  if (!account) throw new Error("资金账户不存在或不属于当前账簿");
+  const isCashLike = account.kind === AccountKind.bank_debit || account.kind === AccountKind.cash || account.kind === AccountKind.ewallet;
+  if (!isCashLike) throw new Error("房产资金账户必须是现金、借记卡或钱包账户");
+  return account;
+}
+
+function serializeAsset(row: {
+  id: string;
+  accountId: string;
+  name: string;
+  propertyType?: string | null;
+  address?: string | null;
+  currency?: string | null;
+  purchaseDate?: Date | null;
+  purchasePrice?: unknown | null;
+  cost: unknown;
+  marketValue: unknown;
+  latestValuationDate?: Date | null;
+  status: string;
+  note?: string | null;
+}) {
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    name: row.name,
+    propertyType: row.propertyType ?? null,
+    address: row.address ?? null,
+    currency: normalizeCurrency(row.currency),
+    purchaseDate: row.purchaseDate ? formatDateUtc(row.purchaseDate) : null,
+    purchasePrice: row.purchasePrice == null ? null : toNumber(row.purchasePrice),
+    cost: toNumber(row.cost),
+    marketValue: toNumber(row.marketValue),
+    latestValuationDate: row.latestValuationDate ? formatDateUtc(row.latestValuationDate) : null,
+    status: row.status,
+    note: row.note ?? null,
+  };
+}
+
+function serializeTransaction(row: {
+  id: string;
+  accountId: string;
+  cashAccountId?: string | null;
+  cashEntryId?: string | null;
+  propertyAssetId: string;
+  action: PropertyTransactionAction;
+  source?: string | null;
+  tradeDate: Date;
+  settlementDate?: Date | null;
+  amount: unknown;
+  fee?: unknown | null;
+  tax?: unknown | null;
+  realizedProfit?: unknown | null;
+  note?: string | null;
+  PropertyAsset?: { name?: string | null } | null;
+  Account?: { name?: string | null } | null;
+  CashAccount?: { name?: string | null } | null;
+  EntryBusinessLink?: Array<{ id: string }> | null;
+}) {
+  return {
+    id: row.id,
+    linkId: row.EntryBusinessLink?.[0]?.id ?? null,
+    cashEntryId: row.cashEntryId ?? null,
+    accountId: row.accountId,
+    accountName: row.Account?.name ?? "",
+    cashAccountId: row.cashAccountId ?? null,
+    cashAccountName: row.CashAccount?.name ?? null,
+    propertyAssetId: row.propertyAssetId,
+    propertyName: row.PropertyAsset?.name ?? null,
+    action: row.action,
+    source: row.source ?? "manual",
+    tradeDate: formatDateUtc(row.tradeDate),
+    settlementDate: row.settlementDate ? formatDateUtc(row.settlementDate) : null,
+    amount: toNumber(row.amount),
+    fee: row.fee == null ? null : toNumber(row.fee),
+    tax: row.tax == null ? null : toNumber(row.tax),
+    realizedProfit: row.realizedProfit == null ? null : toNumber(row.realizedProfit),
+    note: row.note ?? null,
+  };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const { householdId } = await getApiHouseholdScope(req);
+    const accountId = req.nextUrl.searchParams.get("accountId")?.trim() || "";
+    if (accountId) await assertPropertyAccount(accountId, householdId);
+
+    const [assets, transactions] = await Promise.all([
+      prisma.propertyAsset.findMany({
+        where: { householdId, deletedAt: null, ...(accountId ? { accountId } : {}) },
+        orderBy: [{ status: "asc" }, { latestValuationDate: "desc" }, { createdAt: "asc" }],
+      }),
+      prisma.propertyTransaction.findMany({
+        where: { householdId, deletedAt: null, ...(accountId ? { accountId } : {}) },
+        include: {
+          Account: true,
+          CashAccount: true,
+          PropertyAsset: true,
+          EntryBusinessLink: { where: { deletedAt: null }, select: { id: true }, take: 1 },
+        },
+        orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
+        take: 500,
+      }),
+    ]);
+
+    return NextResponse.json({
+      ok: true,
+      data: {
+        assets: assets.map(serializeAsset),
+        transactions: transactions.map(serializeTransaction),
+      },
+    }, { headers: corsHeaders() });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "查询失败" },
+      { status: 500, headers: corsHeaders() },
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { householdId } = await getApiHouseholdScope(req);
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+
+    const accountId = String(body.accountId ?? "").trim();
+    if (!accountId) return NextResponse.json({ ok: false, error: "缺少房产账户" }, { status: 400, headers: corsHeaders() });
+    const propertyAccount = await assertPropertyAccount(accountId, householdId);
+    const cashAccountId = String(body.cashAccountId ?? "").trim() || null;
+    const cashAccount = await findCashAccount(cashAccountId, householdId);
+    const action = normalizePropertyAction(body.action);
+    const tradeDate = parseDateOnly(body.tradeDate);
+    const settlementDate = parseDateOnly(body.settlementDate);
+    if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+
+    const amount = parseNonNegativeNumber(body.amount);
+    const fee = parseOptionalNonNegativeNumber(body.fee);
+    const tax = parseOptionalNonNegativeNumber(body.tax);
+    const marketValueInput = parseOptionalNonNegativeNumber(body.marketValue);
+    if (amount <= 0) return NextResponse.json({ ok: false, error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
+
+    const touchedAccountIds = new Set<string>([accountId]);
+    if (cashAccountId) touchedAccountIds.add(cashAccountId);
+
+    const created = await prisma.$transaction(async (tx) => {
+      const totalCostDelta = amount + (fee ?? 0) + (tax ?? 0);
+      let propertyAssetId = String(body.propertyAssetId ?? "").trim();
+      let existingAsset = propertyAssetId
+        ? await tx.propertyAsset.findFirst({ where: { id: propertyAssetId, householdId, accountId, deletedAt: null } })
+        : null;
+
+      if (action === PropertyTransactionAction.purchase) {
+        const assetName = String(body.name ?? "").trim();
+        if (!assetName) throw new Error("购入房产需要填写房产名称");
+        const initialMarketValue = marketValueInput ?? totalCostDelta;
+        existingAsset = await tx.propertyAsset.create({
+          data: {
+            householdId,
+            accountId,
+            name: assetName,
+            propertyType: String(body.propertyType ?? "").trim() || null,
+            address: String(body.address ?? "").trim() || null,
+            currency: propertyAccount.currency ?? cashAccount?.currency ?? "CNY",
+            purchaseDate: tradeDate,
+            purchasePrice: decimalString(amount),
+            cost: String(totalCostDelta),
+            marketValue: String(initialMarketValue),
+            latestValuationDate: tradeDate,
+            note: String(body.note ?? "").trim() || null,
+          },
+        });
+        propertyAssetId = existingAsset.id;
+        await tx.propertyValuation.create({
+          data: {
+            householdId,
+            propertyAssetId,
+            valuationDate: tradeDate,
+            marketValue: String(initialMarketValue),
+            source: "purchase",
+            note: "购入时初始估值",
+          },
+        });
+      } else {
+        if (!existingAsset) throw new Error("房产不存在或不属于当前账户");
+        const nextCost = action === PropertyTransactionAction.improvement
+          ? toNumber(existingAsset.cost) + totalCostDelta
+          : toNumber(existingAsset.cost);
+        const nextMarketValue = action === PropertyTransactionAction.sale
+          ? Math.max(0, amount - (fee ?? 0) - (tax ?? 0))
+          : marketValueInput ?? toNumber(existingAsset.marketValue);
+        await tx.propertyAsset.update({
+          where: { id: existingAsset.id },
+          data: {
+            cost: String(nextCost),
+            marketValue: String(nextMarketValue),
+            latestValuationDate: marketValueInput != null || action === PropertyTransactionAction.sale ? (settlementDate ?? tradeDate) : existingAsset.latestValuationDate,
+            status: action === PropertyTransactionAction.sale ? "sold" : existingAsset.status,
+          },
+        });
+        if (marketValueInput != null || action === PropertyTransactionAction.sale) {
+          await tx.propertyValuation.create({
+            data: {
+              householdId,
+              propertyAssetId: existingAsset.id,
+              valuationDate: settlementDate ?? tradeDate,
+              marketValue: String(nextMarketValue),
+              source: action === PropertyTransactionAction.sale ? "sale" : "manual",
+              note: action === PropertyTransactionAction.sale ? "出售回收金额" : "交易后手动估值",
+            },
+          });
+        }
+      }
+
+      const realizedProfit = action === PropertyTransactionAction.sale && existingAsset
+        ? Math.max(0, amount - (fee ?? 0) - (tax ?? 0)) - toNumber(existingAsset.cost)
+        : null;
+      const row = await tx.propertyTransaction.create({
+        data: {
+          householdId,
+          accountId,
+          cashAccountId: cashAccount?.id ?? null,
+          propertyAssetId,
+          action,
+          source: String(body.source ?? "manual").trim() || "manual",
+          tradeDate,
+          settlementDate,
+          amount: String(amount),
+          fee: decimalString(fee),
+          tax: decimalString(tax),
+          realizedProfit: decimalString(realizedProfit),
+          note: String(body.note ?? "").trim() || null,
+        },
+        include: { Account: true, CashAccount: true, PropertyAsset: true },
+      });
+      const link = await ensurePropertyTransactionCashFlow(tx, {
+        householdId,
+        row,
+        propertyAccount: row.Account,
+        cashAccount: row.CashAccount,
+        metadata: { createdBy: "properties-api" },
+      });
+      return { id: row.id, link };
+    });
+
+    for (const id of touchedAccountIds) {
+      await recalcAndSaveAccountBalance(id).catch(() => undefined);
+    }
+    await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => undefined);
+    revalidateAfterInvestChange();
+
+    const row = await prisma.propertyTransaction.findUnique({
+      where: { id: created.id },
+      include: {
+        Account: true,
+        CashAccount: true,
+        PropertyAsset: true,
+        EntryBusinessLink: { where: { deletedAt: null }, select: { id: true }, take: 1 },
+      },
+    });
+
+    return NextResponse.json({
+      ok: true,
+      data: {
+        transaction: row ? serializeTransaction(row) : null,
+        linkId: created.link.linkId,
+        cashEntryId: created.link.cashEntryId,
+      },
+    }, { headers: corsHeaders() });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "创建失败" },
+      { status: 500, headers: corsHeaders() },
+    );
+  }
+}

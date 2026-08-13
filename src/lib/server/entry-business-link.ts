@@ -24,7 +24,7 @@ function inputJsonObjectOf(value: Record<string, unknown> | null | undefined, fa
   return JSON.parse(JSON.stringify(source)) as EntryBusinessLinkMetadata;
 }
 
-export type EntryBusinessType = "fund" | "stock" | "wealth" | "deposit" | "insurance" | "metal" | "other_investment";
+export type EntryBusinessType = "fund" | "stock" | "wealth" | "deposit" | "insurance" | "metal" | "property" | "other_investment";
 export type EntryCashFlowDirection = "outflow" | "inflow" | "internal" | "none";
 export type EntryBusinessDeleteImpact = {
   linkId: string;
@@ -50,6 +50,7 @@ type EntryBusinessLinkSummaryRow = {
   depositTransactionId?: string | null;
   preciousMetalTransactionId?: string | null;
   stockTransactionId?: string | null;
+  propertyTransactionId?: string | null;
   businessType: EntryBusinessType | string;
   linkType?: string | null;
   CashEntry?: { id: string; deletedAt?: Date | null } | null;
@@ -60,6 +61,7 @@ type EntryBusinessLinkSummaryRow = {
   DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
   PreciousMetalTransaction?: { id: string; deletedAt?: Date | null } | null;
   StockTransaction?: { id: string; deletedAt?: Date | null } | null;
+  PropertyTransaction?: { id: string; deletedAt?: Date | null } | null;
 };
 
 export const entryBusinessLinkSummaryInclude = {
@@ -75,6 +77,7 @@ export const entryBusinessLinkSummaryInclude = {
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
+      propertyTransactionId: true,
       businessType: true,
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
@@ -85,6 +88,7 @@ export const entryBusinessLinkSummaryInclude = {
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
       StockTransaction: { select: { id: true, deletedAt: true } },
+      PropertyTransaction: { select: { id: true, deletedAt: true } },
     },
   },
   EntryBusinessLinkBusiness: {
@@ -99,6 +103,7 @@ export const entryBusinessLinkSummaryInclude = {
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
+      propertyTransactionId: true,
       businessType: true,
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
@@ -109,6 +114,7 @@ export const entryBusinessLinkSummaryInclude = {
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
       StockTransaction: { select: { id: true, deletedAt: true } },
+      PropertyTransaction: { select: { id: true, deletedAt: true } },
     },
   },
 } as const;
@@ -127,6 +133,7 @@ type BusinessEntryLike = {
   metalTypeId?: string | null;
   depositSourceEntryId?: string | null;
   stockTransactionId?: string | null;
+  propertyTransactionId?: string | null;
   createdAt?: Date | string | null;
 };
 
@@ -141,7 +148,8 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
       entry.source === "insurance" ||
       entry.metalTypeId ||
       entry.depositSourceEntryId ||
-      entry.stockTransactionId,
+      entry.stockTransactionId ||
+      entry.propertyTransactionId,
   );
   if (!isInvestmentEntry || !hasBusinessFields) return null;
 
@@ -150,6 +158,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
   if (entry.fundProductType === "deposit" || entry.depositSourceEntryId) return "deposit";
   if (entry.fundProductType === "metal" || entry.metalTypeId) return "metal";
   if (entry.fundProductType === "stock" || entry.stockTransactionId) return "stock";
+  if (entry.propertyTransactionId) return "property";
   if (entry.fundProductType === "fund" || entry.fundProductType === "money" || entry.fundCode) return "fund";
   return "other_investment";
 }
@@ -251,6 +260,7 @@ export async function upsertEntryBusinessCashFlowLink(
     depositTransactionId?: string | null;
     preciousMetalTransactionId?: string | null;
     stockTransactionId?: string | null;
+    propertyTransactionId?: string | null;
     businessType: EntryBusinessType;
     cashFlowDirection?: EntryCashFlowDirection | null;
     source?: string | null;
@@ -265,8 +275,9 @@ export async function upsertEntryBusinessCashFlowLink(
           : params.depositTransactionId ? `deposit_${params.depositTransactionId}`
             : params.preciousMetalTransactionId ? `metal_${params.preciousMetalTransactionId}`
               : params.stockTransactionId ? `stock_${params.stockTransactionId}`
-                : params.businessEntryId ? `entry_${params.businessEntryId}`
-                  : "";
+                : params.propertyTransactionId ? `property_${params.propertyTransactionId}`
+                  : params.businessEntryId ? `entry_${params.businessEntryId}`
+                    : "";
   if (!businessTarget) return;
 
   const linkId = params.cashEntryId
@@ -286,6 +297,7 @@ export async function upsertEntryBusinessCashFlowLink(
       depositTransactionId: params.depositTransactionId ?? null,
       preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
       stockTransactionId: params.stockTransactionId ?? null,
+      propertyTransactionId: params.propertyTransactionId ?? null,
       businessType: params.businessType,
       linkType: "cash_flow",
       cashFlowDirection: params.cashFlowDirection ?? "none",
@@ -302,6 +314,7 @@ export async function upsertEntryBusinessCashFlowLink(
       depositTransactionId: params.depositTransactionId ?? null,
       preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
       stockTransactionId: params.stockTransactionId ?? null,
+      propertyTransactionId: params.propertyTransactionId ?? null,
       businessType: params.businessType,
       cashFlowDirection: params.cashFlowDirection ?? "none",
       source: params.source ?? "manual",
@@ -319,6 +332,7 @@ export function entryBusinessTypeLabel(type: EntryBusinessType | string) {
   if (type === "deposit") return "存款交易";
   if (type === "metal") return "贵金属交易";
   if (type === "stock") return "股票交易";
+  if (type === "property") return "房产交易";
   if (type === "fund") return "基金交易";
   return "投资业务交易";
 }
@@ -337,6 +351,7 @@ export function buildEntryBusinessLinkSummary(entry: {
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
     if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
     if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
+    if (row.propertyTransactionId && (!row.PropertyTransaction || row.PropertyTransaction.deletedAt)) continue;
     const targetId =
       row.fundTransactionId ??
       row.insuranceTransactionId ??
@@ -344,6 +359,7 @@ export function buildEntryBusinessLinkSummary(entry: {
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
       row.stockTransactionId ??
+      row.propertyTransactionId ??
       row.businessEntryId ??
       "";
     const key = `${row.cashEntryId ?? ""}:${targetId}:${row.linkType ?? ""}`;
@@ -376,6 +392,7 @@ export async function listEntryBusinessDeleteImpacts(
     depositTransactionId?: string | null;
     preciousMetalTransactionId?: string | null;
     stockTransactionId?: string | null;
+    propertyTransactionId?: string | null;
   }) =>
     row.businessEntryId ??
     row.fundTransactionId ??
@@ -384,6 +401,7 @@ export async function listEntryBusinessDeleteImpacts(
     row.depositTransactionId ??
     row.preciousMetalTransactionId ??
     row.stockTransactionId ??
+    row.propertyTransactionId ??
     null;
 
   const rows = await prisma.entryBusinessLink.findMany({
@@ -399,6 +417,7 @@ export async function listEntryBusinessDeleteImpacts(
         { depositTransactionId: { in: ids } },
         { preciousMetalTransactionId: { in: ids } },
         { stockTransactionId: { in: ids } },
+        { propertyTransactionId: { in: ids } },
       ],
     },
     select: {
@@ -411,6 +430,7 @@ export async function listEntryBusinessDeleteImpacts(
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
+      propertyTransactionId: true,
       businessType: true,
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
@@ -421,6 +441,7 @@ export async function listEntryBusinessDeleteImpacts(
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
       StockTransaction: { select: { id: true, deletedAt: true } },
+      PropertyTransaction: { select: { id: true, deletedAt: true } },
     },
   });
 
@@ -434,6 +455,7 @@ export async function listEntryBusinessDeleteImpacts(
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
     if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
     if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
+    if (row.propertyTransactionId && (!row.PropertyTransaction || row.PropertyTransaction.deletedAt)) continue;
 
     const businessEntryId = businessTargetIdOf(row);
     const selectedEntryId =
@@ -443,9 +465,10 @@ export async function listEntryBusinessDeleteImpacts(
             : hasId(row.insuranceTransactionId) ? row.insuranceTransactionId
               : hasId(row.wealthTransactionId) ? row.wealthTransactionId
                 : hasId(row.depositTransactionId) ? row.depositTransactionId
-                  : hasId(row.preciousMetalTransactionId) ? row.preciousMetalTransactionId
-                    : hasId(row.stockTransactionId) ? row.stockTransactionId
-                      : row.cashEntryId;
+                    : hasId(row.preciousMetalTransactionId) ? row.preciousMetalTransactionId
+                      : hasId(row.stockTransactionId) ? row.stockTransactionId
+                        : hasId(row.propertyTransactionId) ? row.propertyTransactionId
+                          : row.cashEntryId;
     if (!selectedEntryId) continue;
 
     const businessSideSelected =
@@ -455,7 +478,8 @@ export async function listEntryBusinessDeleteImpacts(
       hasId(row.wealthTransactionId) ||
       hasId(row.depositTransactionId) ||
       hasId(row.preciousMetalTransactionId) ||
-      hasId(row.stockTransactionId);
+      hasId(row.stockTransactionId) ||
+      hasId(row.propertyTransactionId);
     const selectedSide =
       hasId(row.cashEntryId) && hasId(row.businessEntryId) ? "both"
         : businessSideSelected ? "business"

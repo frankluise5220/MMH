@@ -2,7 +2,7 @@
  * API: /api/v1/business-transactions/link-cash-flow
  *
  * POST
- *   Body: { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund" | "stock", businessTransactionId: string }
+ *   Body: { businessType: "wealth" | "deposit" | "insurance" | "metal" | "fund" | "stock" | "property", businessTransactionId: string }
  *
  * Creates or restores the cash-side TxRecord for an independent business
  * transaction, then writes the EntryBusinessLink. A highlighted link icon means
@@ -24,6 +24,7 @@ import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-lin
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
+import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
 
 export const runtime = "nodejs";
 
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     const businessType = String(body?.businessType ?? "").trim();
     const businessTransactionId = String(body?.businessTransactionId ?? "").trim();
 
-    if (!["wealth", "deposit", "insurance", "metal", "fund", "stock"].includes(businessType)) {
+    if (!["wealth", "deposit", "insurance", "metal", "fund", "stock", "property"].includes(businessType)) {
       return NextResponse.json({ ok: false, error: "不支持的业务交易类型" }, { status: 400 });
     }
     if (!businessTransactionId) {
@@ -403,6 +404,28 @@ export async function POST(req: Request) {
         touchedAccountIds.add(row.stockAccountId);
         touchedAccountIds.add(row.cashAccountId);
         stockAccountsToRecalc.add(row.stockAccountId);
+        return { cashEntryId: link.cashEntryId, businessTransactionId: row.id, linkId: link.linkId };
+      }
+
+      if (businessType === "property") {
+        const row = await tx.propertyTransaction.findFirst({
+          where: { id: businessTransactionId, householdId, deletedAt: null },
+          include: { Account: true, CashAccount: true, PropertyAsset: true },
+        });
+        if (!row) throw new Error("房产交易记录不存在");
+        if (!row.cashAccountId || !row.CashAccount) throw new Error("这条房产记录缺少资金账户，无法自动建立资金侧记录");
+
+        const link = await ensurePropertyTransactionCashFlow(tx, {
+          householdId,
+          row,
+          propertyAccount: row.Account,
+          cashAccount: row.CashAccount,
+          metadata: { splitRecord: true, independentBusinessTransaction: true, repairedBy: "link-cash-flow" },
+        });
+        if (!link.cashEntryId) throw new Error("这条房产记录不是资金流交易，无法建立资金侧记录");
+
+        touchedAccountIds.add(row.accountId);
+        touchedAccountIds.add(row.cashAccountId);
         return { cashEntryId: link.cashEntryId, businessTransactionId: row.id, linkId: link.linkId };
       }
 

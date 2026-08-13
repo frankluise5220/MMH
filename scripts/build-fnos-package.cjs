@@ -1167,6 +1167,13 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260811_stock_domain",
+    description: "Add stock core tables",
+    apply(db) {
+      createStockDomainTables(db);
+    },
+  },
+  {
     version: "20260812_stock_reference_tables",
     description: "Add stock market fee rules and brokerage catalog",
     apply(db) {
@@ -1218,6 +1225,183 @@ function addColumnIfMissing(db, tableName, columnName, definition) {
   }
   if (columnExists(db, tableName, columnName)) return;
   db.exec("ALTER TABLE " + quoteIdent(tableName) + " ADD COLUMN " + quoteIdent(columnName) + " " + definition);
+}
+
+function splitSqlStatements(sql) {
+  const statements = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+    const next = sql[i + 1];
+    current += char;
+    if (quote) {
+      if (char === quote) {
+        if (next === quote) {
+          current += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === ";") {
+      const statement = current.slice(0, -1).trim();
+      if (statement) statements.push(statement);
+      current = "";
+    }
+  }
+  const tail = current.trim();
+  if (tail) statements.push(tail);
+  return statements;
+}
+
+function createTableNameFromStatement(statement) {
+  const match = /^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?([^"\\s(]+)"?/i.exec(statement.trim());
+  return match ? match[1] : "";
+}
+
+function createIndexTableNameFromStatement(statement) {
+  const match = /^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?[^"\\s(]+"?\\s+ON\\s+"?([^"\\s(]+)"?/i.exec(statement.trim());
+  return match ? match[1] : "";
+}
+
+function createIndexStatementIfMissing(statement) {
+  const trimmed = statement.trim();
+  if (/^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+IF\\s+NOT\\s+EXISTS\\s+/i.test(trimmed)) return trimmed;
+  if (/^CREATE\\s+UNIQUE\\s+INDEX\\s+/i.test(trimmed)) {
+    return trimmed.replace(/^CREATE\\s+UNIQUE\\s+INDEX\\s+/i, "CREATE UNIQUE INDEX IF NOT EXISTS ");
+  }
+  return trimmed.replace(/^CREATE\\s+INDEX\\s+/i, "CREATE INDEX IF NOT EXISTS ");
+}
+
+function splitSqlListItems(value) {
+  const items = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    const next = value[i + 1];
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        if (next === quote) {
+          current += next;
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === ",") {
+      const item = current.trim();
+      if (item) items.push(item);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  const tail = current.trim();
+  if (tail) items.push(tail);
+  return items;
+}
+
+function createIndexColumnNamesFromStatement(statement) {
+  const match = /\\(([^()]*)\\)\\s*(?:WHERE\\s+.*)?$/i.exec(statement.trim());
+  if (!match) return [];
+  const names = [];
+  for (const item of splitSqlListItems(match[1])) {
+    const normalized = item.trim().replace(/\\s+(?:ASC|DESC)\\s*$/i, "");
+    const quoted = /^"([^"]+)"$/.exec(normalized);
+    if (quoted) {
+      names.push(quoted[1]);
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) {
+      names.push(normalized);
+      continue;
+    }
+    return [];
+  }
+  return names;
+}
+
+function indexColumnsExist(db, tableName, columnNames) {
+  if (!columnNames.length) return true;
+  const existingColumns = new Set(db.prepare("PRAGMA table_info(" + quoteIdent(tableName) + ")").all().map((column) => column.name));
+  return columnNames.every((columnName) => existingColumns.has(columnName));
+}
+
+function applyMissingSchemaObjectsFromInitSql(db, sqlPath) {
+  const statements = splitSqlStatements(fs.readFileSync(sqlPath, "utf8"));
+  for (const statement of statements) {
+    if (!/^CREATE\\s+TABLE\\s+/i.test(statement)) continue;
+    const tableName = createTableNameFromStatement(statement);
+    if (!tableName || tableExists(db, tableName)) continue;
+    db.exec(statement);
+    console.log("SQLite schema table added from native-init.sql: " + tableName);
+  }
+  for (const statement of statements) {
+    if (!/^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+/i.test(statement)) continue;
+    const tableName = createIndexTableNameFromStatement(statement);
+    if (!tableName || !tableExists(db, tableName)) continue;
+    const columnNames = createIndexColumnNamesFromStatement(statement);
+    if (!indexColumnsExist(db, tableName, columnNames)) {
+      console.warn("SQLite schema index skipped from native-init.sql because columns are missing on " + tableName);
+      continue;
+    }
+    try {
+      db.exec(createIndexStatementIfMissing(statement));
+    } catch (error) {
+      console.warn("SQLite schema index skipped from native-init.sql for " + tableName + ": " + (error && error.message ? error.message : String(error)));
+    }
+  }
+}
+
+function createStockDomainTables(db) {
+  db.exec([
+    "CREATE TABLE IF NOT EXISTS \\"stock_securities\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"householdId\\" TEXT NOT NULL, \\"market\\" TEXT NOT NULL, \\"stockCode\\" TEXT NOT NULL, \\"stockName\\" TEXT NOT NULL, \\"currency\\" TEXT NOT NULL DEFAULT 'CNY', \\"exchange\\" TEXT, \\"isActive\\" BOOLEAN NOT NULL DEFAULT true, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_securities_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS \\"stock_holdings\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"householdId\\" TEXT NOT NULL, \\"accountId\\" TEXT NOT NULL, \\"securityId\\" TEXT NOT NULL, \\"market\\" TEXT NOT NULL, \\"stockCode\\" TEXT NOT NULL, \\"stockName\\" TEXT, \\"quantity\\" DECIMAL NOT NULL DEFAULT 0, \\"avgCost\\" DECIMAL NOT NULL DEFAULT 0, \\"cost\\" DECIMAL NOT NULL DEFAULT 0, \\"latestPrice\\" DECIMAL, \\"marketValue\\" DECIMAL NOT NULL DEFAULT 0, \\"historicalProfit\\" DECIMAL NOT NULL DEFAULT 0, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_holdings_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"stock_holdings_accountId_fkey\\" FOREIGN KEY (\\"accountId\\") REFERENCES \\"Account\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"stock_holdings_securityId_fkey\\" FOREIGN KEY (\\"securityId\\") REFERENCES \\"stock_securities\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS \\"stock_transactions\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"householdId\\" TEXT NOT NULL, \\"stockAccountId\\" TEXT NOT NULL, \\"cashAccountId\\" TEXT, \\"cashEntryId\\" TEXT, \\"securityId\\" TEXT, \\"market\\" TEXT NOT NULL, \\"stockCode\\" TEXT NOT NULL, \\"stockName\\" TEXT, \\"action\\" TEXT NOT NULL, \\"source\\" TEXT DEFAULT 'manual', \\"tradeDate\\" DATETIME NOT NULL, \\"settleDate\\" DATETIME, \\"grossAmount\\" DECIMAL NOT NULL, \\"netAmount\\" DECIMAL, \\"quantity\\" DECIMAL, \\"price\\" DECIMAL, \\"fee\\" DECIMAL, \\"commission\\" DECIMAL, \\"stampTax\\" DECIMAL, \\"transferFee\\" DECIMAL, \\"exchangeFee\\" DECIMAL, \\"regulatoryFee\\" DECIMAL, \\"otherFee\\" DECIMAL, \\"realizedProfit\\" DECIMAL, \\"externalLinkId\\" TEXT, \\"brokerTradeId\\" TEXT, \\"note\\" TEXT, \\"deletedAt\\" DATETIME, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_transactions_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"stock_transactions_stockAccountId_fkey\\" FOREIGN KEY (\\"stockAccountId\\") REFERENCES \\"Account\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"stock_transactions_cashAccountId_fkey\\" FOREIGN KEY (\\"cashAccountId\\") REFERENCES \\"Account\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE, CONSTRAINT \\"stock_transactions_securityId_fkey\\" FOREIGN KEY (\\"securityId\\") REFERENCES \\"stock_securities\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS \\"stock_price_cache\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"securityId\\" TEXT, \\"market\\" TEXT NOT NULL, \\"stockCode\\" TEXT NOT NULL, \\"priceDate\\" DATETIME NOT NULL, \\"closePrice\\" DECIMAL NOT NULL, \\"currency\\" TEXT NOT NULL DEFAULT 'CNY', \\"source\\" TEXT NOT NULL DEFAULT 'manual', \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_price_cache_securityId_fkey\\" FOREIGN KEY (\\"securityId\\") REFERENCES \\"stock_securities\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS \\"stock_fee_rules\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"accountId\\" TEXT NOT NULL, \\"securityId\\" TEXT, \\"market\\" TEXT, \\"stockCode\\" TEXT, \\"feeType\\" TEXT NOT NULL, \\"direction\\" TEXT NOT NULL DEFAULT 'both', \\"rate\\" DECIMAL, \\"amount\\" DECIMAL, \\"minAmount\\" DECIMAL, \\"currency\\" TEXT NOT NULL DEFAULT 'CNY', \\"effectiveDate\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"source\\" TEXT NOT NULL DEFAULT 'manual', \\"note\\" TEXT, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"stock_fee_rules_accountId_fkey\\" FOREIGN KEY (\\"accountId\\") REFERENCES \\"Account\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"stock_fee_rules_securityId_fkey\\" FOREIGN KEY (\\"securityId\\") REFERENCES \\"stock_securities\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_securities_householdId_market_stockCode_key\\" ON \\"stock_securities\\"(\\"householdId\\", \\"market\\", \\"stockCode\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_securities_householdId_stockName_idx\\" ON \\"stock_securities\\"(\\"householdId\\", \\"stockName\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_securities_market_stockCode_idx\\" ON \\"stock_securities\\"(\\"market\\", \\"stockCode\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_holdings_accountId_securityId_key\\" ON \\"stock_holdings\\"(\\"accountId\\", \\"securityId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_holdings_householdId_accountId_idx\\" ON \\"stock_holdings\\"(\\"householdId\\", \\"accountId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_holdings_accountId_idx\\" ON \\"stock_holdings\\"(\\"accountId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_holdings_securityId_idx\\" ON \\"stock_holdings\\"(\\"securityId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_holdings_market_stockCode_idx\\" ON \\"stock_holdings\\"(\\"market\\", \\"stockCode\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_transactions_cashEntryId_key\\" ON \\"stock_transactions\\"(\\"cashEntryId\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_transactions_householdId_stockAccountId_externalLinkId_key\\" ON \\"stock_transactions\\"(\\"householdId\\", \\"stockAccountId\\", \\"externalLinkId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_householdId_stockAccountId_tradeDate_idx\\" ON \\"stock_transactions\\"(\\"householdId\\", \\"stockAccountId\\", \\"tradeDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_cashAccountId_tradeDate_idx\\" ON \\"stock_transactions\\"(\\"cashAccountId\\", \\"tradeDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_securityId_tradeDate_idx\\" ON \\"stock_transactions\\"(\\"securityId\\", \\"tradeDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_market_stockCode_tradeDate_idx\\" ON \\"stock_transactions\\"(\\"market\\", \\"stockCode\\", \\"tradeDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_brokerTradeId_idx\\" ON \\"stock_transactions\\"(\\"brokerTradeId\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_transactions_deletedAt_idx\\" ON \\"stock_transactions\\"(\\"deletedAt\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"stock_price_cache_market_stockCode_priceDate_key\\" ON \\"stock_price_cache\\"(\\"market\\", \\"stockCode\\", \\"priceDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_price_cache_securityId_priceDate_idx\\" ON \\"stock_price_cache\\"(\\"securityId\\", \\"priceDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_price_cache_priceDate_idx\\" ON \\"stock_price_cache\\"(\\"priceDate\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_fee_rules_accountId_feeType_direction_idx\\" ON \\"stock_fee_rules\\"(\\"accountId\\", \\"feeType\\", \\"direction\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_fee_rules_accountId_securityId_feeType_direction_idx\\" ON \\"stock_fee_rules\\"(\\"accountId\\", \\"securityId\\", \\"feeType\\", \\"direction\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_fee_rules_accountId_market_stockCode_feeType_direction_idx\\" ON \\"stock_fee_rules\\"(\\"accountId\\", \\"market\\", \\"stockCode\\", \\"feeType\\", \\"direction\\")",
+    "CREATE INDEX IF NOT EXISTS \\"stock_fee_rules_effectiveDate_idx\\" ON \\"stock_fee_rules\\"(\\"effectiveDate\\")",
+  ].join(";"));
+  addColumnIfMissing(db, "entry_business_links", "stockTransactionId", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS \\"entry_business_links_stockTransactionId_idx\\" ON \\"entry_business_links\\"(\\"stockTransactionId\\")");
 }
 
 function createStockReferenceTables(db) {
@@ -1358,9 +1542,11 @@ try {
     ensureMigrationTable(db);
     db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run("0.1.0");
     applyRuntimeMigrations(db);
+    applyMissingSchemaObjectsFromInitSql(db, sqlPath);
     console.log(\`SQLite database initialized at \${dbPath}\`);
   } else {
     applyRuntimeMigrations(db);
+    applyMissingSchemaObjectsFromInitSql(db, sqlPath);
     console.log(\`SQLite database already initialized and migrated at \${dbPath}\`);
   }
 } finally {

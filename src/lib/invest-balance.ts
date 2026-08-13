@@ -14,6 +14,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 
 export type InvestBalanceDetail = {
   marketValue: number;
@@ -25,6 +26,7 @@ export type InvestBalanceDetail = {
 export type PositionDisplayRow = {
   fundCode: string;
   wealthProductId?: string | null;
+  propertyAssetId?: string | null;
   name: string;
   holdingDate: string;
   units: number;
@@ -43,6 +45,7 @@ export type PositionDisplayRow = {
 export type ClearedPositionRow = {
   fundCode: string;
   wealthProductId?: string | null;
+  propertyAssetId?: string | null;
   name: string;
   historicalProfit: number;
   totalInvested: number;
@@ -51,6 +54,18 @@ export type ClearedPositionRow = {
   clearedDate: string;
   totalBuyAmount: number;
   totalRedeemAmount: number;
+};
+
+type PropertyAssetDisplayRow = {
+  id: string;
+  accountId: string;
+  name: string;
+  status: string | null;
+  purchaseDate?: Date | null;
+  cost: unknown;
+  marketValue: unknown;
+  latestValuationDate?: Date | null;
+  createdAt?: Date;
 };
 
 function isCashInSubtype(subtype: FundSubtype | string | null | undefined) {
@@ -114,6 +129,30 @@ async function loadStockHoldingsForInvestSummary(accountIds: string[]) {
     if (isMissingStockHoldingsTableError(error)) return [];
     throw error;
   }
+}
+
+async function loadPropertyAssetsForInvestSummary(accountIds: string[]) {
+  if (accountIds.length === 0) return [];
+  return optionalPrismaFindMany<PropertyAssetDisplayRow>(
+    prisma,
+    "propertyAsset",
+    {
+      where: { accountId: { in: accountIds }, deletedAt: null },
+    },
+    { tableNames: ["property_assets"] },
+  );
+}
+
+async function loadPropertyAssetsForPositionDisplay(accountId: string) {
+  return optionalPrismaFindMany<PropertyAssetDisplayRow>(
+    prisma,
+    "propertyAsset",
+    {
+      where: { accountId, deletedAt: null },
+      orderBy: [{ status: "asc" }, { latestValuationDate: "desc" }, { createdAt: "asc" }],
+    },
+    { tableNames: ["property_assets"] },
+  );
 }
 
 async function loadDisplayPendingCostByHoldingKey(ctx: HouseholdContext, accountIds: string[]) {
@@ -192,7 +231,10 @@ export const computeInvestBalances = cache(
   const stockAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "stock")
     .map((account) => account.id);
-  const nonFundAccountIds = new Set([...metalAccountIds, ...wealthAccountIds, ...stockAccountIds]);
+  const propertyAccountIds = accounts
+    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "property")
+    .map((account) => account.id);
+  const nonFundAccountIds = new Set([...metalAccountIds, ...wealthAccountIds, ...stockAccountIds, ...propertyAccountIds]);
   const fundAccountIds = investIds.filter((id) => !nonFundAccountIds.has(id));
 
   const allHoldings = await prisma.fundHolding.findMany({
@@ -205,6 +247,7 @@ export const computeInvestBalances = cache(
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
   });
   const allStockHoldings = await loadStockHoldingsForInvestSummary(stockAccountIds);
+  const allPropertyAssets = await loadPropertyAssetsForInvestSummary(propertyAccountIds);
   const stockCashBalanceByAccountId = stockAccountIds.length > 0
     ? await computeAccountDisplayBalances(
         stockAccountIds.map((id) => ({ id, kind: AccountKind.investment, investProductType: "stock" })),
@@ -331,6 +374,13 @@ export const computeInvestBalances = cache(
     result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
   }
 
+  for (const acctId of propertyAccountIds) {
+    const assets = allPropertyAssets.filter((asset) => asset.accountId === acctId && asset.status !== "sold");
+    const marketValue = assets.reduce((sum, asset) => sum + toNumber(asset.marketValue), 0);
+    const totalCost = assets.reduce((sum, asset) => sum + toNumber(asset.cost), 0);
+    result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
+  }
+
   return result;
 },
 );
@@ -363,6 +413,53 @@ export const computePositionDisplay = cache(
   });
   if (!account) {
     return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, totalHistoricalProfit: 0 };
+  }
+
+  if (account.investProductType === "property") {
+    const propertyAssets = await loadPropertyAssetsForPositionDisplay(accountId);
+    const positions: PositionDisplayRow[] = propertyAssets
+      .filter((asset) => asset.status !== "sold")
+      .map((asset) => {
+        const cost = toNumber(asset.cost);
+        const marketValue = toNumber(asset.marketValue);
+        const floatingPnL = marketValue - cost;
+        return {
+          fundCode: asset.id,
+          propertyAssetId: asset.id,
+          name: asset.name,
+          holdingDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
+          units: 0,
+          hasUnits: false,
+          avgCost: 0,
+          cost,
+          nav: null,
+          navDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
+          marketValue,
+          floatingPnL,
+          floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+          pendingCost: 0,
+          historicalProfit: 0,
+        };
+      })
+      .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
+    const clearedPositions: ClearedPositionRow[] = propertyAssets
+      .filter((asset) => asset.status === "sold")
+      .map((asset) => ({
+        fundCode: asset.id,
+        propertyAssetId: asset.id,
+        name: asset.name,
+        historicalProfit: toNumber(asset.marketValue) - toNumber(asset.cost),
+        totalInvested: toNumber(asset.cost),
+        returnRate: toNumber(asset.cost) > 0 ? (toNumber(asset.marketValue) - toNumber(asset.cost)) / toNumber(asset.cost) : 0,
+        firstBuyDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
+        clearedDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
+        totalBuyAmount: toNumber(asset.cost),
+        totalRedeemAmount: toNumber(asset.marketValue),
+      }));
+    const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+    const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+    const totalHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
   }
 
   if (account.investProductType === "stock") {

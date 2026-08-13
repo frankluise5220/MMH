@@ -12,6 +12,8 @@ import {
 type UndoState = {
   label: string;
   canUndo: boolean;
+  undoCount?: number;
+  historyLimit?: number;
 } | null;
 
 export function UndoLastOperationButton({
@@ -59,7 +61,10 @@ export function UndoLastOperationButton({
         setMessage(result?.error ?? "撤销失败");
         return;
       }
-      setMessage(`已撤销：${result.data.label}`);
+      const remainingCount = Number(result.data?.remainingCount ?? 0);
+      setMessage(remainingCount > 0
+        ? `已撤销：${result.data.label}，还可撤销 ${remainingCount} 步`
+        : `已撤销：${result.data.label}`);
       setState(null);
       dispatchFinanceDataChanged({ reason: "undo-entry-operation", entryIds: undefined });
     } finally {
@@ -67,7 +72,10 @@ export function UndoLastOperationButton({
     }
   }
 
-  const title = state?.canUndo ? `撤销：${state.label}` : "没有可撤销的操作";
+  const undoCount = Number(state?.undoCount ?? 0);
+  const title = state?.canUndo
+    ? `撤销：${state.label}${undoCount > 0 ? `（可连续撤销 ${undoCount} 步）` : ""}`
+    : "没有可撤销的操作";
   if (compact) {
     return (
       <button

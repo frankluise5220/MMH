@@ -77,6 +77,7 @@ function normalizeSidebarItemKind(item: Pick<AccountItem, "kind" | "investProduc
   if (item.kind === "investment" && item.investProductType === "money") return "investment_money";
   if (item.kind === "investment" && item.investProductType === "wealth") return "investment_wealth";
   if (item.kind === "investment" && item.investProductType === "stock") return "investment_stock";
+  if (item.kind === "investment" && item.investProductType === "property") return "investment_property";
   if (item.kind === "investment" && item.investProductType === "fund") return "investment_fund";
   return item.kind;
 }
@@ -116,7 +117,7 @@ function HeaderHistoryButton({
 
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
 const CREDIT_KINDS = ["bank_credit"];
-const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_stock"];
+const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_stock", "investment_property"];
 const INSURANCE_KINDS = ["insurance"];
 const LIABILITY_KINDS = ["loan_summary", "loan"];
 const ASSET_SUBGROUPS: Array<{ key: string; label: string; kinds: string[] }> = [
@@ -142,6 +143,7 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["investment_fund", 52],
   ["investment_wealth", 53],
   ["investment_stock", 54],
+  ["investment_property", 55],
   ["insurance", 55],
   ["bank_credit", 60],
   ["loan_summary", 70],
@@ -284,6 +286,7 @@ export function SidebarClient({
       selectedView === "investmoney" ||
       selectedView === "investwealth" ||
       selectedView === "investstock" ||
+      selectedView === "investproperty" ||
       selectedView === "regularinvest");
 
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
@@ -675,6 +678,7 @@ export function SidebarClient({
     if (kind === "investment_money") return t("sidebar.kind.moneyFund");
     if (kind === "investment_wealth") return t("sidebar.kind.wealth");
     if (kind === "investment_stock") return t("investment.product.stock");
+    if (kind === "investment_property") return t("investment.product.property");
     if (kind === "insurance") return t("sidebar.kind.insurance");
     if (kind === "bank_credit") return t("sidebar.kind.creditCard");
     if (kind === "loan_summary" || kind === "loan") return t("sidebar.kind.loan");

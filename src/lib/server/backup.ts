@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import {
+  getOptionalPrismaDelegate,
+  optionalPrismaDeleteMany,
+  optionalPrismaFindMany,
+  type OptionalPrismaRestoreDelegate,
+} from "@/lib/server/optional-prisma-delegate";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import type { CurrentUser } from "@/lib/server/auth";
@@ -365,6 +371,199 @@ async function createManyRecords(
   await target.createMany({ data: records.map((record) => normalizeRecordDates(record, nullDateKeys)) });
 }
 
+function isSqliteRuntime() {
+  const url = String(process.env.DATABASE_URL ?? "");
+  return url === ":memory:" || url.startsWith("file:");
+}
+
+const SQLITE_STOCK_RESTORE_SCHEMA_SQL = [
+  `CREATE TABLE IF NOT EXISTS "stock_securities" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "market" TEXT NOT NULL,
+    "stockCode" TEXT NOT NULL,
+    "stockName" TEXT NOT NULL,
+    "currency" TEXT NOT NULL DEFAULT 'CNY',
+    "exchange" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_securities_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_holdings" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "securityId" TEXT NOT NULL,
+    "market" TEXT NOT NULL,
+    "stockCode" TEXT NOT NULL,
+    "stockName" TEXT,
+    "quantity" DECIMAL NOT NULL DEFAULT 0,
+    "avgCost" DECIMAL NOT NULL DEFAULT 0,
+    "cost" DECIMAL NOT NULL DEFAULT 0,
+    "latestPrice" DECIMAL,
+    "marketValue" DECIMAL NOT NULL DEFAULT 0,
+    "historicalProfit" DECIMAL NOT NULL DEFAULT 0,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_holdings_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "stock_holdings_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "stock_holdings_securityId_fkey" FOREIGN KEY ("securityId") REFERENCES "stock_securities"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_transactions" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "stockAccountId" TEXT NOT NULL,
+    "cashAccountId" TEXT,
+    "cashEntryId" TEXT,
+    "securityId" TEXT,
+    "market" TEXT NOT NULL,
+    "stockCode" TEXT NOT NULL,
+    "stockName" TEXT,
+    "action" TEXT NOT NULL,
+    "source" TEXT DEFAULT 'manual',
+    "tradeDate" DATETIME NOT NULL,
+    "settleDate" DATETIME,
+    "grossAmount" DECIMAL NOT NULL,
+    "netAmount" DECIMAL,
+    "quantity" DECIMAL,
+    "price" DECIMAL,
+    "fee" DECIMAL,
+    "commission" DECIMAL,
+    "stampTax" DECIMAL,
+    "transferFee" DECIMAL,
+    "exchangeFee" DECIMAL,
+    "regulatoryFee" DECIMAL,
+    "otherFee" DECIMAL,
+    "realizedProfit" DECIMAL,
+    "externalLinkId" TEXT,
+    "brokerTradeId" TEXT,
+    "note" TEXT,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_transactions_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "stock_transactions_stockAccountId_fkey" FOREIGN KEY ("stockAccountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "stock_transactions_cashAccountId_fkey" FOREIGN KEY ("cashAccountId") REFERENCES "Account"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "stock_transactions_securityId_fkey" FOREIGN KEY ("securityId") REFERENCES "stock_securities"("id") ON DELETE SET NULL ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_price_cache" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "securityId" TEXT,
+    "market" TEXT NOT NULL,
+    "stockCode" TEXT NOT NULL,
+    "priceDate" DATETIME NOT NULL,
+    "closePrice" DECIMAL NOT NULL,
+    "currency" TEXT NOT NULL DEFAULT 'CNY',
+    "source" TEXT NOT NULL DEFAULT 'manual',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_price_cache_securityId_fkey" FOREIGN KEY ("securityId") REFERENCES "stock_securities"("id") ON DELETE SET NULL ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_fee_rules" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "accountId" TEXT NOT NULL,
+    "securityId" TEXT,
+    "market" TEXT,
+    "stockCode" TEXT,
+    "feeType" TEXT NOT NULL,
+    "direction" TEXT NOT NULL DEFAULT 'both',
+    "rate" DECIMAL,
+    "amount" DECIMAL,
+    "minAmount" DECIMAL,
+    "currency" TEXT NOT NULL DEFAULT 'CNY',
+    "effectiveDate" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "source" TEXT NOT NULL DEFAULT 'manual',
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_fee_rules_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "stock_fee_rules_securityId_fkey" FOREIGN KEY ("securityId") REFERENCES "stock_securities"("id") ON DELETE SET NULL ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_market_fee_rules" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT,
+    "market" TEXT NOT NULL,
+    "stockCode" TEXT,
+    "feeType" TEXT NOT NULL,
+    "direction" TEXT NOT NULL DEFAULT 'both',
+    "rate" DECIMAL,
+    "amount" DECIMAL,
+    "minAmount" DECIMAL,
+    "currency" TEXT NOT NULL DEFAULT 'CNY',
+    "effectiveDate" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "source" TEXT NOT NULL DEFAULT 'system',
+    "sourceUrl" TEXT,
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "stock_market_fee_rules_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "stock_brokerage_catalog" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "shortName" TEXT,
+    "aliases" TEXT,
+    "registryCode" TEXT,
+    "officialWebsite" TEXT,
+    "source" TEXT NOT NULL DEFAULT 'manual',
+    "sourceUrl" TEXT,
+    "sourceUpdatedAt" DATETIME,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_securities_householdId_market_stockCode_key" ON "stock_securities"("householdId", "market", "stockCode")`,
+  `CREATE INDEX IF NOT EXISTS "stock_securities_householdId_stockName_idx" ON "stock_securities"("householdId", "stockName")`,
+  `CREATE INDEX IF NOT EXISTS "stock_securities_market_stockCode_idx" ON "stock_securities"("market", "stockCode")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_holdings_accountId_securityId_key" ON "stock_holdings"("accountId", "securityId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_holdings_householdId_accountId_idx" ON "stock_holdings"("householdId", "accountId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_holdings_accountId_idx" ON "stock_holdings"("accountId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_holdings_securityId_idx" ON "stock_holdings"("securityId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_holdings_market_stockCode_idx" ON "stock_holdings"("market", "stockCode")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_transactions_cashEntryId_key" ON "stock_transactions"("cashEntryId")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_transactions_householdId_stockAccountId_externalLinkId_key" ON "stock_transactions"("householdId", "stockAccountId", "externalLinkId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_householdId_stockAccountId_tradeDate_idx" ON "stock_transactions"("householdId", "stockAccountId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_cashAccountId_tradeDate_idx" ON "stock_transactions"("cashAccountId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_securityId_tradeDate_idx" ON "stock_transactions"("securityId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_market_stockCode_tradeDate_idx" ON "stock_transactions"("market", "stockCode", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_brokerTradeId_idx" ON "stock_transactions"("brokerTradeId")`,
+  `CREATE INDEX IF NOT EXISTS "stock_transactions_deletedAt_idx" ON "stock_transactions"("deletedAt")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_price_cache_market_stockCode_priceDate_key" ON "stock_price_cache"("market", "stockCode", "priceDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_price_cache_securityId_priceDate_idx" ON "stock_price_cache"("securityId", "priceDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_price_cache_priceDate_idx" ON "stock_price_cache"("priceDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_fee_rules_accountId_feeType_direction_idx" ON "stock_fee_rules"("accountId", "feeType", "direction")`,
+  `CREATE INDEX IF NOT EXISTS "stock_fee_rules_accountId_securityId_feeType_direction_idx" ON "stock_fee_rules"("accountId", "securityId", "feeType", "direction")`,
+  `CREATE INDEX IF NOT EXISTS "stock_fee_rules_accountId_market_stockCode_feeType_direction_idx" ON "stock_fee_rules"("accountId", "market", "stockCode", "feeType", "direction")`,
+  `CREATE INDEX IF NOT EXISTS "stock_fee_rules_effectiveDate_idx" ON "stock_fee_rules"("effectiveDate")`,
+  `CREATE INDEX IF NOT EXISTS "stock_market_fee_rules_householdId_market_stockCode_feeType_direction_idx" ON "stock_market_fee_rules"("householdId", "market", "stockCode", "feeType", "direction")`,
+  `CREATE INDEX IF NOT EXISTS "stock_market_fee_rules_market_stockCode_feeType_direction_idx" ON "stock_market_fee_rules"("market", "stockCode", "feeType", "direction")`,
+  `CREATE INDEX IF NOT EXISTS "stock_market_fee_rules_effectiveDate_idx" ON "stock_market_fee_rules"("effectiveDate")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "stock_brokerage_catalog_name_key" ON "stock_brokerage_catalog"("name")`,
+  `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_shortName_idx" ON "stock_brokerage_catalog"("shortName")`,
+  `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_registryCode_idx" ON "stock_brokerage_catalog"("registryCode")`,
+  `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_isActive_idx" ON "stock_brokerage_catalog"("isActive")`,
+] as const;
+
+async function ensureSqliteColumn(tableName: string, columnName: string, definition: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)) {
+    throw new Error("Unsafe SQLite schema identifier");
+  }
+  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("${tableName}")`);
+  if (columns.length === 0 || columns.some((column) => column.name === columnName)) return;
+  await prisma.$executeRawUnsafe(`ALTER TABLE "${tableName}" ADD COLUMN "${columnName}" ${definition}`);
+}
+
+async function ensureSqliteRestoreCompatibilitySchema() {
+  if (!isSqliteRuntime()) return;
+  for (const statement of SQLITE_STOCK_RESTORE_SCHEMA_SQL) {
+    await prisma.$executeRawUnsafe(statement);
+  }
+  await ensureSqliteColumn("entry_business_links", "stockTransactionId", "TEXT");
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS "entry_business_links_stockTransactionId_idx" ON "entry_business_links"("stockTransactionId")`,
+  );
+}
+
 function decodeBackupPackageKey(value: string) {
   const key = Buffer.from(value, "base64");
   if (key.length !== 32) {
@@ -631,6 +830,9 @@ export async function buildHouseholdBackupPayload(
     stockPriceCache,
     stockFeeRules,
     stockMarketFeeRules,
+    propertyAssets,
+    propertyValuations,
+    propertyTransactions,
     entryBusinessLinks,
     systemSettings,
     accessKeys,
@@ -668,12 +870,60 @@ export async function buildHouseholdBackupPayload(
     prisma.wealthTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.depositTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.stockSecurity.findMany({ where: { householdId }, orderBy: [{ market: "asc" }, { stockCode: "asc" }] }),
-    prisma.stockHolding.findMany({ where: { householdId }, orderBy: [{ accountId: "asc" }, { market: "asc" }, { stockCode: "asc" }] }),
-    prisma.stockTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.stockPriceCache.findMany({ where: { StockSecurity: { is: { householdId } } }, orderBy: [{ priceDate: "asc" }, { market: "asc" }, { stockCode: "asc" }] }),
-    prisma.stockFeeRule.findMany({ where: { Account: { householdId } }, orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }] }),
-    prisma.stockMarketFeeRule.findMany({ where: { householdId }, orderBy: [{ market: "asc" }, { effectiveDate: "asc" }] }),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockSecurity",
+      { where: { householdId }, orderBy: [{ market: "asc" }, { stockCode: "asc" }] },
+      { tableNames: ["stock_securities"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockHolding",
+      { where: { householdId }, orderBy: [{ accountId: "asc" }, { market: "asc" }, { stockCode: "asc" }] },
+      { tableNames: ["stock_holdings"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockTransaction",
+      { where: { householdId }, orderBy: [{ createdAt: "asc" }] },
+      { tableNames: ["stock_transactions"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockPriceCache",
+      { where: { StockSecurity: { is: { householdId } } }, orderBy: [{ priceDate: "asc" }, { market: "asc" }, { stockCode: "asc" }] },
+      { tableNames: ["stock_price_cache", "stock_securities"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockFeeRule",
+      { where: { Account: { householdId } }, orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }] },
+      { tableNames: ["stock_fee_rules"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "stockMarketFeeRule",
+      { where: { householdId }, orderBy: [{ market: "asc" }, { effectiveDate: "asc" }] },
+      { tableNames: ["stock_market_fee_rules"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "propertyAsset",
+      { where: { householdId }, orderBy: [{ createdAt: "asc" }] },
+      { tableNames: ["property_assets"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "propertyValuation",
+      { where: { householdId }, orderBy: [{ valuationDate: "asc" }, { createdAt: "asc" }] },
+      { tableNames: ["property_valuations"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "propertyTransaction",
+      { where: { householdId }, orderBy: [{ createdAt: "asc" }] },
+      { tableNames: ["property_transactions"] },
+    ),
     prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
     prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
@@ -693,7 +943,6 @@ export async function buildHouseholdBackupPayload(
     fundFeeRates,
     fundHoldings,
     preciousMetalHoldings,
-    fundSnapshots,
     attachments,
     entryTags,
   ] = await Promise.all([
@@ -720,9 +969,6 @@ export async function buildHouseholdBackupPayload(
       : Promise.resolve([]),
     accountIds.length > 0
       ? prisma.preciousMetalHolding.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { metalTypeName: "asc" }] })
-      : Promise.resolve([]),
-    accountIds.length > 0
-      ? prisma.fundSnapshot.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ createdAt: "asc" }] })
       : Promise.resolve([]),
     prisma.attachment.findMany({ where: { transactions: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
     prisma.entryTag.findMany({
@@ -759,7 +1005,8 @@ export async function buildHouseholdBackupPayload(
         wealthTransactions.length +
         depositTransactions.length +
         preciousMetalTransactions.length +
-        stockTransactions.length,
+        stockTransactions.length +
+        propertyTransactions.length,
       systemSettings: systemSettings.length,
       accessKeys: accessKeys.length,
       aiChannels: aiChannels.length,
@@ -794,7 +1041,6 @@ export async function buildHouseholdBackupPayload(
       loanRateAdjustments,
       fundQueryApis,
       statementRecognitionRules,
-      fundSnapshots,
       regularInvestPlans,
       importBatches,
       transactions,
@@ -813,6 +1059,9 @@ export async function buildHouseholdBackupPayload(
       stockPriceCache,
       stockFeeRules,
       stockMarketFeeRules,
+      propertyAssets,
+      propertyValuations,
+      propertyTransactions,
       entryBusinessLinks,
       attachments,
       entryTags,
@@ -851,7 +1100,6 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
-    ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
     ["Transactions", labelTransactionRows(payload.data.transactions as Record<string, unknown>[])],
@@ -870,6 +1118,9 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
+    ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
+    ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
+    ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -929,7 +1180,6 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
-    ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
     ["Transactions", labelTransactionRows(tableTransactions)],
@@ -948,6 +1198,9 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["StockPriceCache", sheetRows(payload.data.stockPriceCache)],
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
+    ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
+    ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
+    ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
@@ -1009,7 +1262,6 @@ export function parseBackupPayload(raw: unknown) {
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
-      fundSnapshots: ensureArray(data.fundSnapshots ?? [], "data.fundSnapshots"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
       importBatches: ensureArray(data.importBatches ?? [], "data.importBatches"),
       transactions: ensureArray(data.transactions ?? [], "data.transactions"),
@@ -1028,6 +1280,9 @@ export function parseBackupPayload(raw: unknown) {
       stockPriceCache: ensureArray(data.stockPriceCache ?? [], "data.stockPriceCache"),
       stockFeeRules: ensureArray(data.stockFeeRules ?? [], "data.stockFeeRules"),
       stockMarketFeeRules: ensureArray(data.stockMarketFeeRules ?? [], "data.stockMarketFeeRules"),
+      propertyAssets: ensureArray(data.propertyAssets ?? [], "data.propertyAssets"),
+      propertyValuations: ensureArray(data.propertyValuations ?? [], "data.propertyValuations"),
+      propertyTransactions: ensureArray(data.propertyTransactions ?? [], "data.propertyTransactions"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
@@ -1052,6 +1307,7 @@ export async function restoreHouseholdBackup(
   const payload = parseBackupPayload(rawPayload);
   const data = payload.data;
   const householdId = options.householdId;
+  await ensureSqliteRestoreCompatibilitySchema();
 
   const importedUsers = data.users.map((item) => String(item.id));
   const importedUserSet = new Set(importedUsers);
@@ -1079,6 +1335,21 @@ export async function restoreHouseholdBackup(
           importedAccounts.has(String(item.stockAccountId)) &&
           (!item.cashAccountId || importedAccounts.has(String(item.cashAccountId))) &&
           (!item.securityId || importedStockSecurities.has(String(item.securityId))),
+      )
+      .map((item) => String(item.id)),
+  );
+  const importedPropertyAssets = new Set(
+    data.propertyAssets
+      .filter((item) => importedAccounts.has(String(item.accountId)))
+      .map((item) => String(item.id)),
+  );
+  const importedPropertyTransactions = new Set(
+    data.propertyTransactions
+      .filter(
+        (item) =>
+          importedAccounts.has(String(item.accountId)) &&
+          importedPropertyAssets.has(String(item.propertyAssetId)) &&
+          (!item.cashAccountId || importedAccounts.has(String(item.cashAccountId))),
       )
       .map((item) => String(item.id)),
   );
@@ -1115,6 +1386,18 @@ export async function restoreHouseholdBackup(
     item.fundSourceEntryId != null &&
     legacyMainFundIds.has(String(item.fundSourceEntryId))
   ));
+  const backupContainsPropertyData =
+    data.propertyAssets.length > 0 ||
+    data.propertyValuations.length > 0 ||
+    data.propertyTransactions.length > 0;
+  const backupContainsStockData =
+    data.stockSecurities.length > 0 ||
+    data.stockHoldings.length > 0 ||
+    data.stockTransactions.length > 0 ||
+    data.stockPriceCache.length > 0 ||
+    data.stockFeeRules.length > 0 ||
+    data.stockMarketFeeRules.length > 0 ||
+    data.entryBusinessLinks.some((item) => item.stockTransactionId != null);
 
   await prisma.$transaction(async (tx) => {
     const currentUsers = await tx.user.findMany({
@@ -1128,6 +1411,9 @@ export async function restoreHouseholdBackup(
 
     const currentUserIds = currentUsers.map((item) => item.id);
     const currentAccountIds = currentAccounts.map((item) => item.id);
+    const propertyAssetDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyAsset");
+    const propertyValuationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyValuation");
+    const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
 
     await tx.systemSetting.deleteMany({ where: { key: { in: householdSystemSettingKeys(householdId) } } });
     await tx.attachment.deleteMany({ where: { transactions: { householdId } } });
@@ -1140,12 +1426,79 @@ export async function restoreHouseholdBackup(
     await tx.wealthTransaction.deleteMany({ where: { householdId } });
     await tx.depositTransaction.deleteMany({ where: { householdId } });
     await tx.preciousMetalTransaction.deleteMany({ where: { householdId } });
-    await tx.stockTransaction.deleteMany({ where: { householdId } });
-    await tx.stockPriceCache.deleteMany({ where: { StockSecurity: { is: { householdId } } } });
-    await tx.stockFeeRule.deleteMany({ where: { Account: { householdId } } });
-    await tx.stockMarketFeeRule.deleteMany({ where: { householdId } });
-    await tx.stockHolding.deleteMany({ where: { householdId } });
-    await tx.stockSecurity.deleteMany({ where: { householdId } });
+    const stockTransactionsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockTransaction",
+      { where: { householdId } },
+      { tableNames: ["stock_transactions"] },
+    );
+    const propertyTransactionsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "propertyTransaction",
+      { where: { householdId } },
+      { tableNames: ["property_transactions"] },
+    );
+    const propertyValuationsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "propertyValuation",
+      { where: { householdId } },
+      { tableNames: ["property_valuations"] },
+    );
+    const propertyAssetsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "propertyAsset",
+      { where: { householdId } },
+      { tableNames: ["property_assets"] },
+    );
+    if (
+      backupContainsPropertyData &&
+      (!propertyTransactionsDeleted || !propertyValuationsDeleted || !propertyAssetsDeleted)
+    ) {
+      restoreError("当前系统版本不支持房产数据，请先更新并完成数据库迁移后再恢复。");
+    }
+    const stockPriceCacheDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockPriceCache",
+      { where: { StockSecurity: { is: { householdId } } } },
+      { tableNames: ["stock_price_cache", "stock_securities"] },
+    );
+    const stockFeeRulesDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockFeeRule",
+      { where: { Account: { householdId } } },
+      { tableNames: ["stock_fee_rules"] },
+    );
+    const stockMarketFeeRulesDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockMarketFeeRule",
+      { where: { householdId } },
+      { tableNames: ["stock_market_fee_rules"] },
+    );
+    const stockHoldingsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockHolding",
+      { where: { householdId } },
+      { tableNames: ["stock_holdings"] },
+    );
+    const stockSecuritiesDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "stockSecurity",
+      { where: { householdId } },
+      { tableNames: ["stock_securities"] },
+    );
+    if (
+      backupContainsStockData &&
+      (
+        !stockTransactionsDeleted ||
+        !stockPriceCacheDeleted ||
+        !stockFeeRulesDeleted ||
+        !stockMarketFeeRulesDeleted ||
+        !stockHoldingsDeleted ||
+        !stockSecuritiesDeleted
+      )
+    ) {
+      restoreError("当前系统版本不支持股票数据，请先更新并完成数据库迁移后再恢复。");
+    }
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
 
@@ -1155,11 +1508,20 @@ export async function restoreHouseholdBackup(
           OR: [{ householdId }, { accountId: { in: currentAccountIds } }, { cashAccountId: { in: currentAccountIds } }],
         },
       });
-      await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
-      await tx.stockHolding.deleteMany({ where: { accountId: { in: currentAccountIds } } });
-      await tx.stockFeeRule.deleteMany({ where: { accountId: { in: currentAccountIds } } });
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockHolding",
+        { where: { accountId: { in: currentAccountIds } } },
+        { tableNames: ["stock_holdings"] },
+      );
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockFeeRule",
+        { where: { accountId: { in: currentAccountIds } } },
+        { tableNames: ["stock_fee_rules"] },
+      );
       await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.fundFeeRate.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.billOverride.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -1774,25 +2136,39 @@ export async function restoreHouseholdBackup(
       );
     }
 
-    if (data.fundSnapshots.length > 0) {
-      await tx.fundSnapshot.createMany({
-        data: data.fundSnapshots
+    if (propertyAssetDelegate) {
+      await createManyRecords(
+        propertyAssetDelegate,
+        data.propertyAssets
           .filter((item) => importedAccounts.has(String(item.accountId)))
           .map((item) => ({
-            id: String(item.id),
+            ...item,
+            householdId,
             accountId: String(item.accountId),
-            snapshotDate: new Date(String(item.snapshotDate)),
-            totalCost: item.totalCost == null ? "0" : String(item.totalCost),
+            name: String(item.name ?? ""),
+            currency: item.currency == null ? "CNY" : String(item.currency),
+            purchasePrice: item.purchasePrice == null ? null : String(item.purchasePrice),
+            cost: item.cost == null ? "0" : String(item.cost),
             marketValue: item.marketValue == null ? "0" : String(item.marketValue),
-            floatingPnL: item.floatingPnL == null ? "0" : String(item.floatingPnL),
-            floatingPnLRate: item.floatingPnLRate == null ? "0" : String(item.floatingPnLRate),
-            units: item.units == null ? "0" : String(item.units),
-            nav: item.nav == null ? null : String(item.nav),
-            source: item.source == null ? null : String(item.source),
-            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
-            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+            status: item.status == null ? "active" : String(item.status),
           })),
-      });
+        new Set(["purchaseDate", "latestValuationDate", "deletedAt"]),
+      );
+    }
+
+    if (propertyValuationDelegate) {
+      await createManyRecords(
+        propertyValuationDelegate,
+        data.propertyValuations
+          .filter((item) => importedPropertyAssets.has(String(item.propertyAssetId)))
+          .map((item) => ({
+            ...item,
+            householdId,
+            propertyAssetId: String(item.propertyAssetId),
+            marketValue: item.marketValue == null ? "0" : String(item.marketValue),
+            source: item.source == null ? "manual" : String(item.source),
+          })),
+      );
     }
 
     await createManyRecords(
@@ -2250,6 +2626,41 @@ export async function restoreHouseholdBackup(
       new Set(["settleDate", "deletedAt"]),
     );
 
+    if (propertyTransactionDelegate) {
+      await createManyRecords(
+        propertyTransactionDelegate,
+        data.propertyTransactions
+          .filter(
+            (item) =>
+              importedAccounts.has(String(item.accountId)) &&
+              importedPropertyAssets.has(String(item.propertyAssetId)) &&
+              (!item.cashAccountId || importedAccounts.has(String(item.cashAccountId))),
+          )
+          .map((item) => ({
+            ...item,
+            householdId,
+            accountId: String(item.accountId),
+            cashAccountId:
+              item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+                ? String(item.cashAccountId)
+                : null,
+            cashEntryId:
+              item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+                ? String(item.cashEntryId)
+                : null,
+            propertyAssetId: String(item.propertyAssetId),
+            action: String(item.action ?? "purchase") as never,
+            source: item.source == null ? "manual" : String(item.source),
+            amount: item.amount == null ? "0" : String(item.amount),
+            fee: item.fee == null ? null : String(item.fee),
+            tax: item.tax == null ? null : String(item.tax),
+            realizedProfit: item.realizedProfit == null ? null : String(item.realizedProfit),
+            note: item.note == null ? null : String(item.note),
+          })),
+        new Set(["settlementDate", "deletedAt"]),
+      );
+    }
+
     await createManyRecords(
       tx.fundTransactionCashFlow,
       data.fundTransactionCashFlows
@@ -2300,10 +2711,12 @@ export async function restoreHouseholdBackup(
           item.preciousMetalTransactionId && importedPreciousMetalTransactions.has(String(item.preciousMetalTransactionId))
             ? String(item.preciousMetalTransactionId)
             : null,
-        stockTransactionId:
-          item.stockTransactionId && importedStockTransactions.has(String(item.stockTransactionId))
-            ? String(item.stockTransactionId)
-            : null,
+        ...(item.stockTransactionId && importedStockTransactions.has(String(item.stockTransactionId))
+          ? { stockTransactionId: String(item.stockTransactionId) }
+          : {}),
+        ...(item.propertyTransactionId && importedPropertyTransactions.has(String(item.propertyTransactionId))
+          ? { propertyTransactionId: String(item.propertyTransactionId) }
+          : {}),
       })),
       new Set(["deletedAt"]),
     );

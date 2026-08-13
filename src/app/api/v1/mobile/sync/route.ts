@@ -9,6 +9,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 
 export const runtime = "nodejs";
 
@@ -120,8 +121,26 @@ export async function GET(req: Request) {
           OR: [{ updatedAt }, { deletedAt: updatedAt }],
         }
       : { ...scope.hidFilter, deletedAt: null };
+    const propertyWhere = since
+      ? {
+          ...scope.hidFilter,
+          OR: [{ updatedAt }, { deletedAt: updatedAt }],
+        }
+      : { ...scope.hidFilter, deletedAt: null };
 
-    const [accounts, categories, transactionsRaw, fundHoldings, stockHoldings, stockTransactions, fundConfirmDays, fundFeeRates, regularInvestPlans] = await Promise.all([
+    const [
+      accounts,
+      categories,
+      transactionsRaw,
+      fundHoldings,
+      stockHoldings,
+      stockTransactions,
+      propertyAssets,
+      propertyTransactions,
+      fundConfirmDays,
+      fundFeeRates,
+      regularInvestPlans,
+    ] = await Promise.all([
       prisma.account.findMany({
         where: accountWhere,
         select: {
@@ -282,6 +301,65 @@ export async function GET(req: Request) {
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         take: limit + 1,
       }),
+      optionalPrismaFindMany<any>(
+        prisma,
+        "propertyAsset",
+        {
+          where: propertyWhere,
+          select: {
+            id: true,
+            accountId: true,
+            name: true,
+            propertyType: true,
+            address: true,
+            currency: true,
+            purchaseDate: true,
+            purchasePrice: true,
+            cost: true,
+            marketValue: true,
+            latestValuationDate: true,
+            status: true,
+            note: true,
+            deletedAt: true,
+            updatedAt: true,
+          },
+          orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+          take: limit + 1,
+        },
+        { tableNames: ["property_assets"] },
+      ),
+      optionalPrismaFindMany<any>(
+        prisma,
+        "propertyTransaction",
+        {
+          where: propertyWhere,
+          select: {
+            id: true,
+            accountId: true,
+            cashAccountId: true,
+            cashEntryId: true,
+            propertyAssetId: true,
+            action: true,
+            source: true,
+            tradeDate: true,
+            settlementDate: true,
+            amount: true,
+            fee: true,
+            tax: true,
+            realizedProfit: true,
+            note: true,
+            deletedAt: true,
+            updatedAt: true,
+            EntryBusinessLink: {
+              where: { deletedAt: null },
+              select: { id: true },
+            },
+          },
+          orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+          take: limit + 1,
+        },
+        { tableNames: ["property_transactions"] },
+      ),
       prisma.fundConfirmDays.findMany({
         where: {
           Account: scope.hidFilter,
@@ -367,6 +445,8 @@ export async function GET(req: Request) {
     const holdingBatch = fundHoldings.slice(0, limit);
     const stockHoldingBatch = stockHoldings.slice(0, limit);
     const stockTransactionBatch = stockTransactions.slice(0, limit);
+    const propertyAssetBatch = propertyAssets.slice(0, limit);
+    const propertyTransactionBatch = propertyTransactions.slice(0, limit);
     const confirmDaysBatch = fundConfirmDays.slice(0, limit);
     const feeRateBatch = fundFeeRates.slice(0, limit);
     const regularInvestPlanBatch = regularInvestPlans.slice(0, limit);
@@ -423,6 +503,8 @@ export async function GET(req: Request) {
       fundHoldings.length > limit ||
       stockHoldings.length > limit ||
       stockTransactions.length > limit ||
+      propertyAssets.length > limit ||
+      propertyTransactions.length > limit ||
       fundConfirmDays.length > limit ||
       fundFeeRates.length > limit ||
       regularInvestPlans.length > limit ||
@@ -604,6 +686,46 @@ export async function GET(req: Request) {
             updatedAt: item.updatedAt.toISOString(),
           })),
         deletedStockTransactionIds: stockTransactionBatch.filter((item) => item.deletedAt).map((item) => item.id),
+        propertyAssets: propertyAssetBatch
+          .filter((item) => !item.deletedAt)
+          .map((item) => ({
+            id: item.id,
+            accountId: item.accountId,
+            name: item.name,
+            propertyType: item.propertyType,
+            address: item.address,
+            currency: item.currency,
+            purchaseDate: item.purchaseDate ? formatDateUtc(item.purchaseDate) : null,
+            purchasePrice: item.purchasePrice == null ? null : toNumber(item.purchasePrice),
+            cost: toNumber(item.cost),
+            marketValue: toNumber(item.marketValue),
+            latestValuationDate: item.latestValuationDate ? formatDateUtc(item.latestValuationDate) : null,
+            status: item.status,
+            note: item.note,
+            updatedAt: item.updatedAt.toISOString(),
+          })),
+        deletedPropertyAssetIds: propertyAssetBatch.filter((item) => item.deletedAt).map((item) => item.id),
+        propertyTransactions: propertyTransactionBatch
+          .filter((item) => !item.deletedAt)
+          .map((item) => ({
+            id: item.id,
+            linkId: item.EntryBusinessLink[0]?.id ?? null,
+            accountId: item.accountId,
+            cashAccountId: item.cashAccountId,
+            cashEntryId: item.cashEntryId,
+            propertyAssetId: item.propertyAssetId,
+            action: item.action,
+            source: item.source,
+            tradeDate: formatDateUtc(item.tradeDate),
+            settlementDate: item.settlementDate ? formatDateUtc(item.settlementDate) : null,
+            amount: toNumber(item.amount),
+            fee: item.fee == null ? null : toNumber(item.fee),
+            tax: item.tax == null ? null : toNumber(item.tax),
+            realizedProfit: item.realizedProfit == null ? null : toNumber(item.realizedProfit),
+            note: item.note,
+            updatedAt: item.updatedAt.toISOString(),
+          })),
+        deletedPropertyTransactionIds: propertyTransactionBatch.filter((item) => item.deletedAt).map((item) => item.id),
         regularInvestPlans: regularInvestPlanBatch.map((item) => ({
           id: item.id,
           householdId: item.householdId ?? "",

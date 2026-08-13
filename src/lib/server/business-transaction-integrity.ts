@@ -8,6 +8,7 @@ import {
   upsertEntryBusinessCashFlowLink,
   type EntryBusinessType,
 } from "@/lib/server/entry-business-link";
+import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 
 type BusinessIntegrityType = Exclude<EntryBusinessType, "other_investment">;
@@ -26,7 +27,7 @@ type ExpectedBusinessEntry = {
   cannotRepairDetail?: string;
 };
 
-const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "deposit", "metal"];
+const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "deposit", "metal", "property"];
 
 function isRegularInvestRefund(entry: { fundSubtype?: string | null; source?: string | null }) {
   return entry.fundSubtype === FundSubtype.buy_failed && entry.source === "regular_invest_refund";
@@ -126,17 +127,30 @@ async function getExpectedBusinessEntries(householdId: string): Promise<Expected
     });
   }
 
+  const propertyTransactions = await prisma.propertyTransaction.findMany({
+    where: { householdId, deletedAt: null },
+    select: { id: true },
+  });
+  for (const row of propertyTransactions) {
+    expected.set(`property:${row.id}`, {
+      id: row.id,
+      businessType: "property",
+      canRepair: true,
+    });
+  }
+
   return Array.from(expected.values());
 }
 
 async function existingBusinessIdsByType(householdId: string) {
-  const [fund, stock, insurance, wealth, deposit, metal] = await Promise.all([
+  const [fund, stock, insurance, wealth, deposit, metal, property] = await Promise.all([
     prisma.fundTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.stockTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.insuranceTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.wealthTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.depositTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.preciousMetalTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.propertyTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
   ]);
   return {
     fund: new Set(fund.map((row) => row.id)),
@@ -145,6 +159,7 @@ async function existingBusinessIdsByType(householdId: string) {
     wealth: new Set(wealth.map((row) => row.id)),
     deposit: new Set(deposit.map((row) => row.id)),
     metal: new Set(metal.map((row) => row.id)),
+    property: new Set(property.map((row) => row.id)),
   } satisfies Record<BusinessIntegrityType, Set<string>>;
 }
 
@@ -160,6 +175,7 @@ async function linkedBusinessIdsByType(householdId: string) {
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
+      propertyTransactionId: true,
     },
   });
 
@@ -170,6 +186,7 @@ async function linkedBusinessIdsByType(householdId: string) {
     wealth: new Set(),
     deposit: new Set(),
     metal: new Set(),
+    property: new Set(),
   };
   for (const row of rows) {
     if (!BUSINESS_TYPES.includes(row.businessType as BusinessIntegrityType)) continue;
@@ -181,6 +198,7 @@ async function linkedBusinessIdsByType(householdId: string) {
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
       row.stockTransactionId ??
+      row.propertyTransactionId ??
       row.businessEntryId;
     if (id) result[type].add(id);
   }
@@ -258,6 +276,7 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
     wealth: new Set(),
     deposit: new Set(),
     metal: new Set(),
+    property: new Set(),
   };
 
   for (const issue of before.issues) {
@@ -310,6 +329,34 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
         cashFlowDirection: "none",
         source: row.source ?? "manual",
         note: "Linked stock transaction without cash side",
+        metadata: { independentBusinessTransaction: true, repairedBy: "business-integrity" },
+      });
+    }
+    attempted += 1;
+  }
+  for (const id of repairableIdsByType.property) {
+    const row = await prisma.propertyTransaction.findFirst({
+      where: { id, householdId, deletedAt: null },
+      include: { Account: true, CashAccount: true, PropertyAsset: true },
+    });
+    if (!row) continue;
+    if (row.cashAccountId || row.cashEntryId) {
+      await ensurePropertyTransactionCashFlow(prisma, {
+        householdId,
+        row,
+        propertyAccount: row.Account,
+        cashAccount: row.CashAccount,
+        metadata: { repairedBy: "business-integrity" },
+      });
+    } else {
+      await upsertEntryBusinessCashFlowLink(prisma, {
+        householdId,
+        cashEntryId: null,
+        propertyTransactionId: row.id,
+        businessType: "property",
+        cashFlowDirection: "none",
+        source: row.source ?? "manual",
+        note: "Linked property transaction without cash side",
         metadata: { independentBusinessTransaction: true, repairedBy: "business-integrity" },
       });
     }

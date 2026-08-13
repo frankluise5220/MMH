@@ -541,7 +541,8 @@ Notes:
 - `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
 - `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值。
 - `POST /api/v1/stocks/holdings` 使用 `{ accountId, securityIds? }` 触发股票持仓重算。
-- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
+- `POST /api/v1/stocks/prices/refresh` 使用 `{ accountId, securityIds? }` 获取当前股票持仓的最新收盘价，写入 `StockPriceCache` 后重算 `StockHolding`，返回 `{ refreshed, failed, prices, holdings, totalMarketValue, totalCost, floatingPnL }`；股票持仓表头的“获取收盘价”按钮调用该接口。
+- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`GET /api/v1/stocks/fee-rules?accountId=...&estimate=1&direction=buy&tradeDate=YYYY-MM-DD&market=CN&stockCode=600519&grossAmount=1040&refresh=1` 返回买卖窗口使用的只读费用预估 `{ fees, totalFee, cashAmount }`；`refresh=1` 会先刷新系统内置的 A 股公开市场默认费率，再按同一规则重算。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
 
 股票动作：
 
@@ -550,6 +551,26 @@ Notes:
 - `dividend`：现金股息，产生现金流入并计入历史收益。
 - `bonus_share` / `split_share` / `merge_share`：股数变动，不创建资金侧流水；Web 交易弹窗应合并为一个“股本变动”入口，再在表单内选择具体类型。
 - `fee_adjustment` / `tax_adjustment`：费用或税费调整，通常产生现金流出；用于导入/账户调整路径，不作为普通股票交易弹窗动作展示。
+
+### Property
+
+范围：
+
+- 房产账户、房产资产、房产交易和手动估值。
+- 房产归在 `Account.kind = "investment"` + `investProductType = "property"` 下，但业务表、API、字段和 UI 语义都使用独立 `property` 域。
+- 房产没有份额、净值、确认日或到账日。房产市值来自 `PropertyAsset.marketValue` 和 `PropertyValuation`，累计成本来自购入/装修/税费/手续费，房贷余额仍来自单独负债账户。
+
+相关路径：
+
+- `GET /api/v1/properties?accountId=` 返回 `{ ok:true, data:{ assets, transactions } }`。`assets` 包含 `id`、`accountId`、`name`、`propertyType`、`address`、`currency`、`purchaseDate`、`purchasePrice`、`cost`、`marketValue`、`latestValuationDate`、`status` 和 `note`；`transactions` 包含 `id`、`linkId/cashEntryId`、`accountId`、`cashAccountId`、`propertyAssetId`、`action`、`tradeDate`、`settlementDate`、`amount`、`fee`、`tax`、`realizedProfit` 和 `note`。
+- `POST /api/v1/properties` 创建房产交易。Body: `{ accountId, cashAccountId?, propertyAssetId?, action, name?, propertyType?, address?, tradeDate, settlementDate?, amount, fee?, tax?, marketValue?, note? }`；`action` 为 `purchase`、`improvement` 或 `sale`。购入会创建 `PropertyAsset` 和初始 `PropertyValuation`；装修增加累计成本；出售把资产标记为 `sold` 并按净回收金额计算 `realizedProfit`。传入 `cashAccountId` 时同步创建/更新现金侧 `TxRecord` 和 `EntryBusinessLink.propertyTransactionId`。
+- `POST /api/v1/properties/valuations` 手动更新房产估值。Body: `{ propertyAssetId, valuationDate, marketValue, note? }`；只写 `PropertyValuation` 并更新 `PropertyAsset.marketValue` / `latestValuationDate`，不创建收入、支出、转账或投资现金流水。
+
+房产动作：
+
+- `purchase`：购入房产，通常产生现金流出，成本 = 金额 + 手续费 + 税费。
+- `improvement`：装修或资本化投入，通常产生现金流出并增加累计成本。
+- `sale`：出售房产，通常产生现金流入，已实现收益 = 出售净回收金额 - 累计成本。
 
 ### Insurance
 
@@ -706,14 +727,16 @@ Notes:
 
 移动同步返回 `stockHoldings`、`stockTransactions` 和 `deletedStockTransactionIds`。股票同步项来自独立 stock 表，客户端不得从 `fundCode`、`fundUnits`、`fundNav` 或基金净值缓存推断股票持仓；`stockTransactions[].linkId` 是 `EntryBusinessLink` 的稳定关联 ID。
 
+移动同步返回 `propertyAssets`、`propertyTransactions`、`deletedPropertyAssetIds` 和 `deletedPropertyTransactionIds`。房产同步项来自独立 property 表，客户端不得从基金份额、净值或 `TxRecord` 余额推断房产市值；`propertyTransactions[].linkId` 是 `EntryBusinessLink` 的稳定关联 ID。
+
 账户同步项包含 `creditBillMode`，值为 `separate` 或 `consolidated`，也包含用户自由备注 `note`。合并账单按同一账簿、同一机构下标记为 `consolidated` 的有效信用卡归组；交易的 `accountId` / `toAccountId` 仍指向具体信用卡，不改写为代表账户。
 
 账户同步项的 `balance` 与 Web 一致，表示截至当前日期的展示余额；移动端不得把未来日期的计划还款、分期、保费或未来流水自行累加到账户余额。
 
-### 撤销最近一次明细操作
+### 撤销最近明细操作
 
-- `GET /api/v1/undo` 返回当前用户最近一次资金明细编辑/删除操作及 `canUndo`。
-- `POST /api/v1/undo` 将最近一次单条编辑、批量编辑、单条删除或批量删除作为一个整体恢复。
+- `GET /api/v1/undo` 返回当前用户最近一条可撤销的资金明细编辑/删除操作、`canUndo`、`undoCount` 和 `historyLimit`；当前保留最近 5 个操作。
+- `POST /api/v1/undo` 将最近一条可撤销的单条编辑、批量编辑、单条删除或批量删除作为一个整体恢复；连续调用可继续撤销上一条，最多回退当前保留的 5 个操作。
 - 撤销恢复交易字段与标签，并触发账户余额、基金/贵金属持仓和信用卡账单缓存刷新。
 - 贷款项目整体删除涉及账户、计划和利率硬删除，当前不进入普通明细撤销。
 

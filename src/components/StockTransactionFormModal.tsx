@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { RefreshCcw, X } from "lucide-react";
 
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
@@ -99,6 +99,26 @@ type StockSecurityLookupResponse = {
   };
 };
 
+type StockFeeEstimateResponse = {
+  ok?: boolean;
+  error?: string;
+  data?: {
+    grossAmount?: number;
+    fees?: {
+      fee?: number | null;
+      commission?: number | null;
+      stampTax?: number | null;
+      transferFee?: number | null;
+      exchangeFee?: number | null;
+      regulatoryFee?: number | null;
+      otherFee?: number | null;
+    };
+    totalFee?: number;
+    cashAmount?: number;
+    updatedMarketDefaultCount?: number;
+  };
+};
+
 type StockCreateEventDetail = {
   requestId?: string;
   defaultStockAccountId?: string;
@@ -133,6 +153,16 @@ function parseNumber(value: string) {
   return Number.isFinite(num) && num >= 0 ? num : 0;
 }
 
+function formatMoney(value?: number | null, currency = "CNY") {
+  if (value == null || !Number.isFinite(Number(value))) return "-";
+  return `${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
+function formatFeeTooltipValue(key: string, value: number | null, currency: string) {
+  if (key === "commission" && value == null) return "未设置";
+  return formatMoney(value ?? 0, currency);
+}
+
 function normalizeStockCode(value: string) {
   return value.trim().toUpperCase();
 }
@@ -143,6 +173,14 @@ function inferStockMarketFromCode(value: string) {
   if (/^\d{5}$/.test(code)) return "HK";
   if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(code)) return "US";
   return "CN";
+}
+
+function currencyForStockMarket(market: string, fallbackCurrency?: string | null) {
+  const normalizedMarket = market.trim().toUpperCase();
+  if (normalizedMarket === "CN" || normalizedMarket === "CN_SH" || normalizedMarket === "CN_SZ") return "CNY";
+  if (normalizedMarket === "HK") return "HKD";
+  if (normalizedMarket === "US") return "USD";
+  return (fallbackCurrency || "CNY").toUpperCase();
 }
 
 function sameBrokerageFundingAccount(stockAccount: AccountOption | null, cashAccount: AccountOption) {
@@ -354,6 +392,10 @@ export function StockTransactionFormModal({
   const [grossAmount, setGrossAmount] = useState("");
   const [netAmount, setNetAmount] = useState("");
   const [stockLookupLoading, setStockLookupLoading] = useState(false);
+  const [feeEstimate, setFeeEstimate] = useState<NonNullable<StockFeeEstimateResponse["data"]> | null>(null);
+  const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
+  const [feeEstimateError, setFeeEstimateError] = useState("");
+  const [feeEstimateStatus, setFeeEstimateStatus] = useState("");
   const [brokerTradeId, setBrokerTradeId] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -414,6 +456,36 @@ export function StockTransactionFormModal({
     : action === "buy"
       ? effectiveGrossAmount
       : 0;
+  const displayCurrency = currencyForStockMarket(market, selectedCashAccount?.currency || selectedAccount?.currency);
+  const amountCurrencyLabel = `（${displayCurrency}）`;
+  const feeLineItems = [
+    { key: "commission", label: "佣金", value: feeEstimate?.fees?.commission ?? null },
+    { key: "stampTax", label: "印花税", value: feeEstimate?.fees?.stampTax ?? null },
+    { key: "transferFee", label: "过户费", value: feeEstimate?.fees?.transferFee ?? null },
+    { key: "exchangeFee", label: "经手费", value: feeEstimate?.fees?.exchangeFee ?? null },
+    { key: "regulatoryFee", label: "证管费", value: feeEstimate?.fees?.regulatoryFee ?? null },
+    { key: "otherFee", label: "其他费用", value: (feeEstimate?.fees?.otherFee ?? 0) + (feeEstimate?.fees?.fee ?? 0) },
+  ];
+  const feeTotalDisplay = feeEstimateLoading
+    ? "计算中..."
+    : feeEstimate
+      ? formatMoney(feeEstimate.totalFee ?? 0, displayCurrency)
+      : "-";
+  const finalCashAmountLabel = action === "buy" ? "预计应付" : "预计到账";
+  const finalCashAmountDisplay = feeEstimateLoading
+    ? "计算中..."
+    : feeEstimate
+      ? formatMoney(feeEstimate.cashAmount ?? 0, displayCurrency)
+      : "-";
+  const feeBreakdownTitle = feeEstimate
+    ? [
+        ...feeLineItems.map((item) => `${item.label}：${formatFeeTooltipValue(item.key, item.value, displayCurrency)}`),
+        `费用合计：${formatMoney(feeEstimate.totalFee ?? 0, displayCurrency)}`,
+        `${finalCashAmountLabel}：${formatMoney(feeEstimate.cashAmount ?? 0, displayCurrency)}`,
+      ].join("\n")
+    : feeEstimateLoading
+      ? "正在计算费用"
+      : feeEstimateError || "填写数量和成交价格后自动计算费用";
   const accountCreateFieldData = useMemo(() => {
     const accounts = mergeAccounts(localStockAccounts, localCashAccounts);
     const groups = new Map<string, { id: string; name: string }>();
@@ -479,6 +551,10 @@ export function StockTransactionFormModal({
     setGrossAmount(detail?.defaultAmount ? String(detail.defaultAmount) : "");
     setNetAmount("");
     setStockLookupLoading(false);
+    setFeeEstimate(null);
+    setFeeEstimateLoading(false);
+    setFeeEstimateError("");
+    setFeeEstimateStatus("");
     setBrokerTradeId("");
     setNote("");
     setAutoCreateError("");
@@ -725,6 +801,56 @@ export function StockTransactionFormModal({
     };
   }, [open, stockCode]);
 
+  const loadFeeEstimate = useCallback(async (refresh = false) => {
+    const normalizedCode = normalizeStockCode(stockCode);
+    if (!open || !isBuySell || !stockAccountId || effectiveGrossAmount <= 0 || !normalizedCode) {
+      setFeeEstimate(null);
+      setFeeEstimateLoading(false);
+      setFeeEstimateError("");
+      setFeeEstimateStatus("");
+      return;
+    }
+    setFeeEstimateLoading(true);
+    setFeeEstimateError("");
+    if (!refresh) setFeeEstimateStatus("");
+    try {
+      const params = new URLSearchParams({
+        accountId: stockAccountId,
+        estimate: "1",
+        direction: action,
+        tradeDate,
+        market,
+        stockCode: normalizedCode,
+        grossAmount: effectiveGrossAmount.toFixed(2),
+      });
+      if (refresh) params.set("refresh", "1");
+      const res = await fetch(`/api/v1/stocks/fee-rules?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null) as StockFeeEstimateResponse | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "费用预估失败");
+      setFeeEstimate(data.data ?? null);
+      setFeeEstimateStatus(refresh ? "已获取新费率" : "");
+    } catch (error) {
+      setFeeEstimateError(error instanceof Error ? error.message : "费用预估失败");
+      if (refresh) setFeeEstimateStatus("");
+    } finally {
+      setFeeEstimateLoading(false);
+    }
+  }, [action, effectiveGrossAmount, isBuySell, market, open, stockAccountId, stockCode, tradeDate]);
+
+  useEffect(() => {
+    if (!open || !isBuySell || effectiveGrossAmount <= 0) {
+      setFeeEstimate(null);
+      setFeeEstimateLoading(false);
+      setFeeEstimateError("");
+      setFeeEstimateStatus("");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadFeeEstimate(false);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [effectiveGrossAmount, isBuySell, loadFeeEstimate, open]);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting) return;
@@ -897,7 +1023,7 @@ export function StockTransactionFormModal({
                 ) : null}
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
                 {isShareAction ? (
                   <div className="space-y-1">
                     <div className="form-label">变动类型</div>
@@ -922,25 +1048,16 @@ export function StockTransactionFormModal({
                     <CalcInput value={price} onChange={setPrice} placeholder="成交价" label="成交价格" precision={4} />
                   </div>
                 ) : null}
-                {showAmountField ? (
+                {showAmountField && !isBuySell ? (
                   <div className="space-y-1">
                     <div className="form-label">{amountLabelForAction(action)}</div>
-                    {isBuySell ? (
-                      <input
-                        value={grossFromQuantity > 0 ? grossFromQuantity.toFixed(2) : ""}
-                        readOnly
-                        className="form-input bg-slate-50 text-right tabular-nums text-slate-700"
-                        placeholder="自动计算"
-                      />
-                    ) : (
-                      <CalcInput
-                        value={grossAmount}
-                        onChange={setGrossAmount}
-                        placeholder="金额"
-                        label={amountLabelForAction(action)}
-                        precision={2}
-                      />
-                    )}
+                    <CalcInput
+                      value={grossAmount}
+                      onChange={setGrossAmount}
+                      placeholder="金额"
+                      label={amountLabelForAction(action)}
+                      precision={2}
+                    />
                   </div>
                 ) : null}
                 {showNetAmount ? (
@@ -950,6 +1067,54 @@ export function StockTransactionFormModal({
                   </div>
                 ) : null}
               </div>
+
+              {isBuySell ? (
+                <div className="space-y-2">
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void loadFeeEstimate(true)}
+                      disabled={feeEstimateLoading || !stockAccountId || effectiveGrossAmount <= 0}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="获取最新公开费率并重算"
+                    >
+                      <RefreshCcw className={`h-3 w-3 ${feeEstimateLoading ? "animate-spin" : ""}`} />
+                      获取新费率
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <div className="form-label">费用合计{amountCurrencyLabel}</div>
+                      <input
+                        value={feeTotalDisplay}
+                        readOnly
+                        title={feeBreakdownTitle}
+                        className="form-input cursor-help bg-slate-50 text-right tabular-nums text-slate-700"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">成交金额{amountCurrencyLabel}</div>
+                      <input
+                        value={effectiveGrossAmount > 0 ? formatMoney(effectiveGrossAmount, displayCurrency) : ""}
+                        readOnly
+                        className="form-input bg-slate-50 text-right tabular-nums text-slate-700"
+                        placeholder="数量 × 成交价格"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{finalCashAmountLabel}{amountCurrencyLabel}</div>
+                      <input
+                        value={finalCashAmountDisplay}
+                        readOnly
+                        title={action === "buy" ? "从证券资金账户扣除：成交金额 + 费用合计" : "进入证券资金账户：成交金额 - 费用合计"}
+                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
+                      />
+                    </div>
+                  </div>
+                  {feeEstimateError ? <div className="text-xs text-rose-600">{feeEstimateError}</div> : null}
+                  {feeEstimateStatus ? <div className="text-xs text-emerald-700">{feeEstimateStatus}</div> : null}
+                </div>
+              ) : null}
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
@@ -963,10 +1128,16 @@ export function StockTransactionFormModal({
               </div>
             </div>
 
-            <div className="modal-footer flex shrink-0 justify-end">
-              <button type="submit" disabled={submitting || autoCreatingAccount} className="primary-button h-9 px-4 text-sm disabled:opacity-50">
-                {submitting ? "保存中..." : "保存"}
-              </button>
+            <div className="shrink-0 border-t border-slate-100 bg-white/95 px-3 py-3 sm:px-5">
+              <div className="flex justify-end gap-2">
+                <button
+                  type="submit"
+                  disabled={submitting || autoCreatingAccount}
+                  className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+                >
+                  {submitting ? "保存中..." : "保存"}
+                </button>
+              </div>
             </div>
           </form>
         </div>

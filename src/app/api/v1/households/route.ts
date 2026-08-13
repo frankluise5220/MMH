@@ -193,8 +193,6 @@ export async function DELETE(req: NextRequest) {
       );
       // 级联删除账户关联数据
       if (accountIds.length > 0) {
-        // 先删除持仓快照（依赖 fundHolding）
-        await tx.fundSnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
         // 删除持仓
         await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });

@@ -42,6 +42,7 @@ export function MobileNavigation() {
     rootView === "investmoney" ||
     rootView === "investwealth" ||
     rootView === "investstock" ||
+    rootView === "investproperty" ||
     rootView === "regularinvest";
 
   useEffect(() => {

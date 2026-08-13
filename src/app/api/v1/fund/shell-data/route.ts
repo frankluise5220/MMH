@@ -5,6 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
   loadPreciousMetalTransactionEntryLike,
+  loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 
@@ -56,6 +57,11 @@ export async function GET(req: Request) {
               accountIds: [accountId],
               householdId: ctx.householdId,
             })
+          : account.investProductType === "property"
+            ? await loadPropertyTransactionEntryLike({
+                accountIds: [accountId],
+                householdId: ctx.householdId,
+              })
           : await loadFundTransactionEntryLike({
               accountId,
               householdId: ctx.householdId,

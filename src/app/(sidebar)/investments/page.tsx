@@ -30,6 +30,7 @@ function investProductTypeLabel(type: string | null) {
   if (type === "wealth") return "银行理财";
   if (type === "metal") return "贵金属";
   if (type === "stock") return "股票";
+  if (type === "property") return "房产";
   return "投资账户";
 }
 

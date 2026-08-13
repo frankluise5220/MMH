@@ -26,7 +26,7 @@ type AccountKindValue =
   | "investment"
   | "loan"
   | "other";
-type FundProductTypeValue = "fund" | "money" | "wealth" | "metal" | "stock";
+type FundProductTypeValue = "fund" | "money" | "wealth" | "metal" | "stock" | "property";
 type CostBasisMethodValue = "moving_avg" | "fifo" | "lifo";
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 const ACCOUNT_INSTITUTION_TYPES = new Set(["bank", "insurance", "brokerage", "payment", "ewallet", "other"]);
@@ -37,6 +37,7 @@ const FUND_PRODUCT_LABELS: Record<FundProductTypeValue, string> = {
   wealth: "银行理财",
   metal: "贵金属",
   stock: "股票",
+  property: "房产",
 };
 
 const COST_BASIS_LABELS: Record<CostBasisMethodValue, string> = {
