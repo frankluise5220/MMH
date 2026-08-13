@@ -1070,12 +1070,24 @@ data_root="$(resolve_data_root 2>/dev/null || true)"
 [ -f "$data_root/data/mmh.db" ] || exit 0
 
 parent_dir="$(dirname "$data_root")"
-backup_root="$parent_dir/$TRIM_APPNAME-upgrade-backups"
+backup_root=""
+for candidate in "$parent_dir/$TRIM_APPNAME-upgrade-backups" "$data_root/upgrade-backups"; do
+    if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
+        backup_root="$candidate"
+        break
+    fi
+done
+[ -n "$backup_root" ] || exit 0
 stamp="$(date +%Y%m%d-%H%M%S)"
 target="$backup_root/${reason}-$stamp"
 
-mkdir -p "$target"
-cp -a "$data_root" "$target/appdata"
+mkdir -p "$target/appdata"
+cp -a "$data_root/data" "$target/appdata/data"
+for file in "$data_root/mmh.env" "$data_root/mmh-system-password.txt"; do
+    if [ -f "$file" ]; then
+        cp -a "$file" "$target/appdata/"
+    fi
+done
 if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$data_root/data/mmh.db" > "$target/mmh.db.sha256"
 fi

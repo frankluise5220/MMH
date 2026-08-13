@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.18",
+      "version": "0.1.19",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.19/mmh-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.18/mmh-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.19/mmh-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.19/mmh-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "完善账单/邮件/Excel 导入预览与识别规则，补齐股票交易、券商资金账户和市场费率相关能力；优化外币汇率展示、表格筛选与股票交易弹窗小屏操作；修复迁移表名并补齐 fnOS SQLite 运行时迁移，提升覆盖升级兼容性。",
+      "changelog": "修复 fnOS 覆盖升级前备份目录权限不匹配导致的“执行脚本出错且原因未知”；升级备份会优先使用同级目录，权限不足时回落到应用数据目录内，避免阻断正常升级。",
       "tags": [
         "finance",
         "bookkeeping"
