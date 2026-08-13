@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "private": true,
-  "mmhReleaseNotes": "修复 fnOS 覆盖升级前备份目录权限不匹配导致的“执行脚本出错且原因未知”；升级备份会优先使用同级目录，权限不足时回落到应用数据目录内，避免阻断正常升级。",
+  "mmhReleaseNotes": "统一 fnOS 发布包文件名，Release 资产现在包含系统、版本号和架构，例如 mmh-fnos-v0.1.x-x86_64.fpk 与 mmh-fnos-v0.1.x-arm64.fpk；同步更新飞牛源下载地址和发布校验。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",

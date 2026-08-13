@@ -31,11 +31,15 @@ function getReleaseNotes(pkg) {
   return String(pkg.mmhReleaseNotes || "").trim();
 }
 
+function fnosFpkAssetName(version, assetSuffix) {
+  return `mmh-fnos-v${version}-${assetSuffix}.fpk`;
+}
+
 function fnosDownloadUrls(version) {
   const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
   return {
-    x86_64: `${base}/mmh-x86_64.fpk`,
-    arm64: `${base}/mmh-arm64.fpk`,
+    x86_64: `${base}/${fnosFpkAssetName(version, "x86_64")}`,
+    arm64: `${base}/${fnosFpkAssetName(version, "arm64")}`,
   };
 }
 
@@ -77,6 +81,25 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
   writeJson(fullPath, payload);
 }
 
+function updateFndepotFnpackJson(version, releaseNotes) {
+  const file = path.join(root, "deploy", "fnos", "repository", "fnpack.json");
+  const payload = readJson(file);
+  const app = payload.mmh;
+  if (!app) return;
+  app.version = version;
+  app.platform = "x86";
+  app.platforms = ["x86", "arm"];
+  app.download_url = fnosDownloadUrls(version).x86_64;
+  app.download_urls = fnosDownloadUrls(version);
+  if (typeof app.icon === "string") {
+    app.icon = app.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
+  }
+  if (releaseNotes) {
+    app.changelog = releaseNotes;
+  }
+  writeJson(file, payload);
+}
+
 function updateLegacyFnosAppstore(version, releaseNotes) {
   const file = path.join(root, "fn-appstores.json");
   const payload = readJson(file);
@@ -105,6 +128,7 @@ updatePackageJson(version);
 updatePackageLock(version);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "apps.example.json"), "apps", releaseNotes);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "api", "apps"), undefined, releaseNotes);
+updateFndepotFnpackJson(version, releaseNotes);
 updateLegacyFnosAppstore(version, releaseNotes);
 
 console.log(`MMH release version bumped to ${version}.`);

@@ -1,0 +1,26 @@
+{
+  "mmh": {
+    "display_name": "MMH 家庭财务工作台",
+    "platform": "x86",
+    "platforms": [
+      "x86",
+      "arm"
+    ],
+    "version": "0.1.20",
+    "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
+    "labels": "财务,记账",
+    "distributor": "frankluise5220",
+    "distributor_url": "https://github.com/frankluise5220/MMH",
+    "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
+    "isdocker": "false",
+    "install_type": "存储空间",
+    "size": "122",
+    "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.20/mmh-fnos-v0.1.20-x86_64.fpk",
+    "download_urls": {
+      "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.20/mmh-fnos-v0.1.20-x86_64.fpk",
+      "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.20/mmh-fnos-v0.1.20-arm64.fpk"
+    },
+    "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.20",
+    "changelog": "统一 fnOS 发布包文件名，Release 资产现在包含系统、版本号和架构，例如 mmh-fnos-v0.1.x-x86_64.fpk 与 mmh-fnos-v0.1.x-arm64.fpk；同步更新飞牛源下载地址和发布校验。"
+  }
+}

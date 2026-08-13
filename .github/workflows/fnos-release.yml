@@ -102,6 +102,7 @@ jobs:
       - name: Verify built fnOS FPK
         env:
           FNOS_VERIFY_BUILT_FPK: "1"
+          FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           FNOS_TARGET_ARCH: ${{ matrix.target_arch }}
         run: npm run check:fnos
 

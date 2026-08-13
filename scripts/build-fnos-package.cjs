@@ -340,8 +340,12 @@ function copyFileIfDifferent(src, dest) {
   copyFile(src, dest);
 }
 
+function fpkAssetName() {
+  return `${appName}-fnos-v${version}-${target.assetSuffix}.fpk`;
+}
+
 function materializeFpkOutputs(source) {
-  const archPath = path.join(outDir, `${appName}-${target.assetSuffix}.fpk`);
+  const archPath = path.join(outDir, fpkAssetName());
   copyFileIfDifferent(source, archPath);
 
   return archPath;
@@ -1408,7 +1412,7 @@ if (hasNode) {
 console.log(`FNOS SQLite FPK source staged: ${path.relative(root, stageDir)}`);
 
 if (stageOnly) {
-  const archive = path.join(outDir, `${appName}-${target.assetSuffix}-${version}-fpk-source.tgz`);
+  const archive = path.join(outDir, `${appName}-fnos-v${version}-${target.assetSuffix}-fpk-source.tgz`);
   const tar = run("tar", ["-czf", archive, "-C", stageDir, "."]);
   if (tar.status !== 0) {
     console.error(tar.stderr || tar.stdout || "tar failed");
@@ -1429,7 +1433,7 @@ try {
     assertCompatibleGlibc();
   }
   requirePath(path.join(stageDir, "app", "server", "server.js"), "Run the fnOS standalone build before packaging: npm run build:fnos:app");
-  requirePath(path.join(stageDir, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball via FNOS_NODE_TARBALL before building ${appName}-${target.assetSuffix}.fpk.`);
+  requirePath(path.join(stageDir, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball via FNOS_NODE_TARBALL before building ${fpkAssetName()}.`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
@@ -1470,7 +1474,7 @@ if (manualFpk) {
   }
   fs.rmSync(path.join(stageDir, "app"), { recursive: true, force: true });
   fs.appendFileSync(path.join(stageDir, "manifest"), `checksum=${hashFileMd5(appArchive)}\n`, "utf8");
-  const fpkPath = path.join(outDir, `${appName}-${target.assetSuffix}.fpk`);
+  const fpkPath = path.join(outDir, fpkAssetName());
   const fpkEntries = [
     "app.tgz",
     "cmd",

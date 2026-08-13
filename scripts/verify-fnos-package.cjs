@@ -7,6 +7,8 @@ const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const failures = [];
+const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const verifyVersion = normalizeFnosVersion(process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0");
 const verifyTarget = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const fnosPublicFiles = new Set([
   "apple-touch-icon.png",
@@ -31,7 +33,7 @@ function normalizeFnosTarget(value) {
       manifestPlatform: "x86",
       assetSuffix: "x86_64",
       stageDirName: "mmh-fpk",
-      builtFpkName: "mmh-x86_64.fpk",
+      builtFpkName: fnosFpkAssetName("x86_64"),
     };
   }
   if (["arm", "arm64", "aarch64"].includes(raw)) {
@@ -41,7 +43,7 @@ function normalizeFnosTarget(value) {
       manifestPlatform: "arm",
       assetSuffix: "arm64",
       stageDirName: "mmh-arm64-fpk",
-      builtFpkName: "mmh-arm64.fpk",
+      builtFpkName: fnosFpkAssetName("arm64"),
     };
   }
   failures.push(`FNOS_TARGET_ARCH must be x86 or arm64, got ${value || "(empty)"}.`);
@@ -51,8 +53,26 @@ function normalizeFnosTarget(value) {
     manifestPlatform: "x86",
     assetSuffix: "x86_64",
     stageDirName: "mmh-fpk",
-    builtFpkName: "mmh-x86_64.fpk",
+    builtFpkName: fnosFpkAssetName("x86_64"),
   };
+}
+
+function normalizeFnosVersion(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "0.1.0";
+  const normalized = raw
+    .replace(/^refs\/tags\//, "")
+    .replace(/^v(?=\d)/, "")
+    .replace(/-fnos(?:$|[.-].*)?$/, "");
+  if (!/^0\.1\.\d+$/.test(normalized)) {
+    failures.push(`FNOS_PACKAGE_VERSION must use 0.1.x format, got ${normalized}.`);
+    return "0.1.0";
+  }
+  return normalized;
+}
+
+function fnosFpkAssetName(assetSuffix) {
+  return `mmh-fnos-v${verifyVersion}-${assetSuffix}.fpk`;
 }
 
 function read(file) {
@@ -222,7 +242,8 @@ expect(/if \(!existing\)/.test(buildScript), "fnOS SQLite init must skip schema 
 expect(/export MMH_DEPLOY_TARGET=fnos/.test(buildScript), "fnOS start script must mark the deployment target as fnos.");
 expect(/manifestPlatform/.test(buildScript) && /manifestArch/.test(buildScript), "fnOS manifest must be generated from the target architecture.");
 expect(/assetSuffix/.test(buildScript), "fnOS package outputs must include architecture-specific asset names.");
-expect(!/versionedArchPath/.test(buildScript), "fnOS release must not publish versioned .fpk duplicates.");
+expect(/fnos-v\$\{version\}-\$\{target\.assetSuffix\}/.test(buildScript), "fnOS release asset names must include fnOS, package version, and architecture.");
+expect(!/`\$\{appName\}-\$\{target\.assetSuffix\}\.fpk`/.test(buildScript), "fnOS release must not publish unversioned architecture-only .fpk aliases.");
 expect(!/legacyAlias/.test(buildScript), "fnOS release must not publish a third legacy mmh.fpk alias.");
 expect(/wizard_system_password/.test(buildScript), "fnOS install/config wizard must include a system password field.");
 expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");

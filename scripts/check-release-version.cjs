@@ -23,17 +23,22 @@ function findMmhApp(payload, key) {
   return apps.find((app) => app.id === "mmh");
 }
 
+function fnosFpkAssetName(version, assetSuffix) {
+  return `mmh-fnos-v${version}-${assetSuffix}.fpk`;
+}
+
 function fnosDownloadUrls(version) {
   const base = `https://github.com/frankluise5220/MMH/releases/download/v${version}`;
   return {
-    x86_64: `${base}/mmh-x86_64.fpk`,
-    arm64: `${base}/mmh-arm64.fpk`,
+    x86_64: `${base}/${fnosFpkAssetName(version, "x86_64")}`,
+    arm64: `${base}/${fnosFpkAssetName(version, "arm64")}`,
   };
 }
 
 const pkg = readJson("package.json");
 const version = String(pkg.version || "").trim();
 const releaseNotes = String(pkg.mmhReleaseNotes || "").trim();
+const downloadUrls = fnosDownloadUrls(version);
 
 expect(/^0\.1\.\d+$/.test(version), `package.json version must use 0.1.x format, got ${version || "(empty)"}.`);
 expect(releaseNotes.length > 0, "package.json must include non-empty mmhReleaseNotes for release/version display.");
@@ -49,7 +54,6 @@ for (const [file, key] of [
   const app = findMmhApp(readJson(file), key);
   expect(app, `${file} must contain the mmh app entry.`);
   if (!app) continue;
-  const downloadUrls = fnosDownloadUrls(version);
   expect(app.version === version, `${file} version must match package.json.`);
   expect(app.platform === "x86", `${file} platform must keep x86 as the legacy default platform.`);
   expect(Array.isArray(app.platforms), `${file} platforms must list supported fnOS architectures.`);
@@ -62,9 +66,25 @@ for (const [file, key] of [
   expect(app.changelog === releaseNotes, `${file} changelog must match package.json mmhReleaseNotes.`);
 }
 
+const fndepotFnpack = readJson("deploy/fnos/repository/fnpack.json");
+const fndepotApp = fndepotFnpack.mmh;
+expect(fndepotApp, "deploy/fnos/repository/fnpack.json must contain the mmh app entry for FnDepot.");
+if (fndepotApp) {
+  expect(fndepotApp.version === version, "deploy/fnos/repository/fnpack.json mmh.version must match package.json.");
+  expect(fndepotApp.platform === "x86", "deploy/fnos/repository/fnpack.json mmh.platform must keep x86 as the default platform.");
+  expect(Array.isArray(fndepotApp.platforms), "deploy/fnos/repository/fnpack.json mmh.platforms must list supported fnOS architectures.");
+  expect(fndepotApp.platforms?.includes("x86"), "deploy/fnos/repository/fnpack.json mmh.platforms must include x86.");
+  expect(fndepotApp.platforms?.includes("arm"), "deploy/fnos/repository/fnpack.json mmh.platforms must include arm.");
+  expect(fndepotApp.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json mmh.download_url must point to the x86_64 FPK.");
+  expect(!("x86" in (fndepotApp.download_urls || {})), "deploy/fnos/repository/fnpack.json mmh.download_urls must not publish a third x86 alias URL.");
+  expect(fndepotApp.download_urls?.x86_64 === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json mmh.download_urls.x86_64 must use the unified Release tag.");
+  expect(fndepotApp.download_urls?.arm64 === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json mmh.download_urls.arm64 must use the unified Release tag.");
+  expect(fndepotApp.labels === "财务,记账", "deploy/fnos/repository/fnpack.json mmh.labels must use the finance/bookkeeping category labels.");
+  expect(fndepotApp.changelog === releaseNotes, "deploy/fnos/repository/fnpack.json mmh.changelog must match package.json mmhReleaseNotes.");
+}
+
 const legacyAppstore = readJson("fn-appstores.json");
 const legacyApp = Array.isArray(legacyAppstore) ? legacyAppstore.find((app) => app.id === "mmh")?._manual : null;
-const downloadUrls = fnosDownloadUrls(version);
 expect(legacyApp, "fn-appstores.json must contain the mmh _manual app entry.");
 if (legacyApp) {
   expect(legacyApp.version === version, "fn-appstores.json _manual version must match package.json.");

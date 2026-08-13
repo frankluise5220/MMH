@@ -8,11 +8,11 @@ mmh
 
 现有 MMH 普通 NAS 安装与更新主线仍然是 Docker，继续参考 `docs/nas-install-manual.md` 和 `deploy/nas/`。飞牛版只是额外的 `.fpk` 分发形式，不把普通 NAS 安装改成 SQLite。
 
-飞牛专用 `.fpk` 使用 SQLite 原生运行方式：包内包含 Next standalone、Linux Node runtime、Prisma runtime、SQLite 初始化脚本和应用入口，不依赖 Docker/PostgreSQL。它不是源码包，也不是调试归档。由于包含原生二进制，正式 Release 资产只按架构发布两个文件：`mmh-x86_64.fpk` 和 `mmh-arm64.fpk`，但应用 ID 仍然是同一个 `mmh`。
+飞牛专用 `.fpk` 使用 SQLite 原生运行方式：包内包含 Next standalone、Linux Node runtime、Prisma runtime、SQLite 初始化脚本和应用入口，不依赖 Docker/PostgreSQL。它不是源码包，也不是调试归档。由于包含原生二进制，正式 Release 资产只按架构发布两个文件：`mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`，但应用 ID 仍然是同一个 `mmh`。
 
 ## 安装
 
-1. 下载 Release 资产中适合当前飞牛设备架构的 `.fpk`。x86_64 设备使用 `mmh-x86_64.fpk`，ARM64 设备使用 `mmh-arm64.fpk`。
+1. 下载 Release 资产中适合当前飞牛设备架构的 `.fpk`。x86_64 设备使用 `mmh-fnos-v0.1.x-x86_64.fpk`，ARM64 设备使用 `mmh-fnos-v0.1.x-arm64.fpk`。
 2. 在飞牛应用中心或第三方应用入口安装该 `.fpk`。
 3. 安装向导中填写服务端口和系统密码。系统密码用于系统初始化、删除账簿等敏感操作；留空会在首次启动时随机生成，并保存到飞牛应用数据目录的 `mmh-system-password.txt`。
 4. 启动后访问：
@@ -43,8 +43,8 @@ FNOS_TARGET_ARCH=arm64 FNOS_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz 
 成功后生成：
 
 ```text
-release-artifacts/fnos/mmh-x86_64.fpk
-release-artifacts/fnos/mmh-arm64.fpk
+release-artifacts/fnos/mmh-fnos-v0.1.x-x86_64.fpk
+release-artifacts/fnos/mmh-fnos-v0.1.x-arm64.fpk
 ```
 
 仅调试 FPK 工程结构时，可以运行：
@@ -56,15 +56,15 @@ npm run stage:fnos
 它会生成：
 
 ```text
-release-artifacts/fnos/mmh-x86_64-版本-fpk-source.tgz
-release-artifacts/fnos/mmh-arm64-版本-fpk-source.tgz
+release-artifacts/fnos/mmh-fnos-v0.1.x-x86_64-fpk-source.tgz
+release-artifacts/fnos/mmh-fnos-v0.1.x-arm64-fpk-source.tgz
 ```
 
 这个归档只用于排查 `manifest`、`cmd`、应用文件和图标结构，不是用户安装包。正式安装和应用源下载目标只能是 `.fpk`：
 
 ```text
-mmh-x86_64.fpk
-mmh-arm64.fpk
+mmh-fnos-v0.1.x-x86_64.fpk
+mmh-fnos-v0.1.x-arm64.fpk
 ```
 
 ## 发布
@@ -74,7 +74,7 @@ mmh-arm64.fpk
 - 飞牛包版本直接使用 `package.json` 的 `0.1.x`，与 GitHub Release tag `v0.1.x` 和 GHCR 镜像 tag 一致；不要再发布 `v0.1.x-fnos` 或包内 `-fnos` 版本。
 - 上传前必须运行 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos`，确认包内 `cmd/main`、manifest 和数据目录逻辑来自当前源码。
 - Release workflow 会按 x86 / arm64 安装对应架构的官方 `fnpack`；如果安装或验证失败，workflow 必须失败，不能上传 `*-fpk-source.tgz` 作为替代。
-- `repository/apps.example.json` 的 `download_url` 指向 Release 中的 `mmh-x86_64.fpk`，`download_urls` 只提供 `mmh-x86_64.fpk` 和 `mmh-arm64.fpk`。
+- `repository/apps.example.json` 的 `download_url` 指向 Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls` 只提供 `mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
 
 ## 升级边界
 
